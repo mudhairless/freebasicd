@@ -1,0 +1,42 @@
+#pragma once
+
+#include "LibLsp/lsp/LanguageSession.h"
+#include "LibLsp/lsp/general/exit.h"
+#include "LibLsp/lsp/general/initialize.h"
+#include "LibLsp/lsp/general/lsTextDocumentClientCapabilities.h"
+#include "LibLsp/lsp/general/shutdown.h"
+#include "LibLsp/lsp/lsAny.h"
+#include "LibLsp/lsp/textDocument/did_change.h"
+#include "LibLsp/lsp/textDocument/did_close.h"
+#include "LibLsp/lsp/textDocument/did_open.h"
+#include "LibLsp/lsp/textDocument/did_save.h"
+#include "LibLsp/lsp/textDocument/publishDiagnostics.h"
+#include "LibLsp/lsp/working_files.h"
+
+#include <functional>
+#include <memory>
+#include <vector>
+
+class FreeBasicServer
+{
+public:
+    explicit FreeBasicServer(lsp::LanguageSession& session);
+
+    void registerHandlers();
+    void setExitHandler(std::function<void()> exitHandler);
+
+private:
+    lsp::LanguageSession& session_;
+    std::function<void()> exitHandler_;
+
+    WorkingFiles workingFiles_;
+
+    td_initialize::response onInitialize(td_initialize::request const& req);
+    td_shutdown::response onShutdown(td_shutdown::request const& req);
+    void onDidOpen(Notify_TextDocumentDidOpen::notify& notify);
+    void onDidChange(Notify_TextDocumentDidChange::notify const& notify);
+    void onDidSave(Notify_TextDocumentDidSave::notify const& notify);
+    void onDidClose(Notify_TextDocumentDidClose::notify const& notify);
+
+    void publishDiagnostics(lsDocumentUri const& uri, std::vector<lsDiagnostic> diagnostics);
+};
