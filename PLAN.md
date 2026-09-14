@@ -42,7 +42,17 @@ The repo is a git working tree, so LspCpp is added as a **git submodule** pinned
 ### Milestone 2 — FreeBASIC lexer + parser (M2)
 Pure language layer, no LSP coupling:
 - Tokenizer over FreeBASIC's full syntax surface.
-- Block recognizer: `SUB/FUNCTION/PROPERTY/OPERATOR/CONSTRUCTOR/DESTRUCTOR ... END *`, `TYPE/UNION/ENUM ... END *`, `IF ... END IF`, `SELECT`, `FOR`, `WHILE`, `DO`, `WITH`, `NAMESPACE/MODULE/SCOPE`, `#IF..#ENDIF`.
+- Block recognizer (exact closers, all verified against `fbc` 1.10.2):
+  `SUB/FUNCTION/PROPERTY/OPERATOR/CONSTRUCTOR/DESTRUCTOR ... END <same>`,
+  `TYPE/UNION/ENUM ... END <same>`, `NAMESPACE ... END NAMESPACE`
+  (**no `MODULE` keyword exists**; namespace only), `SCOPE ... END SCOPE`,
+  multi-line `IF...THEN ... END IF`, `SELECT CASE ... END SELECT`,
+  `FOR ... NEXT` (closed by `NEXT`), `WHILE ... WEND` (**`WEND` only** —
+  `END WHILE` is rejected by fbc), `DO ... LOOP`, `WITH ... END WITH`,
+  `EXTERN ... END EXTERN`, `ASM ... END ASM`, and preprocessor
+  `#IF..#ENDIF` / `#MACRO..#ENDMACRO`. `END` alone is the END statement
+  (program exit), never a closer; single-line `IF...THEN` and `DO UNTIL/WHILE`
+  conditions take no closer.
 - Declaration extractor producing a per-document symbol tree.
 - Diagnostics: unterminated block, stray/unmatched `END`, unclosed string, bad continuation, duplicate declaration (warning).
 
@@ -103,8 +113,8 @@ enum class SymbolKind { Sub, Function, Property, Constructor, Destructor, Operat
                         Type, Union, Enum, Namespace, Module, Const, Dim, Label,
                         Parameter, Variable };
 enum class BlockKind   { Sub, Function, Property, Operator, Constructor, Destructor,
-                        Type, Union, Enum, Namespace, Module, Scope, If, Select,
-                        For, While, Do, With, PreprocIf };
+                        Type, Union, Enum, Namespace, Scope, If, Select,
+                        For, While, Do, With, Extern, Asm, PreprocIf, PreprocMacro };
 
 struct Symbol {
     std::string name;       // display name (original case + suffix char)
@@ -203,15 +213,66 @@ LspCpp is multithreaded; our previous single-threaded-loop assumption is gone. N
 
 ## 9. FreeBASIC lexical rules (encoded in lexer.cpp/language.cpp — unchanged contract)
 
-- Case-insensitive identifiers; canonical key = lowercase name **including** type-suffix char.
+Canonical keyword catalog: the alphabetical index at wiki `CatPgFullIndex`
+(~250 keywords). `language.cpp` carries the keyword set as data; the structural
+rules below are the lexer/parser contract. Ground-truth checks against `fbc` 1.10.2
+are recorded in `tests/corpus/`.
+
+**Identifiers & casing**
+- Case-insensitive; canonical key = lowercase name **including** type-suffix char.
 - Suffix chars: `$` STRING, `%` SHORT, `&` LONG, `!` SINGLE, `#` DOUBLE, `@` LONG.
-- Line continuation `_` (whitespace-tolerant) at EOL; statements separated by `:`.
-- Comments: `'` to EOL and line-leading `REM`; `'` inside a string is not a comment.
+- Line labels are identifiers followed by `:` (targets of `GOTO`/`GOSUB`/`ON...GOTO`).
+
+**Data types** (built-in): `Boolean`, `Byte`/`UByte`, `Short`/`UShort`,
+`Integer`/`UInteger`, `Long`/`ULong`, `LongInt`/`ULongInt`, `Single`, `Double`,
+`String`, `WString`, `ZString`, `Object`, `Any`, `Pointer`/`Ptr`. Type-conversion
+functions are `C`-prefixed (`CBool`, `CByte`, `CShort`, `CInt`, `CLng`,
+`CLongInt`, `CSng`, `CDbl`, `CU*`, `CPtr`, `Cast`, `TypeOf`, `TYPEOF`).
+
+**Block structures** (each opened by a keyword, closed by the exact terminator;
+verified against `fbc` 1.10.2)
+- `SUB` / `FUNCTION` / `PROPERTY` / `OPERATOR` / `CONSTRUCTOR` / `DESTRUCTOR`
+  → `END <same>` (module-level and member forms).
+- `TYPE` / `UNION` / `ENUM` → `END <same>` (`TYPE` also has Alias + temporary forms).
+- `NAMESPACE` → `END NAMESPACE`. **There is no `MODULE` keyword.**
+- `SCOPE` → `END SCOPE`.
+- `IF <expr> THEN` … `END IF` (multi-line). Single-line `IF <expr> THEN stmt`
+  has **no** closer.
+- `SELECT CASE` → `END SELECT`.
+- `FOR … NEXT` — closed by `NEXT`; no `END FOR`.
+- `WHILE <expr> … WEND` — **`WEND` only**; `END WHILE` is **rejected** by fbc
+  despite the wiki's "(equivalent to WEND)" note.
+- `DO … LOOP` — traversed with optional `WHILE`/`UNTIL` on either `DO` or `LOOP`;
+  closed by `LOOP`.
+- `WITH <expr>` → `END WITH`.
+- `EXTERN … END EXTERN`.
+- `ASM … END ASM`.
+- `END` **alone** is the END statement (terminate program), never a block closer.
+- `EXIT`/`CONTINUE` take a block target keyword (`EXIT FOR/DO/SUB/FUNCTION/IF`, etc.).
+- Preprocessor blocks: `#IF`/`#IFDEF`/`#IFNDEF` … `#ELSEIF…`/`#ELSE` … `#ENDIF`,
+  and `#MACRO … #ENDMACRO`.
+
+**Lines & structure**
+- Line continuation: trailing `_` (whitespace-tolerant); statements split on `:`.
+- Comments: `'` to EOL, and line-leading `REM`. `'` inside a string is not a comment.
 - Doc comments: `///` and `''` lines directly above declarations feed `Symbol::doc`.
+- `?` is a shortcut for `PRINT` (`? #` = `PRINT #`, `? USING` = `PRINT USING`).
+- `...` (ellipsis) is a variadic-parameter marker (with `VA_*`/`CVA_*` macros).
+
+**Literals**
 - Numbers: decimal, `&H`/`&O`/`&B` radix, floats `1.5`/`1e-5`, optional suffix.
-- Strings: `"..."` with doubled `""` as escaped quote.
-- Preprocessor lines start with `#` (`#include once`, `#define`, `#if..#endif`, `#print`).
-- `.` member access and `->` are operators, never identifier parts.
+- Strings: `"..."` with doubled `""` as escaped quote; `W`-prefixed `Wchr`, etc.
+
+**Preprocessor & meta**
+- Preprocessor lines start with `#`: `#ASSERT`, `#CMDLINE`, `#DEFINE`, `#ELSE`,
+  `#ELSEIF`, `#ELSEIFDEF`, `#ELSEIFNDEF`, `#ENDIF`, `#ENDMACRO`, `#ERROR`, `#IF`,
+  `#IFDEF`, `#IFNDEF`, `#INCLIB`, `#INCLUDE`, `#LANG`, `#LIBPATH`, `#LINE`,
+  `#MACRO`, `#PRAGMA` (`#PRAGMA RESERVE`), `#PRINT`, `#UNDEF`.
+- Legacy meta-commands start with `$`: `$DYNAMIC`, `$INCLUDE`, `$LANG`, `$STATIC`.
+- `.` member access, `.` ellipsis, and `->` are operators/markers, never identifier parts.
+- Single-char and combined assignment operators exist: `AND=` `OR=` `XOR=` `EQV=`
+  `IMP=` `MOD=` `SHL=` `SHR=` — lex `AND`/`AND=` distinctly, and note `<<=>`-style
+  arithmetic is not FreeBASIC (uses `SHL`/`SHR` words).
 
 ## 10. Testing plan
 
