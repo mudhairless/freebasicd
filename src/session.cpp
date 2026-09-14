@@ -1,5 +1,7 @@
 #include "session.h"
 
+#include "language.h"
+#include "lexer.h"
 #include "parser.h"
 #include "resolve.h"
 #include "utf16.h"
@@ -124,6 +126,70 @@ fblang::Symbol const* deepestSymbolAt(std::vector<fblang::Symbol> const& roots, 
     return best;
 }
 
+lsCompletionItemKind completionKindFor(fblang::SymbolKind kind)
+{
+    switch (kind)
+    {
+        case fblang::SymbolKind::Sub:
+            return lsCompletionItemKind::Method;
+        case fblang::SymbolKind::Function:
+            return lsCompletionItemKind::Function;
+        case fblang::SymbolKind::Property:
+            return lsCompletionItemKind::Property;
+        case fblang::SymbolKind::Constructor:
+            return lsCompletionItemKind::Constructor;
+        case fblang::SymbolKind::Destructor:
+        case fblang::SymbolKind::Operator:
+            return lsCompletionItemKind::Operator;
+        case fblang::SymbolKind::Type:
+        case fblang::SymbolKind::Union:
+            return lsCompletionItemKind::Struct;
+        case fblang::SymbolKind::Enum:
+            return lsCompletionItemKind::Enum;
+        case fblang::SymbolKind::Namespace:
+            return lsCompletionItemKind::Module;
+        case fblang::SymbolKind::Const:
+            return lsCompletionItemKind::Constant;
+        case fblang::SymbolKind::Dim:
+        case fblang::SymbolKind::Parameter:
+        case fblang::SymbolKind::Variable:
+            return lsCompletionItemKind::Variable;
+        case fblang::SymbolKind::Scope:
+        case fblang::SymbolKind::Label:
+            return lsCompletionItemKind::Text;
+    }
+    return lsCompletionItemKind::Text;
+}
+
+// Identifier being typed at `off` (bytes), or "" when the cursor is not on an
+// identifier character run.
+std::string completionPrefix(std::string_view content, std::uint32_t off)
+{
+    std::size_t start = off;
+    while (start > 0)
+    {
+        char const c = content[start - 1];
+        bool const ident = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                           c == '_' || fblang::isSuffixChar(c);
+        if (!ident)
+        {
+            break;
+        }
+        --start;
+    }
+    return std::string(content.substr(start, off - start));
+}
+
+bool hasPrefix(std::string_view word, std::string_view prefix)
+{
+    return word.size() >= prefix.size() && word.substr(0, prefix.size()) == prefix;
+}
+
+char const* const kBlockOpeners[] = {"sub",       "function", "property", "operator", "constructor",
+                                     "destructor", "type",     "union",    "enum",     "namespace",
+                                     "scope",     "if",       "select",   "with",     "extern",
+                                     "asm"};
+
 }  // namespace
 
 FreeBasicServer::FreeBasicServer(lsp::LanguageSession& session) : session_(session)
@@ -157,6 +223,8 @@ void FreeBasicServer::registerHandlers()
     session_.on([this](td_definition::request const& req) { return onDefinition(req); });
     session_.on([this](td_references::request const& req) { return onReferences(req); });
     session_.on([this](td_highlight::request const& req) { return onHighlight(req); });
+    session_.on([this](td_completion::request const& req) { return onCompletion(req); });
+    session_.on([this](td_signatureHelp::request const& req) { return onSignatureHelp(req); });
 }
 
 td_initialize::response FreeBasicServer::onInitialize(td_initialize::request const& req)
@@ -184,6 +252,14 @@ td_initialize::response FreeBasicServer::onInitialize(td_initialize::request con
 
     rsp.result.capabilities.documentHighlightProvider.emplace();
     rsp.result.capabilities.documentHighlightProvider->first.emplace(true);
+
+    rsp.result.capabilities.completionProvider.emplace();
+    rsp.result.capabilities.completionProvider->triggerCharacters.emplace();
+    rsp.result.capabilities.completionProvider->triggerCharacters->emplace_back(".");
+
+    rsp.result.capabilities.signatureHelpProvider.emplace();
+    rsp.result.capabilities.signatureHelpProvider->triggerCharacters.emplace_back("(");
+    rsp.result.capabilities.signatureHelpProvider->triggerCharacters.emplace_back(",");
 
     return rsp;
 }
@@ -441,6 +517,242 @@ td_highlight::response FreeBasicServer::onHighlight(td_highlight::request const&
     {
         add(ref);
     }
+    return rsp;
+}
+
+td_completion::response FreeBasicServer::onCompletion(td_completion::request const& req)
+{
+    td_completion::response rsp;
+    rsp.id = req.id;
+
+    std::shared_ptr<WorkingFile> file =
+        workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    if (!file)
+    {
+        return rsp;
+    }
+    std::string_view content = file->GetContentNoLock();
+    std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+    std::string const prefix = fblang::toLowerChars(completionPrefix(content, offset));
+
+    fblang::ParseResult parse = fblang::parseDocument(content);
+
+    for (std::string_view w : fblang::reservedWords())
+    {
+        if (!hasPrefix(w, prefix))
+        {
+            continue;
+        }
+        lsCompletionItem item;
+        item.label = std::string(w);
+        item.kind.emplace(lsCompletionItemKind::Keyword);
+        rsp.result.items.push_back(std::move(item));
+    }
+
+    for (char const* opener : kBlockOpeners)
+    {
+        fblang::BlockCloser closer;
+        if (!fblang::blockForOpener(opener, &closer) || !closer.needsEnd)
+        {
+            continue;
+        }
+        std::string const label = "end " + std::string(closer.closeWord);
+        if (!hasPrefix(label, prefix))
+        {
+            continue;
+        }
+        lsCompletionItem item;
+        item.label = label;
+        item.kind.emplace(lsCompletionItemKind::Snippet);
+        item.insertText.emplace(fblang::closerDisplay(closer));
+        rsp.result.items.push_back(std::move(item));
+    }
+
+    std::vector<std::string> seen;
+    for (fblang::Symbol const* sym : fblang::visibleSymbols(parse, offset))
+    {
+        if (!hasPrefix(sym->key, prefix))
+        {
+            continue;
+        }
+        bool dup = false;
+        for (auto const& k : seen)
+        {
+            if (k == sym->key)
+            {
+                dup = true;
+                break;
+            }
+        }
+        if (dup)
+        {
+            continue;
+        }
+        seen.push_back(sym->key);
+        lsCompletionItem item;
+        item.label = sym->name;
+        item.kind.emplace(completionKindFor(sym->kind));
+        if (!sym->signature.empty())
+        {
+            item.detail.emplace(sym->signature);
+        }
+        rsp.result.items.push_back(std::move(item));
+    }
+    return rsp;
+}
+
+td_signatureHelp::response FreeBasicServer::onSignatureHelp(td_signatureHelp::request const& req)
+{
+    td_signatureHelp::response rsp;
+    rsp.id = req.id;
+
+    std::shared_ptr<WorkingFile> file =
+        workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    if (!file)
+    {
+        return rsp;
+    }
+    std::string_view content = file->GetContentNoLock();
+    std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+
+    fblang::Lexer lx(content);
+    std::vector<fblang::Token> toks;
+    for (;;)
+    {
+        fblang::Token t = lx.next();
+        toks.push_back(t);
+        if (t.kind == fblang::TokenKind::Eof)
+        {
+            break;
+        }
+    }
+    if (toks.empty())
+    {
+        return rsp;
+    }
+
+    // Stack of unclosed '(' with the identifier callee right before each.
+    std::vector<int> openStack;
+    std::vector<int> calleeStack;
+    for (std::size_t i = 0; i < toks.size(); ++i)
+    {
+        fblang::Token const& t = toks[i];
+        if (t.beg > offset)
+        {
+            break;
+        }
+        if (t.kind != fblang::TokenKind::Symbol)
+        {
+            continue;
+        }
+        std::string_view s = t.text();
+        if (s == ")")
+        {
+            if (!openStack.empty())
+            {
+                openStack.pop_back();
+                calleeStack.pop_back();
+            }
+            continue;
+        }
+        if (s != "(")
+        {
+            continue;
+        }
+        int callee = -1;
+        for (std::size_t j = i; j > 0; --j)
+        {
+            fblang::Token const& prev = toks[j - 1];
+            if (prev.kind == fblang::TokenKind::Newline)
+            {
+                break;
+            }
+            if (prev.kind == fblang::TokenKind::Identifier)
+            {
+                callee = static_cast<int>(j - 1);
+                break;
+            }
+            if (prev.kind == fblang::TokenKind::Keyword)
+            {
+                break;
+            }
+        }
+        openStack.push_back(static_cast<int>(i));
+        calleeStack.push_back(callee);
+    }
+    if (openStack.empty() || calleeStack.back() < 0)
+    {
+        return rsp;
+    }
+    int const openIdx = openStack.back();
+    int const nameIdx = calleeStack.back();
+
+    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::Token const& calleeTok = toks[static_cast<std::size_t>(nameIdx)];
+    fblang::Symbol const* decl = fblang::resolveAt(parse, content, calleeTok.beg);
+    if (!decl)
+    {
+        return rsp;
+    }
+    switch (decl->kind)
+    {
+        case fblang::SymbolKind::Sub:
+        case fblang::SymbolKind::Function:
+        case fblang::SymbolKind::Property:
+        case fblang::SymbolKind::Constructor:
+        case fblang::SymbolKind::Destructor:
+        case fblang::SymbolKind::Operator:
+            break;
+        default:
+            return rsp;
+    }
+
+    lsSignatureInformation info;
+    info.label = decl->signature.empty() ? decl->name : decl->signature;
+    for (auto const& p : decl->children)
+    {
+        if (p.kind == fblang::SymbolKind::Parameter)
+        {
+            lsParameterInformation pi;
+            pi.label = p.name;
+            info.parameters.push_back(std::move(pi));
+        }
+    }
+
+    int activeParam = 0;
+    int depth = 0;
+    for (std::size_t i = static_cast<std::size_t>(openIdx) + 1; i < toks.size(); ++i)
+    {
+        fblang::Token const& t = toks[i];
+        if (t.beg >= offset)
+        {
+            break;
+        }
+        if (t.kind != fblang::TokenKind::Symbol)
+        {
+            continue;
+        }
+        std::string_view s = t.text();
+        if (s == "(")
+        {
+            ++depth;
+        }
+        else if (s == ")")
+        {
+            if (depth > 0)
+            {
+                --depth;
+            }
+        }
+        else if (s == "," && depth == 0)
+        {
+            ++activeParam;
+        }
+    }
+
+    rsp.result.signatures.push_back(std::move(info));
+    rsp.result.activeSignature.emplace(0);
+    rsp.result.activeParameter.emplace(activeParam);
     return rsp;
 }
 

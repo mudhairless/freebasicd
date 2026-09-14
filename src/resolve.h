@@ -31,4 +31,9 @@ Symbol const* resolveAt(ParseResult const& parse, std::string_view src, std::uin
 std::vector<SourceRange> occurrencesOf(ParseResult const& parse, std::string_view src,
                                        Symbol const& decl);
 
+// Pointers to every named declaration visible at `off`, innermost scope first.
+// A name listed earlier shadows any later entry with the same key (module
+// level is last). Used to build completion candidates.
+std::vector<Symbol const*> visibleSymbols(ParseResult const& parse, std::uint32_t off);
+
 }  // namespace fblang

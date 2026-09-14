@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "symbols.h"
 
@@ -11,6 +12,10 @@ namespace fblang {
 // True if `word` (lowercase, no suffix) is a reserved FreeBASIC keyword. The
 // set was verified against fbc 1.10.2: each entry fails `dim <word> as integer`.
 bool isReservedWord(std::string_view word);
+
+// The full reserved-word catalog (lowercase, sorted). Completion iterates it
+// to offer keyword items; the returned views reference static storage.
+std::vector<std::string_view> reservedWords();
 
 // Built-in type names (also reserved, listed separately for completion/hover).
 bool isBuiltinType(std::string_view wordLower);

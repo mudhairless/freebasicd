@@ -79,6 +79,21 @@ char const* kHighlightFrame =
     R"FB({"jsonrpc":"2.0","id":"hl","method":"textDocument/documentHighlight","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":0}}})FB";
 
+// A module with a function and a call to get signature help inside the call.
+char const kDidOpenCallsFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/calls.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"function add(a as integer, b as integer) as integer\n    return a + b\nend function\n\n)FB"
+    R"FB(dim x as integer\nx = add(1, \n"}}})FB";
+
+char const* kCompletionFrame =
+    R"FB({"jsonrpc":"2.0","id":"comp","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":8}}})FB";
+
+char const* kSignatureHelpFrame =
+    R"FB({"jsonrpc":"2.0","id":"sig","method":"textDocument/signatureHelp","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/calls.bas"},"position":{"line":5,"character":11}}})FB";
+
 char const kDidCloseFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":)FB"
     R"FB({"uri":"file:///tmp/hello.bas"}})FB";
@@ -142,6 +157,10 @@ void TestInitializeReportsSyncCapabilities()
            "initialize response must advertise references support");
     Expect(response.find("\"documentHighlightProvider\":true") != std::string::npos,
            "initialize response must advertise documentHighlight support");
+    Expect(response.find("\"completionProvider\"") != std::string::npos,
+           "initialize response must advertise completion support");
+    Expect(response.find("\"signatureHelpProvider\"") != std::string::npos,
+           "initialize response must advertise signatureHelp support");
 
     session.stop();
 }
@@ -385,6 +404,70 @@ void TestHighlightCoversAllSites()
     session.stop();
 }
 
+void TestCompletionOffersKeywordsAndSymbols()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kDidOpenResolveFrame));
+    Expect(WaitForPublishedUri(output, 1).empty() == false, "didOpen must publish diagnostics");
+
+    input->append(MakeLspFrame(kCompletionFrame));
+    std::string const response = WaitForOutputContaining(output, "\"id\":\"comp\"");
+
+    Expect(response.find("\"id\":\"comp\"") != std::string::npos,
+           "completion request must receive a response");
+    Expect(response.find("\"label\":\"counter\"") != std::string::npos,
+           "completion must offer the in-scope counter symbol");
+    Expect(response.find("\"label\":\"counter\"") != std::string::npos &&
+               response.find("\"kind\":6") != std::string::npos,
+           "a dim symbol must complete as a variable");
+    Expect(response.find("\"label\":\"dim\"") != std::string::npos,
+           "completion must offer the dim keyword");
+    Expect(response.find("\"label\":\"end if\"") != std::string::npos,
+           "completion must offer END-block snippets");
+
+    session.stop();
+}
+
+void TestSignatureHelpShowsParamsAndActiveIndex()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kDidOpenCallsFrame));
+    Expect(WaitForPublishedUri(output, 1).empty() == false, "didOpen must publish diagnostics");
+
+    input->append(MakeLspFrame(kSignatureHelpFrame));
+    std::string const response = WaitForOutputContaining(output, "\"id\":\"sig\"");
+
+    Expect(response.find("\"id\":\"sig\"") != std::string::npos,
+           "signatureHelp request must receive a response");
+    Expect(response.find("function add(a as integer, b as integer) as integer") != std::string::npos,
+           "signature help must show the whole function header");
+    Expect(response.find("\"label\":\"a\"") != std::string::npos &&
+               response.find("\"label\":\"b\"") != std::string::npos,
+           "signature help must list each parameter");
+    Expect(response.find("\"activeSignature\":0") != std::string::npos,
+           "signature help must mark the only signature active");
+    Expect(response.find("\"activeParameter\":1") != std::string::npos,
+           "signature help must select the second parameter after the comma");
+
+    session.stop();
+}
+
 void TestDidChangePushesDiagnostics()
 {
     lsp::NullLog log;
@@ -528,6 +611,8 @@ int main()
     RUN_TEST(TestDefinitionResolvesToDeclaration);
     RUN_TEST(TestReferencesListAllSites);
     RUN_TEST(TestHighlightCoversAllSites);
+    RUN_TEST(TestCompletionOffersKeywordsAndSymbols);
+    RUN_TEST(TestSignatureHelpShowsParamsAndActiveIndex);
     RUN_TEST(TestDidChangePushesDiagnostics);
     RUN_TEST(TestDidCloseEvictsAndPublishes);
     RUN_TEST(TestShutdownReturnsNullResult);

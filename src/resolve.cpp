@@ -182,4 +182,25 @@ std::vector<SourceRange> occurrencesOf(ParseResult const& parse, std::string_vie
     return out;
 }
 
+std::vector<Symbol const*> visibleSymbols(ParseResult const& parse, std::uint32_t off)
+{
+    std::vector<Symbol const*> out;
+    for (Symbol const* cur = innermostScope(parse, off);; cur = cur ? parentOf(parse, cur) : nullptr)
+    {
+        std::vector<Symbol> const& cands = cur ? cur->children : parse.roots;
+        for (auto const& c : cands)
+        {
+            if (!c.key.empty())
+            {
+                out.push_back(&c);
+            }
+        }
+        if (!cur)
+        {
+            break;
+        }
+    }
+    return out;
+}
+
 }  // namespace fblang

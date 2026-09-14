@@ -414,6 +414,17 @@ bool isReservedWord(std::string_view word)
     return std::binary_search(std::begin(kReserved), std::end(kReserved), std::string(word));
 }
 
+std::vector<std::string_view> reservedWords()
+{
+    std::vector<std::string_view> out;
+    out.reserve(std::size(kReserved));
+    for (char const* w : kReserved)
+    {
+        out.emplace_back(w);
+    }
+    return out;
+}
+
 bool isBuiltinType(std::string_view wordLower)
 {
     for (char const* t : kBuiltinTypes)

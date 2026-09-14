@@ -10,6 +10,7 @@
 #include "LibLsp/lsp/textDocument/did_close.h"
 #include "LibLsp/lsp/textDocument/did_open.h"
 #include "LibLsp/lsp/textDocument/did_save.h"
+#include "LibLsp/lsp/textDocument/completion.h"
 #include "LibLsp/lsp/textDocument/declaration_definition.h"
 #include "LibLsp/lsp/textDocument/document_symbol.h"
 #include "LibLsp/lsp/textDocument/foldingRange.h"
@@ -17,6 +18,7 @@
 #include "LibLsp/lsp/textDocument/hover.h"
 #include "LibLsp/lsp/textDocument/publishDiagnostics.h"
 #include "LibLsp/lsp/textDocument/references.h"
+#include "LibLsp/lsp/textDocument/signature_help.h"
 #include "LibLsp/lsp/working_files.h"
 
 #include <functional>
@@ -50,6 +52,8 @@ private:
     td_definition::response onDefinition(td_definition::request const& req);
     td_references::response onReferences(td_references::request const& req);
     td_highlight::response onHighlight(td_highlight::request const& req);
+    td_completion::response onCompletion(td_completion::request const& req);
+    td_signatureHelp::response onSignatureHelp(td_signatureHelp::request const& req);
 
     void reparseAndPublish(std::shared_ptr<WorkingFile> const& file, lsDocumentUri const& uri);
     void publishDiagnostics(lsDocumentUri const& uri, std::vector<lsDiagnostic> diagnostics);
