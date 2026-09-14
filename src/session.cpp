@@ -93,6 +93,36 @@ std::vector<lsDiagnostic> convertDiagnostics(std::string_view content, fblang::P
     return out;
 }
 
+// Deepest symbol (by range nesting) covering `off`, or nullptr.
+fblang::Symbol const* symbolAt(fblang::Symbol const& sym, std::uint32_t off)
+{
+    if (off < sym.range.beg || off > sym.range.end)
+    {
+        return nullptr;
+    }
+    for (auto const& c : sym.children)
+    {
+        if (fblang::Symbol const* hit = symbolAt(c, off))
+        {
+            return hit;
+        }
+    }
+    return &sym;
+}
+
+fblang::Symbol const* deepestSymbolAt(std::vector<fblang::Symbol> const& roots, std::uint32_t off)
+{
+    fblang::Symbol const* best = nullptr;
+    for (auto const& r : roots)
+    {
+        if (fblang::Symbol const* hit = symbolAt(r, off))
+        {
+            best = hit;
+        }
+    }
+    return best;
+}
+
 }  // namespace
 
 FreeBasicServer::FreeBasicServer(lsp::LanguageSession& session) : session_(session)
@@ -121,6 +151,8 @@ void FreeBasicServer::registerHandlers()
     session_.on([this](Notify_TextDocumentDidSave::notify const& notify) { onDidSave(notify); });
     session_.on([this](Notify_TextDocumentDidClose::notify const& notify) { onDidClose(notify); });
     session_.on([this](td_symbol::request const& req) { return onDocumentSymbol(req); });
+    session_.on([this](td_hover::request const& req) { return onHover(req); });
+    session_.on([this](td_foldingRange::request const& req) { return onFoldingRange(req); });
 }
 
 td_initialize::response FreeBasicServer::onInitialize(td_initialize::request const& req)
@@ -134,6 +166,11 @@ td_initialize::response FreeBasicServer::onInitialize(td_initialize::request con
 
     rsp.result.capabilities.documentSymbolProvider.emplace();
     rsp.result.capabilities.documentSymbolProvider->first.emplace(true);
+
+    rsp.result.capabilities.hoverProvider.emplace(true);
+
+    rsp.result.capabilities.foldingRangeProvider.emplace();
+    rsp.result.capabilities.foldingRangeProvider->first.emplace(true);
 
     return rsp;
 }
@@ -215,6 +252,82 @@ td_symbol::response FreeBasicServer::onDocumentSymbol(td_symbol::request const& 
             continue;
         }
         rsp.result.push_back(convertSymbol(content, root));
+    }
+    return rsp;
+}
+
+td_hover::response FreeBasicServer::onHover(td_hover::request const& req)
+{
+    td_hover::response rsp;
+    rsp.id = req.id;
+
+    std::shared_ptr<WorkingFile> file =
+        workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    if (!file)
+    {
+        return rsp;
+    }
+    std::string_view content = file->GetContentNoLock();
+    std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+
+    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::Symbol const* sym = deepestSymbolAt(parse.roots, offset);
+    if (!sym)
+    {
+        return rsp;
+    }
+
+    std::string markdown;
+    if (!sym->signature.empty())
+    {
+        markdown = "```basic\n" + sym->signature + "\n```";
+    }
+    else
+    {
+        markdown = "`" + sym->name + "`";
+    }
+    if (!sym->doc.empty())
+    {
+        markdown += "\n\n---\n" + sym->doc;
+    }
+
+    rsp.result.contents.second.emplace(MarkupContent{std::string("markdown"), std::move(markdown)});
+    rsp.result.range.emplace(fblang::utf16Range(content, sym->selection.beg, sym->selection.end));
+    return rsp;
+}
+
+td_foldingRange::response FreeBasicServer::onFoldingRange(td_foldingRange::request const& req)
+{
+    td_foldingRange::response rsp;
+    rsp.id = req.id;
+
+    std::shared_ptr<WorkingFile> file =
+        workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    if (!file)
+    {
+        return rsp;
+    }
+    std::string_view content = file->GetContentNoLock();
+    fblang::ParseResult parse = fblang::parseDocument(content);
+
+    for (auto const& br : parse.blockRanges)
+    {
+        lsPosition const start = fblang::utf16Position(content, br.beg);
+        lsPosition const closer = fblang::utf16Position(content, br.end);
+        if (closer.line <= start.line)
+        {
+            continue;  // single-line construct: nothing to fold
+        }
+
+        FoldingRange fr;
+        fr.startLine = start.line;
+        fr.startCharacter = start.character;
+        fr.endLine = closer.line - 1;  // keep the END keyword line visible
+        // -1 character clamps to the end of the fold line in UTF-16 units.
+        fr.endCharacter = fblang::utf16Position(
+            content, fblang::byteOffsetForUtf16Position(content, lsPosition(fr.endLine, -1)))
+                              .character;
+        rsp.result.push_back(fr);
     }
     return rsp;
 }

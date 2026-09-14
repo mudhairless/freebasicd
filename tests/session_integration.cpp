@@ -46,6 +46,19 @@ char const* kDocumentSymbolFrame =
     R"FB({"jsonrpc":"2.0","id":"dsym","method":"textDocument/documentSymbol","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"}}})FB";
 
+// Line 4 is the `function clamp(...)` header; the cursor sits on that line.
+char const* kHoverFrame =
+    R"FB({"jsonrpc":"2.0","id":"hov","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"},"position":{"line":4,"character":1}}})FB";
+
+char const* kHoverOnBodyFrame =
+    R"FB({"jsonrpc":"2.0","id":"hov2","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"},"position":{"line":5,"character":4}}})FB";
+
+char const* kFoldingRangeFrame =
+    R"FB({"jsonrpc":"2.0","id":"fold","method":"textDocument/foldingRange","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"}}})FB";
+
 char const kDidCloseFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":)FB"
     R"FB({"uri":"file:///tmp/hello.bas"}})FB";
@@ -99,6 +112,10 @@ void TestInitializeReportsSyncCapabilities()
            "textDocumentSync must advertise incremental changes");
     Expect(response.find("\"documentSymbolProvider\":true") != std::string::npos,
            "initialize response must advertise documentSymbol support");
+    Expect(response.find("\"hoverProvider\":true") != std::string::npos,
+           "initialize response must advertise hover support");
+    Expect(response.find("\"foldingRangeProvider\":true") != std::string::npos,
+           "initialize response must advertise foldingRange support");
 
     session.stop();
 }
@@ -188,6 +205,68 @@ void TestDocumentSymbolsReturnHierarchy()
            "nested parameter symbols must be reported as children");
     Expect(response.find("\"selectionRange\"") != std::string::npos,
            "document symbols must carry a selection range for the name token");
+
+    session.stop();
+}
+
+void TestHoverShowsSignatureAndDoc()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kDidOpenHierFrame));
+    Expect(WaitForPublishedUri(output, 1).empty() == false, "didOpen must publish diagnostics");
+
+    input->append(MakeLspFrame(kHoverFrame));
+    std::string const response = WaitForOutputContaining(output, "\"id\":\"hov\"");
+
+    Expect(response.find("\"id\":\"hov\"") != std::string::npos,
+           "hover request must receive a response");
+    Expect(response.find("\"kind\":\"markdown\"") != std::string::npos,
+           "hover contents must be markdown");
+    Expect(response.find("function clamp(v as integer, lo as integer, hi as integer) as integer") !=
+               std::string::npos,
+           "hover over the function header must show its signature");
+    Expect(response.find("\"range\"") != std::string::npos,
+           "hover must carry the selection range of the hovered symbol");
+
+    input->append(MakeLspFrame(kHoverOnBodyFrame));
+    std::string const bodyHover = WaitForOutputContaining(output, "\"id\":\"hov2\"");
+    Expect(bodyHover.find("function clamp(v as integer") != std::string::npos,
+           "hover anywhere inside a function must resolve to that function");
+
+    session.stop();
+}
+
+void TestFoldingRangesReturned()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kDidOpenHierFrame));
+    Expect(WaitForPublishedUri(output, 1).empty() == false, "didOpen must publish diagnostics");
+
+    input->append(MakeLspFrame(kFoldingRangeFrame));
+    std::string const response = WaitForOutputContaining(output, "\"id\":\"fold\"");
+
+    Expect(response.find("\"id\":\"fold\"") != std::string::npos,
+           "foldingRange request must receive a response");
+    Expect(response.find("\"startLine\":0,\"endLine\":1") != std::string::npos,
+           "the SUB block must fold from line 0 up to the END SUB line");
+    Expect(response.find("\"startLine\":4,\"endLine\":6") != std::string::npos,
+           "the FUNCTION block must fold from line 4 up to the END FUNCTION line");
 
     session.stop();
 }
@@ -330,6 +409,8 @@ int main()
     RUN_TEST(TestDidOpenPublishesDiagnostics);
     RUN_TEST(TestDiagnosticsReflectParseErrors);
     RUN_TEST(TestDocumentSymbolsReturnHierarchy);
+    RUN_TEST(TestHoverShowsSignatureAndDoc);
+    RUN_TEST(TestFoldingRangesReturned);
     RUN_TEST(TestDidChangePushesDiagnostics);
     RUN_TEST(TestDidCloseEvictsAndPublishes);
     RUN_TEST(TestShutdownReturnsNullResult);

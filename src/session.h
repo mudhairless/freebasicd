@@ -11,6 +11,8 @@
 #include "LibLsp/lsp/textDocument/did_open.h"
 #include "LibLsp/lsp/textDocument/did_save.h"
 #include "LibLsp/lsp/textDocument/document_symbol.h"
+#include "LibLsp/lsp/textDocument/foldingRange.h"
+#include "LibLsp/lsp/textDocument/hover.h"
 #include "LibLsp/lsp/textDocument/publishDiagnostics.h"
 #include "LibLsp/lsp/working_files.h"
 
@@ -40,6 +42,8 @@ private:
 
     td_initialize::response onInitialize(td_initialize::request const& req);
     td_symbol::response onDocumentSymbol(td_symbol::request const& req);
+    td_hover::response onHover(td_hover::request const& req);
+    td_foldingRange::response onFoldingRange(td_foldingRange::request const& req);
 
     void reparseAndPublish(std::shared_ptr<WorkingFile> const& file, lsDocumentUri const& uri);
     void publishDiagnostics(lsDocumentUri const& uri, std::vector<lsDiagnostic> diagnostics);

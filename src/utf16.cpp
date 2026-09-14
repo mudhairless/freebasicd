@@ -88,4 +88,31 @@ lsRange utf16Range(std::string_view text, std::uint32_t beginByte, std::uint32_t
     return range;
 }
 
+std::uint32_t byteOffsetForUtf16Position(std::string_view text, lsPosition pos)
+{
+    std::size_t lineStart = 0;
+    unsigned line = 0;
+    while (line < pos.line)
+    {
+        std::size_t const nl = text.find('\n', lineStart);
+        if (nl == std::string_view::npos)
+        {
+            return static_cast<std::uint32_t>(text.size());
+        }
+        lineStart = nl + 1;
+        ++line;
+    }
+
+    std::size_t const lineEnd = text.find('\n', lineStart);
+    std::size_t const stop = lineEnd == std::string_view::npos ? text.size() : lineEnd;
+
+    std::size_t i = lineStart;
+    unsigned units = 0;
+    while (i < stop && units < pos.character)
+    {
+        units += static_cast<unsigned>(utf16UnitsOfCodePoint(text, i));
+    }
+    return static_cast<std::uint32_t>(i);
+}
+
 }  // namespace fblang

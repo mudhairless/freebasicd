@@ -76,6 +76,19 @@ static void TestRanges()
     CHECK(r.end.line == 1 && r.end.character == 5);
 }
 
+static void TestPositionRoundTrip()
+{
+    std::string text;
+    text.reserve(48);
+    text += "' \xE3\x81\x93\xE3\x81\xAB\n";      // こに  (2 x 3 bytes)
+    text += "print \"h\xC3\xA9llo\"";            // é is 2 bytes, 1 code unit
+
+    checkPosition(text, byteOffsetForUtf16Position(text, lsPosition(0, 5)), 0, 4);
+    checkPosition(text, byteOffsetForUtf16Position(text, lsPosition(1, 13)), 1, 13);
+    checkPosition(text, byteOffsetForUtf16Position(text, lsPosition(1, 999)), 1, 13);
+    CHECK(byteOffsetForUtf16Position(text, lsPosition(9, 0)) == text.size());
+}
+
 int main()
 {
     TestAsciiOffsets();
@@ -83,6 +96,7 @@ int main()
     TestNonBmpCountsTwoUnits();
     TestCarriageReturnsCountAsUnits();
     TestRanges();
+    TestPositionRoundTrip();
     std::printf("utf16_checks: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;
 }

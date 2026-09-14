@@ -17,4 +17,10 @@ lsPosition utf16Position(std::string_view text, std::uint32_t byteOffset);
 // Convert an exclusive byte range [beginByte, endByte) to an LSP range.
 lsRange utf16Range(std::string_view text, std::uint32_t beginByte, std::uint32_t endByte);
 
+// Convert an LSP position (UTF-16 code units, zero-based) back to a byte
+// offset into `text`. A character offset past the end of its line clamps to
+// the end of that line, matching the LSP convention; a line index past the
+// last line clamps to the buffer end.
+std::uint32_t byteOffsetForUtf16Position(std::string_view text, lsPosition pos);
+
 }  // namespace fblang
