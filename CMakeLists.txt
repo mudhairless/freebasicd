@@ -18,10 +18,19 @@ set(LSPCPP_STANDALONE_ASIO ON CACHE BOOL "" FORCE)
 
 add_subdirectory(third_party/LspCpp)
 
+# M2 language layer: lexer + parser + language data. LSP-agnostic, byte
+# offsets; the session converts to/from LSP positions at the boundary.
+add_library(freebasiclsp_lang STATIC
+    src/language.cpp
+    src/lexer.cpp
+    src/parser.cpp
+)
+target_include_directories(freebasiclsp_lang PUBLIC ${CMAKE_SOURCE_DIR}/src)
+
 add_library(freebasiclsp_core STATIC
     src/session.cpp
 )
-target_link_libraries(freebasiclsp_core PRIVATE lspcpp)
+target_link_libraries(freebasiclsp_core PRIVATE freebasiclsp_lang lspcpp)
 
 add_executable(freebasiclsp
     src/main.cpp
@@ -29,6 +38,20 @@ add_executable(freebasiclsp
 target_link_libraries(freebasiclsp PRIVATE freebasiclsp_core lspcpp)
 
 enable_testing()
+
+add_executable(lexer_checks
+    tests/lexer_checks.cpp
+)
+target_include_directories(lexer_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(lexer_checks PRIVATE freebasiclsp_lang)
+add_test(NAME lexer_checks COMMAND lexer_checks)
+
+add_executable(parser_checks
+    tests/parser_checks.cpp
+)
+target_include_directories(parser_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(parser_checks PRIVATE freebasiclsp_lang)
+add_test(NAME parser_checks COMMAND parser_checks)
 
 add_executable(session_integration
     tests/session_integration.cpp

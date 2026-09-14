@@ -56,6 +56,23 @@ Pure language layer, no LSP coupling:
 - Declaration extractor producing a per-document symbol tree.
 - Diagnostics: unterminated block, stray/unmatched `END`, unclosed string, bad continuation, duplicate declaration (warning).
 
+#### Dialects (scoped to `fb` for now)
+
+- FreeBASIC has four `-lang` modes — `fb` (default), `deprecated`, `fblite`, `qb` —
+  plus the `#LANG "…"` source directive (reference:
+  https://www.freebasic.net/wiki/CompilerDialects). Only **`fb`** is implemented.
+- Detection: the lexer already produces whole-line `Preprocessor` tokens, so the
+  parser reads the first `#LANG` directive's word and records it in
+  `ParseResult.lang`. Non-`fb` files are parsed best-effort with `fb` rules plus
+  one Information diagnostic (`lang-mode`).
+- Ground truth on fbc 1.10.2: `#LANG "qb"` (any case / spacing) is honored and
+  enables implicit declarations in `qb` mode. The legacy `$LANG "…"` meta-command
+  is **rejected** by fbc 1.10.2 (`Expected End-of-Line, found '$'`) even as the
+  first statement / after a comment — `$`-meta handling in our lexer is inert for
+  `LANG`. `-forcelang` is a compiler flag, not visible in source.
+- M4+: when other dialects are implemented, gate `fb`-specific rules (e.g.
+  implicit declarations in `qb`/`fblite`) behind `ParseResult.lang`.
+
 ### Milestone 3 — LSP features (M3)
 Backed by M1 + M2, implemented as typed LspCpp handlers:
 - `textDocument/publishDiagnostics` (push).

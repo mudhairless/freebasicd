@@ -50,6 +50,12 @@ carries the keyword set as data; block closures below are verified against `fbc`
 - Preprocessor lines start with `#` (`#INCLUDE`/`#INCLUDE ONCE`, `#DEFINE`,
   `#IF..#ENDIF`, `#PRINT`, `#MACRO`, `#PRAGMA RESERVE`, …); legacy meta-commands
   start with `$` (`$DYNAMIC`, `$INCLUDE`, `$LANG`, `$STATIC`).
+- Dialects: only `fb` is implemented. `#LANG "<name>"` (case-insensitive) is the
+  only working source dialect directive; the parser records its word in
+  `ParseResult.lang` and non-`fb` files get a best-effort `fb` parse plus one
+  `lang-mode` Information diagnostic. fbc 1.10.2 **rejects** `$LANG` outright
+  (errors on `$`) and honors `#LANG` even after unrelated content; `-forcelang`
+  is a compiler flag, never visible in source.
 - `.` member access, `.` ellipsis, and `->` are operators, never identifier parts.
 - Combined assignment operators exist: `AND=`, `OR=`, `XOR=`, `EQV=`, `IMP=`,
   `MOD=`, `SHL=`, `SHR=` (lex `AND`/`AND=` distinctly; bit shifts are `SHL`/`SHR`).
@@ -78,3 +84,18 @@ carries the keyword set as data; block closures below are verified against `fbc`
   with in-memory streams (LspCpp `tests/test_helpers.h`).
 - The system `fbc` compiler (1.10.2) is available for ground-truthing ambiguous
   FreeBASIC constructs.
+
+## Git workflow
+
+- **Commit automatically when a milestone is achieved.** Do not wait for an
+  explicit commit request. A milestone is achieved when its acceptance criteria
+  pass: the milestone's tests are green (`ctest` / `cmake --build`) and the
+  milestone deliverable (e.g. lexer/parser, an LSP feature, a docs refresh) is
+  complete. Commit even if the milestone is "small"; never commit half-finished
+  or failing work.
+- Keep the working tree clean between milestones: stage only intended files,
+  never build artifacts or secrets, and write a short conventional `scope:`-style
+  message summarizing what the milestone delivers (see PLAN.md §12 acceptance).
+- Before committing, quickly review `git status` / `git diff` so the commit
+  contains exactly the milestone's changes, nothing stray.
+- The repo lives on `main`; push only when asked.
