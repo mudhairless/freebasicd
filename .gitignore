@@ -22,3 +22,5 @@ Makefile
 # Editor/OS
 *.swp
 .DS_Store
+# corpus harness scratch
+corpus_work/

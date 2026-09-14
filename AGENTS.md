@@ -25,7 +25,8 @@ carries the keyword set as data; block closures below are verified against `fbc`
 
 - Identifiers are **case-insensitive**; canonical lookup key = lowercase name
   **including** any type-suffix char. Suffix chars on identifiers: `$` STRING,
-  `%` SHORT, `&` LONG, `!` SINGLE, `#` DOUBLE, `@` LONG.
+  `%` SHORT, `&` LONG, `!` SINGLE, `#` DOUBLE (`@` is the address-of operator,
+  not a suffix).
 - Built-in types: `Boolean`, `Byte/UByte`, `Short/UShort`, `Integer/UInteger`,
   `Long/ULong`, `LongInt/ULongInt`, `Single`, `Double`, `String`, `WString`,
   `ZString`, `Object`, `Any`, `Pointer`/`Ptr`. `C*`-prefixed conversion funcs.
@@ -48,14 +49,17 @@ carries the keyword set as data; block closures below are verified against `fbc`
 - Numbers: decimal; `&H`/`&O`/`&B` radix; floats `1.5`/`1e-5`; optional suffix.
 - Strings: `"..."` with doubled `""` as an escaped quote.
 - Preprocessor lines start with `#` (`#INCLUDE`/`#INCLUDE ONCE`, `#DEFINE`,
-  `#IF..#ENDIF`, `#PRINT`, `#MACRO`, `#PRAGMA RESERVE`, …); legacy meta-commands
-  start with `$` (`$DYNAMIC`, `$INCLUDE`, `$LANG`, `$STATIC`).
-- Dialects: only `fb` is implemented. `#LANG "<name>"` (case-insensitive) is the
-  only working source dialect directive; the parser records its word in
-  `ParseResult.lang` and non-`fb` files get a best-effort `fb` parse plus one
-  `lang-mode` Information diagnostic. fbc 1.10.2 **rejects** `$LANG` outright
-  (errors on `$`) and honors `#LANG` even after unrelated content; `-forcelang`
-  is a compiler flag, never visible in source.
+  `#IF..#ENDIF`, `#PRINT`, `#MACRO`, `#PRAGMA RESERVE`, …); legacy `$`-metas
+  (`$LANG:`, `$DYNAMIC`, `$INCLUDE`, `$STATIC`) are **not** bare statements —
+  they are metacommands written inside comments: `'$LANG: "qb"` or
+  `rem $LANG: "qb"` (a bare `$` line is a syntax error).
+- Dialects: only `fb` is implemented. Two directives set the dialect and the
+  parser records its word in `ParseResult.lang`: `#LANG "<name>"` and the
+  `$lang` metacommand (`'$lang: "qb"` / `rem $lang: "qb"`). Non-`fb` files get a
+  best-effort `fb` parse plus one `lang-mode` Information diagnostic. fbc 1.10.2
+  honors both (recommended placement: before the first declaration); `$lang`
+  overrides `-lang` but is ignored (with a warning) under `-forcelang`;
+  `-forcelang` is a compiler flag, never visible in source.
 - `.` member access, `.` ellipsis, and `->` are operators, never identifier parts.
 - Combined assignment operators exist: `AND=`, `OR=`, `XOR=`, `EQV=`, `IMP=`,
   `MOD=`, `SHL=`, `SHR=` (lex `AND`/`AND=` distinctly; bit shifts are `SHL`/`SHR`).

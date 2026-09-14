@@ -83,16 +83,15 @@ int main()
 
     // Identifier suffixes.
     {
-        auto ts = tokensOf("foo$ i% n& f! d# p@ ok");
-        CHECK(ts.size() == 8);
+        auto ts = tokensOf("foo$ i% n& f! d# ok");
+        CHECK(ts.size() == 7);
         CHECK(std::string(ts[0].text()) == "foo$");
         CHECK(std::string(ts[1].text()) == "i%");
         CHECK(std::string(ts[2].text()) == "n&");
         CHECK(std::string(ts[3].text()) == "f!");
         CHECK(std::string(ts[4].text()) == "d#");
-        CHECK(std::string(ts[5].text()) == "p@");
-        CHECK(ts[6].kind == TokenKind::Identifier);
-        CHECK(std::string(ts[6].text()) == "ok");
+        CHECK(ts[5].kind == TokenKind::Identifier);
+        CHECK(std::string(ts[5].text()) == "ok");
     }
 
     // Numbers: decimal, float, exponent, radix, suffix.

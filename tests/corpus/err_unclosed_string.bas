@@ -1,0 +1,2 @@
+'@fbc:pass
+print "abc

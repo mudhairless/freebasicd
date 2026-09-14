@@ -171,6 +171,26 @@ Token Lexer::lexNext()
             return t;
         }
 
+        // Line-leading REM is a comment (swallows the line). It must be the
+        // first token and followed by whitespace, a quote, or end of line.
+        if (atLineStart() && p_ + 3 <= end_ &&
+            (c == 'r' || c == 'R') && (peekChar(1) == 'e' || peekChar(1) == 'E') &&
+            (peekChar(2) == 'm' || peekChar(2) == 'M') &&
+            (p_ + 3 == end_ || isWhitespace(peekChar(3)) || peekChar(3) == '\''))
+        {
+            uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
+            while (p_ < end_ && *p_ != '\n' && *p_ != '\r')
+            {
+                ++p_;
+            }
+            Token t;
+            t.kind = TokenKind::Comment;
+            t.beg = beg;
+            t.end = static_cast<uint32_t>(p_ - src_.data());
+            t.data = src_.data() + beg;
+            return t;
+        }
+
         // Line-leading '$' is a legacy meta-command (swallows the line).
         if (c == '$' && atLineStart())
         {

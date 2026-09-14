@@ -70,11 +70,18 @@ public:
                 advance();
                 continue;
             case TokenKind::Comment:
+                checkMetaLang();
                 resetDoc();
                 advance();
                 continue;
             case TokenKind::DocComment:
+                checkMetaLang();
                 collectDoc();
+                if (!cur_.text().empty() && cur_.text()[0] == '/')
+                {
+                    addDiagnostic(cur_.beg, cur_.end, Severity::Information, "doc-slash",
+                                  "/// is not a FreeBASIC comment; use '' for doc comments");
+                }
                 advance();
                 continue;
             case TokenKind::Preprocessor:
@@ -82,6 +89,9 @@ public:
                 advance();
                 continue;
             case TokenKind::Meta:
+                addDiagnostic(cur_.beg, cur_.end, Severity::Information, "meta-directive",
+                              "bare '$' is not a valid metacommand; FreeBASIC "
+                              "metacommands are written as comments ('$LANG: \"qb\"')");
                 advance();
                 continue;
             case TokenKind::Symbol:
@@ -115,17 +125,39 @@ private:
     std::vector<Block> blocks_;
     std::vector<Container> containers_;
     std::string docPending_;
-    std::string lang_ = "fb";
     bool langWarned_ = false;
 
     void advance()
     {
         if (cur_.kind == TokenKind::String && !cur_.terminated)
         {
-            addDiagnostic(cur_.beg, cur_.end, Severity::Error, "unterminated-string",
+            addDiagnostic(cur_.beg, cur_.end, Severity::Warning, "unterminated-string",
                           "unterminated string literal");
         }
         cur_ = lex_.next();
+    }
+
+    // `$`-metacommand dialect detection inside a comment body. Metacommands are
+    // written as comments in FreeBASIC (`'$LANG: "qb"`, `rem $LANG: "qb"`).
+    void checkMetaLang()
+    {
+        LangMode m;
+        if (langFromMetaDirective(cur_.text(), &m))
+        {
+            applyLangDirective(m, cur_.beg, cur_.end);
+        }
+    }
+
+    void applyLangDirective(LangMode m, uint32_t beg, uint32_t end)
+    {
+        out_.lang = langName(m);
+        if (m != LangMode::Fb && !langWarned_)
+        {
+            langWarned_ = true;
+            addDiagnostic(beg, end, Severity::Information, "lang-mode",
+                          "dialect '" + std::string(langName(m)) +
+                              "' is not supported yet; parsing in 'fb' mode");
+        }
     }
 
     static bool isDeclOpenerWord(const std::string& w)
@@ -994,14 +1026,7 @@ private:
             LangMode m;
             if (langFromDirective(cur_.text(), &m))
             {
-                out_.lang = langName(m);
-                if (m != LangMode::Fb && !langWarned_)
-                {
-                    langWarned_ = true;
-                    addDiagnostic(cur_.beg, cur_.end, Severity::Information, "lang-mode",
-                                  "dialect '" + std::string(langName(m)) +
-                                      "' is not supported yet; parsing in 'fb' mode");
-                }
+                applyLangDirective(m, cur_.beg, cur_.end);
             }
         }
     }

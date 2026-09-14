@@ -59,17 +59,21 @@ Pure language layer, no LSP coupling:
 #### Dialects (scoped to `fb` for now)
 
 - FreeBASIC has four `-lang` modes — `fb` (default), `deprecated`, `fblite`, `qb` —
-  plus the `#LANG "…"` source directive (reference:
+  plus two source dialect directives (reference:
   https://www.freebasic.net/wiki/CompilerDialects). Only **`fb`** is implemented.
-- Detection: the lexer already produces whole-line `Preprocessor` tokens, so the
-  parser reads the first `#LANG` directive's word and records it in
-  `ParseResult.lang`. Non-`fb` files are parsed best-effort with `fb` rules plus
-  one Information diagnostic (`lang-mode`).
-- Ground truth on fbc 1.10.2: `#LANG "qb"` (any case / spacing) is honored and
-  enables implicit declarations in `qb` mode. The legacy `$LANG "…"` meta-command
-  is **rejected** by fbc 1.10.2 (`Expected End-of-Line, found '$'`) even as the
-  first statement / after a comment — `$`-meta handling in our lexer is inert for
-  `LANG`. `-forcelang` is a compiler flag, not visible in source.
+- Detection: `#LANG "<name>"` is a whole-line preprocessor directive; the
+  `$LANG` metacommand is written inside a comment (`'$LANG: "qb"` or
+  `rem $LANG: "qb"`) — the lexer hands the parser comment/REM text and the
+  parser reads the quoted dialect. Both set `ParseResult.lang`.
+- Non-`fb` files are parsed best-effort with `fb` rules plus one Information
+  diagnostic (`lang-mode`).
+- Ground truth on fbc 1.10.2: `#LANG "qb"` and `'$LANG: "qb"` are both honored
+  and enable implicit declarations in `qb` mode. The `$`-metacommands
+  (`$LANG`, `$DYNAMIC`, `$INCLUDE`, `$STATIC`, …) are **only valid inside
+  comments** (`'`-quote or line-leading `rem`); a bare `$` line is a syntax
+  error (`Expected End-of-Line, found '$'`). `$LANG` overrides `-lang` but is
+  ignored (with a warning) under `-forcelang`; `-forcelang` is a compiler flag,
+  never visible in source.
 - M4+: when other dialects are implemented, gate `fb`-specific rules (e.g.
   implicit declarations in `qb`/`fblite`) behind `ParseResult.lang`.
 
@@ -237,7 +241,8 @@ are recorded in `tests/corpus/`.
 
 **Identifiers & casing**
 - Case-insensitive; canonical key = lowercase name **including** type-suffix char.
-- Suffix chars: `$` STRING, `%` SHORT, `&` LONG, `!` SINGLE, `#` DOUBLE, `@` LONG.
+- Suffix chars: `$` STRING, `%` SHORT, `&` LONG, `!` SINGLE, `#` DOUBLE (`@` is
+  the address-of operator, never a suffix — `dim p@` is an fbc syntax error).
 - Line labels are identifiers followed by `:` (targets of `GOTO`/`GOSUB`/`ON...GOTO`).
 
 **Data types** (built-in): `Boolean`, `Byte`/`UByte`, `Short`/`UShort`,
@@ -285,7 +290,10 @@ verified against `fbc` 1.10.2)
   `#ELSEIF`, `#ELSEIFDEF`, `#ELSEIFNDEF`, `#ENDIF`, `#ENDMACRO`, `#ERROR`, `#IF`,
   `#IFDEF`, `#IFNDEF`, `#INCLIB`, `#INCLUDE`, `#LANG`, `#LIBPATH`, `#LINE`,
   `#MACRO`, `#PRAGMA` (`#PRAGMA RESERVE`), `#PRINT`, `#UNDEF`.
-- Legacy meta-commands start with `$`: `$DYNAMIC`, `$INCLUDE`, `$LANG`, `$STATIC`.
+- `$`-metacommands are **comment-form directives**: `'$LANG: "qb"`,
+  `rem $DYNAMIC`, `'$INCLUDE "file.bi"`, `'$STATIC` (a bare `$` line is a
+  syntax error in fbc 1.10.2). Only `$LANG` affects parsing; the rest are
+  ordinary comments.
 - `.` member access, `.` ellipsis, and `->` are operators/markers, never identifier parts.
 - Single-char and combined assignment operators exist: `AND=` `OR=` `XOR=` `EQV=`
   `IMP=` `MOD=` `SHL=` `SHR=` — lex `AND`/`AND=` distinctly, and note `<<=>`-style

@@ -47,6 +47,11 @@ enum class LangMode {
 // `out` when the directive is a well-formed, known dialect.
 bool langFromDirective(std::string_view line, LangMode* out);
 
+// Parse a `$`-metacommand comment body (`'$LANG: "qb"`, `rem $LANG: "qb"`):
+// returns true and sets `out` when the comment contains `$lang` (case-
+// insensitive) followed by a quoted, known dialect name.
+bool langFromMetaDirective(std::string_view text, LangMode* out);
+
 const char* langName(LangMode mode);
 
 }  // namespace fblang

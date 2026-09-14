@@ -526,7 +526,7 @@ std::string_view preprocessorWord(std::string_view line)
 
 bool isSuffixChar(char c)
 {
-    return c == '$' || c == '%' || c == '&' || c == '!' || c == '#' || c == '@';
+    return c == '$' || c == '%' || c == '&' || c == '!' || c == '#';
 }
 
 bool langFromDirective(std::string_view line, LangMode* out)
@@ -608,6 +608,79 @@ const char* langName(LangMode mode)
     case LangMode::Deprecated: return "deprecated";
     }
     return "fb";
+}
+
+bool langFromMetaDirective(std::string_view text, LangMode* out)
+{
+    // `$`-metacommands live inside comments: `'$LANG: "qb"` or `rem $LANG:"qb"`.
+    // The comment body is passed in; scan for `$lang` (case-insensitive)
+    // followed by whitespace, an optional ':', and a quoted dialect name.
+    auto ci = [](char c, char want) { return (c | 0x20) == want; };
+    auto ws = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    size_t n = text.size();
+    for (size_t i = 0; i + 4 < n; ++i)
+    {
+        if (text[i] != '$' || !ci(text[i + 1], 'l') || !ci(text[i + 2], 'a') ||
+            !ci(text[i + 3], 'n') || !ci(text[i + 4], 'g'))
+        {
+            continue;
+        }
+        size_t j = i + 5;
+        while (j < n && ws(text[j]))
+        {
+            ++j;
+        }
+        if (j < n && text[j] == ':')
+        {
+            ++j;
+            while (j < n && ws(text[j]))
+            {
+                ++j;
+            }
+        }
+        if (j >= n || text[j] != '"')
+        {
+            continue;
+        }
+        ++j;
+        size_t sbeg = j;
+        while (j < n && text[j] != '"')
+        {
+            ++j;
+        }
+        if (j >= n)
+        {
+            return false;
+        }
+        std::string_view name = text.substr(sbeg, j - sbeg);
+        LangMode mode;
+        if (name == "fb")
+        {
+            mode = LangMode::Fb;
+        }
+        else if (name == "fblite")
+        {
+            mode = LangMode::FbLite;
+        }
+        else if (name == "qb")
+        {
+            mode = LangMode::Qb;
+        }
+        else if (name == "deprecated")
+        {
+            mode = LangMode::Deprecated;
+        }
+        else
+        {
+            continue;
+        }
+        if (out)
+        {
+            *out = mode;
+        }
+        return true;
+    }
+    return false;
 }
 
 }  // namespace fblang

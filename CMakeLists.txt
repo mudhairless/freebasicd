@@ -53,6 +53,15 @@ target_include_directories(parser_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(parser_checks PRIVATE freebasiclsp_lang)
 add_test(NAME parser_checks COMMAND parser_checks)
 
+add_executable(corpus_checks
+    tests/corpus_checks.cpp
+)
+target_include_directories(corpus_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(corpus_checks PRIVATE freebasiclsp_lang)
+target_compile_definitions(corpus_checks PRIVATE CORPUS_DIR="${CMAKE_SOURCE_DIR}/tests/corpus")
+add_test(NAME corpus_checks COMMAND corpus_checks)
+set_tests_properties(corpus_checks PROPERTIES SKIP_RETURN_CODE 77)
+
 add_executable(session_integration
     tests/session_integration.cpp
 )

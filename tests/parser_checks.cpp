@@ -246,6 +246,16 @@ int main()
         CHECK(r.lang == "fb");
         CHECK(r.diagnostics.empty());
     }
+    {
+        ParseResult r = parseDocument("'$lang: \"qb\"\nx = 1\nprint x\n");
+        CHECK(r.lang == "qb");
+        CHECK(diagnosticCount(r, "lang-mode") == 1);
+    }
+    {
+        ParseResult r = parseDocument("rem $lang : \"qb\"\nx = 1\nprint x\n");
+        CHECK(r.lang == "qb");
+        CHECK(diagnosticCount(r, "lang-mode") == 1);
+    }
 
     if (failures == 0)
     {
