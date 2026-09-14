@@ -10,6 +10,7 @@
 #include "LibLsp/lsp/textDocument/did_close.h"
 #include "LibLsp/lsp/textDocument/did_open.h"
 #include "LibLsp/lsp/textDocument/did_save.h"
+#include "LibLsp/lsp/textDocument/document_symbol.h"
 #include "LibLsp/lsp/textDocument/publishDiagnostics.h"
 #include "LibLsp/lsp/working_files.h"
 
@@ -31,12 +32,15 @@ private:
 
     WorkingFiles workingFiles_;
 
-    td_initialize::response onInitialize(td_initialize::request const& req);
     td_shutdown::response onShutdown(td_shutdown::request const& req);
     void onDidOpen(Notify_TextDocumentDidOpen::notify& notify);
     void onDidChange(Notify_TextDocumentDidChange::notify const& notify);
     void onDidSave(Notify_TextDocumentDidSave::notify const& notify);
     void onDidClose(Notify_TextDocumentDidClose::notify const& notify);
 
+    td_initialize::response onInitialize(td_initialize::request const& req);
+    td_symbol::response onDocumentSymbol(td_symbol::request const& req);
+
+    void reparseAndPublish(std::shared_ptr<WorkingFile> const& file, lsDocumentUri const& uri);
     void publishDiagnostics(lsDocumentUri const& uri, std::vector<lsDiagnostic> diagnostics);
 };

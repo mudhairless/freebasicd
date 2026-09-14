@@ -30,6 +30,22 @@ char const kDidChangeFrame[] =
     R"FB({"uri":"file:///tmp/hello.bas","version":2},"contentChanges":[{"range":)FB"
     R"FB({"start":{"line":1,"character":0},"end":{"line":1,"character":0}},"text":"' comment\n"}]}})FB";
 
+char const kDidOpenDupFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/hello.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"dim x as integer\ndim x as string"}}})FB";
+
+char const kDidOpenHierFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/hello.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"sub greet(name as string)\n    print name\nend sub\n\n)FB"
+    R"FB(function clamp(v as integer, lo as integer, hi as integer) as integer\n)FB"
+    R"FB(    if v < lo then return lo\n    if v > hi then return hi\nend function\n"}}})FB";
+
+char const* kDocumentSymbolFrame =
+    R"FB({"jsonrpc":"2.0","id":"dsym","method":"textDocument/documentSymbol","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"}}})FB";
+
 char const kDidCloseFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":)FB"
     R"FB({"uri":"file:///tmp/hello.bas"}})FB";
@@ -81,6 +97,8 @@ void TestInitializeReportsSyncCapabilities()
            "textDocumentSync must advertise openClose");
     Expect(response.find("\"change\":2") != std::string::npos,
            "textDocumentSync must advertise incremental changes");
+    Expect(response.find("\"documentSymbolProvider\":true") != std::string::npos,
+           "initialize response must advertise documentSymbol support");
 
     session.stop();
 }
@@ -102,7 +120,74 @@ void TestDidOpenPublishesDiagnostics()
     Expect(output_all.find(kUri) != std::string::npos,
            "publishDiagnostics must carry the opened uri");
     Expect(output_all.find("\"diagnostics\":[]") != std::string::npos,
-           "M1 publishes an empty diagnostics list on didOpen");
+           "a healthy document must publish no diagnostics");
+
+    session.stop();
+}
+
+void TestDiagnosticsReflectParseErrors()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kDidOpenDupFrame));
+    std::string const output_all = WaitForPublishedUri(output, 1);
+
+    Expect(output_all.find("\"code\":\"duplicate-definition\"") != std::string::npos,
+           "duplicate dims must be reported with their diagnostic code");
+    Expect(output_all.find("duplicate definition: 'x'") != std::string::npos,
+           "duplicate dims must be reported with the offending name");
+    Expect(output_all.find("\"severity\":2") != std::string::npos,
+           "duplicate dims must be reported as warnings");
+    Expect(output_all.find("\"source\":\"freebasiclsp\"") != std::string::npos,
+           "diagnostics must carry the server source name");
+    Expect(output_all.find("\"start\":{\"line\":1,\"character\":4}") != std::string::npos,
+           "the duplicate range must cover the second 'x' name token (byte -> utf-16)");
+    Expect(output_all.find("\"end\":{\"line\":1,\"character\":5}") != std::string::npos,
+           "the duplicate range must end after the second 'x' name token");
+
+    session.stop();
+}
+
+void TestDocumentSymbolsReturnHierarchy()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kDidOpenHierFrame));
+    Expect(WaitForPublishedUri(output, 1).empty() == false, "didOpen must publish diagnostics");
+
+    input->append(MakeLspFrame(kDocumentSymbolFrame));
+    std::string const response = WaitForOutputContaining(output, "\"id\":\"dsym\"");
+
+    Expect(response.find("\"id\":\"dsym\"") != std::string::npos,
+           "documentSymbol request must receive a response");
+    Expect(response.find("\"name\":\"greet\"") != std::string::npos,
+           "documentSymbol must include the SUB symbol");
+    Expect(response.find("\"name\":\"clamp\"") != std::string::npos,
+           "documentSymbol must include the FUNCTION symbol");
+    Expect(response.find("\"kind\":6") != std::string::npos,
+           "SUB must map to the Method symbol kind");
+    Expect(response.find("\"kind\":12") != std::string::npos,
+           "FUNCTION must map to the Function symbol kind");
+    Expect(response.find("\"kind\":253") != std::string::npos,
+           "parameters must map to the Parameter symbol kind");
+    Expect(response.find("\"children\"") != std::string::npos,
+           "nested parameter symbols must be reported as children");
+    Expect(response.find("\"selectionRange\"") != std::string::npos,
+           "document symbols must carry a selection range for the name token");
 
     session.stop();
 }
@@ -243,6 +328,8 @@ int main()
 {
     RUN_TEST(TestInitializeReportsSyncCapabilities);
     RUN_TEST(TestDidOpenPublishesDiagnostics);
+    RUN_TEST(TestDiagnosticsReflectParseErrors);
+    RUN_TEST(TestDocumentSymbolsReturnHierarchy);
     RUN_TEST(TestDidChangePushesDiagnostics);
     RUN_TEST(TestDidCloseEvictsAndPublishes);
     RUN_TEST(TestShutdownReturnsNullResult);

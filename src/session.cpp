@@ -1,6 +1,99 @@
 #include "session.h"
 
+#include "parser.h"
+#include "utf16.h"
+
 #include <utility>
+
+namespace {
+
+lsSymbolKind toLspSymbolKind(fblang::SymbolKind kind)
+{
+    switch (kind)
+    {
+        case fblang::SymbolKind::Sub:
+            return lsSymbolKind::Method;
+        case fblang::SymbolKind::Function:
+            return lsSymbolKind::Function;
+        case fblang::SymbolKind::Property:
+            return lsSymbolKind::Property;
+        case fblang::SymbolKind::Constructor:
+            return lsSymbolKind::Constructor;
+        case fblang::SymbolKind::Destructor:
+            return lsSymbolKind::Method;
+        case fblang::SymbolKind::Operator:
+            return lsSymbolKind::Operator;
+        case fblang::SymbolKind::Type:
+            return lsSymbolKind::Struct;
+        case fblang::SymbolKind::Union:
+            return lsSymbolKind::Struct;
+        case fblang::SymbolKind::Enum:
+            return lsSymbolKind::Enum;
+        case fblang::SymbolKind::Namespace:
+            return lsSymbolKind::Namespace;
+        case fblang::SymbolKind::Const:
+            return lsSymbolKind::Constant;
+        case fblang::SymbolKind::Dim:
+            return lsSymbolKind::Variable;
+        case fblang::SymbolKind::Parameter:
+            return lsSymbolKind::Parameter;
+        case fblang::SymbolKind::Variable:
+            return lsSymbolKind::Variable;
+        case fblang::SymbolKind::Scope:
+        case fblang::SymbolKind::Label:
+            return lsSymbolKind::Unknown;
+    }
+    return lsSymbolKind::Unknown;
+}
+
+// Scope blocks are noise in an outline; recurse but don't emit them.
+lsDocumentSymbol convertSymbol(std::string_view content, fblang::Symbol const& s)
+{
+    lsDocumentSymbol out;
+    out.name = s.name;
+    out.kind = toLspSymbolKind(s.kind);
+    out.range = fblang::utf16Range(content, s.range.beg, s.range.end);
+    out.selectionRange = fblang::utf16Range(content, s.selection.beg, s.selection.end);
+    if (!s.signature.empty())
+    {
+        out.detail.emplace(s.signature);
+    }
+    for (auto const& child : s.children)
+    {
+        if (child.kind == fblang::SymbolKind::Scope)
+        {
+            continue;
+        }
+        if (!out.children)
+        {
+            out.children.emplace();
+        }
+        out.children->push_back(convertSymbol(content, child));
+    }
+    return out;
+}
+
+std::vector<lsDiagnostic> convertDiagnostics(std::string_view content, fblang::ParseResult const& parse)
+{
+    std::vector<lsDiagnostic> out;
+    out.reserve(parse.diagnostics.size());
+    for (auto const& d : parse.diagnostics)
+    {
+        lsDiagnostic diag;
+        diag.range = fblang::utf16Range(content, d.range.beg, d.range.end);
+        diag.severity = static_cast<lsDiagnosticSeverity>(d.severity);
+        if (!d.code.empty())
+        {
+            diag.code.emplace(std::make_pair<optional<std::string>, optional<int>>(d.code, {}));
+        }
+        diag.source.emplace("freebasiclsp");
+        diag.message = d.message;
+        out.push_back(std::move(diag));
+    }
+    return out;
+}
+
+}  // namespace
 
 FreeBasicServer::FreeBasicServer(lsp::LanguageSession& session) : session_(session)
 {
@@ -27,6 +120,7 @@ void FreeBasicServer::registerHandlers()
     session_.on([this](Notify_TextDocumentDidChange::notify const& notify) { onDidChange(notify); });
     session_.on([this](Notify_TextDocumentDidSave::notify const& notify) { onDidSave(notify); });
     session_.on([this](Notify_TextDocumentDidClose::notify const& notify) { onDidClose(notify); });
+    session_.on([this](td_symbol::request const& req) { return onDocumentSymbol(req); });
 }
 
 td_initialize::response FreeBasicServer::onInitialize(td_initialize::request const& req)
@@ -37,6 +131,9 @@ td_initialize::response FreeBasicServer::onInitialize(td_initialize::request con
     lsTextDocumentSyncOptions& sync = rsp.result.capabilities.textDocumentSync.emplace().second.emplace();
     sync.openClose = true;
     sync.change = lsTextDocumentSyncKind::Incremental;
+
+    rsp.result.capabilities.documentSymbolProvider.emplace();
+    rsp.result.capabilities.documentSymbolProvider->first.emplace(true);
 
     return rsp;
 }
@@ -60,7 +157,7 @@ void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify& notify)
     {
         return;
     }
-    publishDiagnostics(notify.params.textDocument.uri, {});
+    reparseAndPublish(file, notify.params.textDocument.uri);
 }
 
 void FreeBasicServer::onDidChange(Notify_TextDocumentDidChange::notify const& notify)
@@ -70,7 +167,7 @@ void FreeBasicServer::onDidChange(Notify_TextDocumentDidChange::notify const& no
     {
         return;
     }
-    publishDiagnostics(notify.params.textDocument.uri, {});
+    reparseAndPublish(file, notify.params.textDocument.uri);
 }
 
 void FreeBasicServer::onDidSave(Notify_TextDocumentDidSave::notify const& notify)
@@ -80,7 +177,7 @@ void FreeBasicServer::onDidSave(Notify_TextDocumentDidSave::notify const& notify
     {
         return;
     }
-    publishDiagnostics(notify.params.textDocument.uri, {});
+    reparseAndPublish(file, notify.params.textDocument.uri);
 }
 
 void FreeBasicServer::onDidClose(Notify_TextDocumentDidClose::notify const& notify)
@@ -90,6 +187,36 @@ void FreeBasicServer::onDidClose(Notify_TextDocumentDidClose::notify const& noti
         return;
     }
     publishDiagnostics(notify.params.textDocument.uri, {});
+}
+
+void FreeBasicServer::reparseAndPublish(std::shared_ptr<WorkingFile> const& file, lsDocumentUri const& uri)
+{
+    std::string_view content = file->GetContentNoLock();
+    fblang::ParseResult parse = fblang::parseDocument(content);
+    publishDiagnostics(uri, convertDiagnostics(content, parse));
+}
+
+td_symbol::response FreeBasicServer::onDocumentSymbol(td_symbol::request const& req)
+{
+    td_symbol::response rsp;
+    rsp.id = req.id;
+
+    std::shared_ptr<WorkingFile> file = workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    if (!file)
+    {
+        return rsp;
+    }
+    std::string_view content = file->GetContentNoLock();
+    fblang::ParseResult parse = fblang::parseDocument(content);
+    for (auto const& root : parse.roots)
+    {
+        if (root.kind == fblang::SymbolKind::Scope)
+        {
+            continue;
+        }
+        rsp.result.push_back(convertSymbol(content, root));
+    }
+    return rsp;
 }
 
 void FreeBasicServer::publishDiagnostics(lsDocumentUri const& uri, std::vector<lsDiagnostic> diagnostics)

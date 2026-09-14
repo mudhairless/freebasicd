@@ -29,6 +29,7 @@ target_include_directories(freebasiclsp_lang PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
 add_library(freebasiclsp_core STATIC
     src/session.cpp
+    src/utf16.cpp
 )
 target_link_libraries(freebasiclsp_core PRIVATE freebasiclsp_lang lspcpp)
 
@@ -61,6 +62,13 @@ target_link_libraries(corpus_checks PRIVATE freebasiclsp_lang)
 target_compile_definitions(corpus_checks PRIVATE CORPUS_DIR="${CMAKE_SOURCE_DIR}/tests/corpus")
 add_test(NAME corpus_checks COMMAND corpus_checks)
 set_tests_properties(corpus_checks PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(utf16_checks
+    tests/utf16_checks.cpp
+)
+target_include_directories(utf16_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(utf16_checks PRIVATE freebasiclsp_core lspcpp)
+add_test(NAME utf16_checks COMMAND utf16_checks)
 
 add_executable(session_integration
     tests/session_integration.cpp
