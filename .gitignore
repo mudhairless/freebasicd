@@ -1,0 +1,24 @@
+# Build directories
+/build/
+/_build/
+/build*/
+cmake-build-*/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+Makefile
+
+# Object/binaries
+*.o
+*.a
+*.so
+*.lib
+*.exe
+
+# Editor/OS
+*.swp
+.DS_Store
