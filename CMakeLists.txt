@@ -24,6 +24,7 @@ add_library(freebasiclsp_lang STATIC
     src/language.cpp
     src/lexer.cpp
     src/parser.cpp
+    src/resolve.cpp
 )
 target_include_directories(freebasiclsp_lang PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
@@ -53,6 +54,13 @@ add_executable(parser_checks
 target_include_directories(parser_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(parser_checks PRIVATE freebasiclsp_lang)
 add_test(NAME parser_checks COMMAND parser_checks)
+
+add_executable(resolve_checks
+    tests/resolve_checks.cpp
+)
+target_include_directories(resolve_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(resolve_checks PRIVATE freebasiclsp_lang)
+add_test(NAME resolve_checks COMMAND resolve_checks)
 
 add_executable(corpus_checks
     tests/corpus_checks.cpp

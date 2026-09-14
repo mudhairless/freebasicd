@@ -1,6 +1,7 @@
 #include "session.h"
 
 #include "parser.h"
+#include "resolve.h"
 #include "utf16.h"
 
 #include <utility>
@@ -153,6 +154,9 @@ void FreeBasicServer::registerHandlers()
     session_.on([this](td_symbol::request const& req) { return onDocumentSymbol(req); });
     session_.on([this](td_hover::request const& req) { return onHover(req); });
     session_.on([this](td_foldingRange::request const& req) { return onFoldingRange(req); });
+    session_.on([this](td_definition::request const& req) { return onDefinition(req); });
+    session_.on([this](td_references::request const& req) { return onReferences(req); });
+    session_.on([this](td_highlight::request const& req) { return onHighlight(req); });
 }
 
 td_initialize::response FreeBasicServer::onInitialize(td_initialize::request const& req)
@@ -171,6 +175,15 @@ td_initialize::response FreeBasicServer::onInitialize(td_initialize::request con
 
     rsp.result.capabilities.foldingRangeProvider.emplace();
     rsp.result.capabilities.foldingRangeProvider->first.emplace(true);
+
+    rsp.result.capabilities.definitionProvider.emplace();
+    rsp.result.capabilities.definitionProvider->first.emplace(true);
+
+    rsp.result.capabilities.referencesProvider.emplace();
+    rsp.result.capabilities.referencesProvider->first.emplace(true);
+
+    rsp.result.capabilities.documentHighlightProvider.emplace();
+    rsp.result.capabilities.documentHighlightProvider->first.emplace(true);
 
     return rsp;
 }
@@ -328,6 +341,105 @@ td_foldingRange::response FreeBasicServer::onFoldingRange(td_foldingRange::reque
             content, fblang::byteOffsetForUtf16Position(content, lsPosition(fr.endLine, -1)))
                               .character;
         rsp.result.push_back(fr);
+    }
+    return rsp;
+}
+
+td_definition::response FreeBasicServer::onDefinition(td_definition::request const& req)
+{
+    td_definition::response rsp;
+    rsp.id = req.id;
+
+    std::shared_ptr<WorkingFile> file =
+        workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    if (!file)
+    {
+        return rsp;
+    }
+    std::string_view content = file->GetContentNoLock();
+    std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+
+    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::Symbol const* decl = fblang::resolveAt(parse, content, offset);
+    if (!decl)
+    {
+        return rsp;
+    }
+    rsp.result.first.emplace();
+    rsp.result.first->push_back(
+        lsLocation(req.params.textDocument.uri, fblang::utf16Range(content, decl->selection.beg,
+                                                                   decl->selection.end)));
+    return rsp;
+}
+
+td_references::response FreeBasicServer::onReferences(td_references::request const& req)
+{
+    td_references::response rsp;
+    rsp.id = req.id;
+
+    std::shared_ptr<WorkingFile> file =
+        workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    if (!file)
+    {
+        return rsp;
+    }
+    std::string_view content = file->GetContentNoLock();
+    std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+
+    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::Symbol const* decl = fblang::resolveAt(parse, content, offset);
+    if (!decl)
+    {
+        return rsp;
+    }
+
+    bool const includeDecl = !req.params.context.includeDeclaration || *req.params.context.includeDeclaration;
+    if (includeDecl)
+    {
+        rsp.result.push_back(lsLocation(req.params.textDocument.uri,
+                                        fblang::utf16Range(content, decl->selection.beg,
+                                                           decl->selection.end)));
+    }
+    for (auto const& ref : fblang::occurrencesOf(parse, content, *decl))
+    {
+        rsp.result.push_back(
+            lsLocation(req.params.textDocument.uri, fblang::utf16Range(content, ref.beg, ref.end)));
+    }
+    return rsp;
+}
+
+td_highlight::response FreeBasicServer::onHighlight(td_highlight::request const& req)
+{
+    td_highlight::response rsp;
+    rsp.id = req.id;
+
+    std::shared_ptr<WorkingFile> file =
+        workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    if (!file)
+    {
+        return rsp;
+    }
+    std::string_view content = file->GetContentNoLock();
+    std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+
+    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::Symbol const* decl = fblang::resolveAt(parse, content, offset);
+    if (!decl)
+    {
+        return rsp;
+    }
+
+    auto add = [&](fblang::SourceRange range)
+    {
+        lsDocumentHighlight hl;
+        hl.range = fblang::utf16Range(content, range.beg, range.end);
+        hl.kind.emplace(lsDocumentHighlightKind::Text);
+        rsp.result.push_back(std::move(hl));
+    };
+    add(decl->selection);
+    for (auto const& ref : fblang::occurrencesOf(parse, content, *decl))
+    {
+        add(ref);
     }
     return rsp;
 }

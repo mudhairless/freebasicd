@@ -59,6 +59,26 @@ char const* kFoldingRangeFrame =
     R"FB({"jsonrpc":"2.0","id":"fold","method":"textDocument/foldingRange","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"}}})FB";
 
+// A second document exercising identifier resolution: module dim, a usage,
+// and a sub with a shadowing local dim.
+char const kDidOpenResolveFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/resolve.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"dim counter as integer\ncounter = counter + 1\n"}}})FB";
+
+char const* kDefinitionFrame =
+    R"FB({"jsonrpc":"2.0","id":"def","method":"textDocument/definition","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":0}}})FB";
+
+char const* kReferencesFrame =
+    R"FB({"jsonrpc":"2.0","id":"ref","method":"textDocument/references","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":0},)FB"
+    R"FB("context":{"includeDeclaration":true}}})FB";
+
+char const* kHighlightFrame =
+    R"FB({"jsonrpc":"2.0","id":"hl","method":"textDocument/documentHighlight","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":0}}})FB";
+
 char const kDidCloseFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":)FB"
     R"FB({"uri":"file:///tmp/hello.bas"}})FB";
@@ -116,6 +136,12 @@ void TestInitializeReportsSyncCapabilities()
            "initialize response must advertise hover support");
     Expect(response.find("\"foldingRangeProvider\":true") != std::string::npos,
            "initialize response must advertise foldingRange support");
+    Expect(response.find("\"definitionProvider\":true") != std::string::npos,
+           "initialize response must advertise definition support");
+    Expect(response.find("\"referencesProvider\":true") != std::string::npos,
+           "initialize response must advertise references support");
+    Expect(response.find("\"documentHighlightProvider\":true") != std::string::npos,
+           "initialize response must advertise documentHighlight support");
 
     session.stop();
 }
@@ -271,6 +297,94 @@ void TestFoldingRangesReturned()
     session.stop();
 }
 
+void TestDefinitionResolvesToDeclaration()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kDidOpenResolveFrame));
+    Expect(WaitForPublishedUri(output, 1).empty() == false, "didOpen must publish diagnostics");
+
+    input->append(MakeLspFrame(kDefinitionFrame));
+    std::string const response = WaitForOutputContaining(output, "\"id\":\"def\"");
+
+    Expect(response.find("\"id\":\"def\"") != std::string::npos,
+           "definition request must receive a response");
+    Expect(response.find("\"start\":{\"line\":0,\"character\":4}") != std::string::npos,
+           "definition must jump to the counter declaration name");
+    Expect(response.find("\"end\":{\"line\":0,\"character\":11}") != std::string::npos,
+           "definition range must cover the full counter name");
+
+    session.stop();
+}
+
+void TestReferencesListAllSites()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kDidOpenResolveFrame));
+    Expect(WaitForPublishedUri(output, 1).empty() == false, "didOpen must publish diagnostics");
+
+    input->append(MakeLspFrame(kReferencesFrame));
+    std::string const response = WaitForOutputContaining(output, "\"id\":\"ref\"");
+
+    Expect(response.find("\"id\":\"ref\"") != std::string::npos,
+           "references request must receive a response");
+    Expect(response.find("\"start\":{\"line\":0,\"character\":4}") != std::string::npos,
+           "references must include the declaration site");
+    Expect(response.find("\"start\":{\"line\":1,\"character\":0}") != std::string::npos,
+           "references must include the first usage");
+    Expect(response.find("\"start\":{\"line\":1,\"character\":10}") != std::string::npos,
+           "references must include the second usage of counter");
+
+    session.stop();
+}
+
+void TestHighlightCoversAllSites()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kDidOpenResolveFrame));
+    Expect(WaitForPublishedUri(output, 1).empty() == false, "didOpen must publish diagnostics");
+
+    input->append(MakeLspFrame(kHighlightFrame));
+    std::string const response = WaitForOutputContaining(output, "\"id\":\"hl\"");
+
+    Expect(response.find("\"id\":\"hl\"") != std::string::npos,
+           "documentHighlight request must receive a response");
+    std::size_t highlightCount = 0;
+    std::size_t pos = 0;
+    while ((pos = response.find("\"start\":", pos)) != std::string::npos)
+    {
+        ++highlightCount;
+        pos += 8;
+    }
+    Expect(highlightCount == 3,
+           "highlight must cover the declaration and both usages");
+
+    session.stop();
+}
+
 void TestDidChangePushesDiagnostics()
 {
     lsp::NullLog log;
@@ -411,6 +525,9 @@ int main()
     RUN_TEST(TestDocumentSymbolsReturnHierarchy);
     RUN_TEST(TestHoverShowsSignatureAndDoc);
     RUN_TEST(TestFoldingRangesReturned);
+    RUN_TEST(TestDefinitionResolvesToDeclaration);
+    RUN_TEST(TestReferencesListAllSites);
+    RUN_TEST(TestHighlightCoversAllSites);
     RUN_TEST(TestDidChangePushesDiagnostics);
     RUN_TEST(TestDidCloseEvictsAndPublishes);
     RUN_TEST(TestShutdownReturnsNullResult);
