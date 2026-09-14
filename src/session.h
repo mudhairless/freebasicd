@@ -19,8 +19,18 @@
 #include "LibLsp/lsp/textDocument/publishDiagnostics.h"
 #include "LibLsp/lsp/textDocument/references.h"
 #include "LibLsp/lsp/textDocument/signature_help.h"
+
 #include "LibLsp/lsp/working_files.h"
 
+// WorkspaceSymbolParams is defined in the extension headers, not lsp/symbol.h;
+// include it or the wp_symbol request type instantiates with an incomplete
+// params type and the runtime parser can never build `workspace/symbol`.
+#include "LibLsp/lsp/workspace/symbol.h"
+#include "LibLsp/lsp/extention/jdtls/WorkspaceSymbolParams.h"
+
+#include "index.h"
+
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -32,12 +42,20 @@ public:
 
     void registerHandlers();
     void setExitHandler(std::function<void()> exitHandler);
+    void setIndexCacheDir(std::filesystem::path cacheDir);
 
 private:
     lsp::LanguageSession& session_;
     std::function<void()> exitHandler_;
 
     WorkingFiles workingFiles_;
+
+    // Durable per-workspace symbol index (M4); null until a workspace root is
+    // known (initialize or first opened file).
+    std::unique_ptr<fblang::WorkspaceIndex> index_;
+    std::filesystem::path indexCacheDir_;  // override for tests (default = platform data dir)
+
+    void ensureWorkspaceIndex(std::filesystem::path root);
 
     td_shutdown::response onShutdown(td_shutdown::request const& req);
     void onDidOpen(Notify_TextDocumentDidOpen::notify& notify);
@@ -54,6 +72,7 @@ private:
     td_highlight::response onHighlight(td_highlight::request const& req);
     td_completion::response onCompletion(td_completion::request const& req);
     td_signatureHelp::response onSignatureHelp(td_signatureHelp::request const& req);
+    wp_symbol::response onWorkspaceSymbol(wp_symbol::request const& req);
 
     void reparseAndPublish(std::shared_ptr<WorkingFile> const& file, lsDocumentUri const& uri);
     void publishDiagnostics(lsDocumentUri const& uri, std::vector<lsDiagnostic> diagnostics);

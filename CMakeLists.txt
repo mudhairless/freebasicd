@@ -19,14 +19,18 @@ set(LSPCPP_STANDALONE_ASIO ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/LspCpp)
 
 # M2 language layer: lexer + parser + language data. LSP-agnostic, byte
-# offsets; the session converts to/from LSP positions at the boundary.
+# offsets; the session converts to/from LSP positions at the boundary. The
+# workspace index (M4) serializes its cache with the RapidJSON bundled by
+# LspCpp; RapidJSON is header-only, so only the include dir is needed.
 add_library(freebasiclsp_lang STATIC
+    src/index.cpp
     src/language.cpp
     src/lexer.cpp
     src/parser.cpp
     src/resolve.cpp
 )
 target_include_directories(freebasiclsp_lang PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(freebasiclsp_lang PRIVATE ${CMAKE_SOURCE_DIR}/third_party/LspCpp/third_party/rapidjson/include)
 
 add_library(freebasiclsp_core STATIC
     src/session.cpp
@@ -77,6 +81,13 @@ add_executable(utf16_checks
 target_include_directories(utf16_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(utf16_checks PRIVATE freebasiclsp_core lspcpp)
 add_test(NAME utf16_checks COMMAND utf16_checks)
+
+add_executable(index_checks
+    tests/index_checks.cpp
+)
+target_include_directories(index_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(index_checks PRIVATE freebasiclsp_lang)
+add_test(NAME index_checks COMMAND index_checks)
 
 add_executable(session_integration
     tests/session_integration.cpp

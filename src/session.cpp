@@ -6,6 +6,7 @@
 #include "resolve.h"
 #include "utf16.h"
 
+#include <fstream>
 #include <utility>
 
 namespace {
@@ -201,6 +202,30 @@ void FreeBasicServer::setExitHandler(std::function<void()> exitHandler)
     exitHandler_ = std::move(exitHandler);
 }
 
+void FreeBasicServer::setIndexCacheDir(std::filesystem::path cacheDir)
+{
+    indexCacheDir_ = std::move(cacheDir);
+}
+
+void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path root)
+{
+    if (root.empty())
+    {
+        return;
+    }
+    if (index_ && fblang::normalizePath(root) == fblang::normalizePath(index_->root()))
+    {
+        return;
+    }
+    if (index_)
+    {
+        index_->close();
+    }
+    index_ = std::make_unique<fblang::WorkspaceIndex>(root, indexCacheDir_);
+    index_->open();
+    index_->scan(true);
+}
+
 void FreeBasicServer::registerHandlers()
 {
     session_.on([this](td_initialize::request const& req) { return onInitialize(req); });
@@ -225,6 +250,7 @@ void FreeBasicServer::registerHandlers()
     session_.on([this](td_highlight::request const& req) { return onHighlight(req); });
     session_.on([this](td_completion::request const& req) { return onCompletion(req); });
     session_.on([this](td_signatureHelp::request const& req) { return onSignatureHelp(req); });
+    session_.on([this](wp_symbol::request const& req) { return onWorkspaceSymbol(req); });
 }
 
 td_initialize::response FreeBasicServer::onInitialize(td_initialize::request const& req)
@@ -261,6 +287,25 @@ td_initialize::response FreeBasicServer::onInitialize(td_initialize::request con
     rsp.result.capabilities.signatureHelpProvider->triggerCharacters.emplace_back("(");
     rsp.result.capabilities.signatureHelpProvider->triggerCharacters.emplace_back(",");
 
+    rsp.result.capabilities.workspaceSymbolProvider.emplace();
+    rsp.result.capabilities.workspaceSymbolProvider->first.emplace(true);
+
+    // Workspace root: rootUri wins over workspaceFolders; fall back to the
+    // first opened file when neither is present (single-file mode).
+    std::string rootPath;
+    if (req.params.rootUri)
+    {
+        rootPath = req.params.rootUri->GetAbsolutePath().path();
+    }
+    if (rootPath.empty() && req.params.workspaceFolders && !req.params.workspaceFolders->empty())
+    {
+        rootPath = (*req.params.workspaceFolders)[0].uri.GetAbsolutePath().path();
+    }
+    if (!rootPath.empty())
+    {
+        ensureWorkspaceIndex(rootPath);
+    }
+
     return rsp;
 }
 
@@ -268,6 +313,11 @@ td_shutdown::response FreeBasicServer::onShutdown(td_shutdown::request const& re
 {
     td_shutdown::response rsp;
     rsp.id = req.id;
+
+    if (index_)
+    {
+        index_->close();
+    }
 
     lsp::Any result;
     result.SetJsonString("null", lsp::Any::kNullType);
@@ -278,6 +328,10 @@ td_shutdown::response FreeBasicServer::onShutdown(td_shutdown::request const& re
 
 void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify& notify)
 {
+    if (!index_)
+    {
+        ensureWorkspaceIndex(std::filesystem::path(notify.params.textDocument.uri.GetAbsolutePath().path()).parent_path());
+    }
     std::shared_ptr<WorkingFile> file = workingFiles_.OnOpen(notify.params.textDocument);
     if (!file)
     {
@@ -320,6 +374,24 @@ void FreeBasicServer::reparseAndPublish(std::shared_ptr<WorkingFile> const& file
     std::string_view content = file->GetContentNoLock();
     fblang::ParseResult parse = fblang::parseDocument(content);
     publishDiagnostics(uri, convertDiagnostics(content, parse));
+
+    if (!index_)
+    {
+        return;
+    }
+    std::string const path = uri.GetAbsolutePath().path();
+    std::string const ext = fblang::toLowerChars(std::filesystem::path(path).extension().string());
+    if (ext != ".bas" && ext != ".bi")
+    {
+        return;
+    }
+    fblang::IndexedFile entry;
+    entry.path = path;
+    fblang::statFile(path, &entry.mtime, &entry.size);
+    entry.lang = parse.lang;
+    entry.roots = std::move(parse.roots);
+    index_->upsert(std::move(entry));
+    index_->flushSoon();
 }
 
 td_symbol::response FreeBasicServer::onDocumentSymbol(td_symbol::request const& req)
@@ -786,6 +858,86 @@ td_signatureHelp::response FreeBasicServer::onSignatureHelp(td_signatureHelp::re
     rsp.result.signatures.push_back(std::move(info));
     rsp.result.activeSignature.emplace(0);
     rsp.result.activeParameter.emplace(activeParam);
+    return rsp;
+}
+
+wp_symbol::response FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const& req)
+{
+    wp_symbol::response rsp;
+    if (!index_)
+    {
+        return rsp;
+    }
+
+    std::string const query = fblang::toLowerChars(req.params.query);
+
+    struct Match {
+        fblang::Symbol const* sym;
+        std::string container;
+    };
+    struct FileMatches {
+        fblang::IndexedFile const* file;
+        std::vector<Match> matches;
+    };
+
+    std::vector<FileMatches> hits;
+
+    std::function<void(fblang::Symbol const&, std::string const&, std::vector<Match>&)> collect =
+        [&query, &collect](fblang::Symbol const& s, std::string const& container,
+                           std::vector<Match>& into) {
+            std::string const key = fblang::toLowerChars(s.key);
+            std::string const name = fblang::toLowerChars(s.name);
+            if (key.find(query) != std::string::npos || name.find(query) != std::string::npos)
+            {
+                into.push_back(Match{&s, container});
+            }
+            std::string const next = container.empty() ? s.name : container + "." + s.name;
+            for (auto const& c : s.children)
+            {
+                collect(c, next, into);
+            }
+        };
+
+    for (auto const& file : index_->snapshot())
+    {
+        std::vector<Match> matches;
+        for (auto const& root : file->roots)
+        {
+            collect(root, {}, matches);
+        }
+        if (matches.empty())
+        {
+            continue;
+        }
+        hits.push_back(FileMatches{file.get(), std::move(matches)});
+    }
+
+    for (auto& hit : hits)
+    {
+        std::string content;
+        {
+            std::ifstream in(hit.file->path, std::ios::binary);
+            if (!in)
+            {
+                continue;
+            }
+            content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        for (auto& m : hit.matches)
+        {
+            lsSymbolInformation info;
+            info.name = m.sym->name;
+            info.kind = toLspSymbolKind(m.sym->kind);
+            info.location = lsLocation(lsDocumentUri(AbsolutePath(hit.file->path)),
+                                       fblang::utf16Range(content, m.sym->selection.beg,
+                                                          m.sym->selection.end));
+            if (!m.container.empty())
+            {
+                info.containerName.emplace(m.container);
+            }
+            rsp.result.push_back(std::move(info));
+        }
+    }
     return rsp;
 }
 

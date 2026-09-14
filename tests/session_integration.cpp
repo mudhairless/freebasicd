@@ -4,6 +4,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -633,10 +637,97 @@ void TestEndToEndLifecycle()
     session.stop();
 }
 
+// Escapes FreeBASIC source so it is JSON-safe inside an LSP frame.
+std::string ToJsonString(std::string const& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s)
+    {
+        switch (c)
+        {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out += c; break;
+        }
+    }
+    return out;
+}
+
+void TestWorkspaceSymbolIndexesWorkspace()
+{
+    char const* kLibContent =
+        "function clamp(v as integer, lo as integer) as integer\n"
+        "    if v < lo then return lo\n"
+        "    return v\n"
+        "end function\n";
+
+    static std::atomic<long> counter{0};
+    std::filesystem::path const sandbox = std::filesystem::temp_directory_path() /
+                                          ("fblsp-session-" + std::to_string(::time(nullptr))
+                                           + "-" + std::to_string(counter.fetch_add(1)));
+    std::filesystem::path const wsDir = sandbox / "ws";
+    std::filesystem::create_directories(wsDir);
+    {
+        std::ofstream out(wsDir / "lib.bi");
+        out << kLibContent;
+    }
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.setIndexCacheDir(sandbox / "cache");
+    server.registerHandlers();
+    session.start(input, output);
+
+    std::string const fileUri = "file://" + (wsDir / "lib.bi").string();
+    std::string const rootUri = "file://" + wsDir.string();
+    std::string const initFrame =
+        R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" + rootUri
+        + "\"}}";
+    input->append(MakeLspFrame(initFrame.c_str()));
+    std::string const init = WaitForOutputContaining(output, "\"id\":\"init\"");
+    Expect(init.find("\"workspaceSymbolProvider\":") != std::string::npos,
+           "initialize must advertise workspace/symbol");
+
+    std::string const openFrame =
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+        R"({"uri":")" + fileUri + R"(","languageId":"basic","version":1,"text":")"
+        + ToJsonString(kLibContent) + "\"}}}";
+    input->append(MakeLspFrame(openFrame.c_str()));
+
+    bool found = false;
+    for (int n = 0; n < 60 && !found; ++n)
+    {
+        std::string const id = "\"id\":\"ws" + std::to_string(n) + "\"";
+std::string const request =
+            R"({"jsonrpc":"2.0","id":"ws)" + std::to_string(n)
+            + R"(","method":"workspace/symbol","params":{"query":"clamp"}})";
+        input->append(MakeLspFrame(request.c_str()));
+        std::string const snapshot = WaitForOutputContaining(output, id, 50);
+        found = snapshot.find("\"name\":\"clamp\"") != std::string::npos;
+    }
+    Expect(found, "workspace/symbol must return the clamp function");
+    std::string const last = WaitForOutputContaining(output, "\"name\":\"clamp\"", 5);
+    Expect(last.find(fileUri) != std::string::npos,
+           "workspace/symbol location must point into the workspace file");
+
+    session.stop();
+    std::error_code ec;
+    std::filesystem::remove_all(sandbox, ec);
+}
+
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    test::InitTestFilter(argc, argv);
     RUN_TEST(TestInitializeReportsSyncCapabilities);
     RUN_TEST(TestDidOpenPublishesDiagnostics);
     RUN_TEST(TestDiagnosticsReflectParseErrors);
@@ -649,6 +740,7 @@ int main()
     RUN_TEST(TestCompletionOffersKeywordsAndSymbols);
     RUN_TEST(TestHoverLinksKeywordDocs);
     RUN_TEST(TestSignatureHelpShowsParamsAndActiveIndex);
+    RUN_TEST(TestWorkspaceSymbolIndexesWorkspace);
     RUN_TEST(TestDidChangePushesDiagnostics);
     RUN_TEST(TestDidCloseEvictsAndPublishes);
     RUN_TEST(TestShutdownReturnsNullResult);
