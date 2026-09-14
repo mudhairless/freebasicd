@@ -5,6 +5,7 @@
 
 #include "parser.h"
 #include "symbols.h"
+#include "language.h"
 
 using namespace fblang;
 
@@ -255,6 +256,20 @@ int main()
         ParseResult r = parseDocument("rem $lang : \"qb\"\nx = 1\nprint x\n");
         CHECK(r.lang == "qb");
         CHECK(diagnosticCount(r, "lang-mode") == 1);
+    }
+
+    // Keyword documentation URLs follow the wiki's real page names.
+    {
+        CHECK(keywordDocsUrl("dim") == "https://www.freebasic.net/wiki/KeyPgDim");
+        CHECK(keywordDocsUrl("DIM") == "https://www.freebasic.net/wiki/KeyPgDim");
+        CHECK(keywordDocsUrl("print") == "https://www.freebasic.net/wiki/KeyPgPrint");
+        CHECK(keywordDocsUrl("and") == "https://www.freebasic.net/wiki/KeyPgOpAnd");
+        CHECK(keywordDocsUrl("if") == "https://www.freebasic.net/wiki/KeyPgIfthen");
+        CHECK(keywordDocsUrl("select") == "https://www.freebasic.net/wiki/KeyPgSelectcase");
+        CHECK(keywordDocsUrl("new") == "https://www.freebasic.net/wiki/KeyPgOpNew");
+        CHECK(keywordDocsUrl("pointer") == "https://www.freebasic.net/wiki/KeyPgPtr");
+        CHECK(keywordDocsUrl("andalso") == "https://www.freebasic.net/wiki/KeyPgOpAndAlso");
+        CHECK(keywordDocsUrl("counter").empty());
     }
 
     if (failures == 0)

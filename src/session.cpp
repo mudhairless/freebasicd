@@ -161,20 +161,20 @@ lsCompletionItemKind completionKindFor(fblang::SymbolKind kind)
     return lsCompletionItemKind::Text;
 }
 
+// Identifier character: letters, digits, underscore, or a type suffix.
+bool isWordChar(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           c == '_' || fblang::isSuffixChar(c);
+}
+
 // Identifier being typed at `off` (bytes), or "" when the cursor is not on an
 // identifier character run.
 std::string completionPrefix(std::string_view content, std::uint32_t off)
 {
     std::size_t start = off;
-    while (start > 0)
+    while (start > 0 && isWordChar(content[start - 1]))
     {
-        char const c = content[start - 1];
-        bool const ident = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-                           c == '_' || fblang::isSuffixChar(c);
-        if (!ident)
-        {
-            break;
-        }
         --start;
     }
     return std::string(content.substr(start, off - start));
@@ -363,6 +363,32 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const& req)
     fblang::Symbol const* sym = deepestSymbolAt(parse.roots, offset);
     if (!sym)
     {
+        // No user symbol here: hover a reserved keyword with its wiki link.
+        if (offset < content.size() && isWordChar(content[offset]))
+        {
+            std::uint32_t beg = offset;
+            while (beg > 0 && isWordChar(content[beg - 1]))
+            {
+                --beg;
+            }
+            std::uint32_t end = offset;
+            while (end < content.size() && isWordChar(content[end]))
+            {
+                ++end;
+            }
+            std::string const word =
+                fblang::toLowerChars(std::string(content.substr(beg, end - beg)));
+            std::string const url = fblang::keywordDocsUrl(word);
+            if (!url.empty())
+            {
+                rsp.result.contents.second.emplace(
+                    MarkupContent{std::string("markdown"),
+                                  "`" + word + "` — FreeBASIC keyword\n\n"
+                                  "[FreeBASIC docs](" + url + ")"});
+                rsp.result.range.emplace(fblang::utf16Range(content, beg, end));
+                return rsp;
+            }
+        }
         return rsp;
     }
 
@@ -546,6 +572,13 @@ td_completion::response FreeBasicServer::onCompletion(td_completion::request con
         lsCompletionItem item;
         item.label = std::string(w);
         item.kind.emplace(lsCompletionItemKind::Keyword);
+        std::string const url = fblang::keywordDocsUrl(w);
+        if (!url.empty())
+        {
+            item.documentation.emplace();
+            item.documentation->second.emplace(MarkupContent{std::string("markdown"),
+                std::string("**FreeBASIC keyword**\n\n[") + std::string(w) + "](" + url + ")"});
+        }
         rsp.result.items.push_back(std::move(item));
     }
 

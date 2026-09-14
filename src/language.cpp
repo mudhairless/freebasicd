@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstring>
 
 namespace fblang {
@@ -406,6 +407,37 @@ constexpr BlockRow kCloserOnly[] = {
     {"loop", BlockKind::Do, "loop", false},
 };
 
+// FreeBASIC wiki page suffixes that do not match the naive `KeyPg<Word>` rule.
+struct DocsPage
+{
+    char const* word;
+    char const* page;
+};
+constexpr DocsPage kDocsPages[] = {
+    {"and", "OpAnd"},             {"andalso", "OpAndAlso"},
+    {"condbroadcast", "CondBroadcast"}, {"condcreate", "CondCreate"},
+    {"conddestroy", "CondDestroy"},     {"condsignal", "CondSignal"},
+    {"condwait", "CondWait"},           {"delete", "OpDelete"},
+    {"eqv", "OpEqv"},                   {"get", "Getfileio"},
+    {"if", "Ifthen"},                   {"imageconvertrow", "ImageConvertRow"},
+    {"imagedestroy", "ImageDestroy"},   {"imageinfo", "ImageInfo"},
+    {"imp", "OpImp"},                   {"line", "Linegraphics"},
+    {"lobyte", "LoByte"},               {"loword", "LoWord"},
+    {"mid", "Midfunction"},             {"mod", "OpModulus"},
+    {"mutexcreate", "MutexCreate"},     {"mutexdestroy", "MutexDestroy"},
+    {"mutexlock", "MutexLock"},         {"mutexunlock", "MutexUnlock"},
+    {"new", "OpNew"},                   {"not", "OpNot"},
+    {"or", "OpOr"},                     {"orelse", "OpOrElse"},
+    {"pointcoord", "PointCoord"},       {"pointer", "Ptr"},
+    {"procptr", "OpProcptr"},           {"put", "Putfileio"},
+    {"screen", "Screengraphics"},       {"seek", "Seekset"},
+    {"select", "Selectcase"},           {"shl", "OpShiftLeft"},
+    {"shr", "OpShiftRight"},            {"strptr", "OpStrptr"},
+    {"threadcall", "ThreadCall"},       {"threadcreate", "ThreadCreate"},
+    {"threadwait", "ThreadWait"},       {"varptr", "OpVarptr"},
+    {"view", "Viewgraphics"},           {"xor", "OpXor"},
+};
+
 }  // namespace
 
 bool isReservedWord(std::string_view word)
@@ -423,6 +455,29 @@ std::vector<std::string_view> reservedWords()
         out.emplace_back(w);
     }
     return out;
+}
+
+std::string keywordDocsUrl(std::string_view word)
+{
+    std::string const lower = toLowerChars(word);
+    if (!isReservedWord(lower))
+    {
+        return {};
+    }
+    auto it = std::partition_point(
+        std::begin(kDocsPages), std::end(kDocsPages),
+        [&](DocsPage const& d) { return std::string_view(d.word) < lower; });
+    std::string page;
+    if (it != std::end(kDocsPages) && it->word == lower)
+    {
+        page = it->page;
+    }
+    else
+    {
+        page = lower;
+        page[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(lower[0])));
+    }
+    return "https://www.freebasic.net/wiki/KeyPg" + page;
 }
 
 bool isBuiltinType(std::string_view wordLower)

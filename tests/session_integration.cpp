@@ -94,6 +94,10 @@ char const* kSignatureHelpFrame =
     R"FB({"jsonrpc":"2.0","id":"sig","method":"textDocument/signatureHelp","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/calls.bas"},"position":{"line":5,"character":11}}})FB";
 
+char const* kKeywordHoverFrame =
+    R"FB({"jsonrpc":"2.0","id":"khh","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/calls.bas"},"position":{"line":4,"character":0}}})FB";
+
 char const kDidCloseFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":)FB"
     R"FB({"uri":"file:///tmp/hello.bas"}})FB";
@@ -432,6 +436,37 @@ void TestCompletionOffersKeywordsAndSymbols()
            "completion must offer the dim keyword");
     Expect(response.find("\"label\":\"end if\"") != std::string::npos,
            "completion must offer END-block snippets");
+    Expect(response.find("\"documentation\"") != std::string::npos,
+           "keyword completion items must carry documentation");
+    Expect(response.find("https://www.freebasic.net/wiki/KeyPgIf") != std::string::npos,
+           "keyword documentation must link to the FreeBASIC wiki");
+
+    session.stop();
+}
+
+void TestHoverLinksKeywordDocs()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kDidOpenCallsFrame));
+    Expect(WaitForPublishedUri(output, 1).empty() == false, "didOpen must publish diagnostics");
+
+    input->append(MakeLspFrame(kKeywordHoverFrame));
+    std::string const response = WaitForOutputContaining(output, "\"id\":\"khh\"");
+
+    Expect(response.find("\"id\":\"khh\"") != std::string::npos,
+           "keyword hover request must receive a response");
+    Expect(response.find("dim") != std::string::npos,
+           "keyword hover must name the keyword");
+    Expect(response.find("https://www.freebasic.net/wiki/KeyPgDim") != std::string::npos,
+           "keyword hover must link to the FreeBASIC wiki page");
 
     session.stop();
 }
@@ -612,6 +647,7 @@ int main()
     RUN_TEST(TestReferencesListAllSites);
     RUN_TEST(TestHighlightCoversAllSites);
     RUN_TEST(TestCompletionOffersKeywordsAndSymbols);
+    RUN_TEST(TestHoverLinksKeywordDocs);
     RUN_TEST(TestSignatureHelpShowsParamsAndActiveIndex);
     RUN_TEST(TestDidChangePushesDiagnostics);
     RUN_TEST(TestDidCloseEvictsAndPublishes);

@@ -17,6 +17,11 @@ bool isReservedWord(std::string_view word);
 // to offer keyword items; the returned views reference static storage.
 std::vector<std::string_view> reservedWords();
 
+// URL of the FreeBASIC wiki page documenting `word`, or "" when the word is
+// not a reserved keyword. Page suffixes were harvested from CatPgFullIndex;
+// operator/compound keywords use their real page names (e.g. "OpNew", "Ifthen").
+std::string keywordDocsUrl(std::string_view word);
+
 // Built-in type names (also reserved, listed separately for completion/hover).
 bool isBuiltinType(std::string_view wordLower);
 
