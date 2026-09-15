@@ -27,6 +27,7 @@ remaining work.
 | M13 — pull diagnostics (backlog) | next |
 | M14 — type/go-to + type hierarchy (backlog) | next |
 | M15 — document links + completion resolve + polish (backlog) | next |
+| M16 — FreeBASIC formatter (backlog, scope TBD) | next |
 
 ## 2. What exists (condensed)
 
@@ -339,10 +340,21 @@ shape and plumbing to M7.
 `willSave`, `window/logMessage` + `$/progress`/`workDoneProgress` for long
 scans, and small telemetry. Individually tiny; bundle as one polish drop.
 
+### M16 — FreeBASIC formatter (backlog, scope TBD)
+
+There is no community formatter standard for FreeBASIC — the plan previously
+called that "low payback / don't do". Reconsidered: the absence of a standard
+is exactly what makes this high payback. Whoever ships the first real
+FreeBASIC formatter sets the de-facto standard, and the LSP server is the
+natural place for it (`textDocument/formatting`, `rangeFormatting`,
+`onTypeFormatting`). Full scope (lexer round-trip fidelity, `:` vs line-split
+policy, continuation `_` handling, comment/dialect preservation, integration
+with the M5.5/6 file pipeline, format-on-type triggers) is deliberately
+unspecified here; it gets fleshed out as a dedicated design pass before
+implementation.
+
 ## 6. Not doing (soon)
 
-- **Formatting** — no community formatter standard for FreeBASIC; high effort,
-  low payback.
 - **Code actions** — thin while diagnostics are syntax-level only; revisit
   once M6 adds include diagnostics (quick-fix candidates then: "insert missing
   `#include`, `END` block closer").
@@ -353,15 +365,16 @@ scans, and small telemetry. Individually tiny; bundle as one polish drop.
 - **Recorded non-starters** (never scheduled): `moniker`, `linkedEditingRange`,
   `documentColor`/`colorPresentation`, the deprecated `declaration` alias —
   exercises for editors we do not target.
-- **Scheduled but deferred** (each lives in §5 as a backlog milestone, M13–M15):
+- **Scheduled but deferred** (each lives in §5 as a backlog milestone, M13–M16):
   pull diagnostics, type/go-to + type hierarchy, document links + completion
-  resolve + protocol polish.
+  resolve + protocol polish, and the FreeBASIC formatter (M16; high-payback —
+  sets the de-facto standard, scope TBD by a dedicated design pass).
 
 ## 7. Cross-cutting engineering notes
 
 - **Concurrency (implemented as-is):** LspCpp handler pool runs requests
   concurrently; the index is snapshot-based and mutex-guarded, responses build
-  lock-free. New M5.5–M15 handlers must follow the same snapshot discipline
+  lock-free. New M5.5–M16 handlers must follow the same snapshot discipline
   (shared_ptr copies only).
 - **Per-milestone acceptance:** `cmake --build` + `ctest` green, milestone
   deliverable complete, commit on `main`, push only on request.
