@@ -28,6 +28,12 @@ struct AnalyzedDoc {
     ParseResult parse;
     std::vector<Token> tokens;
     std::vector<IncludeDirective> includes;
+
+    // A `#pragma once` line was seen somewhere in the source. Recorded as
+    // IndexedFile metadata so the index can acknowledge the header's own
+    // once-guard; guard-aware duplicate processing is still a documented
+    // divergence (FreeBASIC.md §12.6), so this is metadata only.
+    bool pragmaOnce = false;
 };
 
 // Single shared analysis: one lex, one parse, one occurrence sweep, include

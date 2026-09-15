@@ -181,6 +181,50 @@ bool isDirectiveWordChar(char c)
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
 }
 
+// A `#pragma once` Preprocessor line anywhere in the source. Independent of
+// the include sweep (also over Preprocessor tokens; a single pass over the
+// few directive lines keeps both walks cheap and independent).
+bool detectPragmaOnce(std::string_view source, std::vector<Token> const& tokens)
+{
+    for (Token const& t : tokens)
+    {
+        if (t.kind != TokenKind::Preprocessor)
+        {
+            continue;
+        }
+        std::string_view const line = source.substr(t.beg, t.end - t.beg);  // starts at '#'
+        std::size_t i = 1;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t'))
+        {
+            ++i;
+        }
+        std::size_t const wbeg = i;
+        while (i < line.size() && isDirectiveWordChar(line[i]))
+        {
+            ++i;
+        }
+        if (toLowerChars(line.substr(wbeg, i - wbeg)) != "pragma")
+        {
+            continue;
+        }
+        std::size_t r = i;
+        while (r < line.size() && (line[r] == ' ' || line[r] == '\t'))
+        {
+            ++r;
+        }
+        std::size_t const vbeg = r;
+        while (r < line.size() && isDirectiveWordChar(line[r]))
+        {
+            ++r;
+        }
+        if (r > vbeg && toLowerChars(line.substr(vbeg, r - vbeg)) == "once")
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Extract `#include [once] ["]literal["]` directives from the whole-line
 // Preprocessor tokens. Ranges are byte offsets into `source`.
 void collectIncludes(std::string_view source, std::vector<Token> const& tokens,
@@ -294,6 +338,7 @@ AnalyzedDoc analyze(std::string_view source)
     }
     attachOccurrences(doc.parse, doc.tokens);
     collectIncludes(source, doc.tokens, &doc.includes);
+    doc.pragmaOnce = detectPragmaOnce(source, doc.tokens);
     return doc;
 }
 

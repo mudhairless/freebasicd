@@ -8,6 +8,7 @@
 // workspaces never share cache files.
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
 
 #include "index.h"
 #include "lexer.h"
@@ -447,6 +449,76 @@ int main()
         CHECK(vRe.size() == 1);
         CHECK_MSG(vRe.byKey("vv").size() == 1, "the rebuilt v3 cache carries projections");
         vRe.close();
+    }
+
+    // Unresolved include literals keep empty targets (the open-buffer
+    // include-not-found diagnostic source) and `#pragma once` is recorded as
+    // metadata; both survive the disk cache round-trip.
+    {
+        writeFile(ws / "missing.bas", "#include \"nope.bi\"\n#include once \"also_missing.bi\"\n");
+        writeFile(ws / "guard.bi", "#pragma once\ndim guardVal as integer\n");
+        std::string const missingNorm = normalizePath(ws / "missing.bas");
+        std::string const guardNorm = normalizePath(ws / "guard.bi");
+        {
+            WorkspaceIndex m(ws, cache);
+            m.open();
+            m.scan(false);
+            auto const f = findFile(m, missingNorm);
+            CHECK(f != nullptr && f->includes.size() == 2);
+            CHECK(f->includes[0].literal == "nope.bi");
+            CHECK_MSG(f->includes[0].target.empty(),
+                      "an unresolvable include keeps an empty target for diagnostics");
+            CHECK(f->includes[1].once);
+            CHECK(f->includes[1].literal == "also_missing.bi");
+            CHECK_MSG(f->includes[1].target.empty(), "#include once edge also stays unresolved");
+            auto const g = findFile(m, guardNorm);
+            CHECK(g != nullptr);
+            CHECK_MSG(g->pragmaOnce, "#pragma once must be recorded as IndexedFile metadata");
+            CHECK_MSG(!f->pragmaOnce, "a file without #pragma once stays false");
+            m.close();
+        }
+        {
+            WorkspaceIndex reload(ws, cache);
+            reload.open();
+            auto const f = findFile(reload, missingNorm);
+            CHECK(f != nullptr && f->includes.size() == 2);
+            CHECK_MSG(f->includes[0].target.empty(), "empty include targets round-trip the cache");
+            auto const g = findFile(reload, guardNorm);
+            CHECK(g != nullptr && g->pragmaOnce);
+            reload.close();
+        }
+    }
+
+    // watchedFilesChanged() converges an external edit without any session
+    // involvement: the debounced rescan picks up a rewritten header.
+    {
+        fs::path const wsW = sandbox / "watched";
+        fs::create_directories(wsW);
+        writeFile(wsW / "lib.bi", "sub greet()\nend sub\n");
+        WorkspaceIndex w(wsW, cache);
+        w.open();
+        w.scan(true);
+        {
+            int until = 200;
+            while (until-- > 0 && w.byKey("greet").size() != 1)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            CHECK_MSG(w.byKey("greet").size() == 1, "the initial async scan must index lib.bi");
+        }
+        writeFile(wsW / "lib.bi", "sub greet()\nend sub\nsub farewell()\nend sub\n");
+        w.watchedFilesChanged();
+        {
+            int until = 200;
+            while (until-- > 0 && w.byKey("farewell").size() != 1)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            CHECK_MSG(w.byKey("farewell").size() == 1,
+                      "a watched-files event must converge the new symbol via rescan");
+            CHECK(w.byKey("greet").size() == 1);
+        }
+        w.close();
     }
 
     fs::remove_all(sandbox);

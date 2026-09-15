@@ -811,6 +811,144 @@ std::string const request =
     std::filesystem::remove_all(sandbox, ec);
 }
 
+void TestMissingIncludePublishesDiagnostic()
+{
+    static std::atomic<long> counter{0};
+    std::filesystem::path const sandbox = std::filesystem::temp_directory_path() /
+        ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+         std::to_string(counter.fetch_add(1)));
+    std::filesystem::create_directories(sandbox);
+    {
+        std::ofstream out(sandbox / "ok.bi");
+        out << "dim okVal as integer\n";
+    }
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.setIndexCacheDir(sandbox / "cache");
+    server.registerHandlers();
+    session.start(input, output);
+
+    std::string const badUri = "file://" + (sandbox / "main.bas").string();
+    std::string const badOpenFrame =
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+        R"({"uri":")" + badUri + R"(","languageId":"basic","version":1,"text":")"
+        + ToJsonString("#include \"missing.bi\"\nprint \"hi\"\n") + "\"}}}";
+    input->append(MakeLspFrame(badOpenFrame.c_str()));
+    std::string const published = WaitForPublishedUri(output, 1);
+    Expect(published.find("\"code\":\"include-not-found\"") != std::string::npos,
+           "a missing include must be reported with its diagnostic code");
+    Expect(published.find("include file not found") != std::string::npos,
+           "a missing include must carry a readable message");
+    Expect(published.find("missing.bi") != std::string::npos,
+           "the diagnostic must name the missing file");
+    Expect(published.find("\"severity\":1") != std::string::npos,
+           "a missing include must publish at Error severity");
+    Expect(published.find("\"start\":{\"line\":0,\"character\":10}") != std::string::npos,
+           "the include range must cover the filename literal, not the whole line");
+
+    // A resolvable include must not produce an include-not-found diagnostic.
+    std::string const goodUri = "file://" + (sandbox / "uses.bas").string();
+    std::string const goodOpenFrame =
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+        R"({"uri":")" + goodUri + R"(","languageId":"basic","version":1,"text":")"
+        + ToJsonString("#include \"ok.bi\"\n") + "\"}}}";
+    input->append(MakeLspFrame(goodOpenFrame.c_str()));
+    std::string const both = WaitForPublishedUri(output, 2);
+    std::size_t notFound = 0;
+    std::size_t pos = 0;
+    while ((pos = both.find("\"code\":\"include-not-found\"", pos)) != std::string::npos)
+    {
+        ++notFound;
+        pos += 1;
+    }
+    Expect(notFound == 1, "a resolvable include must not publish include-not-found");
+
+    session.stop();
+    std::error_code ec;
+    std::filesystem::remove_all(sandbox, ec);
+}
+
+void TestWatchedFilesRescanConverges()
+{
+    static std::atomic<long> counter{0};
+    std::filesystem::path const sandbox = std::filesystem::temp_directory_path() /
+        ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+         std::to_string(counter.fetch_add(1)));
+    std::filesystem::path const wsDir = sandbox / "ws";
+    std::filesystem::create_directories(wsDir);
+    std::string const lib = "sub greet()\nend sub\n";
+    {
+        std::ofstream out(wsDir / "lib.bi");
+        out << lib;
+    }
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.setIndexCacheDir(sandbox / "cache");
+    server.registerHandlers();
+    session.start(input, output);
+
+    std::string const fileUri = "file://" + (wsDir / "lib.bi").string();
+    std::string const rootUri = "file://" + wsDir.string();
+    std::string const initFrame =
+        R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" + rootUri
+        + "\"}}";
+    input->append(MakeLspFrame(initFrame.c_str()));
+    Expect(WaitForOutputContaining(output, "\"id\":\"init\"").find("\"workspaceSymbolProvider\":") !=
+               std::string::npos,
+           "initialize must advertise workspace/symbol");
+
+    auto querySymbol = [&](int n, std::string const& name) {
+        std::string const id = "\"id\":\"wat" + std::to_string(n) + "\"";
+        std::string const request =
+            R"({"jsonrpc":"2.0","id":"wat)" + std::to_string(n)
+            + R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+        input->append(MakeLspFrame(request.c_str()));
+        return WaitForOutputContaining(output, id, 50);
+    };
+
+    // The initial background scan must index lib.bi before the edit.
+    bool primed = false;
+    for (int n = 0; n < 60 && !primed; ++n)
+    {
+        primed = querySymbol(n, "greet").find("\"name\":\"greet\"") != std::string::npos;
+    }
+    Expect(primed, "workspace/symbol must find the header symbol from the initial scan");
+
+    // A disk edit converges through the watched-files notification: no reopen,
+    // no didChange, no restart.
+    {
+        std::ofstream out(wsDir / "lib.bi");
+        out << lib << "sub farewell()\nend sub\n";
+    }
+    std::string const watchedFrame =
+        R"({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[)"
+        R"({"uri":")" + fileUri + R"(","type":2}]}})";
+    input->append(MakeLspFrame(watchedFrame.c_str()));
+
+    bool converged = false;
+    for (int n = 0; n < 100 && !converged; ++n)
+    {
+        converged = querySymbol(100 + n, "farewell").find("\"name\":\"farewell\"") !=
+                    std::string::npos;
+    }
+    Expect(converged,
+           "a watched-files event must converge an external header edit into workspace/symbol");
+
+    session.stop();
+    std::error_code ec;
+    std::filesystem::remove_all(sandbox, ec);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -834,6 +972,8 @@ int main(int argc, char** argv)
     RUN_TEST(TestShutdownReturnsNullResult);
     RUN_TEST(TestInitializeServesStaticWatchersToNonDynamicClient);
     RUN_TEST(TestInitializedRegistersWatchedFilesDynamically);
+    RUN_TEST(TestMissingIncludePublishesDiagnostic);
+    RUN_TEST(TestWatchedFilesRescanConverges);
     RUN_TEST(TestExitNotifiesSession);
     RUN_TEST(TestEndToEndLifecycle);
     return test::Failures() == 0 ? 0 : 1;

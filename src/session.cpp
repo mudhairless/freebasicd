@@ -96,6 +96,33 @@ std::vector<lsDiagnostic> convertDiagnostics(std::string_view content, fblang::P
     return out;
 }
 
+// Unresolved `#include`/`#include once` literals of an indexed entry become
+// `include-not-found` Errors at the literal's own range. Only the open
+// buffer's own edges are diagnosed (M6); inter-file closure diagnostics wait
+// for pull diagnostics (M13).
+void appendIncludeDiagnostics(std::string_view content, fblang::IndexedFile const& entry,
+                              std::vector<lsDiagnostic>* out)
+{
+    for (auto const& e : entry.includes)
+    {
+        if (!e.target.empty())
+        {
+            continue;
+        }
+        if (e.targetRange.beg >= e.targetRange.end || e.targetRange.end > content.size())
+        {
+            continue;  // a directive with no filename literal
+        }
+        lsDiagnostic diag;
+        diag.range = fblang::utf16Range(content, e.targetRange.beg, e.targetRange.end);
+        diag.severity = static_cast<lsDiagnosticSeverity>(fblang::Severity::Error);
+        diag.code.emplace(std::make_pair<optional<std::string>, optional<int>>(std::string("include-not-found"), {}));
+        diag.source.emplace("freebasiclsp");
+        diag.message = "include file not found: \"" + e.literal + "\"";
+        out->push_back(std::move(diag));
+    }
+}
+
 // Deepest symbol (by range nesting) covering `off`, or nullptr.
 fblang::Symbol const* symbolAt(fblang::Symbol const& sym, std::uint32_t off)
 {
@@ -238,6 +265,7 @@ void FreeBasicServer::registerHandlers()
             }
         });
     session_.on([this](Notify_InitializedNotification::notify const& notify) { onInitialized(notify); });
+    session_.on([this](Notify_WorkspaceDidChangeWatchedFiles::notify const& notify) { onWatchedFiles(notify); });
     session_.on([this](Notify_TextDocumentDidOpen::notify& notify) { onDidOpen(notify); });
     session_.on([this](Notify_TextDocumentDidChange::notify const& notify) { onDidChange(notify); });
     session_.on([this](Notify_TextDocumentDidSave::notify const& notify) { onDidSave(notify); });
@@ -374,6 +402,20 @@ void FreeBasicServer::onInitialized(Notify_InitializedNotification::notify const
     session_.endpoint().send(request);
 }
 
+void FreeBasicServer::onWatchedFiles(Notify_WorkspaceDidChangeWatchedFiles::notify const& notify)
+{
+    // The registered glob (**/*.{bas,bi}) already scopes the events; re-statting
+    // the whole root converges any external .bi edit. The debounce and its
+    // async scan live in the index, so the notification FIFO thread returns at
+    // once regardless of workspace size. Event details are intentionally
+    // ignored: a full-root scan is authoritative and cheap for FB-sized files.
+    (void)notify;
+    if (index_)
+    {
+        index_->watchedFilesChanged();
+    }
+}
+
 void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify& notify)
 {
     if (!index_)
@@ -421,28 +463,30 @@ void FreeBasicServer::reparseAndPublish(std::shared_ptr<WorkingFile> const& file
 {
     std::string_view const content = file->GetContentNoLock();
     fblang::AnalyzedDoc doc = fblang::analyze(content);
-    publishDiagnostics(uri, convertDiagnostics(content, doc.parse));
+    std::vector<lsDiagnostic> diags = convertDiagnostics(content, doc.parse);
 
-    if (!index_)
+    if (index_)
     {
-        return;
+        std::string const path = uri.GetAbsolutePath().path();
+        std::string const ext = fblang::toLowerChars(std::filesystem::path(path).extension().string());
+        if (ext == ".bas" || ext == ".bi")
+        {
+            std::uint64_t mtime = 0;
+            std::uint64_t size = 0;
+            fblang::statFile(path, &mtime, &size);
+            // Open-buffer entries are never persisted: an unsaved buffer must
+            // not be written to the disk cache as on-disk truth, nor satisfy
+            // scan's mtime/size cache-hit. Include targets still resolve
+            // against disk, and unresolved ones publish include-not-found.
+            fblang::IndexedFile entry = fblang::indexedFileFromAnalysis(
+                fblang::normalizePath(path), mtime, size, std::move(doc), index_->root(), false);
+            appendIncludeDiagnostics(content, entry, &diags);
+            index_->upsert(std::move(entry));
+            index_->flushSoon();
+        }
     }
-    std::string const path = uri.GetAbsolutePath().path();
-    std::string const ext = fblang::toLowerChars(std::filesystem::path(path).extension().string());
-    if (ext != ".bas" && ext != ".bi")
-    {
-        return;
-    }
-    std::uint64_t mtime = 0;
-    std::uint64_t size = 0;
-    fblang::statFile(path, &mtime, &size);
-    // Open-buffer entries are never persisted: an unsaved buffer must not be
-    // written to the disk cache as on-disk truth, nor satisfy scan's
-    // mtime/size cache-hit. include targets still resolve against disk.
-    index_->upsert(fblang::indexedFileFromAnalysis(
-        fblang::normalizePath(path), mtime, size, std::move(doc), index_->root(),
-        /*persisted=*/false));
-    index_->flushSoon();
+
+    publishDiagnostics(uri, std::move(diags));
 }
 
 td_symbol::response FreeBasicServer::onDocumentSymbol(td_symbol::request const& req)

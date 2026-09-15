@@ -23,7 +23,8 @@ struct IncludeDirective {
     SourceRange line;      // whole `#include ...` line
     SourceRange target;    // filename literal range (quotes excluded)
     std::string literal;   // filename as written, case preserved
-    bool once = false;     // `#include once`; `#pragma once` tracked from M6
+    bool once = false;     // `#include once`; `#pragma once` is recorded at the
+                           // document/file level, not on the edge
 };
 
 // One usage of a symbol. `moduleScope` = true when the usage sits at module

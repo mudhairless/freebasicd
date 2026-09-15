@@ -27,6 +27,7 @@ namespace {
 
 constexpr int kIndexVersion = 3;
 constexpr auto kFlushDebounce = std::chrono::milliseconds(1500);
+constexpr auto kRescanDebounce = std::chrono::milliseconds(300);
 
 // Skip directories that never hold authored sources.
 bool isSkippedDir(std::filesystem::path const& name)
@@ -208,6 +209,8 @@ std::string serializeFile(IndexedFile const& f)
     w.Uint64(f.size);
     w.Key("lang");
     w.String(f.lang.c_str(), static_cast<rapidjson::SizeType>(f.lang.size()));
+    w.Key("pragmaOnce");
+    w.Bool(f.pragmaOnce);
     w.Key("symbols");
     w.StartArray();
     for (Symbol const& s : f.roots)
@@ -262,6 +265,7 @@ bool deserializeFile(std::string_view json, IndexedFile* out)
     out->mtime = doc["mtime"].GetUint64();
     out->size = doc["size"].GetUint64();
     out->lang = doc["lang"].GetString();
+    out->pragmaOnce = doc.HasMember("pragmaOnce") && doc["pragmaOnce"].IsBool() && doc["pragmaOnce"].GetBool();
     for (auto const& sv : doc["symbols"].GetArray())
     {
         Symbol root;
@@ -527,6 +531,7 @@ IndexedFile indexedFileFromAnalysis(std::string const& normalizedPath, std::uint
     f.size = size;
     f.lang = doc.parse.lang;
     f.roots = std::move(doc.parse.roots);
+    f.pragmaOnce = doc.pragmaOnce;
     f.persisted = persisted;
     for (IncludeDirective const& inc : doc.includes)
     {
@@ -567,6 +572,7 @@ void WorkspaceIndex::open()
     }
     loadFromDisk();
     flusher_ = std::thread([this] { flusherLoop(); });
+    rescan_ = std::thread([this] { rescanLoop(); });
 }
 
 void WorkspaceIndex::close()
@@ -577,6 +583,14 @@ void WorkspaceIndex::close()
         dirty_ = true;
     }
     cv_.notify_all();
+    // Wake the rescan loop's parked waits; a scan it already started finishes
+    // before the join below (rescan_ is joined before scanner_ so the two can
+    // never join the same scanner_ concurrently).
+    rescanCv_.notify_all();
+    if (rescan_.joinable())
+    {
+        rescan_.join();
+    }
     if (flusher_.joinable())
     {
         flusher_.join();
@@ -693,6 +707,41 @@ void WorkspaceIndex::scan(bool async)
     if (changed)
     {
         flushSoon();
+    }
+}
+
+void WorkspaceIndex::watchedFilesChanged()
+{
+    {
+        std::lock_guard<std::mutex> const lk(rescanMu_);
+        rescanQueued_ = true;
+    }
+    rescanCv_.notify_all();
+}
+
+void WorkspaceIndex::rescanLoop()
+{
+    std::unique_lock<std::mutex> lk(rescanMu_);
+    while (running_.load())
+    {
+        // Park until an event arrives (or shutdown).
+        rescanCv_.wait(lk, [this] { return rescanQueued_ || !running_.load(); });
+        if (!running_.load())
+        {
+            break;
+        }
+        // Wait out an idle window so a burst of events coalesces into one
+        // scan; nothing but shutdown aborts this wait early, so every event
+        // in the window is absorbed by the single scan that follows.
+        auto const idle = std::chrono::steady_clock::now() + kRescanDebounce;
+        if (rescanCv_.wait_until(lk, idle, [this] { return !running_.load(); }))
+        {
+            break;
+        }
+        rescanQueued_ = false;
+        lk.unlock();
+        scan(true);
+        lk.lock();
     }
 }
 

@@ -29,6 +29,7 @@
 // params type and the runtime parser can never build `workspace/symbol`.
 #include "LibLsp/lsp/workspace/symbol.h"
 #include "LibLsp/lsp/extention/jdtls/WorkspaceSymbolParams.h"
+#include "LibLsp/lsp/workspace/did_change_watched_files.h"
 
 #include "index.h"
 
@@ -66,6 +67,7 @@ private:
     void ensureWorkspaceIndex(std::filesystem::path const& root);
 
     void onInitialized(Notify_InitializedNotification::notify const& notify);
+    void onWatchedFiles(Notify_WorkspaceDidChangeWatchedFiles::notify const& notify);
 
     td_shutdown::response onShutdown(td_shutdown::request const& req);
     void onDidOpen(Notify_TextDocumentDidOpen::notify& notify);

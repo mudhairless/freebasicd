@@ -19,8 +19,9 @@ namespace fblang {
 struct AnalyzedDoc;
 
 // One `#include [once] "target"` edge of an indexed file. `target` is the
-// resolved normalized absolute path (empty while the include is unresolved;
-// the M6 include diagnostic pass consumes `literal` + `targetRange`).
+// resolved normalized absolute path; when empty the include was unresolved and
+// the open-buffer publish path emits an `include-not-found` diagnostic from
+// `literal` + `targetRange`.
 struct IncludeEdge {
     std::string target;       // normalized absolute path; empty when unresolved
     std::string literal;      // filename as written, case preserved
@@ -37,6 +38,12 @@ struct IndexedFile {
     std::string lang = "fb";
     std::vector<Symbol> roots;
     std::vector<IncludeEdge> includes;
+
+    // The file carries a `#pragma once` line: a self-granted once-guard,
+    // recorded as M6 metadata. Not enforced yet (FreeBASIC.md §12.6: guard
+    // states are not evaluated); the per-path dedup in transitiveIncludes is
+    // intentional and unaffected.
+    bool pragmaOnce = false;
 
     // Whether this entry may be written to the disk cache. False only for
     // open-buffer entries: an unsaved buffer must never be persisted as if it
@@ -88,6 +95,12 @@ public:
     // thread (returns immediately).
     void scan(bool async = true);
 
+    // A `workspace/didChangeWatchedFiles` event arrived. A debounced rescan
+    // follows on an internal thread: bursts coalesce into one scan, and the
+    // notification FIFO thread never blocks on a scan. Safe to call from any
+    // thread.
+    void watchedFilesChanged();
+
     // Feed a file parsed from a live buffer or scan. `flush` schedules the
     // next debounced write.
     void upsert(IndexedFile entry);
@@ -119,6 +132,7 @@ public:
 private:
     void flushNow();
     void flusherLoop();
+    void rescanLoop();
     void removeCacheFile(std::string const& normalizedPath);
     void addToProjections(std::shared_ptr<IndexedFile const> const& f);
     void subtractFromProjections(std::shared_ptr<IndexedFile const> const& f);
@@ -138,6 +152,16 @@ private:
     std::mutex cvMu_;
     std::condition_variable cv_;
     bool dirty_ = false;
+
+    // Debounced watched-files rescan: events coalesce in `rescanQueued_`, the
+    // dedicated `rescanLoop` waits out a quiet window (kRescanDebounce), then
+    // scans on `scanner_`. Keeping the loop here (not in the session) preserves
+    // the close() join ordering: `rescan_` is joined before `scanner_`, so
+    // close() can never race the loop's scan(true) join-previous.
+    std::thread rescan_;
+    std::mutex rescanMu_;
+    std::condition_variable rescanCv_;
+    bool rescanQueued_ = false;
 };
 
 // Free functions, exposed for tests.

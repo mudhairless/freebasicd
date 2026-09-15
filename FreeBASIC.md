@@ -235,4 +235,5 @@ to "the language is what the lexer does":
    legally be processed twice (and `#ifndef`-guarded headers can self-include
    to form an include-once guard). We do not evaluate guard macros yet; a
    self-include is treated as a cycle and terminated like `#include once`.
-   `#pragma once` itself is recorded as M6 metadata, not yet enforced.
+   Since M6, `#pragma once` and `#include once` are recorded as metadata
+   (`IndexedFile.pragmaOnce`, the edge's `once` flag) but not enforced.

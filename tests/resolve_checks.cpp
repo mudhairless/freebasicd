@@ -164,6 +164,24 @@ static void TestAnalyzeIncludes()
     CHECK(doc.includes[2].target.end == src.find("c.bi") + 4);
 }
 
+static void TestAnalyzePragmaOnce()
+{
+    AnalyzedDoc const on = analyze("#pragma once\ndim guard as integer\n");
+    CHECK_MSG(on.pragmaOnce, "a #pragma once line must set the pragmaOnce flag");
+
+    AnalyzedDoc const ws = analyze("  #pragma once\n");
+    CHECK_MSG(ws.pragmaOnce, "whitespace before #pragma once must still be detected");
+
+    AnalyzedDoc const withOnce = analyze("#include once \"a.bi\"\n");
+    CHECK_MSG(!withOnce.pragmaOnce, "#include once is an edge flag, not a #pragma once");
+
+    AnalyzedDoc const commented = analyze("' #pragma once\n");
+    CHECK_MSG(!commented.pragmaOnce, "a comment quoting #pragma once must not set the flag");
+
+    AnalyzedDoc const other = analyze("#pragma push\n#cmdline \"-d foo\"\n");
+    CHECK_MSG(!other.pragmaOnce, "a #pragma with a different directive must not set the flag");
+}
+
 int main()
 {
     TestScopingResolvesCorrectly();
@@ -171,6 +189,7 @@ int main()
     TestOccurrences();
     TestAnalyze();
     TestAnalyzeIncludes();
+    TestAnalyzePragmaOnce();
     std::printf("resolve_checks: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;
 }

@@ -17,7 +17,7 @@ remaining work.
 | M4 — persistent workspace symbol index + `workspace/symbol` | done (rev'd 2026: platform index dir, SHA-256-keyed per-file cache) |
 | M5 — workspace spine: occurrence projection + include graph | done |
 | M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
-| M6 — include resolution + watched files + missing-include diagnostics | next |
+| M6 — include resolution + watched files + missing-include diagnostics | done (2026-09: missing-include diagnostics, debounced watched-files rescan, `#pragma once` metadata) |
 | M7 — cross-file definition / references / highlight / completion | next |
 | M8 — `prepareRename` + `rename` (workspace) | next |
 | M9 — semantic tokens + inlay hints + highlight grammar | next |
@@ -95,8 +95,10 @@ plan engineers around:
    the open file** (`resolve.cpp` is single-`ParseResult`); the M4 index holds
    per-file symbol trees but nothing cross-file is wired.
 2. `prepareRename` / `rename` not implemented; `renameProvider` not advertised.
-3. `#include` / `#include once` directives are lexed but not resolved: no
-   include edges, no missing-file diagnostics, no header symbol visibility.
+3. Include edges and missing-include diagnostics are live (M6), but include-once
+   *guard states* are not evaluated — `#include once` / `#pragma once` / `#ifndef`
+   are processed as recorded metadata, not macros (FreeBASIC.md §12.6) — and
+   `#inclib` is not treated as a source include.
 4. No semantic tokens, no inlay hints (LspCpp bundles the types; unused), and
    no static highlight grammar — editors get no syntax coloring of any kind
    until M9 ships both.
@@ -106,9 +108,10 @@ plan engineers around:
 6. `initialized` + dynamic capability registration landed (M5.5): a dynamic
    client is registered for `workspace/didChangeWatchedFiles` on `initialized`
    via `client/registerCapability`; a static client is served watchers in the
-   `initialize` reply. The watcher *handler* and debounced rescan are still M6
-   work, and `workspace/didChangeWorkspaceFolders` remains unhandled
-   (single-root assumption).
+   `initialize` reply. The watcher handler and the debounced rescan landed in
+   M6 (they fan into `WorkspaceIndex::watchedFilesChanged`); only
+   `workspace/didChangeWorkspaceFolders` remains unhandled (single-root
+   assumption, M11).
 7. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
    built-in intrinsic-function completion catalog.
 8. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
@@ -178,21 +181,43 @@ The transport the watched-file feature (M6) and config-driven watcher changes
 
 ### M6 — Include resolution + convergence
 
-- Include search policy: target resolved relative to the including file's dir,
-  then workspace-root fallback (documented limitation; fbc `-i` dirs later via
-  §M11 settings).
-- `#include`/`#include once` edges are alive end-to-end; an unresolved include
-  literal publishes an `include-not-found` `Error`.
-- `workspace/didChangeWatchedFiles` registered (`**/*.{bas,bi}`) →
-  debounced `index_->scan(true)` so external `.bi` edits converge.
-- Files: `session.{h,cpp}`, new `src/includes.{h,cpp}` (search policy),
-  `session_integration`, `index_checks`.
-- Acceptance: opening `.bas` with a missing `.bi` publishes the diagnostic;
-  touching a `.bi` on disk + watcher notification makes `workspace/symbol`
-  return the new symbol without a restart; `#include once` not duplicated in
-  the closure.
-- Risk: LspCpp watched-file registration semantics — verify against vendored
-  headers before coding.
+Closed includes end-to-end and made the index converge on disk edits. Two
+M6-plan bullets had effectively shipped early and are recorded here as
+deviations rather than reworked.
+
+- **Search policy shipped in M5** (deviation): `resolveIncludeTarget` — the
+  including file's dir first, then workspace-root fallback — landed inside
+  `index.{h,cpp}` during M5, so no `src/includes.{h,cpp}` was created; M6
+  consumes it. fbc `-i` dirs stay later via §M11 settings.
+- **Include-not-found diagnostics (pushed, open files only):** the open-buffer
+  publish path builds the `IndexedFile` once, reads back its resolved include
+  edges, and emits an `include-not-found` `Error` covering the filename
+  literal for every own `#include`/`#include once` whose literal resolved to
+  nothing — one analysis, one resolution, one publish, merged with the parse
+  diagnostics. Inter-file closure diagnostics wait for pull diagnostics (M13).
+- **Watched-files convergence:** the session registers the vendored
+  `Notify_WorkspaceDidChangeWatchedFiles` and fans every event into a new
+  `WorkspaceIndex::watchedFilesChanged()`. A dedicated debounce thread (300ms
+  trailing edge, its own cv/flag, started in `open()`, joined in `close()`
+  before `scanner_`) coalesces bursts and runs one async full-root
+  `scan(true)`, so the LSP notification FIFO thread never blocks on a scan.
+  Event payloads are otherwise ignored: the registered glob
+  (`**/*.{bas,bi}`) plus a re-stat of the root is authoritative and cheap for
+  FB-sized files.
+- **`#pragma once` recorded as metadata** (FreeBASIC.md §12.6): detected in
+  `analyze()`, carried on `IndexedFile.pragmaOnce`, round-tripped as an
+  optional cache-v3 field (warm-start cache, so no version bump). Recording
+  only; guard-state evaluation is still a documented divergence.
+- Files: `resolve.{h,cpp}`, `index.{h,cpp}`, `session.{h,cpp}`,
+  `resolve_checks`, `index_checks`, `session_integration`.
+- Acceptance (green): a `.bas` with a missing `.bi` publishes `include-not-found`
+  over the literal; a resolvable `#include` does not; a `.bi` touched on disk +
+  a watcher notification makes `workspace/symbol` return the new symbol without
+  a restart; `#include once` and duplicate/cyclic paths stay out of the closure.
+- Risk retired: LspCpp watched-file semantics verified against the vendored
+  forks (M5.5 work). Residual invariant: the rescan thread is the only
+  post-open `scan(true)` requester — the initial scan returns before any event
+  can be handled, so `scanner_` is never written concurrently.
 
 ### M7 — Cross-file definition / references / highlight / completion
 
