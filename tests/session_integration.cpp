@@ -881,6 +881,85 @@ void TestOutsideFileNotIndexed()
     std::filesystem::remove_all(sandbox, ec);
 }
 
+// A client root that is itself a single project (has a .git marker) is used
+// as-is; a *broad* root (e.g. an editor reporting the home directory, which
+// hosts several sibling projects) is narrowed to the opened document's project
+// on the first didOpen. Sibling trees under the broad root must never surface.
+void TestBroadRootNarrowsToOpenedProject()
+{
+    static std::atomic<long> counter{0};
+    std::filesystem::path const sandbox = std::filesystem::temp_directory_path() /
+        ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+         std::to_string(counter.fetch_add(1)));
+    std::filesystem::path const broad = sandbox / "broad";
+    std::filesystem::path const proj = broad / "proj";
+    std::filesystem::path const sibling = broad / "sibling";
+    std::filesystem::create_directories(proj / ".git");
+    std::filesystem::create_directories(sibling);
+    {
+        std::ofstream out(proj / "app.bas");
+        out << "sub wsOnly()\nend sub\n";
+        std::ofstream out2(sibling / "other.bas");
+        out2 << "sub siblingOnly()\nend sub\n";
+    }
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.setIndexCacheDir(sandbox / "cache");
+    server.registerHandlers();
+    session.start(input, output);
+
+    std::string const appUri = "file://" + (proj / "app.bas").string();
+    std::string const broadRootUri = "file://" + broad.string();
+    std::string const initFrame =
+        R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+        broadRootUri + "\"}}";
+    input->append(MakeLspFrame(initFrame.c_str()));
+    Expect(WaitForOutputContaining(output, "\"id\":\"init\"").find("\"workspaceSymbolProvider\":") !=
+               std::string::npos,
+           "initialize must advertise workspace/symbol");
+
+    std::string const openFrame =
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+        R"({"uri":")" + appUri + R"(","languageId":"basic","version":1,"text":")"
+        + ToJsonString("sub wsOnly()\nend sub\n") + "\"}}}";
+    input->append(MakeLspFrame(openFrame.c_str()));
+
+    auto querySymbol = [&](int n, std::string const& name) {
+        std::string const id = "\"id\":\"narrow" + std::to_string(n) + "\"";
+        std::string const request =
+            R"({"jsonrpc":"2.0","id":"narrow)" + std::to_string(n)
+            + R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+        input->append(MakeLspFrame(request.c_str()));
+        return WaitForOutputContaining(output, id, 50);
+    };
+
+    // The opened document's project is indexed...
+    bool foundWs = false;
+    for (int n = 0; n < 60 && !foundWs; ++n)
+    {
+        foundWs = querySymbol(n, "wsOnly").find("\"name\":\"wsOnly\"") != std::string::npos;
+    }
+    Expect(foundWs, "the opened document's project must be indexed");
+
+    // ...and the sibling tree under the broad root must never be.
+    bool sawSibling = false;
+    for (int n = 0; n < 40 && !sawSibling; ++n)
+    {
+        sawSibling = querySymbol(100 + n, "siblingOnly").find("\"name\":\"siblingOnly\"") !=
+                     std::string::npos;
+    }
+    Expect(!sawSibling, "a sibling project under a broad root must not be indexed");
+
+    session.stop();
+    std::error_code ec;
+    std::filesystem::remove_all(sandbox, ec);
+}
+
 void TestMissingIncludePublishesDiagnostic()
 {
     static std::atomic<long> counter{0};
@@ -977,6 +1056,14 @@ void TestWatchedFilesRescanConverges()
                std::string::npos,
            "initialize must advertise workspace/symbol");
 
+    // A non-project client root defers index creation to the first opened
+    // document, exactly like a real editor always opens one.
+    std::string const openFrame =
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+        R"({"uri":")" + fileUri + R"(","languageId":"basic","version":1,"text":")"
+        + ToJsonString(lib) + "\"}}}";
+    input->append(MakeLspFrame(openFrame.c_str()));
+
     auto querySymbol = [&](int n, std::string const& name) {
         std::string const id = "\"id\":\"wat" + std::to_string(n) + "\"";
         std::string const request =
@@ -1038,6 +1125,7 @@ int main(int argc, char** argv)
     RUN_TEST(TestSignatureHelpShowsParamsAndActiveIndex);
     RUN_TEST(TestWorkspaceSymbolIndexesWorkspace);
     RUN_TEST(TestOutsideFileNotIndexed);
+    RUN_TEST(TestBroadRootNarrowsToOpenedProject);
     RUN_TEST(TestDidChangePushesDiagnostics);
     RUN_TEST(TestDidCloseEvictsAndPublishes);
     RUN_TEST(TestShutdownReturnsNullResult);

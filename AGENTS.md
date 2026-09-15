@@ -86,8 +86,10 @@ must stay there. Encoding directives that the lexer/parser must honor:
 
 ### clang-tidy
 
-Baseline config lives at repo root `.clang-tidy`; `src/` is expected to be
-**zero-diagnostic** under it. Run:
+On-demand only — not part of the milestone gate. Baseline config lives at repo
+root `.clang-tidy`; keep `src/` **zero-diagnostic** under it whenever you do
+run it, but don't block a milestone on tidying. Run it when asked or when a
+change looks tricky (copy-paste code, heavy templates, new headers):
 
 ```
 cmake -S . -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_COMPILER=clang++

@@ -36,6 +36,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 class FreeBasicServer
@@ -64,7 +65,13 @@ private:
     std::unique_ptr<fblang::WorkspaceIndex> index_;
     std::filesystem::path indexCacheDir_;  // override for tests (default = platform data dir)
 
+    // Client-provided workspace root (`rootUri` / `workspaceFolders`), kept so a
+    // later didOpen can narrow it to the opened document's project (see
+    // onDidOpen); empty when the client sent none.
+    std::filesystem::path sessionRoot_;
+
     void ensureWorkspaceIndex(std::filesystem::path const& root);
+    std::optional<std::filesystem::path> chooseIndexRoot(std::filesystem::path const& openedFile);
 
     void onInitialized(Notify_InitializedNotification::notify const& notify);
     void onWatchedFiles(Notify_WorkspaceDidChangeWatchedFiles::notify const& notify);

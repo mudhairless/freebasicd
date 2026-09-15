@@ -6,10 +6,69 @@
 #include "resolve.h"
 #include "utf16.h"
 
+#include <cstdio>
 #include <fstream>
+#include <optional>
 #include <utility>
 
 namespace {
+
+// True when `normalizedPath` lies at or under `normalizedRoot` (lexical
+// comparison, mirrors WorkspaceIndex::isInsideRoot). Both args already
+// normalized by fblang::normalizePath.
+bool isWithinNormalized(std::string const& normalizedPath, std::string const& normalizedRoot)
+{
+    if (normalizedPath.size() < normalizedRoot.size())
+    {
+        return false;
+    }
+    if (normalizedPath.compare(0, normalizedRoot.size(), normalizedRoot) != 0)
+    {
+        return false;
+    }
+    if (normalizedPath.size() == normalizedRoot.size())
+    {
+        return true;
+    }
+    char const next = normalizedPath[normalizedRoot.size()];
+    return next == '/' || next == '\\';
+}
+
+// A directory that is its own project root (e.g. a git worktree). The dotted
+// `.git` entry is a directory for a regular checkout, a file for a worktree;
+// both count.
+bool isProjectRoot(std::filesystem::path const& dir)
+{
+    std::error_code ec;
+    return std::filesystem::exists(dir / ".git", ec);
+}
+
+// Nearest ancestor of `start` (inclusive) at or below `limit` that is a
+// project root. `start` itself may live outside `limit` (an opened file in a
+// sibling tree); the search then yields nothing, it never widens past `limit`.
+std::optional<std::filesystem::path> nearestProjectRoot(std::filesystem::path start,
+                                                        std::filesystem::path const& limit)
+{
+    std::string const normLimit = fblang::normalizePath(limit);
+    for (;;)
+    {
+        if (isProjectRoot(start))
+        {
+            return start;
+        }
+        if (start == limit)
+        {
+            return std::nullopt;  // reached the client root without a .git marker
+        }
+        std::filesystem::path const parent = start.parent_path();
+        if (parent == start ||
+            !isWithinNormalized(fblang::normalizePath(parent), normLimit))
+        {
+            return std::nullopt;  // filesystem root, or the search would leave the client root
+        }
+        start = parent;
+    }
+}
 
 lsSymbolKind toLspSymbolKind(fblang::SymbolKind kind)
 {
@@ -239,7 +298,9 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const& root)
     {
         return;
     }
-    if (index_ && fblang::normalizePath(root) == fblang::normalizePath(index_->root()))
+    std::string const normRoot = fblang::normalizePath(root);
+    (void)std::fprintf(stderr, "[freebasiclsp] workspace root: %s\n", normRoot.c_str());
+    if (index_ && fblang::normalizePath(index_->root()) == normRoot)
     {
         return;
     }
@@ -250,6 +311,31 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const& root)
     index_ = std::make_unique<fblang::WorkspaceIndex>(root, indexCacheDir_);
     index_->open();
     index_->scan(true);
+}
+
+std::optional<std::filesystem::path> FreeBasicServer::chooseIndexRoot(
+    std::filesystem::path const& openedFile)
+{
+    if (!sessionRoot_.empty())
+    {
+        // A client root that is itself a project root is used as-is.
+        if (isProjectRoot(sessionRoot_))
+        {
+            return sessionRoot_;
+        }
+        // A broad client root (no `.git` marker of its own, e.g. an editor that
+        // reports the home directory as the workspace) is narrowed to the opened
+        // document's project, so sibling FreeBASIC projects under it are never
+        // swept into the index.
+        if (std::optional<std::filesystem::path> const project =
+                nearestProjectRoot(openedFile, sessionRoot_))
+        {
+            return project;
+        }
+        return sessionRoot_;
+    }
+    // No client root: single-file mode, the workspace is the file's directory.
+    return openedFile.parent_path();
 }
 
 void FreeBasicServer::registerHandlers()
@@ -355,7 +441,22 @@ td_initialize::response FreeBasicServer::onInitialize(td_initialize::request con
     }
     if (!rootPath.empty())
     {
-        ensureWorkspaceIndex(rootPath);
+        sessionRoot_ = rootPath;
+        // Create the index now only when the client root is itself a project
+        // root. A broad root (e.g. the home directory, which hosts several
+        // sibling projects) is narrowed to the opened document's project on the
+        // first didOpen so unrelated trees are never scanned or cached.
+        if (isProjectRoot(rootPath))
+        {
+            ensureWorkspaceIndex(rootPath);
+        }
+        else
+        {
+            (void)std::fprintf(stderr,
+                         "[freebasiclsp] workspace root %s has no .git marker; "
+                         "index scope deferred to the first opened document\n",
+                         rootPath.c_str());
+        }
     }
 
     return rsp;
@@ -420,7 +521,11 @@ void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify& notify)
 {
     if (!index_)
     {
-        ensureWorkspaceIndex(std::filesystem::path(notify.params.textDocument.uri.GetAbsolutePath().path()).parent_path());
+        if (std::optional<std::filesystem::path> const root =
+                chooseIndexRoot(notify.params.textDocument.uri.GetAbsolutePath().path()))
+        {
+            ensureWorkspaceIndex(*root);
+        }
     }
     std::shared_ptr<WorkingFile> const file = workingFiles_.OnOpen(notify.params.textDocument);
     if (!file)
