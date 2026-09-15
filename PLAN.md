@@ -5,8 +5,9 @@
 Repository `main`, clean working tree, `ctest` 7/7 green. LspCpp (vendored,
 pinned `19150d12`) supplies framing/JSON-RPC/typed 3.17 messages; the language
 layer is LSP-agnostic and byte-offset based. Full language reference (keyword
-catalog, block closers verified against fbc 1.10.2, dialect rules) lives in
-`AGENTS.md`; this plan covers roadmap, architecture, and the remaining work.
+catalog, block closers verified against fbc 1.10.2, dialect and scope rules)
+lives in `FreeBASIC.md`; this plan covers roadmap, architecture, and the
+remaining work.
 
 | Milestone | Status |
 |-----------|--------|
@@ -55,14 +56,17 @@ symbols), `signatureHelp`, `workspace/symbol`.
 
 ## 3. FreeBASIC semantics that gate the remaining work
 
-The full reference lives in AGENTS.md. These are the rules the forward plan
-engineers around:
+The full reference lives in `FreeBASIC.md`. These are the rules the forward
+plan engineers around:
 
 - **Module model.** A `.bas` file is one program; `.bi` files are shared
-  headers. Cross-file visibility is **module-scope only** (top-level `dim`,
-  `const`, `type`, `sub`/`function` facts) and exists **only through the
-  `#include closure`** of a document. Procedure-local names never cross a file
-  boundary; a header never sees the `.bas` that included it.
+  headers. Cross-file visibility is **module-scope only** (top-level
+  `shared`/`common`/`const`/`type`/`sub`/`function` facts) and exists **only
+  through the `#include closure`** of a document. Procedure bodies see module
+  names only if they are `Shared`/`Common Shared` — plain module-level `Dim`/
+  `Common` is not visible in procedures even in-file (FreeBASIC.md §8,
+  fbc-verified). Procedure-local names never cross a file boundary; a header
+  never sees the `.bas` that included it.
 - **Case-insensitive identity.** Canonical `key` = lowercase name including
   any type-suffix char (`foo$`, `i%`, …). The suffix is part of the token:
   lexers tie it to the identifier for resolution and edits.

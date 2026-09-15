@@ -20,49 +20,30 @@ repository (default branch `main`).
 
 ## FreeBASIC facts (encode these in the lexer/parser)
 
-Canonical keyword catalog: wiki `CatPgFullIndex` (~250 keywords). `language.cpp`
-carries the keyword set as data; block closures below are verified against `fbc` 1.10.2.
+**`FreeBASIC.md` is the single source of truth for the language.** Read it
+before touching the lexer/parser. Anything already encoded in
+`src/language.cpp` (keyword catalog, block closers, wiki URLs) is data, not to
+be re-derived. Provenance: wiki pages + fbc 1.10.2 probes; known divergences
+between this implementation and real `fbc` are tracked in FreeBASIC.md §12 and
+must stay there. Encoding directives that the lexer/parser must honor:
 
 - Identifiers are **case-insensitive**; canonical lookup key = lowercase name
-  **including** any type-suffix char. Suffix chars on identifiers: `$` STRING,
-  `%` SHORT, `&` LONG, `!` SINGLE, `#` DOUBLE (`@` is the address-of operator,
-  not a suffix).
-- Built-in types: `Boolean`, `Byte/UByte`, `Short/UShort`, `Integer/UInteger`,
-  `Long/ULong`, `LongInt/ULongInt`, `Single`, `Double`, `String`, `WString`,
-  `ZString`, `Object`, `Any`, `Pointer`/`Ptr`. `C*`-prefixed conversion funcs.
-- Keywords form **block structures** closed by `END <keyword>`:
-  `SUB/FUNCTION/PROPERTY/OPERATOR/CONSTRUCTOR/DESTRUCTOR ... END <same>`,
-  `TYPE/UNION/ENUM ... END <same>`, `NAMESPACE ... END NAMESPACE`
-  (there is **no `MODULE` keyword**), `SCOPE ... END SCOPE`,
-  `IF ... END IF`, `SELECT CASE ... END SELECT`, `WITH ... END WITH`,
-  `EXTERN ... END EXTERN`, `ASM ... END ASM`.
-- Non-`END` closures: `FOR ... NEXT` (closed by `NEXT`, no `END FOR`);
-  `WHILE ... WEND` (**`WEND` only** — `END WHILE` is rejected by fbc);
-  `DO ... LOOP`; preprocessor `#IF..#ENDIF` and `#MACRO..#ENDMACRO`.
-- `END` **alone** is the END statement (terminate program), not a closer;
-  single-line `IF...THEN` takes no closer. `EXIT`/`CONTINUE` take a block target
-  keyword. Line labels are identifiers followed by `:` (`GOTO`/`GOSUB` targets).
-- Line continuation is trailing `_` (whitespace-tolerant); statements split on `:`.
-- Comments: `'` to EOL and line-leading `REM`. `'` inside a string is not a comment.
-- Doc comments: `///` and `''` lines directly above a declaration → hover text.
-- `?` is a shortcut for `PRINT`; `...` is the variadic-parameter marker.
-- Numbers: decimal; `&H`/`&O`/`&B` radix; floats `1.5`/`1e-5`; optional suffix.
-- Strings: `"..."` with doubled `""` as an escaped quote.
-- Preprocessor lines start with `#` (`#INCLUDE`/`#INCLUDE ONCE`, `#DEFINE`,
-  `#IF..#ENDIF`, `#PRINT`, `#MACRO`, `#PRAGMA RESERVE`, …); legacy `$`-metas
-  (`$LANG:`, `$DYNAMIC`, `$INCLUDE`, `$STATIC`) are **not** bare statements —
-  they are metacommands written inside comments: `'$LANG: "qb"` or
-  `rem $LANG: "qb"` (a bare `$` line is a syntax error).
-- Dialects: only `fb` is implemented. Two directives set the dialect and the
-  parser records its word in `ParseResult.lang`: `#LANG "<name>"` and the
-  `$lang` metacommand (`'$lang: "qb"` / `rem $lang: "qb"`). Non-`fb` files get a
-  best-effort `fb` parse plus one `lang-mode` Information diagnostic. fbc 1.10.2
-  honors both (recommended placement: before the first declaration); `$lang`
-  overrides `-lang` but is ignored (with a warning) under `-forcelang`;
-  `-forcelang` is a compiler flag, never visible in source.
-- `.` member access, `.` ellipsis, and `->` are operators, never identifier parts.
-- Combined assignment operators exist: `AND=`, `OR=`, `XOR=`, `EQV=`, `IMP=`,
-  `MOD=`, `SHL=`, `SHR=` (lex `AND`/`AND=` distinctly; bit shifts are `SHL`/`SHR`).
+  including any trailing type-suffix char. Suffix chars: `$` STRING, `%`
+  INTEGER (not SHORT — see FreeBASIC.md §2), `&` LONG, `!` SINGLE, `#` DOUBLE;
+  `@` is the address-of operator, not a suffix. In `fb` mode fbc ignores
+  identifier suffixes (warning 44) and aliases `foo`/`foo$` — one symbol.
+- Built-in types, block closers, `END` vs `END IF`, `WEND`/`NEXT`/`LOOP`,
+  line continuation `_`, `:` separators, comment forms (`'`, `REM`, nestable
+  `/'...'/`), `#`-preprocessor, `$`-metacommands, dialect gating, and scope
+  rules (module-level plain `Dim` is **not** visible inside procedures — only
+  `Shared`/`Common Shared`): all in `FreeBASIC.md` (§1–§11), verified there.
+- Doc comments: `///` and `''` lines directly above a declaration → hover
+  text. This is our convention, not a language feature (FreeBASIC.md §5).
+- `.` member access, `->`, and the combined assignments `AND=`/`OR=`/`XOR=`/
+  `EQV=`/`IMP=`/`MOD=`/`SHL=`/`SHR=` are operators, never identifier parts.
+- Dialects: only `fb` is implemented; `#LANG "<name>"` and the `$lang`
+  metacommand both set the dialect, recorded in `ParseResult.lang`; non-`fb`
+  gets a best-effort `fb` parse plus one `lang-mode` Information diagnostic.
 
 ## Architecture
 
