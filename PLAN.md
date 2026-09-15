@@ -1,341 +1,258 @@
 # FreeBASIC LSP Server — Implementation Plan
 
-## 1. Context and current state
+## 1. State summary
 
-- Repository: a git working tree, initialized with default branch `main`; root at `/home/mud/Projects/freebasic/lsp`.
-- AGENTS.md: implement an LSP server for FreeBASIC in C++17, cross-platform. LspCpp is the LSP/JSON-RPC dependency; simdjson and `langservercpp` are **not used** (see §2, §5).
-- Toolchain verified: `g++`, `clang++`, `cmake` (no ninja), `fbc` 1.10.2.
+Repository `main`, clean working tree, `ctest` 7/7 green. LspCpp (vendored,
+pinned `19150d12`) supplies framing/JSON-RPC/typed 3.17 messages; the language
+layer is LSP-agnostic and byte-offset based. Full language reference (keyword
+catalog, block closers verified against fbc 1.10.2, dialect rules) lives in
+`AGENTS.md`; this plan covers roadmap, architecture, and the remaining work.
 
-## 2. Library decision: adopt LspCpp (kuafuwang/LspCpp)
-
-**Decision: replace `langservercpp` with [LspCpp](https://github.com/kuafuwang/LspCpp)**, which provides everything we would otherwise hand-roll (framing, JSON-RPC dispatch, typed LSP message structs, position handling), so our code stays focused on FreeBASIC itself.
-
-### Analysis summary
-
-What LspCpp gives us (MIT, commit `19150d12`, no release tag yet, C++17, CMake 3.16+):
-- **Transport + framing**: `LanguageSession.startStdio()` reads/writes Content-Length–framed LSP messages; TCP/WebSocket also available (stdio is all we need).
-- **Typed LSP 3.17 message set**: `td_<feature>::request/response` and `Notify_<Name>::notify` structs generated via `MAKE_REFLECT_STRUCT` + RapidJSON reflection. Every feature we need exists — `td_initialize`, `td_documentSymbol`, `td_completion`, `td_hover`, `td_definition`, `td_references`, `td_documentHighlight`, `td_foldingRange`, `td_signatureHelp`, `td_rename`, `Notify_TextDocumentPublishDiagnostics`, plus `SemanticTokens.h`/`inlayHint.h` for later.
-- **`WorkingFiles`**: open-document registry, incremental updates, and precomputed line offsets with `GetOffsetForPosition(lsPosition)` → byte offset. This directly replaces the `Document` class in the previous plan.
-- **Ordering/cancellation**: notifications run FIFO so `didChange` order is preserved; requests run after prior notifications (gate); `$/cancelRequest` is threaded through via `CancelMonitor` for long ops.
-- **Error responses**: `lsp::ResponseOrError<T>`, `lsp::RequestError`, `makeRequestCancelledError()` helpers.
-- **Capabilities**: `initialize` response capabilities structs are present.
-
-Tradeoffs / things to accept:
-- **JSON engine is RapidJSON (bundled).** simdjson is dropped (user decision, §5); LspCpp handles all protocol JSON, so none of our code parses protocol JSON.
-- **Dependency weight**: bundles Asio, RapidJSON, utfcpp, IXWebSocket (+ zlib for WebSocket). We configure `LSPCPP_BUILD_WEBSOCKETS=OFF` to skip the WebSocket stack; library needs no Boost (standalone Asio is the default).
-- **Multithreaded by design**: parse pool + FIFO notification thread + handler pool (`max_workers`, default 2). Multiple request handlers can run concurrently → our shared language state needs locking (see §7).
-- **Young API**: register early with a pinned commit; treat API churn as a patch risk, not a blocker.
-- **CMake floor becomes 3.16** (repo currently declares 3.14).
-
-### Vendoring method
-
-The repo is a git working tree, so LspCpp is added as a **git submodule** pinned to commit `19150d12c4ae26239d75258ed598ba8ea3587cb7` (master head, 2026-08-21; the only project tag is `boost_version` — there is **no `v1.0.3` release tag yet**). Consumption is `add_subdirectory(third_party/LspCpp)` linking the `lspcpp` target (their supported in-tree mode). A submodule records the pinned SHA in `.gitmodules` + the git index, and anyone can restore it with `git submodule update --init`. If the submodule cannot be fetched (offline), fall back to FetchContent with a pinned URL.
-
-## 3. Functional scope (unchanged in substance)
-
-### Milestone 1 — Bring-up on LspCpp (M1)
-- Vendor LspCpp, build the `lspcpp` target.
-- `LanguageSession`: register `initialize`/`shutdown`/`exit`, `didOpen`/`didChange`/`didSave`/`didClose`.
-- Wire `WorkingFiles` for buffer state; reparse on `didChange`; push diagnostics after each change.
-- Capabilities: `textDocumentSync` (openClose, change=Incremental), `positionEncoding: "utf-16"` (LspCpp default).
-
-### Milestone 2 — FreeBASIC lexer + parser (M2)
-Pure language layer, no LSP coupling:
-- Tokenizer over FreeBASIC's full syntax surface.
-- Block recognizer (exact closers, all verified against `fbc` 1.10.2):
-  `SUB/FUNCTION/PROPERTY/OPERATOR/CONSTRUCTOR/DESTRUCTOR ... END <same>`,
-  `TYPE/UNION/ENUM ... END <same>`, `NAMESPACE ... END NAMESPACE`
-  (**no `MODULE` keyword exists**; namespace only), `SCOPE ... END SCOPE`,
-  multi-line `IF...THEN ... END IF`, `SELECT CASE ... END SELECT`,
-  `FOR ... NEXT` (closed by `NEXT`), `WHILE ... WEND` (**`WEND` only** —
-  `END WHILE` is rejected by fbc), `DO ... LOOP`, `WITH ... END WITH`,
-  `EXTERN ... END EXTERN`, `ASM ... END ASM`, and preprocessor
-  `#IF..#ENDIF` / `#MACRO..#ENDMACRO`. `END` alone is the END statement
-  (program exit), never a closer; single-line `IF...THEN` and `DO UNTIL/WHILE`
-  conditions take no closer.
-- Declaration extractor producing a per-document symbol tree.
-- Diagnostics: unterminated block, stray/unmatched `END`, unclosed string, bad continuation, duplicate declaration (warning).
-
-#### Dialects (scoped to `fb` for now)
-
-- FreeBASIC has four `-lang` modes — `fb` (default), `deprecated`, `fblite`, `qb` —
-  plus two source dialect directives (reference:
-  https://www.freebasic.net/wiki/CompilerDialects). Only **`fb`** is implemented.
-- Detection: `#LANG "<name>"` is a whole-line preprocessor directive; the
-  `$LANG` metacommand is written inside a comment (`'$LANG: "qb"` or
-  `rem $LANG: "qb"`) — the lexer hands the parser comment/REM text and the
-  parser reads the quoted dialect. Both set `ParseResult.lang`.
-- Non-`fb` files are parsed best-effort with `fb` rules plus one Information
-  diagnostic (`lang-mode`).
-- Ground truth on fbc 1.10.2: `#LANG "qb"` and `'$LANG: "qb"` are both honored
-  and enable implicit declarations in `qb` mode. The `$`-metacommands
-  (`$LANG`, `$DYNAMIC`, `$INCLUDE`, `$STATIC`, …) are **only valid inside
-  comments** (`'`-quote or line-leading `rem`); a bare `$` line is a syntax
-  error (`Expected End-of-Line, found '$'`). `$LANG` overrides `-lang` but is
-  ignored (with a warning) under `-forcelang`; `-forcelang` is a compiler flag,
-  never visible in source.
-- M4+: when other dialects are implemented, gate `fb`-specific rules (e.g.
-  implicit declarations in `qb`/`fblite`) behind `ParseResult.lang`.
-
-### Milestone 3 — LSP features (M3)
-Backed by M1 + M2, implemented as typed LspCpp handlers:
-- `textDocument/publishDiagnostics` (push).
-- `textDocument/documentSymbol` (hierarchical outline).
-- `textDocument/hover` (kind, signature, `///`/`''` doc comment).
-- `textDocument/definition`, `references`, `documentHighlight`.
-- `textDocument/completion` (keywords, `END`-block snippets, in-scope symbols).
-- `textDocument/foldingRange` (block-based).
-- `textDocument/signatureHelp` (best-effort from parameter lists).
-
-### Milestone 4 — Cross-file indexing + polish (M4, stretch)
-- Directory scan for `.bas`/`.bi`; workspace symbol index `key -> (defs, refs)`.
-- `textDocument/rename` (workspace) using the index; `workspace/symbol`.
-- `#include once` resolution reading referenced `.bi` files.
-- `SemanticTokens` / inlay hints only if time permits.
-
-## 4. Module map and key types
-
-```
-src/main.cpp          entry point; constructs session, startStdio(), waits on exit Condition
-src/session.h/cpp     lsp::LanguageSession wiring; registers all handlers; owns language state;
-                      converts parser output → LspCpp typed structs
-src/symbols.h         shared model: Symbol, SymbolKind, Occurrence, BlockKind (used by parser + index)
-src/lexer.h/cpp       FreeBASIC tokenizer
-src/parser.h/cpp      block matcher + declaration extraction + diagnostics (byte-offset ranges)
-src/language.h/cpp    FreeBASIC facts: keyword set, completion snippets, hover breadcrumbs
-src/index.h/cpp       parse cache per document; (M4) workspace symbol index
-src/utf16.h/cpp       byte ↔ UTF-16 position adapter for WorkingFile line offsets
-tests/                ctest drivers: lexer_checks, parser_checks, utf16_checks, session_integration
-```
-
-### session.h (sketch)
-```cpp
-class FreeBasicServer {
-public:
-    explicit FreeBasicServer(lsp::LanguageSession& session);
-    void registerHandlers();          // server.on(...) for every advertised method
-
-private:
-    // language state shared by request handlers (guarded, see §7)
-    struct State;
-    std::shared_ptr<State> state_;
-
-    // handlers
-    lsp::td_initialize::response   onInitialize(const lsp::td_initialize::request&);
-    void onDidChange(const lsp::Notify_TextDocumentDidChange::notify&);   // reparse + publish
-    void publishDiagnostics(const lsp::AbsolutePath&, int version, const std::vector<lsp::Diagnostic>&);
-    // ... per-feature handlers
-};
-```
-
-### symbols.h (shared model)
-```cpp
-enum class SymbolKind { Sub, Function, Property, Constructor, Destructor, Operator,
-                        Type, Union, Enum, Namespace, Module, Const, Dim, Label,
-                        Parameter, Variable };
-enum class BlockKind   { Sub, Function, Property, Operator, Constructor, Destructor,
-                        Type, Union, Enum, Namespace, Scope, If, Select,
-                        For, While, Do, With, Extern, Asm, PreprocIf, PreprocMacro };
-
-struct Symbol {
-    std::string name;       // display name (original case + suffix char)
-    std::string key;        // normalized index key = lowercase(name incl. suffix)
-    SymbolKind  kind;
-    lsp::Range  range;      // whole construct (SUB → END SUB)
-    lsp::Range  selection;  // name token
-    std::string signature;  // readable decl for hover/details
-    std::string doc;        // /// or '' doc-comment body above declaration
-    std::vector<Symbol> children;
-};
-
-struct Occurrence {         // definition or reference site, byte-offset based
-    std::string key;
-    uint32_t    beg, end;   // byte offsets in document
-    bool        isDefinition;
-    std::string parentKey;
-};
-```
-
-### parser.h (sketch)
-```cpp
-struct ParseResult {
-    std::vector<Symbol>      roots;
-    std::vector<Occurrence>  occurrences;  // per-document defs/refs
-    std::vector<Diagnostic>  diagnostics;  // byte-offset ranges, converted later
-};
-
-ParseResult parseDocument(std::string_view text);
-```
-
-### lexer.h (sketch, unchanged from prior plan)
-```cpp
-enum class TokenKind { Identifier, Suffix, Keyword, Number, String, Comment,
-                       DocComment, Preprocessor, Symbol, Newline, Eof };
-struct Token { TokenKind kind; const char* start; const char* end; uint32_t beg; uint32_t len; };
-class Lexer { public: explicit Lexer(std::string_view text);
-              Token next(); Token peek(size_t ahead = 0); };
-```
-
-### utf16.h (LspCpp gap-filler)
-LspCpp gives `WorkingFile::GetOffsetForPosition(lsPosition)` (UTF-16 → byte). We need the reverse to turn parser byte ranges into `lsRange`. Small adapter:
-```cpp
-lsPosition utf16_position(const WorkingFile& f, uint32_t byteOffset);
-lsRange     utf16_range(const WorkingFile& f, uint32_t beg, uint32_t end);
-```
-Implementation walks `WorkingFile` line offsets backwards (fast path: ASCII line).
-
-## 5. Dependencies (final)
-
-| Dependency | Status |
+| Milestone | Status |
 |-----------|--------|
-| LspCpp | **in tree** as a git submodule at `third_party/LspCpp`, pinned commit `19150d12` |
-| `langservercpp` | **not used** — the original `CMakeLists.txt` referenced a missing package; LspCpp replaces it |
-| simdjson | **dropped** — LspCpp's bundled RapidJSON handles all protocol JSON |
-| Boost | not required (standalone Asio) |
+| M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
+| M2 — Lexer + parser language layer, dialects, fbc corpus | done |
+| M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done |
+| M4 — persistent workspace symbol index + `workspace/symbol` | done |
+| M5 — workspace spine: occurrence projection + include graph | next |
+| M6 — include resolution + watched files + missing-include diagnostics | next |
+| M7 — cross-file definition / references / highlight / completion | next |
+| M8 — `prepareRename` + `rename` (workspace) | next |
+| M9 — semantic tokens + inlay hints | next |
+| M10 — intrinsic catalog + request-side parse cache | next |
+| M11 — README / editor setup, CI matrix, configuration | next |
 
-`langservercpp` and simdjson must not be re-added for protocol work. If, later, non-protocol JSON parsing is ever needed (e.g. `workspace/didChangeConfiguration`), simdjson could be re-added then.
+## 2. What exists (condensed)
 
-## 6. RPC handlers → LspCpp types
+Module map — only new/modified modules are called out in §5; this is the
+stable shape:
 
-| Method (advertised) | LspCpp type | Behavior |
-|---------------------|-------------|----------|
-| initialize / shutdown / exit | `td_initialize` / `td_shutdown` / `Notify_Exit` | standard lifecycle; capabilities per §3 M1 |
-| textDocument/didOpen | `Notify_TextDocumentDidOpen::notify` | `WorkingFiles.OnOpen`, parse, push diags |
-| textDocument/didChange | `Notify_TextDocumentDidChange::notify` | `WorkingFiles.OnChange`, reparse, push diags |
-| textDocument/didSave / didClose | `Notify_TextDocumentDidSave` / `...DidClose` | reparse on save; evict `WorkingFile` on close |
-| textDocument/documentSymbol | `td_documentSymbol` | Symbol tree → `lsDocumentSymbol[]` |
-| textDocument/foldingRange | `td_foldingRange` | Block ranges → `lsFoldingRange[]` |
-| textDocument/hover | `td_hover` | occurrence at pos → `lsHover` (markdown) |
-| textDocument/definition | `td_definition` | occurrence → origin selection range |
-| textDocument/references | `td_references` | occurrences across index (same-doc first) |
-| textDocument/documentHighlight | `td_documentHighlight` | same-doc occurrences |
-| textDocument/completion | `td_completion` | keywords + `end <block>` snippets + symbols |
-| textDocument/signatureHelp | `td_signatureHelp` | enclosing sub/function parameter list |
-| textDocument/rename (M4) | `td_rename` | index-driven workspace edit |
-| workspace/symbol (M4) | `ws_symbol` / workspace scan | symbol index over `.bas`/`.bi` |
-| `$/cancelRequest` | built-in (CancelMonitor) | checked at loop boundaries of long scans; others fast enough to ignore |
+- `src/lexer.{h,cpp}` — tokenizer over the full FB surface (byte offsets,
+  continuation-aware logical lines). `Token`, `TokenKind`, `Lexer`.
+- `src/parser.{h,cpp}` — `parseDocument(src) -> ParseResult`
+  (`roots`, `diagnostics`, `blockRanges`, `lang`); decl extraction, block
+  matching, dialect detection, doc comments.
+- `src/language.{h,cpp}` — reserved-word catalog, block-closer facts, wiki doc
+  URLs, dialect detection helpers, `isSuffixChar`.
+- `src/symbols.h` — shared model: `Symbol`, `SymbolKind`, `Diagnostic`,
+  `ParseResult`, `SourceRange` (byte offsets), `toLowerChars`.
+- `src/resolve.{h,cpp}` — same-file resolution: `resolveAt`, `occurrencesOf`,
+  `visibleSymbols`, `innermostScope`, `parentOf`.
+- `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index with a
+  validated JSON disk cache, background scan + debounced flusher threads,
+  immutable `IndexedFile` entries + snapshot reads. `normalizePath`,
+  `workspaceKey`, `defaultCacheDir`, `statFile`.
+- `src/utf16.{h,cpp}` — byte ↔ UTF-16 position conversion (session boundary).
+- `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
+  `WorkingFiles` + `WorkspaceIndex`, re-parses the buffer, pushes diagnostics.
+- `src/main.cpp` — stdio entry; `LanguageSession` + exit condition.
 
-## 7. Concurrency (plan change: was single-threaded)
+Implemented LSP methods: `initialize`/`shutdown`/`exit`, `didOpen`/`didChange`/
+`didSave`/`didClose`, `publishDiagnostics`, `documentSymbol`, `hover` (symbols +
+keyword wiki links), `foldingRange`, `definition`, `references`,
+`documentHighlight`, `completion` (keywords + `END`-block snippets + in-scope
+symbols), `signatureHelp`, `workspace/symbol`.
 
-LspCpp is multithreaded; our previous single-threaded-loop assumption is gone. New model:
-- **Inbound ordering is guaranteed**: notifications are FIFO on a dedicated thread; requests execute only after prior notifications complete (LspCpp gate). So buffer state applied by `didChange` is always visible to request handlers.
-- **Requests may run concurrently with each other** (handler pool, `max_workers=2` by default). Keep it at 2 — our CPU work is a per-document reparse, cheap and independent.
-- **Shared state**: the language state (map of `WorkingFile` → parse cache, and M4 workspace index) is a snapshot-able structure guarded by a single `std::mutex`; each handler takes the lock only to fetch a parse snapshot, then does response construction lock-free. No locks on the LspCpp hot path (their docs explicitly forbid mutating registration maps at runtime).
-- **Cancellation**: `CancelMonitor` threaded into M4 scans; per-edit reparses are sub-millisecond so cancellation is irrelevant there.
+## 3. FreeBASIC semantics that gate the remaining work
 
-## 8. Cross-platform + UTF-16 position handling
+The full reference lives in AGENTS.md. These are the rules the forward plan
+engineers around:
 
-- LspCpp hides stdin/stdout binary-mode and framing differences (Windows-safe `stream.h`); we add no own shell/exec/POSIX usage. `std::filesystem` only in M4.
-- Position math:
-  - All LSP positions are UTF-16 code units; `WorkingFile::RebuildLineOffsets` is called on open/change (or re-derive lazily against `GetContentNoLock()`).
-  - Parser operates on byte offsets; `utf16.h` converts at the LSP boundary only.
-  - FreeBASIC source is normally ASCII → fast paths, correctness first via `utf16_position`/`GetOffsetForPosition` round-trip (covered by `utf16_checks` tests).
-- CRLF: LspCpp line-offset rebuild handles `\r`; our lexer treats `\r\n` and `\n` as EOL identically.
+- **Module model.** A `.bas` file is one program; `.bi` files are shared
+  headers. Cross-file visibility is **module-scope only** (top-level `dim`,
+  `const`, `type`, `sub`/`function` facts) and exists **only through the
+  `#include closure`** of a document. Procedure-local names never cross a file
+  boundary; a header never sees the `.bas` that included it.
+- **Case-insensitive identity.** Canonical `key` = lowercase name including
+  any type-suffix char (`foo$`, `i%`, …). The suffix is part of the token:
+  lexers tie it to the identifier for resolution and edits.
+- **Byte-offset core.** Lexer/parser/resolve work in byte offsets; UTF-16
+  conversion happens only at the session boundary per file buffer. Any
+  cross-file reply must convert against the *target* file's content.
+- **Blocks close exactly** (`END SUB`, `NEXT`, `WEND`, `END IF`, …) as
+  verified against fbc 1.10.2 — enforced by `language.cpp` closer facts.
 
-## 9. FreeBASIC lexical rules (encoded in lexer.cpp/language.cpp — unchanged contract)
+## 4. Gaps — what is yet needed
 
-Canonical keyword catalog: the alphabetical index at wiki `CatPgFullIndex`
-(~250 keywords). `language.cpp` carries the keyword set as data; the structural
-rules below are the lexer/parser contract. Ground-truth checks against `fbc` 1.10.2
-are recorded in `tests/corpus/`.
+1. `definition`/`references`/`highlight`/`completion` resolve **only within
+   the open file** (`resolve.cpp` is single-`ParseResult`); the M4 index holds
+   per-file symbol trees but nothing cross-file is wired.
+2. `prepareRename` / `rename` not implemented; `renameProvider` not advertised.
+3. `#include` / `#include once` directives are lexed but not resolved: no
+   include edges, no missing-file diagnostics, no header symbol visibility.
+4. No semantic tokens, no inlay hints (LspCpp bundles the types; unused).
+5. Session re-parses the whole buffer on every request (`documentSymbol`,
+   hover, folding, def/refs/highlight, completion all call `parseDocument`);
+   `resolve.cpp` re-lexes on every call (`lexAll` per `resolveAt`).
+6. Hidden staleness wart: an open buffer parses to `IndexedFile` with **disk**
+   `mtime`/`size`, so `flushNow` can persist unsaved-buffer symbols; and
+   `workspace/didChangeWatchedFiles` is unhandled (index scans only at
+   `initialize`), so external `.bi` edits go unnoticed until restart.
+7. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
+   built-in intrinsic-function completion catalog.
 
-**Identifiers & casing**
-- Case-insensitive; canonical key = lowercase name **including** type-suffix char.
-- Suffix chars: `$` STRING, `%` SHORT, `&` LONG, `!` SINGLE, `#` DOUBLE (`@` is
-  the address-of operator, never a suffix — `dim p@` is an fbc syntax error).
+## 5. Forward plan
 
-**Data types** (built-in): `Boolean`, `Byte`/`UByte`, `Short`/`UShort`,
-`Integer`/`UInteger`, `Long`/`ULong`, `LongInt`/`ULongInt`, `Single`, `Double`,
-`String`, `WString`, `ZString`, `Object`, `Any`, `Pointer`/`Ptr`. Type-conversion
-functions are `C`-prefixed (`CBool`, `CByte`, `CShort`, `CInt`, `CLng`,
-`CLongInt`, `CSng`, `CDbl`, `CU*`, `CPtr`, `Cast`, `TypeOf`, `TYPEOF`).
+Milestones are independently shippable: each leaves `ctest` green and carries
+its own acceptance tests. Commits happen per milestone (AGENTS.md).
 
-**Block structures** (each opened by a keyword, closed by the exact terminator;
-verified against `fbc` 1.10.2)
-- `SUB` / `FUNCTION` / `PROPERTY` / `OPERATOR` / `CONSTRUCTOR` / `DESTRUCTOR`
-  → `END <same>` (module-level and member forms).
-- `TYPE` / `UNION` / `ENUM` → `END <same>` (`TYPE` also has Alias + temporary forms).
-- `NAMESPACE` → `END NAMESPACE`. **There is no `MODULE` keyword.**
-- `SCOPE` → `END SCOPE`.
-- `IF <expr> THEN` … `END IF` (multi-line). Single-line `IF <expr> THEN stmt`
-  has **no** closer.
-- `SELECT CASE` → `END SELECT`.
-- `FOR … NEXT` — closed by `NEXT`; no `END FOR`.
-- `WHILE <expr> … WEND` — **`WEND` only**; `END WHILE` is **rejected** by fbc
-  despite the wiki's "(equivalent to WEND)" note.
-- `DO … LOOP` — traversed with optional `WHILE`/`UNTIL` on either `DO` or `LOOP`;
-  closed by `LOOP`.
-- `WITH <expr>` → `END WITH`.
-- `EXTERN … END EXTERN`.
-- `ASM … END ASM`.
-- `END` **alone** is the END statement (terminate program), never a block closer.
-- `EXIT`/`CONTINUE` take a block target keyword (`EXIT FOR/DO/SUB/FUNCTION/IF`, etc.).
-- Preprocessor blocks: `#IF`/`#IFDEF`/`#IFNDEF` … `#ELSEIF…`/`#ELSE` … `#ENDIF`,
-  and `#MACRO … #ENDMACRO`.
+### M5 — Workspace spine: occurrence projection + include graph
 
-**Lines & structure**
-- Line continuation: trailing `_` (whitespace-tolerant); statements split on `:`.
-- Comments: `'` to EOL, and line-leading `REM`. `'` inside a string is not a comment.
-- Doc comments: `///` and `''` lines directly above declarations feed `Symbol::doc`.
-- `?` is a shortcut for `PRINT` (`? #` = `PRINT #`, `? USING` = `PRINT USING`).
-- `...` (ellipsis) is a variadic-parameter marker (with `VA_*`/`CVA_*` macros).
+The one structural investment everything cross-file derives from. Reshape the
+index **before** building features on it.
 
-**Literals**
-- Numbers: decimal, `&H`/`&O`/`&B` radix, floats `1.5`/`1e-5`, optional suffix.
-- Strings: `"..."` with doubled `""` as escaped quote; `W`-prefixed `Wchr`, etc.
+- **Shared analysis.** One `analyze(source) -> AnalyzedDoc` (parse + token
+  vector + includes + per-symbol occurrence sites), reused by the background
+  scan, the open-buffer `upsert`, and request-side resolution so no layer
+  diverges on what a document contains.
+- **`IndexedFile` additions:** `includes` (resolved include targets + their
+  source ranges + `once` flag), `occurrences` (def + resolved usage sites with
+  a `moduleScope` flag), `persisted` flag.
+- **Inverted projections** under the index mutex, maintained incrementally by
+  `upsert`/`remove`: `byKey_` (lowercase key → sites across files) and
+  `outInc_` (file → direct includes), plus `transitiveIncludes(file)` with a
+  cycle guard.
+- **Disk cache v2** (v1 discarded and rebuilt — warm-start only, acceptable).
+- **Buffer isolation:** open-buffer entries are `persisted=false` — served to
+  live queries but never written by the flusher and never trusted by scan's
+  mtime/size cache-hit. Fixes the §4.6 staleness wart.
+- Files: `symbols.h`, `parser.cpp`, `resolve.cpp` (extract `analyze`),
+  `index.{h,cpp}`, `index_checks` + new corpus cases.
+- Acceptance: `byKey_`/`outInc_` round-trip through the cache; transitive
+  closure correct on diamond + cycle (`a.bi`↔`b.bi`); non-persisted entries
+  never reach disk and never shadow scan hits; all 7 suites green.
+- Risk: occurrence-vector memory for large workspaces (mitigate: sites only,
+  no payload text; FB files are tiny).
 
-**Preprocessor & meta**
-- Preprocessor lines start with `#`: `#ASSERT`, `#CMDLINE`, `#DEFINE`, `#ELSE`,
-  `#ELSEIF`, `#ELSEIFDEF`, `#ELSEIFNDEF`, `#ENDIF`, `#ENDMACRO`, `#ERROR`, `#IF`,
-  `#IFDEF`, `#IFNDEF`, `#INCLIB`, `#INCLUDE`, `#LANG`, `#LIBPATH`, `#LINE`,
-  `#MACRO`, `#PRAGMA` (`#PRAGMA RESERVE`), `#PRINT`, `#UNDEF`.
-- `$`-metacommands are **comment-form directives**: `'$LANG: "qb"`,
-  `rem $DYNAMIC`, `'$INCLUDE "file.bi"`, `'$STATIC` (a bare `$` line is a
-  syntax error in fbc 1.10.2). Only `$LANG` affects parsing; the rest are
-  ordinary comments.
-- `.` member access, `.` ellipsis, and `->` are operators/markers, never identifier parts.
-- Single-char and combined assignment operators exist: `AND=` `OR=` `XOR=` `EQV=`
-  `IMP=` `MOD=` `SHL=` `SHR=` — lex `AND`/`AND=` distinctly, and note `<<=>`-style
-  arithmetic is not FreeBASIC (uses `SHL`/`SHR` words).
+### M6 — Include resolution + convergence
 
-## 10. Testing plan
+- Include search policy: target resolved relative to the including file's dir,
+  then workspace-root fallback (documented limitation; fbc `-i` dirs later via
+  §M11 settings).
+- `#include`/`#include once` edges are alive end-to-end; an unresolved include
+  literal publishes an `include-not-found` `Error`.
+- `workspace/didChangeWatchedFiles` registered (`**/*.{bas,bi}`) →
+  debounced `index_->scan(true)` so external `.bi` edits converge.
+- Files: `session.{h,cpp}`, new `src/includes.{h,cpp}` (search policy),
+  `session_integration`, `index_checks`.
+- Acceptance: opening `.bas` with a missing `.bi` publishes the diagnostic;
+  touching a `.bi` on disk + watcher notification makes `workspace/symbol`
+  return the new symbol without a restart; `#include once` not duplicated in
+  the closure.
+- Risk: LspCpp watched-file registration semantics — verify against vendored
+  headers before coding.
 
-- **Unit (ctest, no external framework)**:
-  - `lexer_checks`: strings with `""`, `&H`/`&B` numbers, continuation `_`, `REM`/`'` comments, suffix identifiers, `:` separators.
-  - `parser_checks`: block nesting, unterminated-block diagnostics, nested outline, doc-comment capture.
-  - `utf16_checks`: byte↔UTF-16 round-trip on ASCII and multi-byte (`漢字`) buffers.
-- **Integration**: drive `LanguageSession` with LspCpp's in-memory test streams (`FeedableIStream`, `StringOStream`, `MakeLspFrame` from their `tests/test_helpers.h`) instead of spawning a subprocess: script initialize → didOpen → documentSymbol → hover → definition → shutdown; assert response JSON. Portable, no Boost needed.
-- **Ground truth**: compile ambiguous snippets with the installed `fbc` (10.2) and record agreement in `tests/corpus/`.
+### M7 — Cross-file definition / references / highlight / completion
 
-## 11. CMake changes
+All four consumer features share one new primitive in `resolve.cpp`:
+`resolveAcross(parse, src, off)` — local scopes first (shadowing wins), then
+module-scope  of each file in `transitiveIncludes`, then `byKey_` workspace
+fallback for names that resolve nowhere locally.
 
-```cmake
-cmake_minimum_required(VERSION 3.16)                 # LspCpp floor
-project(freebasiclsp CXX)
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+- `definition` returns the target file's URI + range (offset conversion per
+  target buffer). `references`/`highlight` use `byKey_` filtered by the
+  closure, def/usage sites joined back to real ranges. `completion` merges
+  visible module-scope names from the closure (deduped, shadow-aware).
+- Open files resolve from `WorkingFile`; closed files from index snapshots
+  (mtime re-validated).
+- Files: `resolve.{h,cpp}`, `session.{h,cpp}`, `resolve_checks`,
+  `session_integration` (two-file frames).
+- Acceptance: def at a call site in `main.bas` lands in `lib.bi`; a local dim
+  shadowing a header global still resolves locally; a procedure-local name in
+  a `.bi` never resolves from `.bas`; references enumerate only closure files.
 
-add_subdirectory(third_party/LspCpp)                 # vendored, pinned commit 19150d12
-set_target_properties(lspcpp PROPERTIES ... )        # if we must force Feature flags
+### M8 — `prepareRename` + `rename` (workspace)
 
-add_executable(freebasiclsp
-    src/main.cpp src/session.cpp src/lexer.cpp src/parser.cpp
-    src/language.cpp src/index.cpp src/utf16.cpp)
-target_link_libraries(freebasiclsp PRIVATE lspcpp)   # simdjson dropped
-enable_testing()
-```
-LspCpp is configured with `-DLSPCPP_BUILD_WEBSOCKETS=OFF -DLSPCPP_BUILD_EXAMPLES=OFF -DLSPCPP_BUILD_TESTS=OFF -DLSPCPP_BUILD_MINIMAL_EXAMPLE=OFF` to minimize its compile surface and avoid the Boost-requiring example/test targets.
+- `prepareRename`: return the identifier token range; error (not a renameable
+  target) for keywords/non-identifiers.
+- Rename is **resolution-based, never name-based**: collect candidate sites
+  from `byKey_`, re-resolve each against its owning file, and edit only sites
+  whose resolution is the target declaration (identical name elsewhere that
+  shadows is untouched).
+- Edits across files as `WorkspaceEdit.documentChanges`; closed files re-parsed
+  on demand from disk, open ones from `WorkingFile`. Case-insensitivity means
+  every occurrence's text is replaced with the user's `newName`; declaration
+  token replaced too (suffix char rides with the token). Collision guard:
+  reject if the new key matches an unrelated module-scope key in the closure.
+- Capability: `renameProvider.prepareProvider = true`.
+- Files: `session.{h,cpp}`, `resolve.cpp` (`occurrencesAcross`), tests driving
+  two open files.
+- Acceptance: rename of a global dim rewrites both files' sites; an
+  unrelated same-named local elsewhere is untouched; local-only rename stays
+  in-file; colliding rename is rejected.
+- Risk: clients may refuse edits to unopened files — report as expected LSP
+  behavior, not a bug.
 
-## 12. Milestone acceptance
+### M9 — Semantic tokens + inlay hints
 
-1. **M1**: `cmake ..` + `cmake --build .` clean with vendored LspCpp; scripted session shows `initialize`→capabilities→`didOpen`→diagnostics with no protocol errors.
-2. **M2**: lexer/parser pass corpus unit tests; diagnostics agree with `fbc` on unterminated/mismatched blocks where checkable.
-3. **M3**: typed handlers return valid JSON for all advertised methods in the in-memory integration test; diagnostics push on every edit.
-4. **M4** (stretch): workspace scan, cross-file references, rename.
+Independent UX wins; LspCpp types confirmed present (`td_semanticTokens_full`,
+`td_inlayHint`).
 
-## 13. Immediate next steps (when implementation starts)
+- **Semantic tokens** (`src/semantic_tokens.{h,cpp}`): legend + full (and
+  delta) from the cached token stream — `TokenKind` → `lsSemanticTokenType`
+  (keyword, string, number, comment/preprocessor, operator/symbol); identifier
+  classification via the symbol tree (known decl → kind) with a plain-variable
+  fallback. Ship exact lexer kinds first, refine classifiers later.
+- **Inlay hints** (`src/inlay_hints.{h,cpp}`), small scope: "expected closer"
+  hints at block openers (`END SUB`, `NEXT`, `WEND`…) from `blockRanges` +
+  `language.cpp` closer facts; optional inferred `AS type` on `dim` without a
+  declared type.
+- Files: new modules + `session.cpp` (2 handlers + capabilities) +
+  `session_integration`.
+- Acceptance: a fixture yields correct keyword/operator/string token spans
+  with UTF-16 (non-ASCII) offsets; block opener offers its closer hint.
+- Risk: token-type string spellings must match the 3.17 legend exactly;
+  delta-encoding correctness (mitigate: full first, delta second).
 
-1. `git submodule add <url> third_party/LspCpp`, then check out the pinned commit `19150d12c4ae26239d75258ed598ba8ea3587cb7`; commit `.gitmodules` + gitlink with it.
-2. Rewrite `CMakeLists.txt` per §11 (drop the `langservercpp` `find_package`; link the `lspcpp` target).
-3. Scaffold headers from this sketch with empty bodies; implement bottom-up: `symbols` → `lexer` → `parser` → `utf16` → `language` → `index` → `session` → `main`, compiling after each.
-4. Commit after each milestone (M1–M4) against the §12 acceptance criteria; keep build/ artifacts out of the index (`.gitignore`).
+### M10 — Intrinsic catalog + request-side parse cache
+
+- **Intrinsic catalog** in `language.cpp` (pattern: the `keywordDocsUrl`
+  per-word table): ~200 intrinsics (`Left$`, `Mid`, `Print`, `Val`, `CInt`,
+  `Space$`, …) as `{ name, kind, signature, wikiSuffix }`; completion merges
+  with keyword items, hover + `signatureHelp` consume it. Name-collision
+  handling (`Left`/`Left$`) and statement-vs-expression position filtering.
+- **Parse cache** in `session`: cache `ParseResult` + token vector per open
+  document keyed by content (WorkingFiles version); invalidate on
+  `didChange`. Removes the §4.5 repeated-full-parse across 8 handlers and the
+  `lexAll`-per-`resolveAt` tax.
+- Files: `language.{h,cpp}`, `session.{h,cpp}`, tests (`language_checks`,
+  `session_integration`).
+- Acceptance: known-intrinsic completion item carries the right signature +
+  wiki link; two sequential requests on an unchanged buffer served from the
+  same cached parse (identical result, no reparse observable).
+
+### M11 — README / editor setup, CI, configuration
+
+- `README.md`: build/test, capability table, position-encoding note, per-editor
+  wiring (`docs/editors/` — neovim builtin LSP, minimal vscode client,
+  emacs `lsp-mode`).
+- `.github/workflows/ci.yml`: build + `ctest` on a Linux/macOS/Windows matrix
+  (`checkout --recurse-submodules`); expect to fix Windows path handling in
+  `index.cpp` defaults once it runs.
+- `workspace/didChangeConfiguration` + `Settings{ includePaths, cacheDirOverride,
+  diagnosticsOn, semanticTokensOn, inlayHintsOn }`; index honors `includePaths`
+  on rescan. Few keys, fixed defaults, forward-compatible unknown-key ignore.
+- Files: README, `.github/`, `src/settings.{h,cpp}`, `session.cpp`,
+  `index.{h,cpp}`, tests.
+- Acceptance: CI green on all three OSes; a `didChangeConfiguration` with a new
+  include path makes a previously-missing `#include` resolve.
+
+## 6. Not doing (soon)
+
+- **Formatting** — no community formatter standard for FreeBASIC; high effort,
+  low payback.
+- **Code actions** — thin while diagnostics are syntax-level only; revisit
+  once M6 adds include diagnostics.
+- **QB / fblite / deprecated dialects** — current behavior (best-effort `fb`
+  parse + `lang-mode` Information diagnostic) degrades gracefully; full dialect
+  semantics is niche.
+- **Debugger / DAP** — out of scope for a language server.
+
+## 7. Cross-cutting engineering notes
+
+- **Concurrency (implemented as-is):** LspCpp handler pool runs requests
+  concurrently; the index is snapshot-based and mutex-guarded, responses build
+  lock-free. New M5–M9 handlers must follow the same snapshot discipline
+  (shared_ptr copies only).
+- **Per-milestone acceptance:** `cmake --build` + `ctest` green, milestone
+  deliverable complete, commit on `main`, push only on request.

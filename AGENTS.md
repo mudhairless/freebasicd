@@ -99,7 +99,7 @@ carries the keyword set as data; block closures below are verified against `fbc`
   or failing work.
 - Keep the working tree clean between milestones: stage only intended files,
   never build artifacts or secrets, and write a short conventional `scope:`-style
-  message summarizing what the milestone delivers (see PLAN.md §12 acceptance).
+  message summarizing what the milestone delivers (see PLAN.md §5 forward plan, §7 acceptance).
 - Before committing, quickly review `git status` / `git diff` so the commit
   contains exactly the milestone's changes, nothing stray.
 - The repo lives on `main`; push only when asked.
