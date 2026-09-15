@@ -20,7 +20,7 @@ remaining work.
 | M6 — include resolution + watched files + missing-include diagnostics | next |
 | M7 — cross-file definition / references / highlight / completion | next |
 | M8 — `prepareRename` + `rename` (workspace) | next |
-| M9 — semantic tokens + inlay hints | next |
+| M9 — semantic tokens + inlay hints + highlight grammar | next |
 | M10 — intrinsic catalog + request-side parse cache | next |
 | M11 — README / editor setup, CI, configuration, workspace folders | next |
 | M12 — editor extras: selectionRange, callHierarchy, codeLens | next |
@@ -97,7 +97,9 @@ plan engineers around:
 2. `prepareRename` / `rename` not implemented; `renameProvider` not advertised.
 3. `#include` / `#include once` directives are lexed but not resolved: no
    include edges, no missing-file diagnostics, no header symbol visibility.
-4. No semantic tokens, no inlay hints (LspCpp bundles the types; unused).
+4. No semantic tokens, no inlay hints (LspCpp bundles the types; unused), and
+   no static highlight grammar — editors get no syntax coloring of any kind
+   until M9 ships both.
 5. Session re-parses the whole buffer on every request (`documentSymbol`,
    hover, folding, def/refs/highlight, completion all call `parseDocument`);
    `resolve.cpp` re-lexes on every call (`lexAll` per `resolveAt`).
@@ -234,26 +236,48 @@ fallback for names that resolve nowhere locally.
 - Risk: clients may refuse edits to unopened files — report as expected LSP
   behavior, not a bug.
 
-### M9 — Semantic tokens + inlay hints
+### M9 — Semantic tokens + inlay hints + highlight grammar
 
-Independent UX wins; LspCpp types confirmed present (`td_semanticTokens_full`,
-`td_inlayHint`).
+Independent UX wins; LspCpp typed types confirmed present (`td_semanticTokens_full`,
+`td_inlayHint`). Together these deliver the full editor-highlighting story:
+semantic tokens are the LSP-native colorizer, and a static grammar is the
+fallback every non-semantic-token editor (and every file pre-first-parse) renders
+from. Both must agree with the lexer so highlighting never diverges from what the
+parser sees.
 
-- **Semantic tokens** (`src/semantic_tokens.{h,cpp}`): legend + full (and
-  delta) from the cached token stream — `TokenKind` → `lsSemanticTokenType`
+- **Semantic tokens** (`src/semantic_tokens.{h,cpp}`): legend + `full` and
+  `full/delta` from the cached token stream — `TokenKind` → `lsSemanticTokenType`
   (keyword, string, number, comment/preprocessor, operator/symbol); identifier
   classification via the symbol tree (known decl → kind) with a plain-variable
-  fallback. Ship exact lexer kinds first, refine classifiers later.
+  fallback. Ship exact lexer kinds first, refine classifiers later. `range`
+  (viewport) is declared **only if** the client asks for it — LspCpp vendors no
+  `td_semanticTokens_range` type, so it needs custom-protocol plumbing; otherwise
+  clients fall back to `full`, which both VSCode and Neovim accept.
+- **Highlight grammar** (`editors/freebasic.tmLanguage.json` (TextMate),
+  `editors/basic.vim`, `editors/README.md`): **generated from the `src/language.cpp`
+  keyword catalog plus the lexer's suffix/operator/comment facts so the grammar
+  cannot drift from the parser** — the same single source of truth the lexer
+  honors (FreeBASIC.md is the root reference; the catalog is the machine form).
+  Base scopes for `.bas`/`.bi`: comments (`'`, `REM`, nestable `/'...'/`),
+  strings, numbers, `#`-preprocessor, `$`-metacommands, operators, and the
+  dialect surface — mirrored to the semantic-token legend names. A committed
+  generator script produces the files; edits go through the catalog, never the
+  generated files.
 - **Inlay hints** (`src/inlay_hints.{h,cpp}`), small scope: "expected closer"
   hints at block openers (`END SUB`, `NEXT`, `WEND`…) from `blockRanges` +
   `language.cpp` closer facts; optional inferred `AS type` on `dim` without a
   declared type.
-- Files: new modules + `session.cpp` (2 handlers + capabilities) +
-  `session_integration`.
-- Acceptance: a fixture yields correct keyword/operator/string token spans
-  with UTF-16 (non-ASCII) offsets; block opener offers its closer hint.
+- Files: new modules (`semantic_tokens`, `inlay_hints`) + `editors/` grammar +
+  generator script + `session.cpp` (`semanticTokensProvider` capability with the
+  legend, `inlayHintProvider`, handlers) + `session_integration`.
+- Acceptance: a fixture yields correct keyword/operator/string token spans with
+  UTF-16 (non-ASCII) offsets; a `range` client gets viewport-matching tokens or a
+  correct `full` fallback; the generated grammar colorizes the same fixture with
+  no unclassified tokens; block opener offers its closer hint; `ctest` green.
 - Risk: token-type string spellings must match the 3.17 legend exactly;
-  delta-encoding correctness (mitigate: full first, delta second).
+  delta-encoding correctness (mitigate: full first, delta second); the grammar is
+  easy to let rot — M11 CI regenerates it from the catalog so a catalog edit
+  cannot ship without a matching grammar update.
 
 ### M10 — Intrinsic catalog + request-side parse cache
 
@@ -276,7 +300,8 @@ Independent UX wins; LspCpp types confirmed present (`td_semanticTokens_full`,
 
 - `README.md`: build/test, capability table, position-encoding note, per-editor
   wiring (`docs/editors/` — neovim builtin LSP, minimal vscode client,
-  emacs `lsp-mode`).
+  emacs `lsp-mode`). Each wiring doc installs the M9 grammar (`editors/`) and
+  turns on semantic tokens.
 - `.github/workflows/ci.yml`: **scaffolded** — build + `ctest` on a
   Linux/macOS/Windows matrix (`checkout --recurse-submodules`); not enabled
   until the repo is pushed. Expect to fix Windows path handling in
