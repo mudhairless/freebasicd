@@ -243,7 +243,6 @@ are recorded in `tests/corpus/`.
 - Case-insensitive; canonical key = lowercase name **including** type-suffix char.
 - Suffix chars: `$` STRING, `%` SHORT, `&` LONG, `!` SINGLE, `#` DOUBLE (`@` is
   the address-of operator, never a suffix — `dim p@` is an fbc syntax error).
-- Line labels are identifiers followed by `:` (targets of `GOTO`/`GOSUB`/`ON...GOTO`).
 
 **Data types** (built-in): `Boolean`, `Byte`/`UByte`, `Short`/`UShort`,
 `Integer`/`UInteger`, `Long`/`ULong`, `LongInt`/`ULongInt`, `Single`, `Double`,
