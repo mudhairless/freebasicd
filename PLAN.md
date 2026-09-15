@@ -16,12 +16,17 @@ remaining work.
 | M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done |
 | M4 — persistent workspace symbol index + `workspace/symbol` | done (rev'd 2026: platform index dir, SHA-256-keyed per-file cache) |
 | M5 — workspace spine: occurrence projection + include graph | done |
+| M5.5 — lifecycle: `initialized` + dynamic capability registration | next |
 | M6 — include resolution + watched files + missing-include diagnostics | next |
 | M7 — cross-file definition / references / highlight / completion | next |
 | M8 — `prepareRename` + `rename` (workspace) | next |
 | M9 — semantic tokens + inlay hints | next |
 | M10 — intrinsic catalog + request-side parse cache | next |
-| M11 — README / editor setup, CI matrix, configuration | next |
+| M11 — README / editor setup, CI, configuration, workspace folders | next |
+| M12 — editor extras: selectionRange, callHierarchy, codeLens | next |
+| M13 — pull diagnostics (backlog) | next |
+| M14 — type/go-to + type hierarchy (backlog) | next |
+| M15 — document links + completion resolve + polish (backlog) | next |
 
 ## 2. What exists (condensed)
 
@@ -95,12 +100,18 @@ plan engineers around:
 5. Session re-parses the whole buffer on every request (`documentSymbol`,
    hover, folding, def/refs/highlight, completion all call `parseDocument`);
    `resolve.cpp` re-lexes on every call (`lexAll` per `resolveAt`).
-6. Hidden staleness wart: an open buffer parses to `IndexedFile` with **disk**
-   `mtime`/`size`, so `flushNow` can persist unsaved-buffer symbols; and
-   `workspace/didChangeWatchedFiles` is unhandled (index scans only at
-   `initialize`), so external `.bi` edits go unnoticed until restart.
+6. No `initialized` handler / dynamic capability registration, and
+   `workspace/didChangeWatchedFiles` unhandled: the index scans only at
+   `initialize`, external `.bi` edits go unnoticed until restart, and there is
+   no server→client `registerCapability` path (needed once M11 settings can
+   change the watcher set). `workspace/didChangeWorkspaceFolders` is likewise
+   unhandled (single-root assumption). (The M5-era staleness wart — unsaved
+   buffers persisted to disk — is fixed.)
 7. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
    built-in intrinsic-function completion catalog.
+8. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
+   `callHierarchy`, `codeLens` (M12), and pull diagnostics (M13). None is
+   required by the target editors; each ships as its own milestone.
 
 ## 5. Forward plan
 
@@ -140,6 +151,28 @@ index **before** building features on it.
 - Risk: occurrence-vector memory for large workspaces (mitigate: sites only,
   no payload text; FB files are tiny). Residual: request-side re-analyze per
   call remains until the M10 parse cache.
+
+### M5.5 — Lifecycle: `initialized` + dynamic capability registration
+
+The transport the watched-file feature (M6) and config-driven watcher changes
+(M11) need, and the first server→client request the server issues.
+
+- Handle `initialized` (the client's first notification after `initialize`):
+  read client capability `workspace.didChangeWatchedFiles.dynamicRegistration`.
+  When true, send `client/registerCapability` for `workspace/didChangeWatchedFiles`
+  (WatchKind create/change/delete, globs `**/*.{bas,bi}`); when false, carry
+  static watchers in the `initialize` reply's `workspace.didChangeWatchedFiles`.
+- Wire the LspCpp plumbing only (`initialized.h`, `registerCapability.h`,
+  `did_change_watched_files.h` — all vendored). No watcher *logic* in M5.5:
+  the registration target exists; M6 fills in the notification handler and the
+  debounced rescan.
+- Files: `session.{h,cpp}`, `session_integration` (init → `initialized` →
+  observed registerCapability frame, plus a non-dynamic-client variant).
+- Acceptance: after `initialized`, a dynamic client receives exactly one
+  registerCapability request for watched files; a non-dynamic client sees the
+  static watchers in the initialize reply.
+- Risk: send-registration before the reply matters to some clients — sequence
+  the registerCapability send as part of the `initialized` queue.
 
 ### M6 — Include resolution + convergence
 
@@ -238,7 +271,7 @@ Independent UX wins; LspCpp types confirmed present (`td_semanticTokens_full`,
   wiki link; two sequential requests on an unchanged buffer served from the
   same cached parse (identical result, no reparse observable).
 
-### M11 — README / editor setup, CI, configuration
+### M11 — README / editor setup, CI, configuration, workspace folders
 
 - `README.md`: build/test, capability table, position-encoding note, per-editor
   wiring (`docs/editors/` — neovim builtin LSP, minimal vscode client,
@@ -250,27 +283,85 @@ Independent UX wins; LspCpp types confirmed present (`td_semanticTokens_full`,
 - `workspace/didChangeConfiguration` + `Settings{ includePaths, cacheDirOverride,
   diagnosticsOn, semanticTokensOn, inlayHintsOn }`; index honors `includePaths`
   on rescan. Few keys, fixed defaults, forward-compatible unknown-key ignore.
+  Config-driven watcher changes ride M5.5's `client/registerCapability` path
+  (unregister old globs, register new).
+- Workspace folders: handle `workspace/didChangeWorkspaceFolders` — added
+  folders get their own `WorkspaceIndex` (keyed by normalized root), removed
+  ones close/scan-drop; single-root behavior stays the default. Server-side
+  settings apply per active folder.
 - Files: README, `.github/`, `src/settings.{h,cpp}`, `session.cpp`,
   `index.{h,cpp}`, tests.
 - Acceptance: CI green on all three OSes; a `didChangeConfiguration` with a new
-  include path makes a previously-missing `#include` resolve.
+  include path makes a previously-missing `#include` resolve; adding a folder
+  to the workspace makes its symbols answer `workspace/symbol`.
+
+### M12 — Editor extras: selectionRange, callHierarchy, codeLens
+
+Three independently useful features; all build on the M7 closure/occurrence
+primitives, none touches the language model.
+
+- **selectionRange** (`src/selection.{h,cpp}`): innermost identifier token →
+  statement/expression span (from `blockRanges`) → enclosing procedure/type →
+  module. Cheap from the parse tree + token stream; powers expand-selection in
+  every editor. Advertise `selectionRangeProvider = true`.
+- **callHierarchy** (`src/call_hierarchy.{h,cpp}`): `prepareCallHierarchy`
+  returns the targeted Sub/Function; outgoing calls = resolved Sub/Function
+  identifiers inside its body; incoming = `byKey` filtered to call sites in
+  closure files. Advertise `callHierarchyProvider = true`.
+- **codeLens** (`src/code_lens.{h,cpp}`): "N references" lens on
+  procedures/types from `byKey` (+ closure), cosmetic only. Advertise
+  `codeLensProvider = { resolveProvider: false }`.
+- Files: the three new modules + `session.{h,cpp}` + `session_integration`.
+- Acceptance: expand-selection yields the token/statement/block chain; a
+  two-file fixture shows outgoing and incoming calls; a referenced procedure
+  carries a "2 references" lens.
+
+### M13 — Pull diagnostics (backlog)
+
+`textDocument/diagnostic` + `workspace/diagnostic` + `workspace/diagnostic/refresh`
+(3.17) as a client-negotiated alternative to pushed `publishDiagnostics`
+(LspCpp types in `protocol_3_18.h`). Sets `DiagnosticOptions.interFileDependencies = true`
+— driven by the M6 include-edge graph — so pull diagnostics can surface
+`relatedDocument` reports. Push stays the default; only worth building if a
+target editor prefers pull.
+
+### M14 — Type/go-to + type hierarchy (backlog)
+
+`typeDefinition`, `implementation`, and typeHierarchy need inheritance facts
+(`Type ... : base`, `Interface`, `Extends`) the parser does not emit yet. Land
+the parser edges first, then reuse `byKey` + closure — otherwise identical in
+shape and plumbing to M7.
+
+### M15 — Document links + completion resolve + polish (backlog)
+
+`documentLink` over keyword/wiki URLs (hover already carries them), optional
+`completionItem/resolve` once the M10 catalog makes items heavy, advertised
+`willSave`, `window/logMessage` + `$/progress`/`workDoneProgress` for long
+scans, and small telemetry. Individually tiny; bundle as one polish drop.
 
 ## 6. Not doing (soon)
 
 - **Formatting** — no community formatter standard for FreeBASIC; high effort,
   low payback.
 - **Code actions** — thin while diagnostics are syntax-level only; revisit
-  once M6 adds include diagnostics.
+  once M6 adds include diagnostics (quick-fix candidates then: "insert missing
+  `#include`, `END` block closer").
 - **QB / fblite / deprecated dialects** — current behavior (best-effort `fb`
   parse + `lang-mode` Information diagnostic) degrades gracefully; full dialect
   semantics is niche.
 - **Debugger / DAP** — out of scope for a language server.
+- **Recorded non-starters** (never scheduled): `moniker`, `linkedEditingRange`,
+  `documentColor`/`colorPresentation`, the deprecated `declaration` alias —
+  exercises for editors we do not target.
+- **Scheduled but deferred** (each lives in §5 as a backlog milestone, M13–M15):
+  pull diagnostics, type/go-to + type hierarchy, document links + completion
+  resolve + protocol polish.
 
 ## 7. Cross-cutting engineering notes
 
 - **Concurrency (implemented as-is):** LspCpp handler pool runs requests
   concurrently; the index is snapshot-based and mutex-guarded, responses build
-  lock-free. New M5–M9 handlers must follow the same snapshot discipline
+  lock-free. New M5.5–M15 handlers must follow the same snapshot discipline
   (shared_ptr copies only).
 - **Per-milestone acceptance:** `cmake --build` + `ctest` green, milestone
   deliverable complete, commit on `main`, push only on request.
