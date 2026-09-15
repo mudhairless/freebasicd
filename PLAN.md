@@ -14,7 +14,7 @@ remaining work.
 | M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
 | M2 — Lexer + parser language layer, dialects, fbc corpus | done |
 | M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done |
-| M4 — persistent workspace symbol index + `workspace/symbol` | done |
+| M4 — persistent workspace symbol index + `workspace/symbol` | done (rev'd 2026: platform index dir, SHA-256-keyed per-file cache) |
 | M5 — workspace spine: occurrence projection + include graph | next |
 | M6 — include resolution + watched files + missing-include diagnostics | next |
 | M7 — cross-file definition / references / highlight / completion | next |
@@ -40,9 +40,16 @@ stable shape:
 - `src/resolve.{h,cpp}` — same-file resolution: `resolveAt`, `occurrencesOf`,
   `visibleSymbols`, `innermostScope`, `parentOf`.
 - `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index with a
-  validated JSON disk cache, background scan + debounced flusher threads,
-  immutable `IndexedFile` entries + snapshot reads. `normalizePath`,
-  `workspaceKey`, `defaultCacheDir`, `statFile`.
+  per-source-file JSON disk cache, background scan + debounced flusher
+  threads, immutable `IndexedFile` entries + snapshot reads. Cache layout:
+  each indexed `.bas`/`.bi` gets its own `<sha256Hex(normalized-path)>.json`
+  inside a per-workspace subdir `<sha256Hex(normalized-root)>`, itself under
+  the platform index dir (`~/.local/state/freebasiclsp/index` on Linux,
+  `%LOCALAPPDATA%\freebasiclsp\index` on Windows,
+  `~/Library/Application Support/freebasiclsp/index` on macOS; SHA-256 via the
+  vendored `hash_sha256` submodule, pinned `ad118c6`). Helpers:
+  `sha256Hex`, `normalizePath`, `workspaceKey`, `defaultCacheDir`,
+  `cacheFileFor`, `statFile`.
 - `src/utf16.{h,cpp}` — byte ↔ UTF-16 position conversion (session boundary).
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
   `WorkingFiles` + `WorkspaceIndex`, re-parses the buffer, pushes diagnostics.
@@ -116,7 +123,8 @@ index **before** building features on it.
   `upsert`/`remove`: `byKey_` (lowercase key → sites across files) and
   `outInc_` (file → direct includes), plus `transitiveIncludes(file)` with a
   cycle guard.
-- **Disk cache v2** (v1 discarded and rebuilt — warm-start only, acceptable).
+- **Disk cache v3** (bump from the M4-revamped per-file v2 layout; discarded
+  and rebuilt — warm-start only, acceptable).
 - **Buffer isolation:** open-buffer entries are `persisted=false` — served to
   live queries but never written by the flusher and never trusted by scan's
   mtime/size cache-hit. Fixes the §4.6 staleness wart.

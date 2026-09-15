@@ -14,6 +14,11 @@ repository (default branch `main`).
   Boost is required (`LSPCPP_STANDALONE_ASIO` is the default); build with
   `LSPCPP_BUILD_WEBSOCKETS=OFF`, `LSPCPP_BUILD_EXAMPLES=OFF`,
   `LSPCPP_BUILD_TESTS=OFF`.
+- **hash_sha256** (github.com/imahjoub/hash_sha256, header-only C++11 SHA-256)
+  is vendored as a **git submodule** at `third_party/hash_sha256`, **pinned to
+  commit `ad118c66b7f5b8ffb5119d0f0104724d0d6db14a`** (main, 2026-09). The
+  index keys every persisted source file and workspace by SHA-256 hex digest
+  of the normalized path; do not swap it for another hash or hasher.
 - **No simdjson** (dropped). LspCpp handles all protocol JSON via its bundled
   RapidJSON. Do not add simdjson back for protocol work.
 - Requires CMake 3.16+ and C++17.

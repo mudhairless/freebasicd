@@ -6,7 +6,7 @@
 # fixed per-file:
 #   -portability-avoid-pragma-once                 # #pragma once everywhere
 #   -readability-identifier-length                 # short loop/iterator names
-#   -readability-magic-numbers                     # FNV-1a / UTF-8 bit constants
+#   -readability-magic-numbers                     # SHA-256 / UTF-8 bit constants
 #   -readability-braces-around-statements          # compact single-line ifs
 #   -readability-implicit-bool-conversion          # idiomatic `if (!ptr)` checks
 #   -readability-function-cognitive-complexity     # informational only

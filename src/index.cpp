@@ -1,5 +1,7 @@
 #include "index.h"
 
+#include "hash_sha256/hash_sha256.h"
+
 #include <rapidjson/document.h>
 #include <rapidjson/rapidjson.h>
 #include <rapidjson/stringbuffer.h>
@@ -8,18 +10,18 @@
 #include "parser.h"
 
 #include <cctype>
-#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <optional>
 #include <set>
+#include <vector>
 
 namespace fblang {
 
 namespace {
 
-constexpr int kIndexVersion = 1;
+constexpr int kIndexVersion = 2;
 constexpr auto kFlushDebounce = std::chrono::milliseconds(1500);
 
 // Skip directories that never hold authored sources.
@@ -141,44 +143,35 @@ bool readSymbol(rapidjson::Value const& v, Symbol* out)
     return true;
 }
 
-std::string serializeFiles(std::string const& workspace, std::vector<IndexedFile> const& files)
+// One cache file holds exactly one indexed source document. Its filename is
+// the SHA-256 of the normalized source path (see cacheFileFor).
+std::string serializeFile(IndexedFile const& f)
 {
     rapidjson::StringBuffer buf;
     rapidjson::Writer<rapidjson::StringBuffer> w(buf);
     w.StartObject();
     w.Key("version");
     w.Uint(kIndexVersion);
-    w.Key("workspace");
-    w.String(workspace.c_str(), static_cast<rapidjson::SizeType>(workspace.size()));
-    w.Key("files");
+    w.Key("path");
+    w.String(f.path.c_str(), static_cast<rapidjson::SizeType>(f.path.size()));
+    w.Key("mtime");
+    w.Uint64(f.mtime);
+    w.Key("size");
+    w.Uint64(f.size);
+    w.Key("lang");
+    w.String(f.lang.c_str(), static_cast<rapidjson::SizeType>(f.lang.size()));
+    w.Key("symbols");
     w.StartArray();
-    for (IndexedFile const& f : files)
+    for (Symbol const& s : f.roots)
     {
-        w.StartObject();
-        w.Key("path");
-        w.String(f.path.c_str(), static_cast<rapidjson::SizeType>(f.path.size()));
-        w.Key("mtime");
-        w.Uint64(f.mtime);
-        w.Key("size");
-        w.Uint64(f.size);
-        w.Key("lang");
-        w.String(f.lang.c_str(), static_cast<rapidjson::SizeType>(f.lang.size()));
-        w.Key("symbols");
-        w.StartArray();
-        for (Symbol const& s : f.roots)
-        {
-            writeSymbol(w, s);
-        }
-        w.EndArray();
-        w.EndObject();
+        writeSymbol(w, s);
     }
     w.EndArray();
     w.EndObject();
     return std::string(buf.GetString(), buf.GetSize());
 }
 
-bool deserializeFiles(std::string_view json, std::string const& expectedWorkspace,
-                      std::vector<IndexedFile>* out)
+bool deserializeFile(std::string_view json, IndexedFile* out)
 {
     rapidjson::Document doc;
     doc.Parse(json.data(), json.size());
@@ -191,39 +184,25 @@ bool deserializeFiles(std::string_view json, std::string const& expectedWorkspac
     {
         return false;
     }
-    if (!doc.HasMember("workspace") || !doc["workspace"].IsString() ||
-        doc["workspace"].GetString() != expectedWorkspace)
+    if (!doc.HasMember("path") || !doc["path"].IsString() || !doc.HasMember("mtime") ||
+        !doc["mtime"].IsUint64() || !doc.HasMember("size") || !doc["size"].IsUint64() ||
+        !doc.HasMember("lang") || !doc["lang"].IsString() || !doc.HasMember("symbols") ||
+        !doc["symbols"].IsArray())
     {
         return false;
     }
-    if (!doc.HasMember("files") || !doc["files"].IsArray())
+    out->path = doc["path"].GetString();
+    out->mtime = doc["mtime"].GetUint64();
+    out->size = doc["size"].GetUint64();
+    out->lang = doc["lang"].GetString();
+    for (auto const& sv : doc["symbols"].GetArray())
     {
-        return false;
-    }
-    for (auto const& fv : doc["files"].GetArray())
-    {
-        if (!fv.IsObject() || !fv.HasMember("path") || !fv["path"].IsString() ||
-            !fv.HasMember("mtime") || !fv["mtime"].IsUint64() || !fv.HasMember("size") ||
-            !fv["size"].IsUint64() || !fv.HasMember("lang") || !fv["lang"].IsString() ||
-            !fv.HasMember("symbols") || !fv["symbols"].IsArray())
+        Symbol root;
+        if (!readSymbol(sv, &root))
         {
             return false;
         }
-        IndexedFile f;
-        f.path = fv["path"].GetString();
-        f.mtime = fv["mtime"].GetUint64();
-        f.size = fv["size"].GetUint64();
-        f.lang = fv["lang"].GetString();
-        for (auto const& sv : fv["symbols"].GetArray())
-        {
-            Symbol root;
-            if (!readSymbol(sv, &root))
-            {
-                return false;
-            }
-            f.roots.push_back(std::move(root));
-        }
-        out->push_back(std::move(f));
+        out->roots.push_back(std::move(root));
     }
     return true;
 }
@@ -263,6 +242,24 @@ bool writeAtomic(std::filesystem::path const& path, std::string const& json)
 
 }  // namespace
 
+std::string sha256Hex(std::string_view data)
+{
+    hash_sha256 hasher;
+    hasher.sha256_init();
+    std::vector<std::uint8_t> bytes(data.begin(), data.end());
+    hasher.sha256_update(bytes.data(), bytes.size());
+    sha256_type const digest = hasher.sha256_final();
+    static constexpr char const kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(digest.size() * 2);
+    for (std::uint8_t const byte : digest)
+    {
+        out.push_back(kHex[(byte >> 4U) & 0x0FU]);
+        out.push_back(kHex[byte & 0x0FU]);
+    }
+    return out;
+}
+
 std::string normalizePath(std::filesystem::path const& path)
 {
     std::error_code ec;
@@ -281,18 +278,12 @@ std::string normalizePath(std::filesystem::path const& path)
     return s;
 }
 
+// Cache subdirectory and cache filename both key off SHA-256: the workspace
+// root chooses the subdirectory (workspace isolation), each source path its
+// own cache file (direct lookup, no scan to find a document's entry).
 std::string workspaceKey(std::string const& normalizedRoot)
 {
-    std::uint64_t h = 14695981039346656037ULL;
-    for (unsigned char const c : normalizedRoot)
-    {
-        h ^= c;
-        h *= 1099511628211ULL;
-    }
-    char buf[17];
-    int const n = std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(h));
-    (void)n;
-    return buf;
+    return sha256Hex(normalizedRoot);
 }
 
 std::filesystem::path defaultCacheDir()
@@ -300,33 +291,38 @@ std::filesystem::path defaultCacheDir()
 #ifdef _WIN32
     if (char const* d = std::getenv("LOCALAPPDATA"))
     {
-        return std::filesystem::path(d) / "fb-lsp";
+        return std::filesystem::path(d) / "freebasiclsp" / "index";
     }
 #elif defined(__APPLE__)
     if (char const* h = std::getenv("HOME"))
     {
-        return std::filesystem::path(h) / "Library" / "Application Support" / "fb-lsp";
+        return std::filesystem::path(h) / "Library" / "Application Support" / "freebasiclsp" / "index";
     }
 #else
-    if (char const* xdg = std::getenv("XDG_DATA_HOME"))
+    if (char const* xdg = std::getenv("XDG_STATE_HOME"))
     {
         if (*xdg)
         {
-            return std::filesystem::path(xdg) / "fb-lsp";
+            return std::filesystem::path(xdg) / "freebasiclsp" / "index";
         }
     }
     if (char const* h = std::getenv("HOME"))
     {
-        return std::filesystem::path(h) / ".local" / "share" / "fb-lsp";
+        return std::filesystem::path(h) / ".local" / "state" / "freebasiclsp" / "index";
     }
 #endif
     std::error_code ec;
     std::filesystem::path const tmp = std::filesystem::temp_directory_path(ec);
     if (!ec)
     {
-        return tmp / "fb-lsp";
+        return tmp / "freebasiclsp" / "index";
     }
     return std::filesystem::path(".");
+}
+
+std::filesystem::path cacheFileFor(std::filesystem::path const& dir, std::string const& normalizedPath)
+{
+    return dir / (sha256Hex(normalizedPath) + ".json");
 }
 
 bool statFile(std::filesystem::path const& path, std::uint64_t* mtime, std::uint64_t* size)
@@ -360,15 +356,8 @@ bool statFile(std::filesystem::path const& path, std::uint64_t* mtime, std::uint
 WorkspaceIndex::WorkspaceIndex(std::filesystem::path const& root, std::filesystem::path const& cacheDir)
     : root_(std::filesystem::absolute(root).lexically_normal())
 {
-    if (cacheDir.empty())
-    {
-        cacheDir_ = defaultCacheDir() / workspaceKey(normalizePath(root_));
-    }
-    else
-    {
-        cacheDir_ = cacheDir / workspaceKey(normalizePath(root_));
-    }
-    indexFile_ = cacheDir_ / "index.json";
+    cacheDir_ = cacheDir.empty() ? defaultCacheDir() : cacheDir;
+    indexDir_ = cacheDir_ / workspaceKey(normalizePath(root_));
 }
 
 WorkspaceIndex::~WorkspaceIndex()
@@ -498,6 +487,7 @@ void WorkspaceIndex::scan(bool async)
             std::filesystem::path const p(itm->second->path);
             if (!std::filesystem::exists(p, ec) || seen.count(itm->second->path) == 0)
             {
+                removeCacheFile(itm->second->path);
                 itm = files_.erase(itm);
             }
             else
@@ -526,8 +516,15 @@ void WorkspaceIndex::upsert(IndexedFile entry)
 void WorkspaceIndex::remove(std::string const& path)
 {
     std::string const norm = normalizePath(path);
-    std::lock_guard<std::mutex> const lk(mu_);
-    files_.erase(norm);
+    bool erased = false;
+    {
+        std::lock_guard<std::mutex> const lk(mu_);
+        erased = files_.erase(norm) > 0;
+    }
+    if (erased)
+    {
+        removeCacheFile(norm);
+    }
 }
 
 std::vector<std::shared_ptr<IndexedFile const>> WorkspaceIndex::snapshot() const
@@ -553,31 +550,68 @@ std::filesystem::path WorkspaceIndex::root() const
     return root_;
 }
 
-std::filesystem::path WorkspaceIndex::indexFile() const
+std::filesystem::path WorkspaceIndex::cacheDir() const
 {
-    return indexFile_;
+    return cacheDir_;
+}
+
+std::filesystem::path WorkspaceIndex::indexDir() const
+{
+    return indexDir_;
+}
+
+std::filesystem::path WorkspaceIndex::cachePathFor(std::string const& normalizedPath) const
+{
+    return cacheFileFor(indexDir_, normalizedPath);
 }
 
 bool WorkspaceIndex::loadFromDisk()
 {
-    std::string json;
-    if (!readTextFile(indexFile_, &json))
-    {
-        return false;
-    }
+    std::error_code ec;
     std::vector<IndexedFile> files;
-    if (!deserializeFiles(json, normalizePath(root_), &files))
+    std::filesystem::directory_iterator const end;
+    for (std::filesystem::directory_iterator it(indexDir_, ec); it != end; it.increment(ec))
     {
-        return false;
+        if (ec)
+        {
+            break;
+        }
+        std::filesystem::path const p = it->path();
+        std::error_code sec;
+        std::filesystem::file_status const s = it->status(sec);
+        if (sec || !std::filesystem::is_regular_file(s) || p.extension().string() != ".json")
+        {
+            continue;
+        }
+        std::string json;
+        if (!readTextFile(p, &json))
+        {
+            continue;
+        }
+        IndexedFile f;
+        if (!deserializeFile(json, &f))
+        {
+            continue;
+        }
+        std::string const norm = normalizePath(f.path);
+        // The cache filename must be the SHA-256 of the stored path; anything
+        // else is a misplaced or corrupt entry and is not trusted.
+        if (p.stem().string() != sha256Hex(norm))
+        {
+            continue;
+        }
+        f.path = norm;
+        files.push_back(std::move(f));
     }
-    std::lock_guard<std::mutex> const lk(mu_);
-    for (IndexedFile& f : files)
     {
-        f.path = normalizePath(f.path);
-        std::string const key = f.path;  // capture before the move (see upsert)
-        files_[key] = std::make_shared<IndexedFile const>(std::move(f));
+        std::lock_guard<std::mutex> const lk(mu_);
+        for (IndexedFile& f : files)
+        {
+            std::string const key = f.path;  // capture before the move (see upsert)
+            files_[key] = std::make_shared<IndexedFile const>(std::move(f));
+        }
     }
-    return true;
+    return !files.empty();
 }
 
 void WorkspaceIndex::flushSoon()
@@ -587,6 +621,12 @@ void WorkspaceIndex::flushSoon()
         dirty_ = true;
     }
     cv_.notify_all();
+}
+
+void WorkspaceIndex::removeCacheFile(std::string const& normalizedPath)
+{
+    std::error_code ec;
+    std::filesystem::remove(cacheFileFor(indexDir_, normalizedPath), ec);
 }
 
 void WorkspaceIndex::flusherLoop()
@@ -616,30 +656,19 @@ void WorkspaceIndex::flushNow()
             files.push_back(*kv.second);
         }
     }
-    if (files.empty())
-    {
-        return;
-    }
     // Persist only entries that still match their last parsed disk state; a
     // live buffer that diverged from disk must never be written as if it were
     // the on-disk file, or the next boot would treat buffer symbols as disk
     // truth after a matching mtime/size check.
-    std::vector<IndexedFile> valid;
-    valid.reserve(files.size());
     for (IndexedFile const& f : files)
     {
         std::uint64_t mtime = 0;
         std::uint64_t size = 0;
         if (statFile(f.path, &mtime, &size) && mtime == f.mtime && size == f.size)
         {
-            valid.push_back(f);
+            writeAtomic(cacheFileFor(indexDir_, f.path), serializeFile(f));
         }
     }
-    if (valid.empty())
-    {
-        return;
-    }
-    writeAtomic(indexFile_, serializeFiles(normalizePath(root_), valid));
 }
 
 }  // namespace fblang

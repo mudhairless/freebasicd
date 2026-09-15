@@ -20,8 +20,9 @@ add_subdirectory(third_party/LspCpp)
 
 # M2 language layer: lexer + parser + language data. LSP-agnostic, byte
 # offsets; the session converts to/from LSP positions at the boundary. The
-# workspace index (M4) serializes its cache with the RapidJSON bundled by
-# LspCpp; RapidJSON is header-only, so only the include dir is needed.
+# workspace index (M4) serializes its per-file cache with the RapidJSON bundled
+# by LspCpp and names cache files by SHA-256 (vendored hash_sha256 submodule);
+# both are header-only, so only the include dirs are needed.
 add_library(freebasiclsp_lang STATIC
     src/index.cpp
     src/language.cpp
@@ -31,6 +32,7 @@ add_library(freebasiclsp_lang STATIC
 )
 target_include_directories(freebasiclsp_lang PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_include_directories(freebasiclsp_lang PRIVATE ${CMAKE_SOURCE_DIR}/third_party/LspCpp/third_party/rapidjson/include)
+target_include_directories(freebasiclsp_lang PRIVATE ${CMAKE_SOURCE_DIR}/third_party/hash_sha256)
 
 add_library(freebasiclsp_core STATIC
     src/session.cpp
