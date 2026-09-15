@@ -498,24 +498,167 @@ bool statFile(std::filesystem::path const& path, std::uint64_t* mtime, std::uint
 // Free functions (M5)
 // ---------------------------------------------------------------------------
 
+// System FreeBASIC headers ship next to the compiler install: Windows keeps
+// them in an `inc` child of the executable's folder, POSIX in
+// `<prefix>/include/freebasic` (i.e. `<exeDir>/../include/freebasic`).
+std::filesystem::path systemIncludeDirForExecutable(std::filesystem::path const& fbcExeDir)
+{
+#ifdef _WIN32
+    return fbcExeDir / "inc";
+#else
+    return fbcExeDir.parent_path() / "include" / "freebasic";
+#endif
+}
+
+std::optional<std::filesystem::path> findFbcExecutableDir(std::string const& pathEnv)
+{
+    std::vector<std::string> dirs;
+    {
+        char const sep =
+#ifdef _WIN32
+            ';';
+#else
+            ':';
+#endif
+        std::size_t start = 0;
+        while (start <= pathEnv.size())
+        {
+            std::size_t const pos = pathEnv.find(sep, start);
+            std::string const dir = pathEnv.substr(start, pos == std::string::npos
+                                                             ? std::string::npos
+                                                             : pos - start);
+            if (!dir.empty())
+            {
+                dirs.push_back(dir);
+            }
+            if (pos == std::string::npos)
+            {
+                break;
+            }
+            start = pos + 1;
+        }
+    }
+
+#ifdef _WIN32
+    static constexpr char const* const kExecutables[] = {"fbc.exe", "fbc32.exe", "fbc64.exe"};
+#else
+    static constexpr char const* const kExecutables[] = {"fbc"};
+#endif
+    for (std::string const& dir : dirs)
+    {
+        for (char const* name : kExecutables)
+        {
+            std::filesystem::path const candidate = std::filesystem::path(dir) / name;
+            std::error_code ec;
+            if (!std::filesystem::is_regular_file(candidate, ec))
+            {
+                continue;
+            }
+#ifndef _WIN32
+            std::error_code pec;
+            auto const perms = std::filesystem::status(candidate, pec).permissions();
+            bool const executable = !pec &&
+                                    (perms & (std::filesystem::perms::owner_exec |
+                                              std::filesystem::perms::group_exec |
+                                              std::filesystem::perms::others_exec)) !=
+                                        std::filesystem::perms::none;
+            if (!executable)
+            {
+                continue;
+            }
+#endif
+            // Resolve symlinks so the include dir tracks the real install, not
+            // a PATH shim (e.g. /usr/bin/fbc -> /opt/fb/bin/fbc).
+            std::filesystem::path resolved = candidate;
+            std::error_code cec;
+            if (std::filesystem::path const canon = std::filesystem::canonical(candidate, cec); !cec)
+            {
+                resolved = canon;
+            }
+            return resolved.parent_path();
+        }
+    }
+    return std::nullopt;
+}
+
+std::filesystem::path defaultSystemIncludeDir()
+{
+    // Magic static: computed once on first use; guaranteed thread-safe.
+    static std::filesystem::path const cached = [] {
+        char const* env = std::getenv("PATH");
+        std::optional<std::filesystem::path> const exeDir = findFbcExecutableDir(env ? env : "");
+        if (!exeDir)
+        {
+            return std::filesystem::path{};
+        }
+        std::filesystem::path const dir = systemIncludeDirForExecutable(*exeDir);
+        std::error_code ec;
+        return std::filesystem::is_directory(dir, ec) ? dir : std::filesystem::path{};
+    }();
+    return cached;
+}
+
 std::optional<std::string> resolveIncludeTarget(std::string_view literal,
                                                 std::filesystem::path const& includingFile,
-                                                std::filesystem::path const& workspaceRoot)
+                                                std::filesystem::path const& workspaceRoot,
+                                                std::filesystem::path const& systemIncludeDir)
 {
     std::string s(literal);
     std::replace(s.begin(), s.end(), '\\', '/');
     std::filesystem::path const lit(s);
+
+    // 1. The including file's own directory (mirrors fbc: source-relative
+    //    headers win).
     std::error_code ec;
-    std::filesystem::path const ownDir = includingFile.parent_path();
-    std::filesystem::path candidate = ownDir / lit;
+    std::filesystem::path candidate = includingFile.parent_path() / lit;
     if (std::filesystem::is_regular_file(candidate, ec))
     {
         return normalizePath(candidate);
     }
+
+    // 2. Relative to the workspace root.
     candidate = workspaceRoot / lit;
     if (std::filesystem::is_regular_file(candidate, ec))
     {
         return normalizePath(candidate);
+    }
+
+    // 3. Every immediate subdirectory of the workspace root. FreeBASIC
+    //    projects keep shared headers in an `inc` / `include` / `src` (etc.)
+    //    child of the root, so `#include "folder/file.bi"` matches under such
+    //    a child without knowing which one holds the headers.
+    {
+        std::error_code rerr;
+        std::filesystem::directory_iterator const end;
+        for (std::filesystem::directory_iterator it(workspaceRoot, rerr); it != end; it.increment(rerr))
+        {
+            if (rerr)
+            {
+                break;
+            }
+            std::error_code sterr;
+            std::filesystem::file_status const st = it->status(sterr);
+            if (sterr || !std::filesystem::is_directory(st))
+            {
+                continue;
+            }
+            candidate = it->path() / lit;
+            if (std::filesystem::is_regular_file(candidate, ec))
+            {
+                return normalizePath(candidate);
+            }
+        }
+    }
+
+    // 4. The FreeBASIC installation's own header folder (resolved from `fbc`
+    //    on PATH). Additional dirs (fbc `-i`) join via an M11 settings option.
+    if (!systemIncludeDir.empty())
+    {
+        candidate = systemIncludeDir / lit;
+        if (std::filesystem::is_regular_file(candidate, ec))
+        {
+            return normalizePath(candidate);
+        }
     }
     return std::nullopt;
 }

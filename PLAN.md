@@ -185,10 +185,16 @@ Closed includes end-to-end and made the index converge on disk edits. Two
 M6-plan bullets had effectively shipped early and are recorded here as
 deviations rather than reworked.
 
-- **Search policy shipped in M5** (deviation): `resolveIncludeTarget` — the
+- **Search policy shipped in M5 + amended** (deviation): `resolveIncludeTarget` — the
   including file's dir first, then workspace-root fallback — landed inside
   `index.{h,cpp}` during M5, so no `src/includes.{h,cpp}` was created; M6
-  consumes it. fbc `-i` dirs stay later via §M11 settings.
+  consumes it. Later amended (post-M6 bugfix) to widen the workspace search to
+  every immediate child dir of the root (`inc`/`include`/`src` etc., so
+  `#include "folder/file.bi"` matches under any of them) and to fall back to
+  the FreeBASIC installation's own header folder found via `fbc` on PATH
+  (Windows `<exeDir>/inc`, POSIX `<exeDir>/../include/freebasic`). fbc `-i`
+  dirs, per-workspace include paths, and force-disabling the system search join
+  later via §M11 `Settings.includePaths`.
 - **Include-not-found diagnostics (pushed, open files only):** the open-buffer
   publish path builds the `IndexedFile` once, reads back its resolved include
   edges, and emits an `include-not-found` `Error` covering the filename

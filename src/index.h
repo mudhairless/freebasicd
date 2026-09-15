@@ -173,13 +173,39 @@ private:
 
 // Free functions, exposed for tests.
 
-// Resolve `literal` as an include target: relative to `includingFile`'s
-// directory first, then the workspace `root`; both `/` and `\` separators are
-// accepted. Returns the normalized absolute path, or nullopt when it does not
-// exist (kept as an unresolved edge for the M6 include diagnostics).
-std::optional<std::string> resolveIncludeTarget(std::string_view literal,
-                                                std::filesystem::path const& includingFile,
-                                                std::filesystem::path const& workspaceRoot);
+// System FreeBASIC headers ship next to the compiler install: Windows keeps
+// them at `<exeDir>/inc`, POSIX at `<exeDir>/../include/freebasic`. Pure:
+// derives the layout from an executable directory; existence is not checked.
+std::filesystem::path systemIncludeDirForExecutable(std::filesystem::path const& fbcExeDir);
+
+// Search the given PATH (split per platform) for an `fbc` executable and
+// return its directory (canonicalized so a PATH shim tracks the real install),
+// or nullopt when FreeBASIC is not installed. Does not check the headers dir.
+std::optional<std::filesystem::path> findFbcExecutableDir(std::string const& pathEnv);
+
+// The cached default system include dir: probes PATH for `fbc` once and
+// verifies the derived folder exists on disk. Returns an empty path when fbc
+// is not installed or was installed without its headers; thread-safe.
+std::filesystem::path defaultSystemIncludeDir();
+
+// Resolve `literal` as an include target, mirrors fbc's relative-path search
+// order (its `-i` dirs join via an M11 settings option later):
+//   1. relative to the including file's own directory;
+//   2. relative to the workspace root;
+//   3. relative to each immediate subdirectory of the workspace root
+//      (projects keep shared headers in `inc` / `include` / `src` etc., so
+//      `#include "folder/file.bi"` matches under such a child);
+//   4. relative to the FreeBASIC installation's system header folder, resolved
+//      from `fbc` on PATH (`systemIncludeDir`; pass an empty path to skip the
+//      system search).
+// Both `/` and `\` separators are accepted. Returns the normalized absolute
+// path, or nullopt when the file exists nowhere (kept as an unresolved edge
+// for the M6 include diagnostics).
+std::optional<std::string> resolveIncludeTarget(
+    std::string_view literal,
+    std::filesystem::path const& includingFile,
+    std::filesystem::path const& workspaceRoot,
+    std::filesystem::path const& systemIncludeDir = defaultSystemIncludeDir());
 
 // An IndexedFile built from one shared analysis. `doc`, `mtime`, and `size`
 // describe the file the buffer or scan produced; include targets are resolved

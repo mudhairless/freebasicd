@@ -574,6 +574,131 @@ int main()
         b.close();
     }
 
+    // Include search: workspace child dirs (inc/include/src, etc.) and the
+    // FreeBASIC installation's system header folder are searched in fbc's
+    // relative order before a file is declared missing.
+    {
+        // Platform layout of the system header folder next to an fbc install.
+#ifdef _WIN32
+        CHECK(systemIncludeDirForExecutable("C:\\FreeBASIC") == fs::path("C:\\FreeBASIC\\inc"));
+        CHECK(systemIncludeDirForExecutable("C:\\FreeBASIC\\bin") ==
+              fs::path("C:\\FreeBASIC\\bin\\inc"));
+#else
+        CHECK(systemIncludeDirForExecutable("/usr/bin") == fs::path("/usr/include/freebasic"));
+        CHECK(systemIncludeDirForExecutable("/opt/fb/bin") == fs::path("/opt/fb/include/freebasic"));
+#endif
+
+        // findFbcExecutableDir walks PATH and requires an executable `fbc`:
+        // a non-executable decoy in an earlier entry is skipped.
+        {
+            fs::path const bin0 = sandbox / "fbcbin0";
+            fs::path const bin1 = sandbox / "fbcbin1";
+            fs::create_directories(bin0);
+            fs::create_directories(bin1);
+            std::string const exeName =
+#ifdef _WIN32
+                "fbc.exe";
+#else
+                "fbc";
+#endif
+            {
+                std::ofstream exe(bin1 / exeName);
+                exe << "#!/bin/sh\n";
+            }
+#ifndef _WIN32
+            // The decoy has no execute bits; it must be skipped.
+            std::ofstream decoy(bin0 / "fbc");
+            decoy << "#!/bin/sh\n";
+            std::filesystem::permissions(bin1 / "fbc",
+                                         std::filesystem::perms::owner_read |
+                                             std::filesystem::perms::owner_write |
+                                             std::filesystem::perms::owner_exec,
+                                         std::filesystem::perm_options::replace);
+#endif
+            char const sep =
+#ifdef _WIN32
+                ';';
+#else
+                ':';
+#endif
+            std::string const path = bin0.string() + sep + bin1.string();
+            std::optional<fs::path> const found = findFbcExecutableDir(path);
+            CHECK_MSG(found.has_value(), "a PATH with an executable fbc must be found");
+            CHECK_MSG(found && found->filename() == fs::path("fbcbin1"),
+                      "the non-executable fbc decoy must be skipped");
+            CHECK(!findFbcExecutableDir(bin0.string()).has_value());
+            CHECK(!findFbcExecutableDir("").has_value());
+        }
+
+        // resolveIncludeTarget precedence with a sandboxed "system" header dir.
+        {
+            fs::path const incWs = sandbox / "incws";
+            fs::create_directories(incWs);
+            fs::create_directories(incWs / "inc" / "pkg");
+            writeFile(incWs / "inc" / "pkg" / "api.bi", "dim apiVal as integer\n");
+            writeFile(incWs / "ownpv.bi", "dim ownVal as integer\n");
+            writeFile(incWs / "main.bas", "#include \"pkg/api.bi\"\n");
+
+            fs::path const sysInc = sandbox / "sysinc";
+            fs::create_directories(sysInc);
+            writeFile(sysInc / "sysonly.bi", "dim sysVal as integer\n");
+
+            std::string const mainNorm = normalizePath(incWs / "main.bas");
+            std::string const ownAbs = normalizePath(incWs / "ownpv.bi");
+
+            // A child dir of the workspace root answers `folder/file.bi`.
+            std::optional<std::string> resolved =
+                resolveIncludeTarget("pkg/api.bi", mainNorm, incWs, sysInc);
+            CHECK_MSG(resolved && *resolved == normalizePath(incWs / "inc" / "pkg" / "api.bi"),
+                      "a workspace child dir must satisfy a sub-folder include");
+
+            // The including file's own directory wins over a child dir.
+            writeFile(incWs / "inc" / "ownpv.bi", "dim childOwnVal as integer\n");
+            resolved = resolveIncludeTarget("ownpv.bi", mainNorm, incWs, sysInc);
+            CHECK_MSG(resolved && *resolved == ownAbs,
+                      "the file's own directory must win over a child dir");
+
+            // The workspace root itself wins over a child dir.
+            fs::create_directories(incWs / "pkg");
+            writeFile(incWs / "pkg" / "api.bi", "dim rootApiVal as integer\n");
+            resolved = resolveIncludeTarget("pkg/api.bi", mainNorm, incWs, sysInc);
+            CHECK_MSG(resolved && *resolved == normalizePath(incWs / "pkg" / "api.bi"),
+                      "the workspace root must win over a child dir");
+
+            // The system folder is searched last, only for a workspace miss.
+            resolved = resolveIncludeTarget("sysonly.bi", mainNorm, incWs, sysInc);
+            CHECK_MSG(resolved && *resolved == normalizePath(sysInc / "sysonly.bi"),
+                      "the system header folder must satisfy a workspace miss");
+
+            // A blank system dir disables the system search; a true miss stays
+            // unresolved (the include-not-found diagnostic source).
+            resolved = resolveIncludeTarget("sysonly.bi", mainNorm, incWs, fs::path{});
+            CHECK_MSG(!resolved.has_value(), "skipping the system dir must leave it unresolved");
+            resolved = resolveIncludeTarget("nope.bi", mainNorm, incWs, sysInc);
+            CHECK_MSG(!resolved.has_value(), "a total miss must stay unresolved");
+        }
+
+        // Scan-level: a child-dir include resolves to the child's path on the
+        // edge (no phantom include-not-found for a resolvable header).
+        {
+            fs::path const incWs2 = sandbox / "incws2";
+            fs::create_directories(incWs2);
+            fs::create_directories(incWs2 / "inc" / "pkg");
+            writeFile(incWs2 / "main.bas", "#include \"pkg/api.bi\"\ndim mainVal as integer\n");
+            writeFile(incWs2 / "inc" / "pkg" / "api.bi", "dim apiVal as integer\n");
+            std::string const mainNorm2 = normalizePath(incWs2 / "main.bas");
+            fs::path const cacheI = sandbox / "cache-inc";
+            WorkspaceIndex scan(incWs2, cacheI);
+            scan.open();
+            scan.scan(false);
+            auto const f = findFile(scan, mainNorm2);
+            CHECK(f != nullptr && f->includes.size() == 1);
+            CHECK_MSG(f->includes[0].target == normalizePath(incWs2 / "inc" / "pkg" / "api.bi"),
+                      "a scan must resolve the include through the workspace child dir");
+            scan.close();
+        }
+    }
+
     fs::remove_all(sandbox);
 
     if (failures == 0)
