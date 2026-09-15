@@ -464,7 +464,7 @@ std::string keywordDocsUrl(std::string_view word)
     {
         return {};
     }
-    auto it = std::partition_point(
+    auto const* it = std::partition_point(
         std::begin(kDocsPages), std::end(kDocsPages),
         [&](DocsPage const& d) { return std::string_view(d.word) < lower; });
     std::string page;
@@ -482,14 +482,8 @@ std::string keywordDocsUrl(std::string_view word)
 
 bool isBuiltinType(std::string_view wordLower)
 {
-    for (char const* t : kBuiltinTypes)
-    {
-        if (wordLower == t)
-        {
-            return true;
-        }
-    }
-    return false;
+    return std::any_of(std::begin(kBuiltinTypes), std::end(kBuiltinTypes),
+                       [&](char const* t) { return wordLower == t; });
 }
 
 namespace {
@@ -507,16 +501,15 @@ BlockCloser fromRow(const BlockRow& r)
 
 bool blockForOpener(std::string_view wordLower, BlockCloser* out)
 {
-    for (const auto& r : kBlockOpeners)
+    auto const* const it = std::find_if(std::begin(kBlockOpeners), std::end(kBlockOpeners),
+                                 [&](BlockRow const& r) { return wordLower == r.opener; });
+    if (it != std::end(kBlockOpeners))
     {
-        if (wordLower == r.opener)
+        if (out)
         {
-            if (out)
-            {
-                *out = fromRow(r);
-            }
-            return true;
+            *out = fromRow(*it);
         }
+        return true;
     }
     return false;
 }
@@ -538,16 +531,15 @@ bool blockForCloser(std::string_view wordLower, BlockCloser* out)
             return true;
         }
     }
-    for (const auto& r : kCloserOnly)
+    auto const* const it = std::find_if(std::begin(kCloserOnly), std::end(kCloserOnly),
+                                 [&](BlockRow const& r) { return wordLower == r.opener; });
+    if (it != std::end(kCloserOnly))
     {
-        if (wordLower == r.opener)
+        if (out)
         {
-            if (out)
-            {
-                *out = fromRow(r);
-            }
-            return true;
+            *out = fromRow(*it);
         }
+        return true;
     }
     return false;
 }
@@ -559,7 +551,7 @@ std::string closerDisplay(const BlockCloser& closer)
     {
         s = "END ";
     }
-    for (char c : closer.closeWord)
+    for (char const c : closer.closeWord)
     {
         s.push_back(static_cast<char>(c - 'a' + 'A'));
     }
@@ -574,7 +566,7 @@ std::string_view preprocessorWord(std::string_view line)
     {
         ++i;
     }
-    size_t beg = i;
+    size_t const beg = i;
     while (i < line.size() &&
            ((line[i] >= 'a' && line[i] <= 'z') || (line[i] >= 'A' && line[i] <= 'Z') ||
             line[i] == '_'))
@@ -603,13 +595,13 @@ bool langFromDirective(std::string_view line, LangMode* out)
     {
         ++i;
     }
-    size_t wbeg = i;
+    size_t const wbeg = i;
     while (i < line.size() && ((line[i] >= 'a' && line[i] <= 'z') ||
                                (line[i] >= 'A' && line[i] <= 'Z')))
     {
         ++i;
     }
-    std::string_view word = line.substr(wbeg, i - wbeg);
+    std::string_view const word = line.substr(wbeg, i - wbeg);
     if (word.size() != 4 ||
         (word[0] != 'l' && word[0] != 'L') || (word[1] != 'a' && word[1] != 'A') ||
         (word[2] != 'n' && word[2] != 'N') || (word[3] != 'g' && word[3] != 'G'))
@@ -625,7 +617,7 @@ bool langFromDirective(std::string_view line, LangMode* out)
         return false;
     }
     ++i;
-    size_t sbeg = i;
+    size_t const sbeg = i;
     while (i < line.size() && line[i] != '"')
     {
         ++i;
@@ -634,7 +626,7 @@ bool langFromDirective(std::string_view line, LangMode* out)
     {
         return false;
     }
-    std::string_view name = line.substr(sbeg, i - sbeg);
+    std::string_view const name = line.substr(sbeg, i - sbeg);
 
     LangMode mode;
     if (name == "fb")
@@ -683,7 +675,7 @@ bool langFromMetaDirective(std::string_view text, LangMode* out)
     // followed by whitespace, an optional ':', and a quoted dialect name.
     auto ci = [](char c, char want) { return (c | 0x20) == want; };
     auto ws = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
-    size_t n = text.size();
+    size_t const n = text.size();
     for (size_t i = 0; i + 4 < n; ++i)
     {
         if (text[i] != '$' || !ci(text[i + 1], 'l') || !ci(text[i + 2], 'a') ||
@@ -709,7 +701,7 @@ bool langFromMetaDirective(std::string_view text, LangMode* out)
             continue;
         }
         ++j;
-        size_t sbeg = j;
+        size_t const sbeg = j;
         while (j < n && text[j] != '"')
         {
             ++j;
@@ -718,7 +710,7 @@ bool langFromMetaDirective(std::string_view text, LangMode* out)
         {
             return false;
         }
-        std::string_view name = text.substr(sbeg, j - sbeg);
+        std::string_view const name = text.substr(sbeg, j - sbeg);
         LangMode mode;
         if (name == "fb")
         {

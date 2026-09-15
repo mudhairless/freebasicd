@@ -10,7 +10,7 @@ namespace {
 // i past the whole code point (or past a single malformed byte).
 int utf16UnitsOfCodePoint(std::string_view text, std::size_t& i)
 {
-    unsigned char c = static_cast<unsigned char>(text[i]);
+    unsigned char const c = static_cast<unsigned char>(text[i]);
     if (c < 0x80)
     {
         ++i;
@@ -21,17 +21,17 @@ int utf16UnitsOfCodePoint(std::string_view text, std::size_t& i)
     if (c >= 0xF0)
     {
         len = 4;
-        cp = c & 0x07u;
+        cp = c & 0x07U;
     }
     else if (c >= 0xE0)
     {
         len = 3;
-        cp = c & 0x0Fu;
+        cp = c & 0x0FU;
     }
     else if (c >= 0xC0)
     {
         len = 2;
-        cp = c & 0x1Fu;
+        cp = c & 0x1FU;
     }
     else
     {
@@ -45,10 +45,10 @@ int utf16UnitsOfCodePoint(std::string_view text, std::size_t& i)
     }
     for (int k = 1; k < len; ++k)
     {
-        cp = (cp << 6) | static_cast<std::uint32_t>(text[i + static_cast<std::size_t>(k)] & 0x3Fu);
+        cp = (cp << 6) | static_cast<std::uint32_t>(text[i + static_cast<std::size_t>(k)] & 0x3FU);
     }
     i += static_cast<std::size_t>(len);
-    return cp >= 0x10000u ? 2 : 1;
+    return cp >= 0x10000U ? 2 : 1;
 }
 
 }  // namespace

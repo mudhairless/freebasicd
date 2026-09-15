@@ -100,7 +100,7 @@ std::vector<Token> lexAll(std::string_view src)
     std::vector<Token> out;
     for (;;)
     {
-        Token t = lx.next();
+        Token const t = lx.next();
         out.push_back(t);
         if (t.kind == TokenKind::Eof)
         {

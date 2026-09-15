@@ -55,7 +55,7 @@ private:
     std::unique_ptr<fblang::WorkspaceIndex> index_;
     std::filesystem::path indexCacheDir_;  // override for tests (default = platform data dir)
 
-    void ensureWorkspaceIndex(std::filesystem::path root);
+    void ensureWorkspaceIndex(std::filesystem::path const& root);
 
     td_shutdown::response onShutdown(td_shutdown::request const& req);
     void onDidOpen(Notify_TextDocumentDidOpen::notify& notify);

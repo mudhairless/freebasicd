@@ -37,8 +37,8 @@ class WorkspaceIndex
 {
 public:
     // `cacheDir` empty selects the platform data dir; tests pass a temp dir.
-    explicit WorkspaceIndex(std::filesystem::path root,
-                            std::filesystem::path cacheDir = std::filesystem::path{});
+    explicit WorkspaceIndex(std::filesystem::path const& root,
+                            std::filesystem::path const& cacheDir = std::filesystem::path{});
     ~WorkspaceIndex();
 
     WorkspaceIndex(WorkspaceIndex const&) = delete;
@@ -90,7 +90,7 @@ private:
 };
 
 // Normalization + keying helpers, exposed for tests.
-std::string normalizePath(std::filesystem::path path);
+std::string normalizePath(std::filesystem::path const& path);
 std::string workspaceKey(std::string const& normalizedRoot);
 std::filesystem::path defaultCacheDir();
 bool statFile(std::filesystem::path const& path, std::uint64_t* mtime, std::uint64_t* size);

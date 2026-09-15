@@ -117,7 +117,7 @@ bool readSymbol(rapidjson::Value const& v, Symbol* out)
     {
         return false;
     }
-    auto getStr = [&](char const* key) -> std::string const {
+    auto getStr = [&](char const* key) -> std::string {
         if (v.HasMember(key) && v[key].IsString())
         {
             return std::string(v[key].GetString(), v[key].GetStringLength());
@@ -263,7 +263,7 @@ bool writeAtomic(std::filesystem::path const& path, std::string const& json)
 
 }  // namespace
 
-std::string normalizePath(std::filesystem::path path)
+std::string normalizePath(std::filesystem::path const& path)
 {
     std::error_code ec;
     std::filesystem::path abs = std::filesystem::absolute(path, ec);
@@ -283,20 +283,21 @@ std::string normalizePath(std::filesystem::path path)
 
 std::string workspaceKey(std::string const& normalizedRoot)
 {
-    std::uint64_t h = 14695981039346656037ull;
-    for (unsigned char c : normalizedRoot)
+    std::uint64_t h = 14695981039346656037ULL;
+    for (unsigned char const c : normalizedRoot)
     {
         h ^= c;
-        h *= 1099511628211ull;
+        h *= 1099511628211ULL;
     }
     char buf[17];
-    std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(h));
+    int const n = std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(h));
+    (void)n;
     return buf;
 }
 
 std::filesystem::path defaultCacheDir()
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     if (char const* d = std::getenv("LOCALAPPDATA"))
     {
         return std::filesystem::path(d) / "fb-lsp";
@@ -320,7 +321,7 @@ std::filesystem::path defaultCacheDir()
     }
 #endif
     std::error_code ec;
-    std::filesystem::path tmp = std::filesystem::temp_directory_path(ec);
+    std::filesystem::path const tmp = std::filesystem::temp_directory_path(ec);
     if (!ec)
     {
         return tmp / "fb-lsp";
@@ -331,7 +332,7 @@ std::filesystem::path defaultCacheDir()
 bool statFile(std::filesystem::path const& path, std::uint64_t* mtime, std::uint64_t* size)
 {
     std::error_code ec;
-    std::filesystem::file_status st = std::filesystem::status(path, ec);
+    std::filesystem::file_status const st = std::filesystem::status(path, ec);
     if (ec || !std::filesystem::is_regular_file(st))
     {
         return false;
@@ -356,7 +357,7 @@ bool statFile(std::filesystem::path const& path, std::uint64_t* mtime, std::uint
     return true;
 }
 
-WorkspaceIndex::WorkspaceIndex(std::filesystem::path root, std::filesystem::path cacheDir)
+WorkspaceIndex::WorkspaceIndex(std::filesystem::path const& root, std::filesystem::path const& cacheDir)
     : root_(std::filesystem::absolute(root).lexically_normal())
 {
     if (cacheDir.empty())
@@ -389,7 +390,7 @@ void WorkspaceIndex::close()
 {
     running_.store(false);
     {
-        std::lock_guard<std::mutex> lk(cvMu_);
+        std::lock_guard<std::mutex> const lk(cvMu_);
         dirty_ = true;
     }
     cv_.notify_all();
@@ -423,7 +424,7 @@ void WorkspaceIndex::scan(bool async)
     std::set<std::string> seen;
     std::filesystem::recursive_directory_iterator it(root_, std::filesystem::directory_options::skip_permission_denied,
                                                     ec);
-    std::filesystem::recursive_directory_iterator end;
+    std::filesystem::recursive_directory_iterator const end;
     if (ec)
     {
         return;
@@ -437,7 +438,7 @@ void WorkspaceIndex::scan(bool async)
             break;
         }
         std::filesystem::directory_entry const entry = *it;
-        std::filesystem::file_status st = entry.status(ec);
+        std::filesystem::file_status const st = entry.status(ec);
         if (ec)
         {
             continue;
@@ -458,13 +459,14 @@ void WorkspaceIndex::scan(bool async)
         std::string const norm = normalizePath(entry.path());
         seen.insert(norm);
 
-        std::uint64_t mtime = 0, size = 0;
+        std::uint64_t mtime = 0;
+        std::uint64_t size = 0;
         if (!statFile(entry.path(), &mtime, &size))
         {
             continue;
         }
         {
-            std::lock_guard<std::mutex> lk(mu_);
+            std::lock_guard<std::mutex> const lk(mu_);
             auto found = files_.find(norm);
             if (found != files_.end() && found->second->mtime == mtime &&
                 found->second->size == size)
@@ -490,10 +492,10 @@ void WorkspaceIndex::scan(bool async)
     }
 
     {
-        std::lock_guard<std::mutex> lk(mu_);
+        std::lock_guard<std::mutex> const lk(mu_);
         for (auto itm = files_.begin(); itm != files_.end();)
         {
-            std::filesystem::path p(itm->second->path);
+            std::filesystem::path const p(itm->second->path);
             if (!std::filesystem::exists(p, ec) || seen.count(itm->second->path) == 0)
             {
                 itm = files_.erase(itm);
@@ -517,20 +519,20 @@ void WorkspaceIndex::upsert(IndexedFile entry)
     // `operator=` first, so moving `entry` into the shared_ptr must not race
     // the subscript's key evaluation (which would leave an empty key).
     std::string const key = entry.path;
-    std::lock_guard<std::mutex> lk(mu_);
+    std::lock_guard<std::mutex> const lk(mu_);
     files_[key] = std::make_shared<IndexedFile const>(std::move(entry));
 }
 
 void WorkspaceIndex::remove(std::string const& path)
 {
     std::string const norm = normalizePath(path);
-    std::lock_guard<std::mutex> lk(mu_);
+    std::lock_guard<std::mutex> const lk(mu_);
     files_.erase(norm);
 }
 
 std::vector<std::shared_ptr<IndexedFile const>> WorkspaceIndex::snapshot() const
 {
-    std::lock_guard<std::mutex> lk(mu_);
+    std::lock_guard<std::mutex> const lk(mu_);
     std::vector<std::shared_ptr<IndexedFile const>> out;
     out.reserve(files_.size());
     for (auto const& kv : files_)
@@ -542,7 +544,7 @@ std::vector<std::shared_ptr<IndexedFile const>> WorkspaceIndex::snapshot() const
 
 std::size_t WorkspaceIndex::size() const
 {
-    std::lock_guard<std::mutex> lk(mu_);
+    std::lock_guard<std::mutex> const lk(mu_);
     return files_.size();
 }
 
@@ -568,7 +570,7 @@ bool WorkspaceIndex::loadFromDisk()
     {
         return false;
     }
-    std::lock_guard<std::mutex> lk(mu_);
+    std::lock_guard<std::mutex> const lk(mu_);
     for (IndexedFile& f : files)
     {
         f.path = normalizePath(f.path);
@@ -581,7 +583,7 @@ bool WorkspaceIndex::loadFromDisk()
 void WorkspaceIndex::flushSoon()
 {
     {
-        std::lock_guard<std::mutex> lk(cvMu_);
+        std::lock_guard<std::mutex> const lk(cvMu_);
         dirty_ = true;
     }
     cv_.notify_all();
@@ -607,7 +609,7 @@ void WorkspaceIndex::flushNow()
 {
     std::vector<IndexedFile> files;
     {
-        std::lock_guard<std::mutex> lk(mu_);
+        std::lock_guard<std::mutex> const lk(mu_);
         files.reserve(files_.size());
         for (auto const& kv : files_)
         {
@@ -626,7 +628,8 @@ void WorkspaceIndex::flushNow()
     valid.reserve(files.size());
     for (IndexedFile const& f : files)
     {
-        std::uint64_t mtime = 0, size = 0;
+        std::uint64_t mtime = 0;
+        std::uint64_t size = 0;
         if (statFile(f.path, &mtime, &size) && mtime == f.mtime && size == f.size)
         {
             valid.push_back(f);

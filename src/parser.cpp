@@ -3,6 +3,7 @@
 #include "language.h"
 #include "lexer.h"
 
+#include <algorithm>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -186,7 +187,7 @@ private:
         return SymbolKind::Namespace;
     }
 
-    std::string displayFor(const Block& b)
+    static std::string displayFor(const Block& b)
     {
         BlockCloser c;
         c.kind = b.kind;
@@ -198,10 +199,7 @@ private:
     std::string headerText(const Token& openTok)
     {
         uint32_t endOff = currentLineEnd();
-        if (endOff < openTok.beg)
-        {
-            endOff = openTok.beg;
-        }
+        endOff = std::max(endOff, openTok.beg);
         std::string s = std::string(src_.substr(openTok.beg, endOff - openTok.beg));
         size_t e = s.size();
         while (e > 0 && (s[e - 1] == ' ' || s[e - 1] == '\t'))
@@ -216,7 +214,7 @@ private:
     {
         for (int i = 0; i < 512; ++i)
         {
-            Token t = lex_.peek(i);
+            Token const t = lex_.peek(i);
             if (t.kind == TokenKind::Newline)
             {
                 return t.beg;
@@ -243,7 +241,7 @@ private:
 
     void collectDoc()
     {
-        std::string_view t = cur_.text();
+        std::string_view const t = cur_.text();
         size_t skip = 0;
         if (t.size() >= 2 && t[0] == '\'' && t[1] == '\'')
         {
@@ -253,7 +251,7 @@ private:
         {
             skip = 3;
         }
-        std::string_view rest = t.substr(skip);
+        std::string_view const rest = t.substr(skip);
         size_t e = rest.size();
         while (e > 0 && (rest[e - 1] == ' ' || rest[e - 1] == '\t'))
         {
@@ -280,7 +278,7 @@ private:
 
     Symbol* addSymbol(Symbol&& s)
     {
-        bool dedupe = s.kind == SymbolKind::Dim || s.kind == SymbolKind::Const ||
+        bool const dedupe = s.kind == SymbolKind::Dim || s.kind == SymbolKind::Const ||
                       s.kind == SymbolKind::Variable || s.kind == SymbolKind::Label ||
                       s.kind == SymbolKind::Type || s.kind == SymbolKind::Union ||
                       s.kind == SymbolKind::Enum || s.kind == SymbolKind::Namespace;
@@ -300,7 +298,7 @@ private:
             out_.roots.push_back(std::move(s));
             return &out_.roots.back();
         }
-        Container& c = containers_.back();
+        Container const& c = containers_.back();
         if (c.sym == nullptr)
         {
             out_.roots.push_back(std::move(s));
@@ -312,7 +310,7 @@ private:
 
     void closeBlock(uint32_t end)
     {
-        Block b = blocks_.back();
+        Block const b = blocks_.back();
         blocks_.pop_back();
         out_.blockRanges.push_back({b.begOpen, end});
         if (b.sym)
@@ -331,7 +329,7 @@ private:
         SymbolKind mk = SymbolKind::Variable;
         if (!blocks_.empty())
         {
-            BlockKind bk = blocks_.back().kind;
+            BlockKind const bk = blocks_.back().kind;
             if (bk == BlockKind::Type || bk == BlockKind::Union)
             {
                 captureMember = true;
@@ -344,7 +342,7 @@ private:
         }
         for (;;)
         {
-            TokenKind k = cur_.kind;
+            TokenKind const k = cur_.kind;
             if (k == TokenKind::Newline || k == TokenKind::Eof || k == TokenKind::Comment ||
                 k == TokenKind::DocComment)
             {
@@ -380,7 +378,7 @@ private:
         // Line label: Identifier directly followed by ':'.
         if (cur_.kind == TokenKind::Identifier)
         {
-            Token nxt = lex_.peek(0);
+            Token const nxt = lex_.peek(0);
             if (nxt.kind == TokenKind::Symbol && nxt.text() == ":")
             {
                 Symbol s;
@@ -403,11 +401,11 @@ private:
             return;
         }
 
-        std::string w = toLowerChars(cur_.text());
+        std::string const w = toLowerChars(cur_.text());
 
         if (w == "private" || w == "public" || w == "export" || w == "static")
         {
-            Token nxt = lex_.peek(0);
+            Token const nxt = lex_.peek(0);
             if (nxt.kind == TokenKind::Keyword &&
                 (isDeclOpenerWord(toLowerChars(nxt.text())) ||
                  toLowerChars(nxt.text()) == "type"))
@@ -519,7 +517,7 @@ private:
 
     void handleDeclBlock(const std::string& openWord, SymbolKind k)
     {
-        Token openTok = cur_;
+        Token const openTok = cur_;
         BlockCloser closer;
         blockForOpener(openWord, &closer);
         advance();
@@ -568,14 +566,14 @@ private:
         int depth = 1;
         for (;;)
         {
-            TokenKind k = cur_.kind;
+            TokenKind const k = cur_.kind;
             if (k == TokenKind::Eof || k == TokenKind::Newline)
             {
                 break;
             }
             if (k == TokenKind::Symbol)
             {
-                std::string_view t = cur_.text();
+                std::string_view const t = cur_.text();
                 if (t == "(")
                 {
                     entry.push_back(cur_);
@@ -609,7 +607,7 @@ private:
         addParam(s, entry);
     }
 
-    void addParam(Symbol& s, const std::vector<Token>& entry)
+    static void addParam(Symbol& s, const std::vector<Token>& entry)
     {
         for (const Token& t : entry)
         {
@@ -629,7 +627,7 @@ private:
 
     void handleType()
     {
-        Token openTok = cur_;
+        Token const openTok = cur_;
         BlockCloser closer;
         blockForOpener("type", &closer);
         advance();
@@ -654,23 +652,20 @@ private:
         bool alias = false;
         if (hasName)
         {
-            if (cur_.kind == TokenKind::Newline || cur_.kind == TokenKind::Eof)
+            if (cur_.kind == TokenKind::Newline || cur_.kind == TokenKind::Eof ||
+                (cur_.kind == TokenKind::Symbol && cur_.text() == ":"))
             {
-                // name alone on the line -> UDT block
+                // name alone on the line, or one-line `TYPE name : ... : END TYPE`
             }
             else if (cur_.kind == TokenKind::Keyword && toLowerChars(cur_.text()) == "as")
             {
                 alias = true;
             }
-            else if (cur_.kind == TokenKind::Symbol && cur_.text() == ":")
-            {
-                // one-line UDT `TYPE name : ... : END TYPE`
-            }
             else
             {
                 for (int i = 0; i < 512; ++i)
                 {
-                    Token t = lex_.peek(i);
+                    Token const t = lex_.peek(i);
                     if (t.kind == TokenKind::Newline || t.kind == TokenKind::Eof ||
                         t.kind == TokenKind::Comment)
                     {
@@ -715,7 +710,7 @@ private:
 
     void handleDeclare()
     {
-        Token openTok = cur_;
+        Token const openTok = cur_;
         advance();  // past DECLARE
         if (cur_.kind != TokenKind::Keyword)
         {
@@ -723,7 +718,7 @@ private:
             skipStatement();
             return;
         }
-        std::string w = toLowerChars(cur_.text());
+        std::string const w = toLowerChars(cur_.text());
         if (w != "sub" && w != "function" && w != "property")
         {
             resetDoc();
@@ -731,9 +726,18 @@ private:
             return;
         }
         Symbol s;
-        s.kind = w == "sub"   ? SymbolKind::Sub
-                 : w == "function" ? SymbolKind::Function
-                                   : SymbolKind::Property;
+        if (w == "sub")
+        {
+            s.kind = SymbolKind::Sub;
+        }
+        else if (w == "function")
+        {
+            s.kind = SymbolKind::Function;
+        }
+        else
+        {
+            s.kind = SymbolKind::Property;
+        }
         advance();
         if (cur_.kind == TokenKind::Identifier || cur_.kind == TokenKind::Keyword)
         {
@@ -757,14 +761,14 @@ private:
 
     void handleVarDecls(SymbolKind k)
     {
-        Token openTok = cur_;
-        std::string doc = takeDoc();
+        Token const openTok = cur_;
+        std::string const doc = takeDoc();
         advance();
         bool atName = true;
         bool first = true;
         for (;;)
         {
-            TokenKind tk = cur_.kind;
+            TokenKind const tk = cur_.kind;
             if (tk == TokenKind::Newline || tk == TokenKind::Eof)
             {
                 break;
@@ -803,11 +807,8 @@ private:
                     advance();
                     // Type-first form: `DIM AS <type> name`. Skip the type
                     // (builtin keyword or user-defined type) before the name.
-                    if (cur_.kind == TokenKind::Keyword && isBuiltinType(toLowerChars(cur_.text())))
-                    {
-                        advance();
-                    }
-                    else if (cur_.kind == TokenKind::Identifier)
+                    if ((cur_.kind == TokenKind::Keyword && isBuiltinType(toLowerChars(cur_.text()))) ||
+                        cur_.kind == TokenKind::Identifier)
                     {
                         advance();
                     }
@@ -827,12 +828,12 @@ private:
 
     void handleIf()
     {
-        Token ifTok = cur_;
+        Token const ifTok = cur_;
         std::vector<Token> tail;
         tail.reserve(32);
         for (int i = 0; i < 512; ++i)
         {
-            Token t = lex_.peek(i);
+            Token const t = lex_.peek(i);
             if (t.kind == TokenKind::Newline || t.kind == TokenKind::Eof ||
                 t.kind == TokenKind::Comment || t.kind == TokenKind::DocComment)
             {
@@ -841,23 +842,23 @@ private:
             tail.push_back(t);
         }
 
-        int idxThen = -1;
+        size_t idxThen = tail.size();
         for (size_t i = 0; i < tail.size(); ++i)
         {
             if (tail[i].kind == TokenKind::Keyword && toLowerChars(tail[i].text()) == "then")
             {
-                idxThen = static_cast<int>(i);
+                idxThen = i;
                 break;
             }
         }
 
         bool singleLine = false;
-        if (idxThen >= 0 && static_cast<size_t>(idxThen + 1) < tail.size())
+        if (idxThen + 1 < tail.size())
         {
-            Token firstAfter = tail[static_cast<size_t>(idxThen + 1)];
-            bool colon = firstAfter.kind == TokenKind::Symbol && firstAfter.text() == ":";
+            Token const firstAfter = tail[idxThen + 1];
+            bool const colon = firstAfter.kind == TokenKind::Symbol && firstAfter.text() == ":";
             bool inlineEndIf = false;
-            for (size_t i = static_cast<size_t>(idxThen + 1); i + 1 < tail.size(); ++i)
+            for (size_t i = idxThen + 1; i + 1 < tail.size(); ++i)
             {
                 if (tail[i].kind == TokenKind::Keyword && tail[i + 1].kind == TokenKind::Keyword &&
                     toLowerChars(tail[i].text()) == "end" &&
@@ -892,7 +893,7 @@ private:
 
     void handleEnd()
     {
-        Token endTok = cur_;
+        Token const endTok = cur_;
         advance();  // past END
 
         if (cur_.kind != TokenKind::Keyword)
@@ -901,11 +902,11 @@ private:
             skipStatement();
             return;
         }
-        std::string w = toLowerChars(cur_.text());
+        std::string const w = toLowerChars(cur_.text());
 
         if (w == "for" || w == "while")
         {
-            std::string expected = w == "for" ? "NEXT" : "WEND";
+            std::string const expected = w == "for" ? "NEXT" : "WEND";
             addDiagnostic(cur_.beg, cur_.end, Severity::Error, "invalid-end",
                           "Expected '" + expected + "'");
             resetDoc();
@@ -930,7 +931,7 @@ private:
             return;
         }
 
-        Block& top = blocks_.back();
+        Block const& top = blocks_.back();
         if (top.kind == c.kind && top.needsEnd)
         {
             closeBlock(cur_.end);
@@ -948,18 +949,24 @@ private:
 
     void handlePlainCloser(const BlockCloser& c)
     {
-        Token closerTok = cur_;
+        Token const closerTok = cur_;
         if (blocks_.empty())
         {
-            const char* msg = c.kind == BlockKind::For   ? "NEXT without FOR"
-                              : c.kind == BlockKind::While ? "WEND without WHILE"
-                                                           : "LOOP without DO";
+const char* msg = "LOOP without DO";
+            if (c.kind == BlockKind::For)
+            {
+                msg = "NEXT without FOR";
+            }
+            else if (c.kind == BlockKind::While)
+            {
+                msg = "WEND without WHILE";
+            }
             addDiagnostic(closerTok.beg, closerTok.end, Severity::Error, "stray-closer", msg);
             resetDoc();
             skipStatement();
             return;
         }
-        Block& top = blocks_.back();
+        Block const& top = blocks_.back();
         if (top.kind == c.kind && !top.needsEnd)
         {
             closeBlock(closerTok.end);
@@ -976,7 +983,7 @@ private:
 
     void handlePreprocessor()
     {
-        std::string w = toLowerChars(preprocessorWord(cur_.text()));
+        std::string const w = toLowerChars(preprocessorWord(cur_.text()));
         if (w == "if" || w == "ifdef" || w == "ifndef")
         {
             Block b;

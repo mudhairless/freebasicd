@@ -70,6 +70,48 @@ must stay there. Encoding directives that the lexer/parser must honor:
 - The system `fbc` compiler (1.10.2) is available for ground-truthing ambiguous
   FreeBASIC constructs.
 
+### clang-tidy
+
+Baseline config lives at repo root `.clang-tidy`; `src/` is expected to be
+**zero-diagnostic** under it. Run:
+
+```
+cmake -S . -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_COMPILER=clang++
+clang-tidy -p build-tidy --quiet src/lexer.cpp src/language.cpp src/parser.cpp \
+    src/resolve.cpp src/index.cpp src/session.cpp src/utf16.cpp src/main.cpp
+```
+
+Gotchas learned the hard way (2026-09):
+
+- The system `clang-tidy` (LLVM 22) is built with **no checks enabled** — a
+  bare run without `-checks`/`.clang-tidy` aborts with "no checks enabled".
+  Disable checks by *adding* `-checks` values; `.clang-tidy` `Checks:` and
+  `WarningsAsErrors:` are the committed source of truth.
+- The checked-in `build/compile_commands.json` is **not** usable for tidying
+  (stale: missing `-std=c++17` and rapidjson include, plus third-party
+  ixwebsocket entries). Using it makes clang-tidy fail to parse the files
+  (`std::string_view`/`std::filesystem` "no member" errors). Always re-create
+  the throwaway `build-tidy/` DB above (gitignored via `build*/`).
+- Default `-header-filter` floods output from vendored headers (LspCpp,
+  rapidjson). `.clang-tidy` restricts to `src/[^/]*\.h$` — our headers live
+  directly under `src/`, third-party does not. Add new src headers without
+  touching this.
+- `WarningsAsErrors` gates bug-class checks (`bugprone-*`, `cert-*`,
+  `clang-analyzer-*`, `performance-*`) — a real finding exits non-zero. Do not
+  widen the suppression list (`-readability-*`, `-misc-*` entries in
+  `.clang-tidy`) to silence a new bug-class hit; those entries exist for
+  deliberate conventions only, each with its reason in the config.
+- Auto-fix pitfall: `--fix` with `readability-braces-around-statements`
+  mangles the codebase's compact single-line `if`s; run `--fix` only on a
+  curated safe subset (e.g. `misc-const-correctness` plus trivial readability
+  categories) and review the diff. Braces style is intentionally silenced in
+  the config instead.
+- 2026-09 cleanup already applied: uint→int narrowing in folding ranges,
+  duplicated switch/case-`if` branches, an ignored `snprintf` result,
+  `std::move` of a trivially-copyable type, `path`-by-value params made
+  `const&`, const-correctness pass, loop→`std::any_of`/`find_if` conversions.
+  Visual check: exit 0, zero diagnostics, `ctest` 7/7 green.
+
 ## Git workflow
 
 - **Commit automatically when a milestone is achieved.** Do not wait for an

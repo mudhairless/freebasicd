@@ -50,7 +50,7 @@ char Lexer::peekChar(size_t ahead) const
 
 char Lexer::advance()
 {
-    char c = *p_;
+    char const c = *p_;
     if (p_ < end_)
     {
         ++p_;
@@ -144,7 +144,7 @@ Token Lexer::lexNext()
             // The newline is one or two bytes (\r, \n, \r\n); widen to cover it.
             t.beg = static_cast<uint32_t>(p_ - src_.data());
             while (t.beg > 0 &&
-                   (src_.data()[t.beg - 1] == '\n' || src_.data()[t.beg - 1] == '\r'))
+                   (src_[t.beg - 1] == '\n' || src_[t.beg - 1] == '\r'))
             {
                 --t.beg;
             }
@@ -153,12 +153,12 @@ Token Lexer::lexNext()
             return t;
         }
 
-        char c = *p_;
+        char const c = *p_;
 
         // Line-leading '#' is a preprocessor directive (swallows the line).
         if (c == '#' && atLineStart())
         {
-            uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
+            uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
             while (p_ < end_ && *p_ != '\n' && *p_ != '\r')
             {
                 ++p_;
@@ -178,7 +178,7 @@ Token Lexer::lexNext()
             (peekChar(2) == 'm' || peekChar(2) == 'M') &&
             (p_ + 3 == end_ || isWhitespace(peekChar(3)) || peekChar(3) == '\''))
         {
-            uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
+            uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
             while (p_ < end_ && *p_ != '\n' && *p_ != '\r')
             {
                 ++p_;
@@ -194,7 +194,7 @@ Token Lexer::lexNext()
         // Line-leading '$' is a legacy meta-command (swallows the line).
         if (c == '$' && atLineStart())
         {
-            uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
+            uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
             while (p_ < end_ && *p_ != '\n' && *p_ != '\r')
             {
                 ++p_;
@@ -210,7 +210,7 @@ Token Lexer::lexNext()
         // Line-leading '///' is a doc comment (swallows the line).
         if (c == '/' && atLineStart() && peekChar(1) == '/' && peekChar(2) == '/')
         {
-            uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
+            uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
             while (p_ < end_ && *p_ != '\n' && *p_ != '\r')
             {
                 ++p_;
@@ -246,10 +246,10 @@ Token Lexer::lexNext()
 
 Token Lexer::lexComment()
 {
-    uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
+    uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
     // Only a line-leading '' turns a quote-comment into a doc comment; mid-line
     // lone '' (e.g. after ':' on a statement line) stays an ordinary comment.
-    bool doc = p_ + 1 < end_ && *(p_ + 1) == '\'' && atLineStart();
+    bool const doc = p_ + 1 < end_ && *(p_ + 1) == '\'' && atLineStart();
     while (p_ < end_ && *p_ != '\n' && *p_ != '\r')
     {
         ++p_;
@@ -264,7 +264,7 @@ Token Lexer::lexComment()
 
 Token Lexer::lexString()
 {
-    uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
+    uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
     advance();  // opening quote
     bool terminated = false;
     while (p_ < end_ && *p_ != '\n' && *p_ != '\r')
@@ -293,7 +293,7 @@ Token Lexer::lexString()
 
 Token Lexer::lexIdentifier()
 {
-    uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
+    uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
     while (p_ < end_ && isIdentChar(*p_))
     {
         ++p_;
@@ -301,7 +301,7 @@ Token Lexer::lexIdentifier()
     const char* baseStart = src_.data() + beg;
     const char* baseEnd = p_;
 
-    bool isBareUnderscore = (baseEnd - baseStart == 1 && *baseStart == '_');
+    bool const isBareUnderscore = (baseEnd - baseStart == 1 && *baseStart == '_');
 
     // Trailing '_' as the last thing on a logical line is a line continuation:
     // drop it and the newline so callers see one continuous logical line.
@@ -326,8 +326,8 @@ Token Lexer::lexIdentifier()
         return t;
     }
 
-    std::string_view base(baseStart, static_cast<size_t>(baseEnd - baseStart));
-    bool isKeywordBase = isReservedWord(base);
+    std::string_view const base(baseStart, static_cast<size_t>(baseEnd - baseStart));
+    bool const isKeywordBase = isReservedWord(base);
 
     // A directly-attached suffix char belongs to the identifier — unless the
     // base is a reserved word (PRINT#1 is PRINT + "#1" channel, not a suffix).
@@ -359,7 +359,7 @@ Token Lexer::lexIdentifier()
 
 Token Lexer::lexNumber()
 {
-    uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
+    uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
     auto radixDigit = [](char c, int radix) {
         if (c >= '0' && c <= '9')
         {
@@ -370,8 +370,20 @@ Token Lexer::lexNumber()
 
     if (*p_ == '&')
     {
-        char r = static_cast<char>(std::tolower(static_cast<unsigned char>(peekChar(1))));
-        int radix = r == 'h' ? 16 : r == 'o' ? 8 : r == 'b' ? 2 : 0;
+        char const r = static_cast<char>(std::tolower(static_cast<unsigned char>(peekChar(1))));
+        int radix = 0;
+        if (r == 'h')
+        {
+            radix = 16;
+        }
+        else if (r == 'o')
+        {
+            radix = 8;
+        }
+        else if (r == 'b')
+        {
+            radix = 2;
+        }
         if (radix != 0)
         {
             advance();
@@ -443,7 +455,7 @@ Token Lexer::lexNumber()
 Token Lexer::lexSymbol()
 {
     uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
-    char c = *p_;
+    char const c = *p_;
     auto finish = [&](uint32_t end, std::string_view text) -> Token {
         Token t;
         t.kind = TokenKind::Symbol;

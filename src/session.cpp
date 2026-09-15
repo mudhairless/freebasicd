@@ -28,7 +28,6 @@ lsSymbolKind toLspSymbolKind(fblang::SymbolKind kind)
         case fblang::SymbolKind::Operator:
             return lsSymbolKind::Operator;
         case fblang::SymbolKind::Type:
-            return lsSymbolKind::Struct;
         case fblang::SymbolKind::Union:
             return lsSymbolKind::Struct;
         case fblang::SymbolKind::Enum:
@@ -207,7 +206,7 @@ void FreeBasicServer::setIndexCacheDir(std::filesystem::path cacheDir)
     indexCacheDir_ = std::move(cacheDir);
 }
 
-void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path root)
+void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const& root)
 {
     if (root.empty())
     {
@@ -332,7 +331,7 @@ void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify& notify)
     {
         ensureWorkspaceIndex(std::filesystem::path(notify.params.textDocument.uri.GetAbsolutePath().path()).parent_path());
     }
-    std::shared_ptr<WorkingFile> file = workingFiles_.OnOpen(notify.params.textDocument);
+    std::shared_ptr<WorkingFile> const file = workingFiles_.OnOpen(notify.params.textDocument);
     if (!file)
     {
         return;
@@ -342,7 +341,7 @@ void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify& notify)
 
 void FreeBasicServer::onDidChange(Notify_TextDocumentDidChange::notify const& notify)
 {
-    std::shared_ptr<WorkingFile> file = workingFiles_.OnChange(notify.params);
+    std::shared_ptr<WorkingFile> const file = workingFiles_.OnChange(notify.params);
     if (!file)
     {
         return;
@@ -352,7 +351,7 @@ void FreeBasicServer::onDidChange(Notify_TextDocumentDidChange::notify const& no
 
 void FreeBasicServer::onDidSave(Notify_TextDocumentDidSave::notify const& notify)
 {
-    std::shared_ptr<WorkingFile> file = workingFiles_.OnSave(notify.params.textDocument);
+    std::shared_ptr<WorkingFile> const file = workingFiles_.OnSave(notify.params.textDocument);
     if (!file)
     {
         return;
@@ -371,7 +370,7 @@ void FreeBasicServer::onDidClose(Notify_TextDocumentDidClose::notify const& noti
 
 void FreeBasicServer::reparseAndPublish(std::shared_ptr<WorkingFile> const& file, lsDocumentUri const& uri)
 {
-    std::string_view content = file->GetContentNoLock();
+    std::string_view const content = file->GetContentNoLock();
     fblang::ParseResult parse = fblang::parseDocument(content);
     publishDiagnostics(uri, convertDiagnostics(content, parse));
 
@@ -399,13 +398,13 @@ td_symbol::response FreeBasicServer::onDocumentSymbol(td_symbol::request const& 
     td_symbol::response rsp;
     rsp.id = req.id;
 
-    std::shared_ptr<WorkingFile> file = workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
     if (!file)
     {
         return rsp;
     }
-    std::string_view content = file->GetContentNoLock();
-    fblang::ParseResult parse = fblang::parseDocument(content);
+    std::string_view const content = file->GetContentNoLock();
+    fblang::ParseResult const parse = fblang::parseDocument(content);
     for (auto const& root : parse.roots)
     {
         if (root.kind == fblang::SymbolKind::Scope)
@@ -422,16 +421,16 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const& req)
     td_hover::response rsp;
     rsp.id = req.id;
 
-    std::shared_ptr<WorkingFile> file =
+    std::shared_ptr<WorkingFile> const file =
         workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
     if (!file)
     {
         return rsp;
     }
-    std::string_view content = file->GetContentNoLock();
+    std::string_view const content = file->GetContentNoLock();
     std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
 
-    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::ParseResult const parse = fblang::parseDocument(content);
     fblang::Symbol const* sym = deepestSymbolAt(parse.roots, offset);
     if (!sym)
     {
@@ -488,14 +487,14 @@ td_foldingRange::response FreeBasicServer::onFoldingRange(td_foldingRange::reque
     td_foldingRange::response rsp;
     rsp.id = req.id;
 
-    std::shared_ptr<WorkingFile> file =
+    std::shared_ptr<WorkingFile> const file =
         workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
     if (!file)
     {
         return rsp;
     }
-    std::string_view content = file->GetContentNoLock();
-    fblang::ParseResult parse = fblang::parseDocument(content);
+    std::string_view const content = file->GetContentNoLock();
+    fblang::ParseResult const parse = fblang::parseDocument(content);
 
     for (auto const& br : parse.blockRanges)
     {
@@ -507,13 +506,13 @@ td_foldingRange::response FreeBasicServer::onFoldingRange(td_foldingRange::reque
         }
 
         FoldingRange fr;
-        fr.startLine = start.line;
-        fr.startCharacter = start.character;
-        fr.endLine = closer.line - 1;  // keep the END keyword line visible
+        fr.startLine = static_cast<int>(start.line);
+        fr.startCharacter = static_cast<int>(start.character);
+        fr.endLine = static_cast<int>(closer.line) - 1;  // keep the END keyword line visible
         // -1 character clamps to the end of the fold line in UTF-16 units.
-        fr.endCharacter = fblang::utf16Position(
+        fr.endCharacter = static_cast<int>(fblang::utf16Position(
             content, fblang::byteOffsetForUtf16Position(content, lsPosition(fr.endLine, -1)))
-                              .character;
+                              .character);
         rsp.result.push_back(fr);
     }
     return rsp;
@@ -524,16 +523,16 @@ td_definition::response FreeBasicServer::onDefinition(td_definition::request con
     td_definition::response rsp;
     rsp.id = req.id;
 
-    std::shared_ptr<WorkingFile> file =
+    std::shared_ptr<WorkingFile> const file =
         workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
     if (!file)
     {
         return rsp;
     }
-    std::string_view content = file->GetContentNoLock();
+    std::string_view const content = file->GetContentNoLock();
     std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
 
-    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::ParseResult const parse = fblang::parseDocument(content);
     fblang::Symbol const* decl = fblang::resolveAt(parse, content, offset);
     if (!decl)
     {
@@ -551,16 +550,16 @@ td_references::response FreeBasicServer::onReferences(td_references::request con
     td_references::response rsp;
     rsp.id = req.id;
 
-    std::shared_ptr<WorkingFile> file =
+    std::shared_ptr<WorkingFile> const file =
         workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
     if (!file)
     {
         return rsp;
     }
-    std::string_view content = file->GetContentNoLock();
+    std::string_view const content = file->GetContentNoLock();
     std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
 
-    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::ParseResult const parse = fblang::parseDocument(content);
     fblang::Symbol const* decl = fblang::resolveAt(parse, content, offset);
     if (!decl)
     {
@@ -587,7 +586,7 @@ td_highlight::response FreeBasicServer::onHighlight(td_highlight::request const&
     td_highlight::response rsp;
     rsp.id = req.id;
 
-    std::shared_ptr<WorkingFile> file =
+    std::shared_ptr<WorkingFile> const file =
         workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
     if (!file)
     {
@@ -596,7 +595,7 @@ td_highlight::response FreeBasicServer::onHighlight(td_highlight::request const&
     std::string_view content = file->GetContentNoLock();
     std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
 
-    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::ParseResult const parse = fblang::parseDocument(content);
     fblang::Symbol const* decl = fblang::resolveAt(parse, content, offset);
     if (!decl)
     {
@@ -608,7 +607,7 @@ td_highlight::response FreeBasicServer::onHighlight(td_highlight::request const&
         lsDocumentHighlight hl;
         hl.range = fblang::utf16Range(content, range.beg, range.end);
         hl.kind.emplace(lsDocumentHighlightKind::Text);
-        rsp.result.push_back(std::move(hl));
+        rsp.result.push_back(hl);
     };
     add(decl->selection);
     for (auto const& ref : fblang::occurrencesOf(parse, content, *decl))
@@ -623,19 +622,19 @@ td_completion::response FreeBasicServer::onCompletion(td_completion::request con
     td_completion::response rsp;
     rsp.id = req.id;
 
-    std::shared_ptr<WorkingFile> file =
+    std::shared_ptr<WorkingFile> const file =
         workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
     if (!file)
     {
         return rsp;
     }
-    std::string_view content = file->GetContentNoLock();
+    std::string_view const content = file->GetContentNoLock();
     std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
     std::string const prefix = fblang::toLowerChars(completionPrefix(content, offset));
 
-    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::ParseResult const parse = fblang::parseDocument(content);
 
-    for (std::string_view w : fblang::reservedWords())
+    for (std::string_view const w : fblang::reservedWords())
     {
         if (!hasPrefix(w, prefix))
         {
@@ -711,20 +710,20 @@ td_signatureHelp::response FreeBasicServer::onSignatureHelp(td_signatureHelp::re
     td_signatureHelp::response rsp;
     rsp.id = req.id;
 
-    std::shared_ptr<WorkingFile> file =
+    std::shared_ptr<WorkingFile> const file =
         workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
     if (!file)
     {
         return rsp;
     }
-    std::string_view content = file->GetContentNoLock();
+    std::string_view const content = file->GetContentNoLock();
     std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
 
     fblang::Lexer lx(content);
     std::vector<fblang::Token> toks;
     for (;;)
     {
-        fblang::Token t = lx.next();
+        fblang::Token const t = lx.next();
         toks.push_back(t);
         if (t.kind == fblang::TokenKind::Eof)
         {
@@ -750,7 +749,7 @@ td_signatureHelp::response FreeBasicServer::onSignatureHelp(td_signatureHelp::re
         {
             continue;
         }
-        std::string_view s = t.text();
+        std::string_view const s = t.text();
         if (s == ")")
         {
             if (!openStack.empty())
@@ -792,7 +791,7 @@ td_signatureHelp::response FreeBasicServer::onSignatureHelp(td_signatureHelp::re
     int const openIdx = openStack.back();
     int const nameIdx = calleeStack.back();
 
-    fblang::ParseResult parse = fblang::parseDocument(content);
+    fblang::ParseResult const parse = fblang::parseDocument(content);
     fblang::Token const& calleeTok = toks[static_cast<std::size_t>(nameIdx)];
     fblang::Symbol const* decl = fblang::resolveAt(parse, content, calleeTok.beg);
     if (!decl)
@@ -837,7 +836,7 @@ td_signatureHelp::response FreeBasicServer::onSignatureHelp(td_signatureHelp::re
         {
             continue;
         }
-        std::string_view s = t.text();
+        std::string_view const s = t.text();
         if (s == "(")
         {
             ++depth;
