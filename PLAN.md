@@ -230,9 +230,10 @@ Independent UX wins; LspCpp types confirmed present (`td_semanticTokens_full`,
 - `README.md`: build/test, capability table, position-encoding note, per-editor
   wiring (`docs/editors/` — neovim builtin LSP, minimal vscode client,
   emacs `lsp-mode`).
-- `.github/workflows/ci.yml`: build + `ctest` on a Linux/macOS/Windows matrix
-  (`checkout --recurse-submodules`); expect to fix Windows path handling in
-  `index.cpp` defaults once it runs.
+- `.github/workflows/ci.yml`: **scaffolded** — build + `ctest` on a
+  Linux/macOS/Windows matrix (`checkout --recurse-submodules`); not enabled
+  until the repo is pushed. Expect to fix Windows path handling in
+  `index.cpp` defaults and any MSVC/LspCpp issues once it runs.
 - `workspace/didChangeConfiguration` + `Settings{ includePaths, cacheDirOverride,
   diagnosticsOn, semanticTokensOn, inlayHintsOn }`; index honors `includePaths`
   on rescan. Few keys, fixed defaults, forward-compatible unknown-key ignore.
