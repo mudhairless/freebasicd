@@ -371,8 +371,8 @@ void FreeBasicServer::onDidClose(Notify_TextDocumentDidClose::notify const& noti
 void FreeBasicServer::reparseAndPublish(std::shared_ptr<WorkingFile> const& file, lsDocumentUri const& uri)
 {
     std::string_view const content = file->GetContentNoLock();
-    fblang::ParseResult parse = fblang::parseDocument(content);
-    publishDiagnostics(uri, convertDiagnostics(content, parse));
+    fblang::AnalyzedDoc doc = fblang::analyze(content);
+    publishDiagnostics(uri, convertDiagnostics(content, doc.parse));
 
     if (!index_)
     {
@@ -384,12 +384,15 @@ void FreeBasicServer::reparseAndPublish(std::shared_ptr<WorkingFile> const& file
     {
         return;
     }
-    fblang::IndexedFile entry;
-    entry.path = path;
-    fblang::statFile(path, &entry.mtime, &entry.size);
-    entry.lang = parse.lang;
-    entry.roots = std::move(parse.roots);
-    index_->upsert(std::move(entry));
+    std::uint64_t mtime = 0;
+    std::uint64_t size = 0;
+    fblang::statFile(path, &mtime, &size);
+    // Open-buffer entries are never persisted: an unsaved buffer must not be
+    // written to the disk cache as on-disk truth, nor satisfy scan's
+    // mtime/size cache-hit. include targets still resolve against disk.
+    index_->upsert(fblang::indexedFileFromAnalysis(
+        fblang::normalizePath(path), mtime, size, std::move(doc), index_->root(),
+        /*persisted=*/false));
     index_->flushSoon();
 }
 

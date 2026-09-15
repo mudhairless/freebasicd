@@ -16,6 +16,24 @@ struct SourceRange {
     uint32_t end = 0;
 };
 
+// A `#include [once] "target"` directive as written in the source. Byte-offset
+// ranges; `target` spans the filename literal (quotes excluded). Resolution to
+// an absolute path happens at the index boundary (resolveIncludeTarget).
+struct IncludeDirective {
+    SourceRange line;      // whole `#include ...` line
+    SourceRange target;    // filename literal range (quotes excluded)
+    std::string literal;   // filename as written, case preserved
+    bool once = false;     // `#include once`; `#pragma once` tracked from M6
+};
+
+// One usage of a symbol. `moduleScope` = true when the usage sits at module
+// level (inside no block), i.e. the site is exposed to the #include closure
+// for cross-file resolution.
+struct Occurrence {
+    SourceRange range;
+    bool moduleScope = true;
+};
+
 enum class SymbolKind {
     Sub,
     Function,
@@ -45,6 +63,14 @@ struct Symbol {
     std::string signature;  // readable declaration header (for hover/details)
     std::string doc;        // /// or '' doc-comment block directly above
     std::vector<Symbol> children;
+
+    // M5 occurrence projection. `moduleScope` (true for file roots) marks
+    // declarations whose key is cross-file reachable through the #include
+    // closure; `occurrences` holds every usage site that resolved to this
+    // symbol at analyze time, sorted by `range.beg` with the name token
+    // itself excluded. Open buffers populate both; the disk cache stores them.
+    bool moduleScope = false;
+    std::vector<Occurrence> occurrences;
 };
 
 enum class Severity {

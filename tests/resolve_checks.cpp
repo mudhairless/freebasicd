@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <string>
 
+#include "lexer.h"
 #include "parser.h"
 #include "resolve.h"
 #include "symbols.h"
@@ -101,11 +102,75 @@ static void TestOccurrences()
               "references must be sorted");
 }
 
+static void TestAnalyze()
+{
+    AnalyzedDoc const doc = analyze(kDoc);
+
+    Symbol const* moduleTotal =
+        resolveAt(doc, static_cast<std::uint32_t>(kDoc.find("dim total") + 4));
+    CHECK(moduleTotal && moduleTotal->name == "total");
+    CHECK_MSG(moduleTotal->moduleScope, "the module-level dim is a file-root decl");
+
+    std::vector<Occurrence> const refs = occurrencesOf(doc, *moduleTotal);
+    CHECK_MSG(refs.size() == 2, "module total must be referenced exactly twice");
+    for (auto const& r : refs)
+    {
+        CHECK_MSG(r.range.beg >= kDoc.find("total = total") && r.range.beg < kDoc.find("sub bump"),
+                  "both references sit in the module-level statement");
+        CHECK_MSG(r.moduleScope, "module-level usages carry the module-scope site flag");
+    }
+
+    std::size_t const localDimStart = kDoc.find("dim total", kDoc.find("sub bump"));
+    Symbol const* local = resolveAt(doc, static_cast<std::uint32_t>(localDimStart + 8));
+    CHECK(local && local->kind == SymbolKind::Dim && local->name == "total");
+    CHECK_MSG(!local->moduleScope, "a dim inside the sub is not file-scoped");
+
+    std::vector<Occurrence> const localRefs = occurrencesOf(doc, *local);
+    CHECK_MSG(localRefs.size() == 1, "the sub-local total has exactly one usage");
+    CHECK_MSG(!localRefs[0].moduleScope, "that usage sits inside the sub block");
+
+    Symbol const* param = resolveAt(doc, static_cast<std::uint32_t>(kDoc.find("n = 2")));
+    CHECK(param && param->kind == SymbolKind::Parameter && param->name == "n");
+    CHECK_MSG(occurrencesOf(doc, *param).size() == 2, "param n keeps both of its usages");
+}
+
+static void TestAnalyzeIncludes()
+{
+    std::string const src =
+        "#define X 1\n"
+        "#include once \"a.bi\"\n"
+        "#include \"b.bi\"\n"
+        "#include c.bi\n"
+        "#includeonce d.bi\n";
+    AnalyzedDoc const doc = analyze(src);
+    CHECK(doc.includes.size() == 3);
+
+    CHECK(doc.includes[0].literal == "a.bi");
+    CHECK(doc.includes[0].once);
+    CHECK(doc.includes[0].line.beg == src.find("#include once"));
+    CHECK(doc.includes[0].target.beg == src.find("a.bi"));
+    CHECK(doc.includes[0].target.end == src.find("a.bi") + 4);
+
+    CHECK(doc.includes[1].literal == "b.bi");
+    CHECK(!doc.includes[1].once);
+    CHECK(doc.includes[1].line.beg == src.find("#include \"b.bi\""));
+    CHECK(doc.includes[1].target.beg == src.find("b.bi"));
+    CHECK(doc.includes[1].target.end == src.find("b.bi") + 4);
+
+    CHECK(doc.includes[2].literal == "c.bi");
+    CHECK(!doc.includes[2].once);
+    CHECK(doc.includes[2].line.beg == src.find("#include c.bi"));
+    CHECK(doc.includes[2].target.beg == src.find("c.bi"));
+    CHECK(doc.includes[2].target.end == src.find("c.bi") + 4);
+}
+
 int main()
 {
     TestScopingResolvesCorrectly();
     TestUnknownAndNonIdentifiersResolveNull();
     TestOccurrences();
+    TestAnalyze();
+    TestAnalyzeIncludes();
     std::printf("resolve_checks: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;
 }

@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -14,6 +15,18 @@
 #include "symbols.h"
 
 namespace fblang {
+
+struct AnalyzedDoc;
+
+// One `#include [once] "target"` edge of an indexed file. `target` is the
+// resolved normalized absolute path (empty while the include is unresolved;
+// the M6 include diagnostic pass consumes `literal` + `targetRange`).
+struct IncludeEdge {
+    std::string target;       // normalized absolute path; empty when unresolved
+    std::string literal;      // filename as written, case preserved
+    SourceRange targetRange;  // filename literal range in source (quotes excluded)
+    bool once = false;        // `#include once`
+};
 
 // One workspace file's cached symbol tree plus the disk state it was parsed
 // from. Immutable once published; updates replace the shared_ptr wholesale.
@@ -23,16 +36,31 @@ struct IndexedFile {
     std::uint64_t size = 0;   // content bytes
     std::string lang = "fb";
     std::vector<Symbol> roots;
+    std::vector<IncludeEdge> includes;
+
+    // Whether this entry may be written to the disk cache. False only for
+    // open-buffer entries: an unsaved buffer must never be persisted as if it
+    // were disk truth, and must never satisfy scan's mtime/size cache-hit.
+    // Never serialized.
+    bool persisted = true;
+};
+
+// A module-scope declaration reachable through the #include closure from some
+// workspace file, as answered by WorkspaceIndex::byKey.
+struct KeyedDecl {
+    std::shared_ptr<IndexedFile const> file;  // owner of `decl` (kept alive)
+    Symbol const* decl;
 };
 
 // Per-workspace symbol index. Live queries read an in-memory snapshot; a JSON
-// file per indexed source persists each file's symbols outside the workspace
-// so no symbol ever leaks into the codebase on disk. Every cache filename is
-// the SHA-256 hex digest of the source path it caches (direct lookup), and
-// each workspace owns a subdirectory keyed by the SHA-256 of its root, so
-// workspaces never share entries. The cache is a warm-start optimization only:
-// entries are validated against file mtime/size on load and scan, and a
-// corrupt or mismatched cache file is discarded and rebuilt.
+// file per indexed source persists each file's symbols, occurrences, and
+// include edges outside the workspace so no symbol ever leaks into the
+// codebase on disk. Every cache filename is the SHA-256 hex digest of the
+// source path it caches (direct lookup), and each workspace owns a subdirectory
+// keyed by the SHA-256 of its root, so workspaces never share entries. The
+// cache is a warm-start optimization only: entries are validated against file
+// mtime/size on load and scan, and a corrupt or mismatched cache file is
+// discarded and rebuilt.
 //
 // Thread-safe for the LSP handler pool. A background scan thread parses the
 // workspace; a debounced flusher persists changes atomically (temp + rename).
@@ -69,6 +97,16 @@ public:
     std::vector<std::shared_ptr<IndexedFile const>> snapshot() const;
     std::size_t size() const;
 
+    // Module-scope declarations whose key (lowercase, suffix char included)
+    // equals `key`. Includes open-buffer entries. Answers cross-file
+    // references through the #include closure.
+    std::vector<KeyedDecl> byKey(std::string const& key) const;
+
+    // Transitively included normalized paths of `normalizedPath` (itself
+    // excluded), textual include pre-order, each file once even through a
+    // diamond; cycles (a.bi <-> b.bi) terminate.
+    std::vector<std::string> transitiveIncludes(std::string const& normalizedPath) const;
+
     std::filesystem::path root() const;
     std::filesystem::path cacheDir() const;    // platform index dir (or test override)
     std::filesystem::path indexDir() const;    // this workspace's subdirectory
@@ -82,6 +120,8 @@ private:
     void flushNow();
     void flusherLoop();
     void removeCacheFile(std::string const& normalizedPath);
+    void addToProjections(std::shared_ptr<IndexedFile const> const& f);
+    void subtractFromProjections(std::shared_ptr<IndexedFile const> const& f);
 
     std::filesystem::path root_;
     std::filesystem::path cacheDir_;
@@ -89,6 +129,8 @@ private:
 
     mutable std::mutex mu_;
     std::map<std::string, std::shared_ptr<IndexedFile const>> files_;
+    std::map<std::string, std::vector<KeyedDecl>> byKey_;                 // key -> module-scope decls
+    std::map<std::string, std::vector<IncludeEdge>> outInc_;              // path -> include edges
 
     std::atomic<bool> running_{false};
     std::thread flusher_;
@@ -97,6 +139,27 @@ private:
     std::condition_variable cv_;
     bool dirty_ = false;
 };
+
+// Free functions, exposed for tests.
+
+// Resolve `literal` as an include target: relative to `includingFile`'s
+// directory first, then the workspace `root`; both `/` and `\` separators are
+// accepted. Returns the normalized absolute path, or nullopt when it does not
+// exist (kept as an unresolved edge for the M6 include diagnostics).
+std::optional<std::string> resolveIncludeTarget(std::string_view literal,
+                                                std::filesystem::path const& includingFile,
+                                                std::filesystem::path const& workspaceRoot);
+
+// An IndexedFile built from one shared analysis. `doc`, `mtime`, and `size`
+// describe the file the buffer or scan produced; include targets are resolved
+// against `workspaceRoot` from the including file's directory. `doc`'s symbol
+// tree is moved into `roots` (a moved-from AnalyzedDoc must not be reused for
+// indexing). `persisted=false` marks an open-buffer entry that must never be
+// written to the disk cache.
+IndexedFile indexedFileFromAnalysis(std::string const& normalizedPath, std::uint64_t mtime,
+                                    std::uint64_t size, AnalyzedDoc&& doc,
+                                    std::filesystem::path const& workspaceRoot,
+                                    bool persisted);
 
 // Normalization + keying helpers, exposed for tests.
 std::string sha256Hex(std::string_view data);

@@ -7,11 +7,15 @@
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
 
+#include "lexer.h"
 #include "parser.h"
+#include "resolve.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <optional>
 #include <set>
@@ -21,7 +25,7 @@ namespace fblang {
 
 namespace {
 
-constexpr int kIndexVersion = 2;
+constexpr int kIndexVersion = 3;
 constexpr auto kFlushDebounce = std::chrono::milliseconds(1500);
 
 // Skip directories that never hold authored sources.
@@ -75,6 +79,23 @@ void writeSymbol(rapidjson::Writer<rapidjson::StringBuffer>& w, Symbol const& s)
     w.String(s.signature.c_str(), static_cast<rapidjson::SizeType>(s.signature.size()));
     w.Key("doc");
     w.String(s.doc.c_str(), static_cast<rapidjson::SizeType>(s.doc.size()));
+    w.Key("moduleScope");
+    w.Bool(s.moduleScope);
+    w.Key("occurrences");
+    w.StartArray();
+    for (Occurrence const& o : s.occurrences)
+    {
+        w.StartObject();
+        w.Key("range");
+        w.StartArray();
+        w.Uint(o.range.beg);
+        w.Uint(o.range.end);
+        w.EndArray();
+        w.Key("moduleScope");
+        w.Bool(o.moduleScope);
+        w.EndObject();
+    }
+    w.EndArray();
     w.Key("children");
     w.StartArray();
     for (Symbol const& c : s.children)
@@ -128,6 +149,33 @@ bool readSymbol(rapidjson::Value const& v, Symbol* out)
     };
     out->signature = getStr("signature");
     out->doc = getStr("doc");
+    out->moduleScope = false;
+    if (v.HasMember("moduleScope") && v["moduleScope"].IsBool())
+    {
+        out->moduleScope = v["moduleScope"].GetBool();
+    }
+    out->occurrences.clear();
+    if (v.HasMember("occurrences") && v["occurrences"].IsArray())
+    {
+        for (auto const& e : v["occurrences"].GetArray())
+        {
+            if (!e.IsObject())
+            {
+                return false;
+            }
+            Occurrence occ;
+            if (!readSegment(e, "range", &occ.range))
+            {
+                return false;
+            }
+            occ.moduleScope = true;
+            if (e.HasMember("moduleScope") && e["moduleScope"].IsBool())
+            {
+                occ.moduleScope = e["moduleScope"].GetBool();
+            }
+            out->occurrences.push_back(occ);
+        }
+    }
     if (v.HasMember("children") && v["children"].IsArray())
     {
         for (auto const& c : v["children"].GetArray())
@@ -167,6 +215,25 @@ std::string serializeFile(IndexedFile const& f)
         writeSymbol(w, s);
     }
     w.EndArray();
+    w.Key("includes");
+    w.StartArray();
+    for (IncludeEdge const& e : f.includes)
+    {
+        w.StartObject();
+        w.Key("target");
+        w.String(e.target.c_str(), static_cast<rapidjson::SizeType>(e.target.size()));
+        w.Key("literal");
+        w.String(e.literal.c_str(), static_cast<rapidjson::SizeType>(e.literal.size()));
+        w.Key("targetRange");
+        w.StartArray();
+        w.Uint(e.targetRange.beg);
+        w.Uint(e.targetRange.end);
+        w.EndArray();
+        w.Key("once");
+        w.Bool(e.once);
+        w.EndObject();
+    }
+    w.EndArray();
     w.EndObject();
     return std::string(buf.GetString(), buf.GetSize());
 }
@@ -204,6 +271,30 @@ bool deserializeFile(std::string_view json, IndexedFile* out)
         }
         out->roots.push_back(std::move(root));
     }
+    out->includes.clear();
+    if (doc.HasMember("includes") && doc["includes"].IsArray())
+    {
+        for (auto const& ie : doc["includes"].GetArray())
+        {
+            if (!ie.IsObject())
+            {
+                continue;
+            }
+            IncludeEdge e;
+            if (ie.HasMember("target") && ie["target"].IsString())
+            {
+                e.target = ie["target"].GetString();
+            }
+            if (ie.HasMember("literal") && ie["literal"].IsString())
+            {
+                e.literal = ie["literal"].GetString();
+            }
+            readSegment(ie, "targetRange", &e.targetRange);
+            e.once = ie.HasMember("once") && ie["once"].IsBool() && ie["once"].GetBool();
+            out->includes.push_back(std::move(e));
+        }
+    }
+    out->persisted = true;
     return true;
 }
 
@@ -241,6 +332,52 @@ bool writeAtomic(std::filesystem::path const& path, std::string const& json)
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Projection helpers (called under mu_ by upsert / remove / scan / load)
+// ---------------------------------------------------------------------------
+
+void WorkspaceIndex::addToProjections(std::shared_ptr<IndexedFile const> const& f)
+{
+    outInc_[f->path] = f->includes;
+    for (Symbol const& root : f->roots)
+    {
+        if (root.key.empty())
+        {
+            continue;
+        }
+        byKey_[root.key].push_back(KeyedDecl{f, &root});
+    }
+}
+
+void WorkspaceIndex::subtractFromProjections(std::shared_ptr<IndexedFile const> const& f)
+{
+    outInc_.erase(f->path);
+    for (Symbol const& root : f->roots)
+    {
+        if (root.key.empty())
+        {
+            continue;
+        }
+        auto it = byKey_.find(root.key);
+        if (it == byKey_.end())
+        {
+            continue;
+        }
+        auto& vec = it->second;
+        vec.erase(std::remove_if(vec.begin(), vec.end(),
+                                 [p = f.get()](KeyedDecl const& kd) { return kd.file.get() == p; }),
+                  vec.end());
+        if (vec.empty())
+        {
+            byKey_.erase(it);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Normalization + keying helpers
+// ---------------------------------------------------------------------------
 
 std::string sha256Hex(std::string_view data)
 {
@@ -353,6 +490,63 @@ bool statFile(std::filesystem::path const& path, std::uint64_t* mtime, std::uint
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Free functions (M5)
+// ---------------------------------------------------------------------------
+
+std::optional<std::string> resolveIncludeTarget(std::string_view literal,
+                                                std::filesystem::path const& includingFile,
+                                                std::filesystem::path const& workspaceRoot)
+{
+    std::string s(literal);
+    std::replace(s.begin(), s.end(), '\\', '/');
+    std::filesystem::path const lit(s);
+    std::error_code ec;
+    std::filesystem::path const ownDir = includingFile.parent_path();
+    std::filesystem::path candidate = ownDir / lit;
+    if (std::filesystem::is_regular_file(candidate, ec))
+    {
+        return normalizePath(candidate);
+    }
+    candidate = workspaceRoot / lit;
+    if (std::filesystem::is_regular_file(candidate, ec))
+    {
+        return normalizePath(candidate);
+    }
+    return std::nullopt;
+}
+
+IndexedFile indexedFileFromAnalysis(std::string const& normalizedPath, std::uint64_t mtime,
+                                    std::uint64_t size, AnalyzedDoc&& doc,
+                                    std::filesystem::path const& workspaceRoot,
+                                    bool persisted)
+{
+    IndexedFile f;
+    f.path = normalizedPath;
+    f.mtime = mtime;
+    f.size = size;
+    f.lang = doc.parse.lang;
+    f.roots = std::move(doc.parse.roots);
+    f.persisted = persisted;
+    for (IncludeDirective const& inc : doc.includes)
+    {
+        IncludeEdge e;
+        e.literal = inc.literal;
+        e.targetRange = inc.target;
+        e.once = inc.once;
+        if (std::optional<std::string> t = resolveIncludeTarget(inc.literal, normalizedPath, workspaceRoot))
+        {
+            e.target = std::move(*t);
+        }
+        f.includes.push_back(std::move(e));
+    }
+    return f;
+}
+
+// ---------------------------------------------------------------------------
+// WorkspaceIndex lifecycle
+// ---------------------------------------------------------------------------
+
 WorkspaceIndex::WorkspaceIndex(std::filesystem::path const& root, std::filesystem::path const& cacheDir)
     : root_(std::filesystem::absolute(root).lexically_normal())
 {
@@ -393,6 +587,10 @@ void WorkspaceIndex::close()
     }
     flushNow();
 }
+
+// ---------------------------------------------------------------------------
+// Scan
+// ---------------------------------------------------------------------------
 
 void WorkspaceIndex::scan(bool async)
 {
@@ -457,8 +655,10 @@ void WorkspaceIndex::scan(bool async)
         {
             std::lock_guard<std::mutex> const lk(mu_);
             auto found = files_.find(norm);
-            if (found != files_.end() && found->second->mtime == mtime &&
-                found->second->size == size)
+            // A non-persisted open-buffer entry must never satisfy scan's
+            // cache-hit: scan is disk truth, buffers are live truth.
+            if (found != files_.end() && found->second->persisted &&
+                found->second->mtime == mtime && found->second->size == size)
             {
                 continue;
             }
@@ -469,14 +669,8 @@ void WorkspaceIndex::scan(bool async)
         {
             continue;
         }
-        ParseResult parse = parseDocument(content);
-        IndexedFile f;
-        f.path = norm;
-        f.mtime = mtime;
-        f.size = size;
-        f.lang = parse.lang;
-        f.roots = std::move(parse.roots);
-        upsert(std::move(f));
+        AnalyzedDoc doc = analyze(content);
+        upsert(indexedFileFromAnalysis(norm, mtime, size, std::move(doc), root_, true));
         changed = true;
     }
 
@@ -484,9 +678,9 @@ void WorkspaceIndex::scan(bool async)
         std::lock_guard<std::mutex> const lk(mu_);
         for (auto itm = files_.begin(); itm != files_.end();)
         {
-            std::filesystem::path const p(itm->second->path);
-            if (!std::filesystem::exists(p, ec) || seen.count(itm->second->path) == 0)
+            if (!std::filesystem::exists(itm->second->path, ec) || seen.count(itm->second->path) == 0)
             {
+                subtractFromProjections(itm->second);
                 removeCacheFile(itm->second->path);
                 itm = files_.erase(itm);
             }
@@ -502,6 +696,10 @@ void WorkspaceIndex::scan(bool async)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Insert / remove
+// ---------------------------------------------------------------------------
+
 void WorkspaceIndex::upsert(IndexedFile entry)
 {
     entry.path = normalizePath(entry.path);
@@ -509,23 +707,39 @@ void WorkspaceIndex::upsert(IndexedFile entry)
     // `operator=` first, so moving `entry` into the shared_ptr must not race
     // the subscript's key evaluation (which would leave an empty key).
     std::string const key = entry.path;
-    std::lock_guard<std::mutex> const lk(mu_);
-    files_[key] = std::make_shared<IndexedFile const>(std::move(entry));
+    std::shared_ptr<IndexedFile const> ptr;
+    {
+        std::lock_guard<std::mutex> const lk(mu_);
+        auto existing = files_.find(key);
+        if (existing != files_.end())
+        {
+            subtractFromProjections(existing->second);
+        }
+        ptr = std::make_shared<IndexedFile const>(std::move(entry));
+        files_[key] = ptr;
+        addToProjections(ptr);
+    }
 }
 
 void WorkspaceIndex::remove(std::string const& path)
 {
     std::string const norm = normalizePath(path);
-    bool erased = false;
     {
         std::lock_guard<std::mutex> const lk(mu_);
-        erased = files_.erase(norm) > 0;
+        auto it = files_.find(norm);
+        if (it == files_.end())
+        {
+            return;
+        }
+        subtractFromProjections(it->second);
+        files_.erase(it);
     }
-    if (erased)
-    {
-        removeCacheFile(norm);
-    }
+    removeCacheFile(norm);
 }
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
 
 std::vector<std::shared_ptr<IndexedFile const>> WorkspaceIndex::snapshot() const
 {
@@ -544,6 +758,50 @@ std::size_t WorkspaceIndex::size() const
     std::lock_guard<std::mutex> const lk(mu_);
     return files_.size();
 }
+
+std::vector<KeyedDecl> WorkspaceIndex::byKey(std::string const& key) const
+{
+    std::lock_guard<std::mutex> const lk(mu_);
+    auto it = byKey_.find(key);
+    if (it == byKey_.end())
+    {
+        return {};
+    }
+    return it->second;
+}
+
+std::vector<std::string> WorkspaceIndex::transitiveIncludes(std::string const& normalizedPath) const
+{
+    std::lock_guard<std::mutex> const lk(mu_);
+    std::vector<std::string> out;
+    std::set<std::string> visited;
+    visited.insert(normalizedPath);
+    std::function<void(std::string const&)> visit = [&](std::string const& node) {
+        auto it = outInc_.find(node);
+        if (it == outInc_.end())
+        {
+            return;
+        }
+        for (IncludeEdge const& e : it->second)
+        {
+            if (e.target.empty())
+            {
+                continue;
+            }
+            if (visited.insert(e.target).second)
+            {
+                out.push_back(e.target);
+                visit(e.target);
+            }
+        }
+    };
+    visit(normalizedPath);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Accessors
+// ---------------------------------------------------------------------------
 
 std::filesystem::path WorkspaceIndex::root() const
 {
@@ -564,6 +822,10 @@ std::filesystem::path WorkspaceIndex::cachePathFor(std::string const& normalized
 {
     return cacheFileFor(indexDir_, normalizedPath);
 }
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
 
 bool WorkspaceIndex::loadFromDisk()
 {
@@ -608,7 +870,9 @@ bool WorkspaceIndex::loadFromDisk()
         for (IndexedFile& f : files)
         {
             std::string const key = f.path;  // capture before the move (see upsert)
-            files_[key] = std::make_shared<IndexedFile const>(std::move(f));
+            std::shared_ptr<IndexedFile const> const ptr = std::make_shared<IndexedFile const>(std::move(f));
+            files_[key] = ptr;
+            addToProjections(ptr);
         }
     }
     return !files.empty();
@@ -656,12 +920,15 @@ void WorkspaceIndex::flushNow()
             files.push_back(*kv.second);
         }
     }
-    // Persist only entries that still match their last parsed disk state; a
-    // live buffer that diverged from disk must never be written as if it were
-    // the on-disk file, or the next boot would treat buffer symbols as disk
-    // truth after a matching mtime/size check.
+    // Persist only entries that were parsed from disk (not open buffers)
+    // and whose stats still match the source file; a buffer that diverged
+    // from disk must never be written as if it were on-disk truth.
     for (IndexedFile const& f : files)
     {
+        if (!f.persisted)
+        {
+            continue;
+        }
         std::uint64_t mtime = 0;
         std::uint64_t size = 0;
         if (statFile(f.path, &mtime, &size) && mtime == f.mtime && size == f.size)

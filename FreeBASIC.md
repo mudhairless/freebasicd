@@ -228,3 +228,11 @@ to "the language is what the lexer does":
 4. **`''` doc comments** are our LSP convention; document as such (§5), never
    as a language feature.
 5. **Type sizes** must not be hardcoded (§2): Integer=8 here, 4 on 32-bit.
+6. **Include-once divergence.** The M5 include graph treats a header as
+   included once per *path*, closing diamonds and cycles by visited set.
+   Real `fbc` runs `#include`/`#include once`/`#pragma once`/`#ifndef` guard
+   macros faithfully, so a path reached twice under different guard states can
+   legally be processed twice (and `#ifndef`-guarded headers can self-include
+   to form an include-once guard). We do not evaluate guard macros yet; a
+   self-include is treated as a cycle and terminated like `#include once`.
+   `#pragma once` itself is recorded as M6 metadata, not yet enforced.

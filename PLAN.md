@@ -15,7 +15,7 @@ remaining work.
 | M2 — Lexer + parser language layer, dialects, fbc corpus | done |
 | M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done |
 | M4 — persistent workspace symbol index + `workspace/symbol` | done (rev'd 2026: platform index dir, SHA-256-keyed per-file cache) |
-| M5 — workspace spine: occurrence projection + include graph | next |
+| M5 — workspace spine: occurrence projection + include graph | done |
 | M6 — include resolution + watched files + missing-include diagnostics | next |
 | M7 — cross-file definition / references / highlight / completion | next |
 | M8 — `prepareRename` + `rename` (workspace) | next |
@@ -128,13 +128,18 @@ index **before** building features on it.
 - **Buffer isolation:** open-buffer entries are `persisted=false` — served to
   live queries but never written by the flusher and never trusted by scan's
   mtime/size cache-hit. Fixes the §4.6 staleness wart.
-- Files: `symbols.h`, `parser.cpp`, `resolve.cpp` (extract `analyze`),
-  `index.{h,cpp}`, `index_checks` + new corpus cases.
+- Files: `symbols.h`, `resolve.{h,cpp}` (shared `analyze` + occurrence sweep,
+  legacy ParseResult wrappers internally analyze-backed), `index.{h,cpp}`,
+  `session.cpp` (open-buffer upserts go through `analyze`, `persisted=false`),
+  `resolve_checks` + `index_checks` cases. **Delivery deviation:** `parser.cpp`
+  untouched (include extraction uses the public `preprocessorWord()` seam);
+  `Storage`/`Shared` tagging deferred to M7 (`moduleScope` = "is a file root").
 - Acceptance: `byKey_`/`outInc_` round-trip through the cache; transitive
   closure correct on diamond + cycle (`a.bi`↔`b.bi`); non-persisted entries
   never reach disk and never shadow scan hits; all 7 suites green.
 - Risk: occurrence-vector memory for large workspaces (mitigate: sites only,
-  no payload text; FB files are tiny).
+  no payload text; FB files are tiny). Residual: request-side re-analyze per
+  call remains until the M10 parse cache.
 
 ### M6 — Include resolution + convergence
 
