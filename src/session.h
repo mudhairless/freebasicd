@@ -1,8 +1,10 @@
 #pragma once
 
 #include "LibLsp/lsp/LanguageSession.h"
+#include "LibLsp/lsp/client/registerCapability.h"
 #include "LibLsp/lsp/general/exit.h"
 #include "LibLsp/lsp/general/initialize.h"
+#include "LibLsp/lsp/general/initialized.h"
 #include "LibLsp/lsp/general/lsTextDocumentClientCapabilities.h"
 #include "LibLsp/lsp/general/shutdown.h"
 #include "LibLsp/lsp/lsAny.h"
@@ -50,12 +52,20 @@ private:
 
     WorkingFiles workingFiles_;
 
+    // Client negotiated `workspace/didChangeWatchedFiles` in initialize; a
+    // dynamic client is registered via client/registerCapability on the
+    // `initialized` notification, a static client is served the watchers in
+    // the initialize reply.
+    bool watchedFilesDynamic_ = false;
+
     // Durable per-workspace symbol index (M4); null until a workspace root is
     // known (initialize or first opened file).
     std::unique_ptr<fblang::WorkspaceIndex> index_;
     std::filesystem::path indexCacheDir_;  // override for tests (default = platform data dir)
 
     void ensureWorkspaceIndex(std::filesystem::path const& root);
+
+    void onInitialized(Notify_InitializedNotification::notify const& notify);
 
     td_shutdown::response onShutdown(td_shutdown::request const& req);
     void onDidOpen(Notify_TextDocumentDidOpen::notify& notify);

@@ -237,6 +237,7 @@ void FreeBasicServer::registerHandlers()
                 exitHandler_();
             }
         });
+    session_.on([this](Notify_InitializedNotification::notify const& notify) { onInitialized(notify); });
     session_.on([this](Notify_TextDocumentDidOpen::notify& notify) { onDidOpen(notify); });
     session_.on([this](Notify_TextDocumentDidChange::notify const& notify) { onDidChange(notify); });
     session_.on([this](Notify_TextDocumentDidSave::notify const& notify) { onDidSave(notify); });
@@ -250,6 +251,12 @@ void FreeBasicServer::registerHandlers()
     session_.on([this](td_completion::request const& req) { return onCompletion(req); });
     session_.on([this](td_signatureHelp::request const& req) { return onSignatureHelp(req); });
     session_.on([this](wp_symbol::request const& req) { return onWorkspaceSymbol(req); });
+
+    // The server->client client/registerCapability request is sent from the
+    // `initialized` handler, after the parse/notification pools are running;
+    // per RemoteEndPoint its response parser must be in place before
+    // startProcessingMessages().
+    session_.endpoint().registerResponseParser<Req_ClientRegisterCapability::request>();
 }
 
 td_initialize::response FreeBasicServer::onInitialize(td_initialize::request const& req)
@@ -289,6 +296,24 @@ td_initialize::response FreeBasicServer::onInitialize(td_initialize::request con
     rsp.result.capabilities.workspaceSymbolProvider.emplace();
     rsp.result.capabilities.workspaceSymbolProvider->first.emplace(true);
 
+    // Watched-file negotiation: a client with
+    // workspace.didChangeWatchedFiles.dynamicRegistration gets the watcher
+    // via client/registerCapability on `initialized`; everyone else is served
+    // the static watchers right here.
+    watchedFilesDynamic_ =
+        req.params.capabilities.workspace && req.params.capabilities.workspace->didChangeWatchedFiles &&
+        req.params.capabilities.workspace->didChangeWatchedFiles->dynamicRegistration &&
+        *req.params.capabilities.workspace->didChangeWatchedFiles->dynamicRegistration;
+    if (!watchedFilesDynamic_)
+    {
+        lsFileSystemWatcher watcher;
+        watcher.globPattern = "**/*.{bas,bi}";
+        watcher.kind.emplace(7);  // WatchKind Create | Change | Delete
+        rsp.result.capabilities.workspace.emplace();
+        rsp.result.capabilities.workspace->didChangeWatchedFiles.emplace();
+        rsp.result.capabilities.workspace->didChangeWatchedFiles->watchers.push_back(std::move(watcher));
+    }
+
     // Workspace root: rootUri wins over workspaceFolders; fall back to the
     // first opened file when neither is present (single-file mode).
     std::string rootPath;
@@ -323,6 +348,30 @@ td_shutdown::response FreeBasicServer::onShutdown(td_shutdown::request const& re
     rsp.result = result;
 
     return rsp;
+}
+
+void FreeBasicServer::onInitialized(Notify_InitializedNotification::notify const& notify)
+{
+    // The client has seen the initialize reply; a dynamic client now gets the
+    // watched-file registration. Notifications are FIFO, so this cannot race
+    // ahead of `initialized`.
+    (void)notify;
+    if (!watchedFilesDynamic_)
+    {
+        return;
+    }
+
+    Req_ClientRegisterCapability::request request =
+        session_.endpoint().createRequest<Req_ClientRegisterCapability::request>();
+
+    Registration registration = Registration::Create("workspace/didChangeWatchedFiles");
+    lsp::Any options;
+    options.SetJsonString(R"({"watchers":[{"globPattern":"**/*.{bas,bi}","kind":7}]})",
+                          lsp::Any::kObjectType);
+    registration.registerOptions.emplace(std::move(options));
+    request.params.registrations.push_back(std::move(registration));
+
+    session_.endpoint().send(request);
 }
 
 void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify& notify)

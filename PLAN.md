@@ -16,7 +16,7 @@ remaining work.
 | M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done |
 | M4 — persistent workspace symbol index + `workspace/symbol` | done (rev'd 2026: platform index dir, SHA-256-keyed per-file cache) |
 | M5 — workspace spine: occurrence projection + include graph | done |
-| M5.5 — lifecycle: `initialized` + dynamic capability registration | next |
+| M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
 | M6 — include resolution + watched files + missing-include diagnostics | next |
 | M7 — cross-file definition / references / highlight / completion | next |
 | M8 — `prepareRename` + `rename` (workspace) | next |
@@ -103,13 +103,12 @@ plan engineers around:
 5. Session re-parses the whole buffer on every request (`documentSymbol`,
    hover, folding, def/refs/highlight, completion all call `parseDocument`);
    `resolve.cpp` re-lexes on every call (`lexAll` per `resolveAt`).
-6. No `initialized` handler / dynamic capability registration, and
-   `workspace/didChangeWatchedFiles` unhandled: the index scans only at
-   `initialize`, external `.bi` edits go unnoticed until restart, and there is
-   no server→client `registerCapability` path (needed once M11 settings can
-   change the watcher set). `workspace/didChangeWorkspaceFolders` is likewise
-   unhandled (single-root assumption). (The M5-era staleness wart — unsaved
-   buffers persisted to disk — is fixed.)
+6. `initialized` + dynamic capability registration landed (M5.5): a dynamic
+   client is registered for `workspace/didChangeWatchedFiles` on `initialized`
+   via `client/registerCapability`; a static client is served watchers in the
+   `initialize` reply. The watcher *handler* and debounced rescan are still M6
+   work, and `workspace/didChangeWorkspaceFolders` remains unhandled
+   (single-root assumption).
 7. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
    built-in intrinsic-function completion catalog.
 8. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,

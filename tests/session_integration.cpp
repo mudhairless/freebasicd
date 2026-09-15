@@ -109,6 +109,15 @@ char const kDidCloseFrame[] =
 char const* kShutdownFrame = R"FB({"jsonrpc":"2.0","id":2,"method":"shutdown","params":null})FB";
 char const* kExitFrame = R"FB({"jsonrpc":"2.0","method":"exit","params":null})FB";
 
+// A client that opts into `workspace.didChangeWatchedFiles` dynamic
+// registration; must be registered for it on the `initialized` notification.
+char const kInitializeDynamicFrame[] =
+    R"FB({"jsonrpc":"2.0","id":"init","method":"initialize","params":{)FB"
+    R"FB("capabilities":{"workspace":{"didChangeWatchedFiles":{"dynamicRegistration":true}}}}})FB";
+
+char const* kInitializedFrame =
+    R"FB({"jsonrpc":"2.0","method":"initialized","params":{}})FB";
+
 std::string WaitForPublishedUri(std::shared_ptr<StringOStream> const& output, size_t count)
 {
     std::string cur;
@@ -599,6 +608,85 @@ void TestExitNotifiesSession()
     session.stop();
 }
 
+void TestInitializeServesStaticWatchersToNonDynamicClient()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kInitializeFrame));
+    std::string const response = WaitForOutputContaining(output, "\"id\":\"init\"");
+
+    Expect(response.find("\"didChangeWatchedFiles\"") != std::string::npos,
+           "a non-dynamic client must get the static watcher capability in the initialize reply");
+    Expect(response.find("\"globPattern\":\"**/*.{bas,bi}\"") != std::string::npos,
+           "the static watcher must watch the FreeBASIC source globs");
+    Expect(response.find("\"kind\":7") != std::string::npos,
+           "the static watcher must cover create/change/delete events");
+
+    input->append(MakeLspFrame(kInitializedFrame));
+    bool sawRegistration = false;
+    for (int i = 0; i < 20; ++i)
+    {
+        if (output->snapshot().find("\"method\":\"client/registerCapability\"") != std::string::npos)
+        {
+            sawRegistration = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    Expect(!sawRegistration,
+           "a non-dynamic client must not receive a registerCapability request after initialized");
+
+    session.stop();
+}
+
+void TestInitializedRegistersWatchedFilesDynamically()
+{
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    input->append(MakeLspFrame(kInitializeDynamicFrame));
+    std::string const init = WaitForOutputContaining(output, "\"id\":\"init\"");
+    Expect(init.find("\"didChangeWatchedFiles\"") == std::string::npos,
+           "a dynamic client must not be served the static watcher capability");
+
+    input->append(MakeLspFrame(kInitializedFrame));
+    std::string const registered = WaitForOutputContaining(output, "\"client/registerCapability\"");
+
+    Expect(registered.find("\"method\":\"workspace/didChangeWatchedFiles\"") != std::string::npos,
+           "the registerCapability request must register the watched-files method");
+    Expect(registered.find("\"method\":\"client/registerCapability\"") != std::string::npos,
+           "the server must send the registerCapability request to the client");
+    Expect(registered.find("\"globPattern\":\"**/*.{bas,bi}\"") != std::string::npos,
+           "the registration must watch the FreeBASIC source globs");
+    Expect(registered.find("\"kind\":7") != std::string::npos,
+           "the registration must cover create/change/delete events");
+
+    std::size_t registrationCount = 0;
+    std::size_t pos = 0;
+    while ((pos = registered.find("\"method\":\"client/registerCapability\"", pos)) != std::string::npos)
+    {
+        ++registrationCount;
+        pos += 1;
+    }
+    Expect(registrationCount == 1,
+           "a dynamic client must receive exactly one registerCapability request");
+
+    session.stop();
+}
+
 void TestEndToEndLifecycle()
 {
     lsp::NullLog log;
@@ -744,6 +832,8 @@ int main(int argc, char** argv)
     RUN_TEST(TestDidChangePushesDiagnostics);
     RUN_TEST(TestDidCloseEvictsAndPublishes);
     RUN_TEST(TestShutdownReturnsNullResult);
+    RUN_TEST(TestInitializeServesStaticWatchersToNonDynamicClient);
+    RUN_TEST(TestInitializedRegistersWatchedFilesDynamically);
     RUN_TEST(TestExitNotifiesSession);
     RUN_TEST(TestEndToEndLifecycle);
     return test::Failures() == 0 ? 0 : 1;
