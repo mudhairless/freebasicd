@@ -811,6 +811,76 @@ std::string const request =
     std::filesystem::remove_all(sandbox, ec);
 }
 
+// Files outside the workspace root must never be indexed: opening one and
+// querying workspace/symbol must not surface its symbols.
+void TestOutsideFileNotIndexed()
+{
+    static std::atomic<long> counter{0};
+    std::filesystem::path const sandbox = std::filesystem::temp_directory_path() /
+        ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+         std::to_string(counter.fetch_add(1)));
+    std::filesystem::path const wsDir = sandbox / "ws";
+    std::filesystem::path const outsideDir = sandbox / "outside";
+    std::filesystem::create_directories(wsDir);
+    std::filesystem::create_directories(outsideDir);
+    {
+        std::ofstream out(wsDir / "main.bas");
+        out << "dim mainVal as integer\n";
+        std::ofstream out2(outsideDir / "dep.bi");
+        out2 << "sub outsideFunc()\nend sub\n";
+    }
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.setIndexCacheDir(sandbox / "cache");
+    server.registerHandlers();
+    session.start(input, output);
+
+    std::string const rootUri = "file://" + wsDir.string();
+    std::string const initFrame =
+        R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" + rootUri
+        + "\"}}";
+    input->append(MakeLspFrame(initFrame.c_str()));
+    Expect(WaitForOutputContaining(output, "\"id\":\"init\"").find("\"workspaceSymbolProvider\":") !=
+               std::string::npos,
+           "initialize must advertise workspace/symbol");
+
+    // Open a header living outside the workspace root.
+    std::string const outsideUri = "file://" + (outsideDir / "dep.bi").string();
+    std::string const openFrame =
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+        R"({"uri":")" + outsideUri + R"(","languageId":"basic","version":1,"text":")"
+        + ToJsonString("sub outsideFunc()\nend sub\n") + "\"}}}";
+    input->append(MakeLspFrame(openFrame.c_str()));
+
+    auto querySymbol = [&](int n, std::string const& name) {
+        std::string const id = "\"id\":\"ext" + std::to_string(n) + "\"";
+        std::string const request =
+            R"({"jsonrpc":"2.0","id":"ext)" + std::to_string(n)
+            + R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+        input->append(MakeLspFrame(request.c_str()));
+        return WaitForOutputContaining(output, id, 50);
+    };
+
+    // Give open+scan time to settle; the outside file's symbol must never
+    // appear in workspace/symbol.
+    bool sawOutside = false;
+    for (int n = 0; n < 40 && !sawOutside; ++n)
+    {
+        sawOutside = querySymbol(n, "outsideFunc").find("\"name\":\"outsideFunc\"") !=
+                     std::string::npos;
+    }
+    Expect(!sawOutside, "workspace/symbol must not return symbols from outside the root");
+
+    session.stop();
+    std::error_code ec;
+    std::filesystem::remove_all(sandbox, ec);
+}
+
 void TestMissingIncludePublishesDiagnostic()
 {
     static std::atomic<long> counter{0};
@@ -967,6 +1037,7 @@ int main(int argc, char** argv)
     RUN_TEST(TestHoverLinksKeywordDocs);
     RUN_TEST(TestSignatureHelpShowsParamsAndActiveIndex);
     RUN_TEST(TestWorkspaceSymbolIndexesWorkspace);
+    RUN_TEST(TestOutsideFileNotIndexed);
     RUN_TEST(TestDidChangePushesDiagnostics);
     RUN_TEST(TestDidCloseEvictsAndPublishes);
     RUN_TEST(TestShutdownReturnsNullResult);

@@ -553,10 +553,29 @@ IndexedFile indexedFileFromAnalysis(std::string const& normalizedPath, std::uint
 // ---------------------------------------------------------------------------
 
 WorkspaceIndex::WorkspaceIndex(std::filesystem::path const& root, std::filesystem::path const& cacheDir)
-    : root_(std::filesystem::absolute(root).lexically_normal())
+    : root_(std::filesystem::absolute(root).lexically_normal()),
+      rootNorm_(normalizePath(root_))
 {
     cacheDir_ = cacheDir.empty() ? defaultCacheDir() : cacheDir;
     indexDir_ = cacheDir_ / workspaceKey(normalizePath(root_));
+}
+
+bool WorkspaceIndex::isInsideRoot(std::string const& normalizedPath) const
+{
+    if (normalizedPath.size() < rootNorm_.size())
+    {
+        return false;
+    }
+    if (normalizedPath.compare(0, rootNorm_.size(), rootNorm_) != 0)
+    {
+        return false;
+    }
+    if (normalizedPath.size() == rootNorm_.size())
+    {
+        return true;  // the root itself (a directory, never a source file)
+    }
+    char const next = normalizedPath[rootNorm_.size()];
+    return next == '/' || next == '\\';
 }
 
 WorkspaceIndex::~WorkspaceIndex()
@@ -658,6 +677,13 @@ void WorkspaceIndex::scan(bool async)
             continue;
         }
         std::string const norm = normalizePath(entry.path());
+        // Defensive: a junction/symlink inside the root could resolve to a
+        // tree outside it. The index is strictly workspace-scoped.
+        if (!isInsideRoot(norm))
+        {
+            it.disable_recursion_pending();
+            continue;
+        }
         seen.insert(norm);
 
         std::uint64_t mtime = 0;
@@ -752,6 +778,15 @@ void WorkspaceIndex::rescanLoop()
 void WorkspaceIndex::upsert(IndexedFile entry)
 {
     entry.path = normalizePath(entry.path);
+    // The index is strictly workspace-scoped: never index (or persist) files
+    // outside the root, e.g. an open-buffer edit to a system header or a file
+    // in a sibling directory. Drop a stray on-disk cache entry for such a
+    // path left by an older build.
+    if (!isInsideRoot(entry.path))
+    {
+        removeCacheFile(entry.path);
+        return;
+    }
     // Capture the key before the move: C++17 sequences the right operand of
     // `operator=` first, so moving `entry` into the shared_ptr must not race
     // the subscript's key evaluation (which would leave an empty key).
@@ -909,6 +944,13 @@ bool WorkspaceIndex::loadFromDisk()
         // else is a misplaced or corrupt entry and is not trusted.
         if (p.stem().string() != sha256Hex(norm))
         {
+            continue;
+        }
+        // The index is strictly workspace-scoped; prune stray entries outside
+        // the root (persisted by an older build) together with their caches.
+        if (!isInsideRoot(norm))
+        {
+            removeCacheFile(norm);
             continue;
         }
         f.path = norm;

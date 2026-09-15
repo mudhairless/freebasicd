@@ -137,7 +137,14 @@ private:
     void addToProjections(std::shared_ptr<IndexedFile const> const& f);
     void subtractFromProjections(std::shared_ptr<IndexedFile const> const& f);
 
+    // True when `normalizedPath` lies at or under this workspace's root
+    // (compared in the normalized form used by normalizePath). The index is
+    // strictly workspace-scoped: system headers and stray open buffers outside
+    // the root must never be indexed or persisted.
+    bool isInsideRoot(std::string const& normalizedPath) const;
+
     std::filesystem::path root_;
+    std::string rootNorm_;  // normalizePath(root_) at construction
     std::filesystem::path cacheDir_;
     std::filesystem::path indexDir_;
 

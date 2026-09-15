@@ -24,3 +24,6 @@ Makefile
 .DS_Store
 # corpus harness scratch
 corpus_work/
+
+# locally tracked bug list
+BUGS.md

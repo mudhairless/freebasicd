@@ -521,6 +521,59 @@ int main()
         w.close();
     }
 
+    // Workspace scoping: the index only ever holds files under its root. An
+    // open-buffer upsert of an outside file is dropped, and a stray outside
+    // cache entry left by an older build is pruned on load.
+    {
+        fs::path const wsS = sandbox / "scopedws";
+        fs::path const cacheS = sandbox / "cache-scoped";
+        fs::path const outDir = sandbox / "scoped-outside";
+        fs::create_directories(wsS);
+        fs::create_directories(outDir);
+        writeFile(wsS / "in.bas", "dim inside as integer\n");
+        writeFile(outDir / "rogue.bi", "dim rogue as integer\n");
+
+        std::string const inNorm = normalizePath(wsS / "in.bas");
+        std::string const rogueNorm = normalizePath(outDir / "rogue.bi");
+        fs::path const scopedIndexDir = cacheS / workspaceKey(normalizePath(wsS));
+
+        // A scan indexes only the workspace.
+        WorkspaceIndex a(wsS, cacheS);
+        a.open();
+        a.scan(false);
+        CHECK_MSG(findFile(a, inNorm) != nullptr, "a workspace file is indexed");
+        CHECK_MSG(a.size() == 1, "the scan indexes exactly the workspace file");
+
+        // An open-buffer upsert of an outside file is dropped entirely.
+        std::uint64_t mt = 0;
+        std::uint64_t sz = 0;
+        statFile(outDir / "rogue.bi", &mt, &sz);
+        AnalyzedDoc doc = analyze("dim rogue as integer\n");
+        a.upsert(indexedFileFromAnalysis(rogueNorm, mt, sz, std::move(doc), wsS,
+                                         /*persisted=*/false));
+        CHECK_MSG(a.size() == 1, "upsert outside the root is dropped");
+        CHECK_MSG(findFile(a, rogueNorm) == nullptr, "the outside path is not indexed");
+        CHECK_MSG(a.byKey("rogue").empty(), "outside declarations are not projected");
+        a.close();
+
+        // A stray cache entry for an outside path (as an older build persisted)
+        // is not loaded and its cache file is removed.
+        {
+            WorkspaceIndex stray(wsS, cacheS);
+            std::ofstream out(stray.cachePathFor(rogueNorm), std::ios::binary | std::ios::trunc);
+            out << "{\"version\":3,\"path\":\"" << rogueNorm
+                << "\",\"mtime\":0,\"size\":0,\"lang\":\"fb\",\"pragmaOnce\":false,"
+                   "\"symbols\":[],\"includes\":[]}";
+        }
+        CHECK(fs::exists(scopedIndexDir / (sha256Hex(rogueNorm) + ".json")));
+        WorkspaceIndex b(wsS, cacheS);
+        b.open();
+        CHECK_MSG(b.size() == 1, "outside cache entries are not loaded");
+        CHECK_MSG(!fs::exists(b.cachePathFor(rogueNorm)), "the stray outside cache file is removed");
+        CHECK_MSG(b.byKey("rogue").empty(), "the pruned entry projects nothing");
+        b.close();
+    }
+
     fs::remove_all(sandbox);
 
     if (failures == 0)
