@@ -53,22 +53,6 @@ stat/mask constants).
 
 ---
 
-## readability-braces-around-statements
-
-**Looks for:** `if`, `for`, `while`, and `do` bodies that are single
-statements without braces.
-
-**Why suppressed:** The codebase uses compact single-line forms heavily,
-e.g. `if (!ptr) continue;`, `if (n < 0) return -1;`.  clang-tidy's auto-fix
-mangles them into multi-line blocks that triple the line count.  The pattern
-is consistent and grep-able; the 8 flagged sites all live in one function
-(`declKindFor` in parser.cpp) where the `if`/`else if` chain of pointer
-checks reads better compactly.
-
-**Hit count:** ~8 (all in parser.cpp `declKindFor`).
-
----
-
 ## readability-implicit-bool-conversion
 
 **Looks for:** Implicit conversions to or from `bool`: `if (ptr)` instead of

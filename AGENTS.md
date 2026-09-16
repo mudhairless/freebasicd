@@ -84,6 +84,21 @@ must stay there. Encoding directives that the lexer/parser must honor:
 - The system `fbc` compiler (1.10.2) is available for ground-truthing ambiguous
   FreeBASIC constructs.
 
+### clang-format
+
+Formatting is **part of the milestone gate** (unlike tidy): the repo's
+`.clang-format` pins the LLVM standard (2-space indent, attached braces,
+80-column). Run the check before acceptance / commit on all supported C++
+files:
+
+```
+clang-format --dry-run --Werror src/*.cpp src/*.h tests/*.cpp
+```
+
+Apply with `clang-format -i <file>` (or `--lines=start:end` for a region, e.g.
+right after `clang-tidy --fix`). Corpus `.bas`/`.diag` files and
+`third_party/` are out of scope.
+
 ### clang-tidy
 
 On-demand only — not part of the milestone gate. Baseline config lives at repo
@@ -117,11 +132,13 @@ Gotchas learned the hard way (2026-09):
   widen the suppression list (`-readability-*`, `-misc-*` entries in
   `.clang-tidy`) to silence a new bug-class hit; those entries exist for
   deliberate conventions only, each with its reason in the config.
-- Auto-fix pitfall: `--fix` with `readability-braces-around-statements`
-  mangles the codebase's compact single-line `if`s; run `--fix` only on a
-  curated safe subset (e.g. `misc-const-correctness` plus trivial readability
-  categories) and review the diff. Braces style is intentionally silenced in
-  the config instead.
+- Auto-fix pitfall: the raw `--fix` output is not formatter-clean (one-line
+  statements come back as `{ stmt;` with the closing brace at column 0), so
+  run `clang-format -i` over the touched lines afterward and review the diff;
+  never hand-write a brace shape over the tool's output.
+  `readability-braces-around-statements` is enabled (since 2026-09): single-
+  statement `if`/`for`/`while`/`do` bodies must be braced in the attached,
+  2-space style that `.clang-format` (LLVM) enforces codebase-wide.
 - 2026-09 cleanup already applied: uint→int narrowing in folding ranges,
   duplicated switch/case-`if` branches, an ignored `snprintf` result,
   `std::move` of a trivially-copyable type, `path`-by-value params made
@@ -132,7 +149,8 @@ Gotchas learned the hard way (2026-09):
 
 - **Commit automatically when a milestone is achieved.** Do not wait for an
   explicit commit request. A milestone is achieved when its acceptance criteria
-  pass: the milestone's tests are green (`ctest` / `cmake --build`) and the
+  pass: the milestone's tests are green (`ctest` / `cmake --build`), changed C++
+  files are `clang-format` clean (see Verification §clang-format), and the
   milestone deliverable (e.g. lexer/parser, an LSP feature, a docs refresh) is
   complete. Commit even if the milestone is "small"; never commit half-finished
   or failing work.

@@ -11,4 +11,4 @@ namespace fblang {
 // returned ParseResult (Symbol doc/name strings are copied, ranges point back).
 ParseResult parseDocument(std::string_view source);
 
-}  // namespace fblang
+} // namespace fblang

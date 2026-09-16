@@ -7,7 +7,6 @@
 #   -portability-avoid-pragma-once                 # #pragma once everywhere
 #   -readability-identifier-length                 # short loop/iterator names
 #   -readability-magic-numbers                     # SHA-256 / UTF-8 bit constants
-#   -readability-braces-around-statements          # compact single-line ifs
 #   -readability-implicit-bool-conversion          # idiomatic `if (!ptr)` checks
 #   -readability-function-cognitive-complexity     # informational only
 #   -misc-include-cleaner                          # umbrella headers by design
@@ -30,7 +29,6 @@ Checks: >
   -portability-avoid-pragma-once,
   -readability-identifier-length,
   -readability-magic-numbers,
-  -readability-braces-around-statements,
   -readability-implicit-bool-conversion,
   -readability-function-cognitive-complexity,
   -misc-include-cleaner,

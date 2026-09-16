@@ -30,15 +30,15 @@ struct Token;
 // projection: every Symbol's `occurrences` are filled and file-root Symbols
 // are tagged `moduleScope=true`.
 struct AnalyzedDoc {
-    ParseResult parse;
-    std::vector<Token> tokens;
-    std::vector<IncludeDirective> includes;
+  ParseResult parse;
+  std::vector<Token> tokens;
+  std::vector<IncludeDirective> includes;
 
-    // A `#pragma once` line was seen somewhere in the source. Recorded as
-    // IndexedFile metadata so the index can acknowledge the header's own
-    // once-guard; guard-aware duplicate processing is still a documented
-    // divergence (FreeBASIC.md §12.6), so this is metadata only.
-    bool pragmaOnce = false;
+  // A `#pragma once` line was seen somewhere in the source. Recorded as
+  // IndexedFile metadata so the index can acknowledge the header's own
+  // once-guard; guard-aware duplicate processing is still a documented
+  // divergence (FreeBASIC.md §12.6), so this is metadata only.
+  bool pragmaOnce = false;
 };
 
 // Single shared analysis: one lex, one parse, one occurrence sweep, include
@@ -47,34 +47,35 @@ struct AnalyzedDoc {
 AnalyzedDoc analyze(std::string_view source);
 
 // Resolution over an analyzed document (no re-lexing, no re-parsing).
-Symbol const* resolveAt(AnalyzedDoc const& doc, std::uint32_t off);
+Symbol const *resolveAt(AnalyzedDoc const &doc, std::uint32_t off);
 // Byte range of the identifier token under `off` in `doc` (empty when `off`
 // is not on an identifier token). The cursor's own token, not the resolved
 // declaration's name token — the two live in different files when a usage
 // resolves cross-file, and prepareRename must report the requesting
 // document's selection.
-SourceRange tokenRangeAt(AnalyzedDoc const& doc, std::uint32_t off);
+SourceRange tokenRangeAt(AnalyzedDoc const &doc, std::uint32_t off);
 // The decl's own precomputed usage sites (empty unless `doc` came from
 // analyze()). `decl` must point into `doc.parse`'s symbol tree.
-std::vector<Occurrence> occurrencesOf(AnalyzedDoc const& doc, Symbol const& decl);
+std::vector<Occurrence> occurrencesOf(AnalyzedDoc const &doc,
+                                      Symbol const &decl);
 // Pointers to every named declaration visible at `off`, innermost scope first.
-std::vector<Symbol const*> visibleSymbols(AnalyzedDoc const& doc, std::uint32_t off);
+std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
+                                           std::uint32_t off);
 
 // Innermost declaration-block scope containing `off`, or nullptr for module
 // level. Dim/Const/Parameter nodes are not scopes and are walked through.
-Symbol const* innermostScope(ParseResult const& parse, std::uint32_t off);
+Symbol const *innermostScope(ParseResult const &parse, std::uint32_t off);
 
 // Where a cross-file resolution landed. `file == nullptr` means `decl` points
 // into the request-local `AnalyzedDoc` (tier 1); otherwise `file` pins the
 // workspace snapshot that owns `decl` (tiers 2/3), kept alive by the caller.
 struct CrossDecl {
-    std::shared_ptr<IndexedFile const> file;
-    Symbol const* decl = nullptr;
+  std::shared_ptr<IndexedFile const> file;
+  Symbol const *decl = nullptr;
 
-    bool operator==(CrossDecl const& other) const
-    {
-        return file.get() == other.file.get() && decl == other.decl;
-    }
+  bool operator==(CrossDecl const &other) const {
+    return file.get() == other.file.get() && decl == other.decl;
+  }
 };
 
 // Cross-file resolution over an analyzed document, three tiers (FreeBASIC.md
@@ -85,8 +86,9 @@ struct CrossDecl {
 // (still-unincluded headers — a documented divergence). Returns an empty
 // CrossDecl when `off` is not an identifier token or no tier resolves.
 // `normalizedPath` is the request document's normalized absolute path.
-CrossDecl resolveAcross(AnalyzedDoc const& doc, std::string const& normalizedPath,
-                        std::uint32_t off, WorkspaceIndex const& index);
+CrossDecl resolveAcross(AnalyzedDoc const &doc,
+                        std::string const &normalizedPath, std::uint32_t off,
+                        WorkspaceIndex const &index);
 
 // The declaration a usage at `off` resolves to, or nullptr when the offset is
 // not an identifier token or the name is unknown in every enclosing scope.
@@ -94,31 +96,34 @@ CrossDecl resolveAcross(AnalyzedDoc const& doc, std::string const& normalizedPat
 // Legacy ParseResult-based forms (each lexes the source once), kept so
 // existing ParseResult-only callers stay green; prefer the AnalyzedDoc
 // overloads in new code.
-Symbol const* resolveAt(ParseResult const& parse, std::string_view src, std::uint32_t off);
+Symbol const *resolveAt(ParseResult const &parse, std::string_view src,
+                        std::uint32_t off);
 
 // Reference sites of `decl` (usages that resolve to it), sorted by byte
 // offset, excluding `decl`'s own name token. `decl` must point into `parse`'s
 // symbol tree (as returned by resolveAt / parse.roots).
-std::vector<SourceRange> occurrencesOf(ParseResult const& parse, std::string_view src,
-                                       Symbol const& decl);
+std::vector<SourceRange> occurrencesOf(ParseResult const &parse,
+                                       std::string_view src,
+                                       Symbol const &decl);
 
 // Pointers to every named declaration visible at `off`, innermost scope first.
 // A name listed earlier shadows any later entry with the same key (module
 // level is last). Used to build completion candidates.
-std::vector<Symbol const*> visibleSymbols(ParseResult const& parse, std::uint32_t off);
+std::vector<Symbol const *> visibleSymbols(ParseResult const &parse,
+                                           std::uint32_t off);
 
 // --- Cross-file rename support (M8) ---
 
 // A single rename site: the file and byte range to replace.
 struct OccurrenceSite {
-    std::string file;         // normalized absolute path
-    SourceRange range;        // byte range of the token to replace
+  std::string file;  // normalized absolute path
+  SourceRange range; // byte range of the token to replace
 };
 
 // Content provider for occurrencesAcross: returns file content from open
 // buffers or disk, or nullopt if unavailable.
 using ContentProvider =
-    std::function<std::optional<std::string>(std::string const&)>;
+    std::function<std::optional<std::string>(std::string const &)>;
 
 // All reference sites of the symbol the usage at `off` resolves to, across the
 // workspace: the requesting file, its forward include closure, the resolving
@@ -128,8 +133,10 @@ using ContentProvider =
 // untouched. Ranges are byte offsets into the exact content `content` serves.
 // `normalizedPath` is the request document's normalized absolute path;
 // `index == nullptr` restricts to the requesting file.
-std::vector<OccurrenceSite> occurrencesAcross(
-    AnalyzedDoc const& doc, std::string const& normalizedPath, std::uint32_t off,
-    WorkspaceIndex const* index, ContentProvider const& content);
+std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
+                                              std::string const &normalizedPath,
+                                              std::uint32_t off,
+                                              WorkspaceIndex const *index,
+                                              ContentProvider const &content);
 
-}  // namespace fblang
+} // namespace fblang
