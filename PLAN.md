@@ -19,7 +19,7 @@ remaining work.
 | M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
 | M6 — include resolution + watched files + missing-include diagnostics | done (2026-09: missing-include diagnostics, debounced watched-files rescan, `#pragma once` metadata) |
 | M7 — cross-file definition / references / highlight / completion | done (2026-09: `resolveAcross` tiers, `Shared` storage gate, four cross-file handlers, two-file tests) |
-| M8 — `prepareRename` + `rename` (workspace) | next |
+| M8 — `prepareRename` + `rename` (workspace) | done |
 | M9 — semantic tokens + inlay hints + highlight grammar | next |
 | M10 — intrinsic catalog + request-side parse cache | next |
 | M11 — README / editor setup, CI, configuration, workspace folders | next |
@@ -58,7 +58,8 @@ Implemented LSP methods: `initialize`/`shutdown`/`exit`, `didOpen`/`didChange`/
 `didSave`/`didClose`, `publishDiagnostics`, `documentSymbol`, `hover` (symbols +
 keyword wiki links), `foldingRange`, `definition`, `references`,
 `documentHighlight`, `completion` (keywords + `END`-block snippets + in-scope
-symbols), `signatureHelp`, `workspace/symbol`.
+symbols), `signatureHelp`, `workspace/symbol`, `prepareRename`, `rename`
+(resolution-based workspace edits).
 
 ## 3. FreeBASIC semantics that gate the remaining work
 
@@ -87,27 +88,26 @@ plan engineers around:
 1. `definition`/`references`/`highlight`/`completion` resolve **only within
    the open file** (`resolve.cpp` is single-`ParseResult`); the M4 index holds
    per-file symbol trees but nothing cross-file is wired.
-2. `prepareRename` / `rename` not implemented; `renameProvider` not advertised.
-3. Include edges and missing-include diagnostics are live (M6), but include-once
+2. Include edges and missing-include diagnostics are live (M6), but include-once
    *guard states* are not evaluated — `#include once` / `#pragma once` / `#ifndef`
    are processed as recorded metadata, not macros (FreeBASIC.md §12.6) — and
    `#inclib` is not treated as a source include.
-4. No semantic tokens, no inlay hints (LspCpp bundles the types; unused), and
+3. No semantic tokens, no inlay hints (LspCpp bundles the types; unused), and
    no static highlight grammar — editors get no syntax coloring of any kind
    until M9 ships both.
-5. Session re-parses the whole buffer on every request (`documentSymbol`,
+4. Session re-parses the whole buffer on every request (`documentSymbol`,
    hover, folding, def/refs/highlight, completion all call `parseDocument`);
    `resolve.cpp` re-lexes on every call (`lexAll` per `resolveAt`).
-6. `initialized` + dynamic capability registration landed (M5.5): a dynamic
+5. `initialized` + dynamic capability registration landed (M5.5): a dynamic
    client is registered for `workspace/didChangeWatchedFiles` on `initialized`
    via `client/registerCapability`; a static client is served watchers in the
    `initialize` reply. The watcher handler and the debounced rescan landed in
    M6 (they fan into `WorkspaceIndex::watchedFilesChanged`); only
    `workspace/didChangeWorkspaceFolders` remains unhandled (single-root
    assumption, M11).
-7. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
+6. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
    built-in intrinsic-function completion catalog.
-8. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
+7. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
    `callHierarchy`, `codeLens` (M12), and pull diagnostics (M13). None is
    required by the target editors; each ships as its own milestone.
 
@@ -316,6 +316,13 @@ the design; sub-tasks land in order.
   divergence.
 
 ### M8 — `prepareRename` + `rename` (workspace)
+
+> Status: landed 2026-09, `ctest` 7/7 green. Realized as designed, two
+> details beyond the sketch: `occurrencesAcross` extends the candidate site set
+> with reverse reachability — every file whose include closure reaches the
+> declaration's file — so a rename issued at a header declaration covers all of
+> its includers; and an invalid `newName` (keyword, digit-leading, lone `_`,
+> suffix-only) is rejected up front in `onRename` before any site collection.
 
 - `prepareRename`: return the identifier token range; error (not a renameable
   target) for keywords/non-identifiers.
