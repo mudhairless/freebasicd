@@ -14,7 +14,7 @@ remaining work.
 | M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
 | M2 — Lexer + parser language layer, dialects, fbc corpus | done |
 | M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done |
-| M4 — persistent workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an **in-memory-only** index — no on-disk cache; startup cleanup removes the legacy cache dir) |
+| M4 — persistent workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an **in-memory-only** index — no on-disk cache) |
 | M5 — workspace spine: occurrence projection + include graph | done |
 | M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
 | M6 — include resolution + watched files + missing-include diagnostics | done (2026-09: missing-include diagnostics, debounced watched-files rescan, `#pragma once` metadata) |
@@ -48,8 +48,7 @@ stable shape:
 - `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index, purely
   in memory (nothing is ever written to disk), background scan + debounced
   watched-files rescan threads, immutable `IndexedFile` entries + snapshot
-  reads. Helpers: `normalizePath`, `statFile`, `resolveIncludeTarget`,
-  `cleanupLegacyDiskIndex` (removes the pre-2026-09 disk cache at startup).
+  reads. Helpers: `normalizePath`, `statFile`, `resolveIncludeTarget`.
 - `src/utf16.{h,cpp}` — byte ↔ UTF-16 position conversion (session boundary).
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
   `WorkingFiles` + `WorkspaceIndex`, re-parses the buffer, pushes diagnostics.
@@ -136,8 +135,7 @@ index **before** building features on it.
 - **In-memory only** (2026-09 revision): the M4 disk cache is removed — the
   index never writes to disk. The `persisted` flag narrows to `fromDisk`:
   false for open-buffer entries, and scan's mtime/size cache-hit never accepts
-  one, so scan stays disk truth and buffers stay live truth. Startup calls
-  `cleanupLegacyDiskIndex()` to remove the cache older builds left behind.
+  one, so scan stays disk truth and buffers stay live truth.
 - Files: `symbols.h`, `resolve.{h,cpp}` (shared `analyze` + occurrence sweep,
   legacy ParseResult wrappers internally analyze-backed), `index.{h,cpp}`,
   `session.cpp` (open-buffer upserts go through `analyze`, `fromDisk=false`),

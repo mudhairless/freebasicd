@@ -1,16 +1,13 @@
 // Workspace index checks: in-memory scan/upsert/remove, projections (byKey +
-// transitiveIncludes), open-buffer isolation, workspace scoping, and the
-// legacy-disk-index cleanup. Uses temp directories; never touches the real
-// data dir or the workspace on disk.
+// transitiveIncludes), open-buffer isolation, and workspace scoping. Uses temp
+// directories; never touches the real data dir or the workspace on disk.
 //
 // The index is purely in memory — no symbols or index state are ever written
-// to disk, and the only disk the legacy cleanup touches is the platform index
-// dir an older build left behind.
+// to disk.
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -94,56 +91,6 @@ int main()
     std::string const b = normalizePath("/tmp/Alpha/One.bas");
     CHECK(a == b);
     CHECK(normalizePath("/tmp/a/../b/x.bi") == normalizePath("/tmp/b/x.bi"));
-
-    // cleanupLegacyDiskIndex removes the platform index dir the old disk cache
-    // lived in. The env var the platform dir is derived from is pointed at a
-    // temp root so the real home/state is never touched.
-    {
-        fs::path const legacyRoot = fs::temp_directory_path() /
-                                    ("fblsp-legacy-" + std::to_string(::time(nullptr)));
-        auto const redirectOnce = [&](char const* env, fs::path const& base,
-                                      fs::path const& legacy) {
-            std::string const saved = std::getenv(env) ? std::getenv(env) : "";
-            fs::create_directories(legacy / "somews");
-            writeFile(legacy / "somews" / "stale.json", "{}");
-#ifdef _WIN32
-            _putenv_s(env, base.string().c_str());
-#else
-            setenv(env, base.string().c_str(), 1);
-#endif
-            cleanupLegacyDiskIndex();
-#ifdef _WIN32
-            if (saved.empty())
-            {
-                _putenv_s(env, "");
-            }
-            else
-            {
-                _putenv_s(env, saved.c_str());
-            }
-#else
-            if (saved.empty())
-            {
-                unsetenv(env);
-            }
-            else
-            {
-                setenv(env, saved.c_str(), 1);
-            }
-#endif
-            CHECK_MSG(!fs::exists(legacy),
-                      "cleanupLegacyDiskIndex must remove the legacy index dir");
-        };
-#ifdef _WIN32
-        redirectOnce("LOCALAPPDATA", legacyRoot, legacyRoot / "freebasiclsp" / "index");
-#elif defined(__APPLE__)
-        redirectOnce("HOME", legacyRoot,
-                     legacyRoot / "Library" / "Application Support" / "freebasiclsp" / "index");
-#else
-        redirectOnce("XDG_STATE_HOME", legacyRoot, legacyRoot / "freebasiclsp" / "index");
-#endif
-        fs::remove_all(legacyRoot);
-    }
 
     fs::path const sandbox = makeTmpDir();
     fs::path const ws = sandbox / "ws";

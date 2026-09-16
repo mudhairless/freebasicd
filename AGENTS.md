@@ -73,8 +73,7 @@ must stay there. Encoding directives that the lexer/parser must honor:
   is ever written to disk. A background scan parses the workspace (plus a
   debounced rescan on watched-file events); open-buffer entries are marked
   `fromDisk=false` so scan's mtime/size cache-hit can never accept a live
-  buffer's parse. `main` runs a one-time `cleanupLegacyDiskIndex()` to remove
-  the on-disk cache older builds left behind.
+  buffer's parse.
 - Capabilities advertise only implemented features; `positionEncoding: "utf-16"`.
 
 ## Verification

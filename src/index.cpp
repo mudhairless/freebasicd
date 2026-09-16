@@ -103,54 +103,6 @@ bool statFile(std::filesystem::path const& path, std::uint64_t* mtime, std::uint
     return true;
 }
 
-void cleanupLegacyDiskIndex()
-{
-    // The index is in memory only; a directory an older build wrote holds
-    // nothing but warm-start cache files, so remove it outright. The location
-    // mirrors the legacy `defaultCacheDir` layout: the one platform directory
-    // that build would have used (or the temp-directory fallback). Best-effort
-    // and idempotent: errors are ignored, and only our own platform index dir
-    // is ever touched.
-    std::error_code ec;
-    std::filesystem::path base;
-#ifdef _WIN32
-    if (char const* d = std::getenv("LOCALAPPDATA"))
-    {
-        base = std::filesystem::path(d);
-    }
-#elif defined(__APPLE__)
-    if (char const* h = std::getenv("HOME"))
-    {
-        base = std::filesystem::path(h) / "Library" / "Application Support";
-    }
-#else
-    if (char const* xdg = std::getenv("XDG_STATE_HOME"))
-    {
-        if (*xdg)
-        {
-            base = std::filesystem::path(xdg);
-        }
-    }
-    if (base.empty())
-    {
-        if (char const* h = std::getenv("HOME"))
-        {
-            base = std::filesystem::path(h) / ".local" / "state";
-        }
-    }
-#endif
-    if (!base.empty())
-    {
-        std::filesystem::remove_all(base / "freebasiclsp" / "index", ec);
-        return;
-    }
-    std::filesystem::path const tmp = std::filesystem::temp_directory_path(ec);
-    if (!ec)
-    {
-        std::filesystem::remove_all(tmp / "freebasiclsp" / "index", ec);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Free functions (M5)
 // ---------------------------------------------------------------------------

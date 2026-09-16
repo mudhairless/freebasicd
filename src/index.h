@@ -197,12 +197,6 @@ IndexedFile indexedFileFromAnalysis(std::string const& normalizedPath, std::uint
                                     std::filesystem::path const& workspaceRoot,
                                     bool fromDisk);
 
-// One-time removal of the legacy on-disk index (the per-workspace JSON cache
-// layouts that predated the in-memory-only architecture). Best-effort and
-// idempotent; nothing but the platform index dir is touched, so it only ever
-// deletes files this server wrote. Exposed for tests and called from startup.
-void cleanupLegacyDiskIndex();
-
 // Normalization helpers, exposed for tests.
 std::string normalizePath(std::filesystem::path const& path);
 bool statFile(std::filesystem::path const& path, std::uint64_t* mtime, std::uint64_t* size);
