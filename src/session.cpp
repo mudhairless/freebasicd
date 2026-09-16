@@ -682,7 +682,7 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
 
   fblang::ParseResult const parse = fblang::parseDocument(content);
   fblang::Symbol const *sym = deepestSymbolAt(parse.roots, offset);
-  if (!sym) {
+  if (sym == nullptr) {
     // No user symbol here: hover a reserved keyword with its wiki link.
     if (offset < content.size() && isWordChar(content[offset])) {
       std::uint32_t beg = offset;
@@ -779,7 +779,7 @@ FreeBasicServer::onDefinition(td_definition::request const &req) {
 
   fblang::AnalyzedDoc const doc = fblang::analyze(content);
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
-  if (!target.decl) {
+  if (target.decl == nullptr) {
     return rsp;
   }
 
@@ -823,7 +823,7 @@ FreeBasicServer::onReferences(td_references::request const &req) {
 
   fblang::AnalyzedDoc const doc = fblang::analyze(content);
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
-  if (!target.decl) {
+  if (target.decl == nullptr) {
     return rsp;
   }
 
@@ -921,7 +921,7 @@ FreeBasicServer::onHighlight(td_highlight::request const &req) {
 
   fblang::AnalyzedDoc const doc = fblang::analyze(content);
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
-  if (!target.decl) {
+  if (target.decl == nullptr) {
     return rsp;
   }
 
@@ -972,7 +972,7 @@ FreeBasicServer::onPrepareRename(td_prepareRename::request const &req) {
 
   fblang::AnalyzedDoc const doc = fblang::analyze(content);
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
-  if (!target.decl) {
+  if (target.decl == nullptr) {
     // Keyword, non-identifier, or an unknown name: not renameable (the
     // paired response serializes as JSON null).
     return rsp;
@@ -1017,7 +1017,7 @@ td_rename::response FreeBasicServer::onRename(td_rename::request const &req) {
 
   fblang::AnalyzedDoc const doc = fblang::analyze(content);
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
-  if (!target.decl) {
+  if (target.decl == nullptr) {
     throw lsp::RequestError(
         lsErrorCodes::InvalidParams,
         "the position does not reference a renameable symbol");
@@ -1306,7 +1306,7 @@ FreeBasicServer::onSignatureHelp(td_signatureHelp::request const &req) {
   fblang::ParseResult const parse = fblang::parseDocument(content);
   fblang::Token const &calleeTok = toks[static_cast<std::size_t>(nameIdx)];
   fblang::Symbol const *decl = fblang::resolveAt(parse, content, calleeTok.beg);
-  if (!decl) {
+  if (decl == nullptr) {
     return rsp;
   }
   switch (decl->kind) {

@@ -6,7 +6,6 @@
 # fixed per-file:
 #   -portability-avoid-pragma-once                 # #pragma once everywhere
 #   -readability-identifier-length                 # short loop/iterator names
-#   -readability-implicit-bool-conversion          # idiomatic `if (!ptr)` checks
 #   -readability-function-cognitive-complexity     # informational only
 #   -misc-include-cleaner                          # umbrella headers by design
 #   -misc-no-recursion                             # parser is recursive
@@ -27,7 +26,6 @@ Checks: >
   misc-*,
   -portability-avoid-pragma-once,
   -readability-identifier-length,
-  -readability-implicit-bool-conversion,
   -readability-function-cognitive-complexity,
   -misc-include-cleaner,
   -misc-no-recursion,

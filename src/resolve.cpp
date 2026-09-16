@@ -38,7 +38,8 @@ DeclIdentity identityOf(CrossDecl const &d, std::string const &fallbackPath) {
 CrossDecl canonicalTarget(CrossDecl const &target,
                           std::string const &normalizedPath,
                           WorkspaceIndex const *index) {
-  if (!target.decl || target.file || !index || !target.decl->moduleScope) {
+  if (target.decl == nullptr || target.file || index == nullptr ||
+      !target.decl->moduleScope) {
     return target;
   }
   std::shared_ptr<IndexedFile const> const file = index->fileAt(normalizedPath);
@@ -65,7 +66,7 @@ bool sameIdentity(DeclIdentity const &a, DeclIdentity const &b) {
 CrossDecl resolveIn(AnalyzedDoc const &d, std::string const &fpath,
                     std::uint32_t off, WorkspaceIndex const *index,
                     std::string const &declPath) {
-  if (!index || fpath == declPath) {
+  if (index == nullptr || fpath == declPath) {
     if (Symbol const *const local = resolveAt(d, off)) {
       return CrossDecl{nullptr, local};
     }
@@ -169,14 +170,15 @@ SourceRange rangeOf(Token const &t) { return {t.beg, t.end}; }
 Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
                      std::uint32_t off) {
   Token const *tok = tokenAt(tokens, off);
-  if (!tok) {
+  if (tok == nullptr) {
     return nullptr;
   }
   std::string const key = toLowerChars(tok->text());
   Symbol const *const siteScope = innermostScope(parse, off);
   for (Symbol const *cur = siteScope;;
-       cur = cur ? parentOf(parse, cur) : nullptr) {
-    std::vector<Symbol> const &cands = cur ? cur->children : parse.roots;
+       cur = cur != nullptr ? parentOf(parse, cur) : nullptr) {
+    std::vector<Symbol> const &cands =
+        cur != nullptr ? cur->children : parse.roots;
     for (auto const &c : cands) {
       if (c.key.empty() || c.key != key) {
         continue;
@@ -187,7 +189,7 @@ Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
         return &c;
       }
     }
-    if (!cur) {
+    if (cur == nullptr) {
       return nullptr;
     }
   }
@@ -206,7 +208,7 @@ void attachOccurrences(ParseResult &parse, std::vector<Token> const &tokens) {
       continue;
     }
     Symbol const *const decl = declAt(parse, tokens, t.beg);
-    if (!decl ||
+    if (decl == nullptr ||
         (t.beg == decl->selection.beg && t.end == decl->selection.end)) {
       continue;
     }
@@ -331,7 +333,7 @@ Symbol const *innermostScope(ParseResult const &parse, std::uint32_t off) {
       best = d;
     }
   }
-  while (best && !isScopeKind(best->kind)) {
+  while (best != nullptr && !isScopeKind(best->kind)) {
     best = parentOf(parse, best);
   }
   return best;
@@ -375,7 +377,7 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
                         std::string const &normalizedPath, std::uint32_t off,
                         WorkspaceIndex const &index) {
   Token const *const tok = tokenAt(doc.tokens, off);
-  if (!tok) {
+  if (tok == nullptr) {
     return {};
   }
 
@@ -424,17 +426,17 @@ std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
                                               WorkspaceIndex const *index,
                                               ContentProvider const &content) {
   std::vector<OccurrenceSite> out;
-  if (!tokenAt(doc.tokens, off)) {
+  if (tokenAt(doc.tokens, off) == nullptr) {
     return out;
   }
 
   CrossDecl target;
-  if (index) {
+  if (index != nullptr) {
     target = resolveAcross(doc, normalizedPath, off, *index);
   } else if (Symbol const *const local = resolveAt(doc, off)) {
     target = CrossDecl{nullptr, local};
   }
-  if (!target.decl) {
+  if (target.decl == nullptr) {
     return out;
   }
 
@@ -455,7 +457,7 @@ std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
     }
   };
   addFile(normalizedPath);
-  if (index) {
+  if (index != nullptr) {
     for (std::string const &p : index->transitiveIncludes(normalizedPath)) {
       addFile(p);
     }
@@ -482,7 +484,7 @@ std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
         continue;
       }
       CrossDecl const r = resolveIn(d, fpath, t.beg, index, declPath);
-      if (!r.decl) {
+      if (r.decl == nullptr) {
         continue;
       }
       if (sameIdentity(identityOf(r, fpath), self)) {
@@ -535,8 +537,9 @@ std::vector<Symbol const *> visibleSymbols(ParseResult const &parse,
   std::vector<Symbol const *> out;
   Symbol const *const siteScope = innermostScope(parse, off);
   for (Symbol const *cur = siteScope;;
-       cur = cur ? parentOf(parse, cur) : nullptr) {
-    std::vector<Symbol> const &cands = cur ? cur->children : parse.roots;
+       cur = cur != nullptr ? parentOf(parse, cur) : nullptr) {
+    std::vector<Symbol> const &cands =
+        cur != nullptr ? cur->children : parse.roots;
     for (auto const &c : cands) {
       if (c.key.empty()) {
         continue;
@@ -549,7 +552,7 @@ std::vector<Symbol const *> visibleSymbols(ParseResult const &parse,
       }
       out.push_back(&c);
     }
-    if (!cur) {
+    if (cur == nullptr) {
       break;
     }
   }

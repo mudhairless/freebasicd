@@ -38,21 +38,6 @@ scratch vars).
 
 ---
 
-## readability-implicit-bool-conversion
-
-**Looks for:** Implicit conversions to or from `bool`: `if (ptr)` instead of
-`if (ptr != nullptr)`, `return n` instead of `return n != 0`, passing an int
-where `bool` is expected.
-
-**Why suppressed:** Pointer null-checks are universally read as boolean in
-C/C++; writing `!= nullptr` is noise that slows the eye without improving
-safety.  The integer cases (`return ok`) are guarded by naming: the variable
-is already clearly boolean.
-
-**Hit count:** ~25 (mostly null-pointer checks and bool returns).
-
----
-
 ## readability-function-cognitive-complexity
 
 **Looks for:** Functions exceeding a cyclomatic-complexity threshold

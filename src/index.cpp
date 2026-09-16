@@ -79,10 +79,10 @@ bool statFile(std::filesystem::path const &path, std::uint64_t *mtime,
   if (ec) {
     return false;
   }
-  if (mtime) {
+  if (mtime != nullptr) {
     *mtime = static_cast<std::uint64_t>(lm.time_since_epoch().count());
   }
-  if (size) {
+  if (size != nullptr) {
     *size = std::filesystem::file_size(path, ec);
     if (ec) {
       return false;

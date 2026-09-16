@@ -521,7 +521,7 @@ bool blockForOpener(std::string_view wordLower, BlockCloser *out) {
       std::find_if(std::begin(kBlockOpeners), std::end(kBlockOpeners),
                    [&](BlockRow const &r) { return wordLower == r.opener; });
   if (it != std::end(kBlockOpeners)) {
-    if (out) {
+    if (out != nullptr) {
       *out = fromRow(*it);
     }
     return true;
@@ -530,12 +530,12 @@ bool blockForOpener(std::string_view wordLower, BlockCloser *out) {
 }
 
 bool blockForCloser(std::string_view wordLower, BlockCloser *out) {
-  if (out) {
+  if (out != nullptr) {
     *out = {};
   }
   for (const auto &r : kBlockOpeners) {
     if (r.needsEnd && wordLower == r.close) {
-      if (out) {
+      if (out != nullptr) {
         *out = fromRow(r);
       }
       return true;
@@ -545,7 +545,7 @@ bool blockForCloser(std::string_view wordLower, BlockCloser *out) {
       std::find_if(std::begin(kCloserOnly), std::end(kCloserOnly),
                    [&](BlockRow const &r) { return wordLower == r.opener; });
   if (it != std::end(kCloserOnly)) {
-    if (out) {
+    if (out != nullptr) {
       *out = fromRow(*it);
     }
     return true;
@@ -634,7 +634,7 @@ bool langFromDirective(std::string_view line, LangMode *out) {
   } else {
     return false;
   }
-  if (out) {
+  if (out != nullptr) {
     *out = mode;
   }
   return true;
@@ -704,7 +704,7 @@ bool langFromMetaDirective(std::string_view text, LangMode *out) {
     } else {
       continue;
     }
-    if (out) {
+    if (out != nullptr) {
       *out = mode;
     }
     return true;

@@ -290,7 +290,7 @@ private:
     Block const b = blocks_.back();
     blocks_.pop_back();
     out_.blockRanges.push_back({b.begOpen, end});
-    if (b.sym) {
+    if (b.sym != nullptr) {
       b.sym->range.end = end;
       if (!containers_.empty() && containers_.back().sym == b.sym) {
         containers_.pop_back();
@@ -499,7 +499,7 @@ private:
     b.begOpen = openTok.beg;
     b.endOpen = openTok.end;
     blocks_.push_back(b);
-    if (psym) {
+    if (psym != nullptr) {
       containers_.push_back(Container(psym));
     }
     skipStatement();
@@ -624,7 +624,7 @@ private:
     b.begOpen = openTok.beg;
     b.endOpen = openTok.end;
     blocks_.push_back(b);
-    if (psym) {
+    if (psym != nullptr) {
       containers_.push_back(Container(psym));
     }
     skipStatement();
