@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,6 +48,12 @@ AnalyzedDoc analyze(std::string_view source);
 
 // Resolution over an analyzed document (no re-lexing, no re-parsing).
 Symbol const* resolveAt(AnalyzedDoc const& doc, std::uint32_t off);
+// Byte range of the identifier token under `off` in `doc` (empty when `off`
+// is not on an identifier token). The cursor's own token, not the resolved
+// declaration's name token — the two live in different files when a usage
+// resolves cross-file, and prepareRename must report the requesting
+// document's selection.
+SourceRange tokenRangeAt(AnalyzedDoc const& doc, std::uint32_t off);
 // The decl's own precomputed usage sites (empty unless `doc` came from
 // analyze()). `decl` must point into `doc.parse`'s symbol tree.
 std::vector<Occurrence> occurrencesOf(AnalyzedDoc const& doc, Symbol const& decl);
@@ -98,5 +106,30 @@ std::vector<SourceRange> occurrencesOf(ParseResult const& parse, std::string_vie
 // A name listed earlier shadows any later entry with the same key (module
 // level is last). Used to build completion candidates.
 std::vector<Symbol const*> visibleSymbols(ParseResult const& parse, std::uint32_t off);
+
+// --- Cross-file rename support (M8) ---
+
+// A single rename site: the file and byte range to replace.
+struct OccurrenceSite {
+    std::string file;         // normalized absolute path
+    SourceRange range;        // byte range of the token to replace
+};
+
+// Content provider for occurrencesAcross: returns file content from open
+// buffers or disk, or nullopt if unavailable.
+using ContentProvider =
+    std::function<std::optional<std::string>(std::string const&)>;
+
+// All reference sites of the symbol the usage at `off` resolves to, across the
+// workspace: the requesting file, its forward include closure, the resolving
+// declaration's own file, and reverse reachability (every file whose closure
+// includes the declaration's file). Each candidate token is re-resolved
+// shadowing-aware, so a same-named local that shadows the declaration is
+// untouched. Ranges are byte offsets into the exact content `content` serves.
+// `normalizedPath` is the request document's normalized absolute path;
+// `index == nullptr` restricts to the requesting file.
+std::vector<OccurrenceSite> occurrencesAcross(
+    AnalyzedDoc const& doc, std::string const& normalizedPath, std::uint32_t off,
+    WorkspaceIndex const* index, ContentProvider const& content);
 
 }  // namespace fblang

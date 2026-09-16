@@ -2,9 +2,16 @@
 // Byte-offset and LSP-agnostic.
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <optional>
 #include <string>
 
+#include "index.h"
 #include "lexer.h"
 #include "parser.h"
 #include "resolve.h"
@@ -250,6 +257,239 @@ static void TestStorageGate()
     CHECK_MSG(!has("g"), "visibleSymbols must drop a plain module dim inside a block");
 }
 
+// --- M8: occurrencesAcross ---
+
+static std::filesystem::path MakeTmpDir()
+{
+    static std::atomic<long> counter{0};
+    std::filesystem::path const root = std::filesystem::temp_directory_path() /
+                                      ("fblsp-resolve-" + std::to_string(::time(nullptr)) + "-" +
+                                       std::to_string(counter.fetch_add(1)));
+    std::filesystem::create_directories(root);
+    return root;
+}
+
+static void WriteFile(std::filesystem::path const& path, std::string const& content)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+}
+
+// Single-file mode (nullptr index): sites of the module dim span its
+// declaration and both usages, never the shadowing sub-local; sites of the
+// sub-local span only its own declaration and usage, never the module dim.
+static void TestOccurrencesAcrossSingleFile()
+{
+    std::string const src =
+        "dim total as integer\n"
+        "total = total + 1\n"
+        "sub bump(n as integer)\n"
+        "    dim total as integer\n"
+        "    total = n\n"
+        "end sub\n";
+    std::string const path = "/virtual/single.bas";
+    ContentProvider const content = [&src, &path](std::string const& p)
+    {
+        return p == path ? std::optional<std::string>(src) : std::nullopt;
+    };
+
+    AnalyzedDoc const doc = analyze(src);
+
+    // From the module-level usage: only the module dim's own sites.
+    std::uint32_t const moduleUse = static_cast<std::uint32_t>(src.find("total = total"));
+    std::uint32_t const moduleUse2 =
+        static_cast<std::uint32_t>(src.find("total", moduleUse + 1));
+    std::uint32_t const moduleDecl = static_cast<std::uint32_t>(src.find("dim total") + 4);
+    std::vector<OccurrenceSite> const sites =
+        occurrencesAcross(doc, path, moduleUse, nullptr, content);
+    CHECK_MSG(sites.size() == 3, "the module dim spans decl + two usages");
+    if (sites.size() == 3)
+    {
+        CHECK(sites[0].file == path && sites[0].range.beg == moduleDecl);
+        CHECK(sites[1].file == path && sites[1].range.beg == moduleUse);
+        CHECK(sites[2].file == path && sites[2].range.beg == moduleUse2);
+        for (auto const& s : sites)
+        {
+            CHECK_MSG(s.range.end == s.range.beg + 5, "total is five bytes long");
+        }
+    }
+
+    // From the sub-local: only its own declaration and usage survive; the
+    // module-level dim is a different declaration.
+    std::uint32_t const subBegin = static_cast<std::uint32_t>(src.find("sub bump"));
+    std::uint32_t const localDecl = static_cast<std::uint32_t>(src.find("dim total", subBegin) + 4);
+    std::uint32_t const localUse = static_cast<std::uint32_t>(src.find("total = n"));
+    std::vector<OccurrenceSite> const localSites =
+        occurrencesAcross(doc, path, localDecl, nullptr, content);
+    CHECK_MSG(localSites.size() == 2, "the sub-local spans decl + one usage");
+    if (localSites.size() == 2)
+    {
+        CHECK(localSites[0].range.beg == localDecl);
+        CHECK(localSites[1].range.beg == localUse);
+    }
+
+    // A keyword offset resolves nothing.
+    std::uint32_t const dimKw = static_cast<std::uint32_t>(src.find("dim total") + 1);
+    CHECK_MSG(occurrencesAcross(doc, path, dimKw, nullptr, content).empty(),
+              "a keyword must yield no rename sites");
+}
+
+// Cross-file workspace rename: a shared module dim is renamed from a client
+// file; candidates are the closure plus reverse reachability, and every site
+// is re-resolved so a shadowing or gated same-named local is untouched.
+static void TestOccurrencesAcrossCrossFile()
+{
+    std::string const libContent =
+        "dim shared globalCount as integer\n"
+        "dim localOnly as integer\n"
+        "sub libProc()\n"
+        "    print globalCount\n"
+        "end sub\n";
+    std::string const mainContent =
+        "#include \"lib.bi\"\n"
+        "dim head as integer\n"
+        "head = globalCount + localOnly + earlyBird\n"
+        "sub mainProc()\n"
+        "    globalCount = globalCount + 1\n"
+        "    localOnly = 5\n"
+        "end sub\n";
+
+    std::filesystem::path const sandbox = MakeTmpDir();
+    std::filesystem::path const ws = sandbox / "ws";
+    std::filesystem::create_directories(ws);
+    WriteFile(ws / "lib.bi", libContent);
+    WriteFile(ws / "main.bas", mainContent);
+
+    std::string const libNorm = normalizePath(ws / "lib.bi");
+    std::string const mainNorm = normalizePath(ws / "main.bas");
+    ContentProvider const content = [](std::string const& p)
+        -> std::optional<std::string>
+    {
+        std::ifstream in(std::filesystem::path(p), std::ios::binary);
+        if (!in)
+        {
+            return std::nullopt;
+        }
+        return std::string(std::istreambuf_iterator<char>(in),
+                           std::istreambuf_iterator<char>());
+    };
+
+    WorkspaceIndex index(ws, sandbox / "cache");
+    index.open();
+    index.scan(false);
+    try
+    {
+        AnalyzedDoc const doc = analyze(mainContent);
+
+        // Shared globalCount: decl + libProc use in lib.bi, module + two
+        // in-sub usages in main.bas — five sites across two files.
+        std::uint32_t const mainModuleUse =
+            static_cast<std::uint32_t>(mainContent.find("globalCount"));
+        std::vector<OccurrenceSite> const sites =
+            occurrencesAcross(doc, mainNorm, mainModuleUse, &index, content);
+        CHECK_MSG(sites.size() == 5, "shared globalCount covers decl + every usage");
+        if (sites.size() == 5)
+        {
+            std::uint32_t const libDecl =
+                static_cast<std::uint32_t>(libContent.find("globalCount"));
+            std::uint32_t const libUse =
+                static_cast<std::uint32_t>(libContent.find("globalCount", libDecl + 1));
+            std::uint32_t const mainSubLine =
+                static_cast<std::uint32_t>(mainContent.find("sub mainProc"));
+            std::uint32_t const mainFirst =
+                static_cast<std::uint32_t>(mainContent.find("globalCount", mainSubLine));
+            std::uint32_t const mainSecond =
+                static_cast<std::uint32_t>(mainContent.find("globalCount", mainFirst + 1));
+            CHECK(sites[0].file == libNorm && sites[1].file == libNorm);
+            CHECK(sites[2].file == mainNorm && sites[3].file == mainNorm &&
+                  sites[4].file == mainNorm);
+            CHECK(sites[0].range.beg == libDecl && sites[1].range.beg == libUse);
+            CHECK(sites[2].range.beg == mainModuleUse && sites[3].range.beg == mainFirst &&
+                  sites[4].range.beg == mainSecond);
+        }
+
+        // A plain module dim is visible from module level but storage-gated
+        // inside blocks: the in-sub `localOnly = 5` (fbc error 42) is not a
+        // rename site.
+        std::uint32_t const loModuleUse =
+            static_cast<std::uint32_t>(mainContent.find("localOnly"));
+        std::vector<OccurrenceSite> const loSites =
+            occurrencesAcross(doc, mainNorm, loModuleUse, &index, content);
+        CHECK_MSG(loSites.size() == 2, "a plain dim keeps its decl + the module usage only");
+        if (loSites.size() == 2)
+        {
+            std::uint32_t const loDecl =
+                static_cast<std::uint32_t>(libContent.find("localOnly"));
+            CHECK(loSites[0].file == libNorm && loSites[0].range.beg == loDecl);
+            CHECK(loSites[1].file == mainNorm && loSites[1].range.beg == loModuleUse);
+        }
+
+        // Shadowing: a same-named local in an included file's block is
+        // untouched even though the shared declaration is visible there —
+        // tier-1 in-file resolution wins for the local.
+        std::string const shLib =
+            "dim shared ticker as integer\n"
+            "sub poke()\n"
+            "    print ticker\n"
+            "end sub\n";
+        std::string const shMain =
+            "#include \"sh.lib.bi\"\n"
+            "sub localOnly()\n"
+            "    dim ticker as integer\n"
+            "    ticker = 7\n"
+            "end sub\n"
+            "ticker = ticker + 1\n";
+        WriteFile(ws / "sh.lib.bi", shLib);
+        WriteFile(ws / "sh.main.bas", shMain);
+        index.scan(false);
+
+        std::string const shLibNorm = normalizePath(ws / "sh.lib.bi");
+        std::string const shMainNorm = normalizePath(ws / "sh.main.bas");
+        AnalyzedDoc const shDoc = analyze(shMain);
+        std::uint32_t const shModuleUse =
+            static_cast<std::uint32_t>(shMain.find("ticker = ticker + 1"));
+        std::vector<OccurrenceSite> const shSites =
+            occurrencesAcross(shDoc, shMainNorm, shModuleUse, &index, content);
+        CHECK_MSG(shSites.size() == 4,
+                  "shared ticker: lib decl + lib use + the two module usages");
+        if (shSites.size() == 4)
+        {
+            std::uint32_t const shLibDecl =
+                static_cast<std::uint32_t>(shLib.find("ticker"));
+            std::uint32_t const shLibUse =
+                static_cast<std::uint32_t>(shLib.find("ticker", shLibDecl + 1));
+            CHECK(shSites[0].file == shLibNorm && shSites[0].range.beg == shLibDecl);
+            CHECK(shSites[1].file == shLibNorm && shSites[1].range.beg == shLibUse);
+            CHECK(shSites[2].file == shMainNorm && shSites[3].file == shMainNorm);
+            std::uint32_t const shModuleUse2 =
+                static_cast<std::uint32_t>(shMain.find("ticker", shModuleUse + 1));
+            CHECK(shSites[2].range.beg == shModuleUse &&
+                  shSites[3].range.beg == shModuleUse2);
+            // No site inside the shadowing local's block (in main.bas).
+            std::uint32_t const shadowBeg =
+                static_cast<std::uint32_t>(shMain.find("dim ticker"));
+            std::uint32_t const shadowEnd =
+                static_cast<std::uint32_t>(shMain.find("ticker = 7")) + 6;
+            for (auto const& s : shSites)
+            {
+                if (s.file != shMainNorm)
+                {
+                    continue;
+                }
+                CHECK_MSG(s.range.beg < shadowBeg || s.range.beg > shadowEnd,
+                          "shadowing local sites must not be rename targets");
+            }
+        }
+    }
+    catch (...)
+    {
+        CHECK_MSG(false, "cross-file occurrencesAcross must not throw");
+    }
+    index.close();
+    std::error_code ec;
+    std::filesystem::remove_all(sandbox, ec);
+}
+
 int main()
 {
     TestScopingResolvesCorrectly();
@@ -259,6 +499,8 @@ int main()
     TestAnalyzeIncludes();
     TestAnalyzePragmaOnce();
     TestStorageGate();
+    TestOccurrencesAcrossSingleFile();
+    TestOccurrencesAcrossCrossFile();
     std::printf("resolve_checks: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;
 }

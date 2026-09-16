@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -13,6 +15,72 @@
 namespace fblang {
 
 namespace {
+
+// A declaration's cross-snapshot identity: its owning file plus the selection
+// range of its name token. Unique per declaration: a (path, selection) pair
+// pins one Symbol across index snapshots and fresh parses of the same file.
+struct DeclIdentity {
+    std::string path;
+    std::uint32_t beg = 0;
+    std::uint32_t end = 0;
+};
+
+DeclIdentity identityOf(CrossDecl const& d, std::string const& fallbackPath)
+{
+    return {d.file ? d.file->path : fallbackPath, d.decl->selection.beg,
+            d.decl->selection.end};
+}
+
+// When the target is a module-scope root of the requesting file (found in-file,
+// `file == nullptr`), give it its index identity (`fileAt(normalizedPath)`)
+// so a same declaration re-resolved through tier 2 by a different file's
+// closure matches on identity — the declaration's index copy and its fresh
+// in-file parse share the same (path, selection).
+CrossDecl canonicalTarget(CrossDecl const& target, std::string const& normalizedPath,
+                          WorkspaceIndex const* index)
+{
+    if (!target.decl || target.file || !index || !target.decl->moduleScope)
+    {
+        return target;
+    }
+    std::shared_ptr<IndexedFile const> const file = index->fileAt(normalizedPath);
+    if (!file)
+    {
+        return target;
+    }
+    for (Symbol const& root : file->roots)
+    {
+        if (root.key == target.decl->key &&
+            root.selection.beg == target.decl->selection.beg &&
+            root.selection.end == target.decl->selection.end)
+        {
+            return CrossDecl{file, &root};
+        }
+    }
+    return target;
+}
+
+bool sameIdentity(DeclIdentity const& a, DeclIdentity const& b)
+{
+    return a.path == b.path && a.beg == b.beg && a.end == b.end;
+}
+
+// The declaration a token in `d` resolves to, expressed as a CrossDecl:
+// in-file for the declaration's own file (the storage gate applies), across
+// the workspace otherwise. `nullptr index` resolves in-file only.
+CrossDecl resolveIn(AnalyzedDoc const& d, std::string const& fpath, std::uint32_t off,
+                    WorkspaceIndex const* index, std::string const& declPath)
+{
+    if (!index || fpath == declPath)
+    {
+        if (Symbol const* const local = resolveAt(d, off))
+        {
+            return CrossDecl{nullptr, local};
+        }
+        return {};
+    }
+    return resolveAcross(d, fpath, off, *index);
+}
 
 // Deepest node of `sym` (inclusive, so a cursor on the closer token still
 // lands inside the block) that contains `off`, or nullptr.
@@ -364,6 +432,15 @@ std::vector<Occurrence> occurrencesOf(AnalyzedDoc const& doc, Symbol const& decl
     return decl.occurrences;
 }
 
+SourceRange tokenRangeAt(AnalyzedDoc const& doc, std::uint32_t off)
+{
+    if (Token const* const tok = tokenAt(doc.tokens, off))
+    {
+        return {tok->beg, tok->end};
+    }
+    return {};
+}
+
 CrossDecl resolveAcross(AnalyzedDoc const& doc, std::string const& normalizedPath,
                         std::uint32_t off, WorkspaceIndex const& index)
 {
@@ -417,6 +494,107 @@ CrossDecl resolveAcross(AnalyzedDoc const& doc, std::string const& normalizedPat
         }
     }
     return {};
+}
+
+std::vector<OccurrenceSite> occurrencesAcross(
+    AnalyzedDoc const& doc, std::string const& normalizedPath, std::uint32_t off,
+    WorkspaceIndex const* index, ContentProvider const& content)
+{
+    std::vector<OccurrenceSite> out;
+    if (!tokenAt(doc.tokens, off))
+    {
+        return out;
+    }
+
+    CrossDecl target;
+    if (index)
+    {
+        target = resolveAcross(doc, normalizedPath, off, *index);
+    }
+    else if (Symbol const* const local = resolveAt(doc, off))
+    {
+        target = CrossDecl{nullptr, local};
+    }
+    if (!target.decl)
+    {
+        return out;
+    }
+
+    CrossDecl const canon = canonicalTarget(target, normalizedPath, index);
+    DeclIdentity const self = identityOf(canon, normalizedPath);
+    std::string const declPath = canon.file ? canon.file->path : normalizedPath;
+
+    // Candidate files: the requesting file, its forward include closure, the
+    // declaration's own file (a tier-3 byKey hit can land outside the closure),
+    // and reverse reachability — every file whose own closure reaches the
+    // declaration's file, so a rename at a header declaration covers all
+    // includers. Insertion order keeps the requesting file first, the closure
+    // textual-pre-order next (matches resolveAcross), and reverse files after.
+    std::vector<std::string> files;
+    auto addFile = [&files](std::string const& f)
+    {
+        if (std::find(files.begin(), files.end(), f) == files.end())
+        {
+            files.push_back(f);
+        }
+    };
+    addFile(normalizedPath);
+    if (index)
+    {
+        for (std::string const& p : index->transitiveIncludes(normalizedPath))
+        {
+            addFile(p);
+        }
+        addFile(declPath);
+        for (auto const& f : index->snapshot())
+        {
+            for (std::string const& p : index->transitiveIncludes(f->path))
+            {
+                if (p == declPath)
+                {
+                    addFile(f->path);
+                    break;
+                }
+            }
+        }
+    }
+
+    for (std::string const& fpath : files)
+    {
+        std::optional<std::string> const src = content(fpath);
+        if (!src)
+        {
+            continue;
+        }
+        AnalyzedDoc const d = analyze(*src);
+        for (Token const& t : d.tokens)
+        {
+            if (t.kind != TokenKind::Identifier || toLowerChars(t.text()) != target.decl->key)
+            {
+                continue;
+            }
+            CrossDecl const r = resolveIn(d, fpath, t.beg, index, declPath);
+            if (!r.decl)
+            {
+                continue;
+            }
+            if (sameIdentity(identityOf(r, fpath), self))
+            {
+                out.push_back(OccurrenceSite{fpath, {t.beg, t.end}});
+            }
+        }
+    }
+
+    std::sort(out.begin(), out.end(),
+              [](OccurrenceSite const& a, OccurrenceSite const& b)
+              {
+                  if (a.file != b.file)
+                  {
+                      return a.file < b.file;
+                  }
+                  return a.range.beg < b.range.beg;
+              });
+    return out;
 }
 
 std::vector<Symbol const*> visibleSymbols(AnalyzedDoc const& doc, std::uint32_t off)

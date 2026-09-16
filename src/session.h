@@ -19,7 +19,9 @@
 #include "LibLsp/lsp/textDocument/highlight.h"
 #include "LibLsp/lsp/textDocument/hover.h"
 #include "LibLsp/lsp/textDocument/publishDiagnostics.h"
+#include "LibLsp/lsp/textDocument/prepareRename.h"
 #include "LibLsp/lsp/textDocument/references.h"
+#include "LibLsp/lsp/textDocument/rename.h"
 #include "LibLsp/lsp/textDocument/signature_help.h"
 
 #include "LibLsp/lsp/working_files.h"
@@ -92,6 +94,8 @@ private:
     td_highlight::response onHighlight(td_highlight::request const& req);
     td_completion::response onCompletion(td_completion::request const& req);
     td_signatureHelp::response onSignatureHelp(td_signatureHelp::request const& req);
+    td_prepareRename::response onPrepareRename(td_prepareRename::request const& req);
+    td_rename::response onRename(td_rename::request const& req);
     wp_symbol::response onWorkspaceSymbol(wp_symbol::request const& req);
 
     void reparseAndPublish(std::shared_ptr<WorkingFile> const& file, lsDocumentUri const& uri);

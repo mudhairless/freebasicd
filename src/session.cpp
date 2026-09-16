@@ -268,6 +268,45 @@ bool isWordChar(char c)
            c == '_' || fblang::isSuffixChar(c);
 }
 
+// A valid FreeBASIC identifier (a rename target must lex as a single
+// identifier token): a letter or underscore followed by letters/digits/
+// underscores, plus an optional trailing type-suffix char — and never a
+// reserved keyword (PRINT, END, ... — a keyword base plus suffix also fails,
+// mirroring the lexer) and never a bare `_` (that is a line-continuation
+// symbol).
+bool isValidIdentifier(std::string_view name)
+{
+    if (name.empty())
+    {
+        return false;
+    }
+    std::size_t const baseLen = name.size() - (fblang::isSuffixChar(name.back()) ? 1u : 0u);
+    if (baseLen == 0 || !(name[0] == '_' || (name[0] >= 'a' && name[0] <= 'z') ||
+                          (name[0] >= 'A' && name[0] <= 'Z')))
+    {
+        return false;
+    }
+    if (baseLen == 1 && name[0] == '_')
+    {
+        return false;  // a lone `_` is the line-continuation symbol
+    }
+    for (std::size_t i = 0; i < baseLen; ++i)
+    {
+        char const c = name[i];
+        bool const ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_';
+        if (!ok)
+        {
+            return false;
+        }
+    }
+    if (fblang::isReservedWord(fblang::toLowerChars(name.substr(0, baseLen))))
+    {
+        return false;
+    }
+    return true;
+}
+
 // Identifier being typed at `off` (bytes), or "" when the cursor is not on an
 // identifier character run.
 std::string completionPrefix(std::string_view content, std::uint32_t off)
@@ -378,6 +417,8 @@ void FreeBasicServer::registerHandlers()
     session_.on([this](td_highlight::request const& req) { return onHighlight(req); });
     session_.on([this](td_completion::request const& req) { return onCompletion(req); });
     session_.on([this](td_signatureHelp::request const& req) { return onSignatureHelp(req); });
+    session_.on([this](td_prepareRename::request const& req) { return onPrepareRename(req); });
+    session_.on([this](td_rename::request const& req) { return onRename(req); });
     session_.on([this](wp_symbol::request const& req) { return onWorkspaceSymbol(req); });
 
     // The server->client client/registerCapability request is sent from the
@@ -412,6 +453,13 @@ td_initialize::response FreeBasicServer::onInitialize(td_initialize::request con
 
     rsp.result.capabilities.documentHighlightProvider.emplace();
     rsp.result.capabilities.documentHighlightProvider->first.emplace(true);
+
+    // renameProvider carries RenameOptions (not the bare-bool Either arm) so
+    // prepareProvider=true reaches the client; serializing the bool first arm
+    // would drop the options entirely.
+    rsp.result.capabilities.renameProvider.emplace();
+    rsp.result.capabilities.renameProvider->second.emplace();
+    rsp.result.capabilities.renameProvider->second->prepareProvider.emplace(true);
 
     rsp.result.capabilities.completionProvider.emplace();
     rsp.result.capabilities.completionProvider->triggerCharacters.emplace();
@@ -948,6 +996,174 @@ td_highlight::response FreeBasicServer::onHighlight(td_highlight::request const&
         {
             add({t.beg, t.end});
         }
+    }
+    return rsp;
+}
+
+td_prepareRename::response FreeBasicServer::onPrepareRename(td_prepareRename::request const& req)
+{
+    td_prepareRename::response rsp;
+    rsp.id = req.id;
+
+    std::shared_ptr<WorkingFile> const file =
+        workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    if (!file)
+    {
+        return rsp;
+    }
+    std::string_view const content = file->GetContentNoLock();
+    std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+    std::string const normPath =
+        fblang::normalizePath(req.params.textDocument.uri.GetAbsolutePath().path());
+
+    fblang::AnalyzedDoc const doc = fblang::analyze(content);
+    fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
+    if (!target.decl)
+    {
+        // Keyword, non-identifier, or an unknown name: not renameable (the
+        // paired response serializes as JSON null).
+        return rsp;
+    }
+
+    // The requesting document's token under the cursor plus the current name
+    // as the placeholder. The range must come from the requesting file (the
+    // resolved declaration may live in another file, whose coordinates are
+    // meaningless here); converting the decl's own selection against this
+    // content would produce a garbage range. The pair's first element
+    // (lsRange) stays empty; the writer reflects the `second`
+    // PrepareRenameResult when it is set.
+    fblang::SourceRange const tokRange = fblang::tokenRangeAt(doc, offset);
+    PrepareRenameResult result;
+    result.range = fblang::utf16Range(content, tokRange.beg, tokRange.end);
+    result.placeholder = target.decl->name;
+    rsp.result.second.emplace(std::move(result));
+    return rsp;
+}
+
+td_rename::response FreeBasicServer::onRename(td_rename::request const& req)
+{
+    td_rename::response rsp;
+    rsp.id = req.id;
+
+    // An invalid new name cannot lex as a single identifier token; reject it
+    // up front (keywords, a lone `_`, digit-leading, or suffix-only names).
+    if (!isValidIdentifier(req.params.newName))
+    {
+        throw lsp::RequestError(lsErrorCodes::InvalidParams,
+                                "invalid new name: \"" + req.params.newName + "\"");
+    }
+
+    std::shared_ptr<WorkingFile> const file =
+        workingFiles_.GetFileByFilename(req.params.textDocument.uri.GetAbsolutePath());
+    if (!file)
+    {
+        return rsp;
+    }
+    std::string_view const content = file->GetContentNoLock();
+    std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+    std::string const normPath =
+        fblang::normalizePath(req.params.textDocument.uri.GetAbsolutePath().path());
+
+    fblang::AnalyzedDoc const doc = fblang::analyze(content);
+    fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
+    if (!target.decl)
+    {
+        throw lsp::RequestError(lsErrorCodes::InvalidParams,
+                                "the position does not reference a renameable symbol");
+    }
+    std::string const newKey = fblang::toLowerChars(req.params.newName);
+
+    // Collision guard: renaming into a key that an unrelated module-scope
+    // declaration of the requesting file or its include closure already owns
+    // would fold two declarations into one textual module. The renamed symbol
+    // itself (same key, or the same declaration under the new key) is exempt.
+    if (index_ && newKey != target.decl->key)
+    {
+        std::vector<std::string> guardPaths = {normPath};
+        for (std::string const& p : index_->transitiveIncludes(normPath))
+        {
+            guardPaths.push_back(p);
+        }
+        for (std::string const& p : guardPaths)
+        {
+            std::shared_ptr<fblang::IndexedFile const> const f = index_->fileAt(p);
+            if (!f)
+            {
+                continue;
+            }
+            for (fblang::Symbol const& root : f->roots)
+            {
+                if (root.key != newKey)
+                {
+                    continue;
+                }
+                std::string const ownerPath = target.file ? target.file->path : normPath;
+                bool const isTarget =
+                    f->path == ownerPath &&
+                    root.selection.beg == target.decl->selection.beg &&
+                    root.selection.end == target.decl->selection.end;
+                if (!isTarget)
+                {
+                    throw lsp::RequestError(
+                        lsErrorCodes::InvalidParams,
+                        "new name \"" + req.params.newName +
+                            "\" collides with an existing declaration");
+                }
+            }
+        }
+    }
+
+    // The rename site set: requesting file + include closure + reverse
+    // reachability, every token re-resolved shadowing-aware so a same-named
+    // local that shadows the declaration is untouched. Ranges are byte offsets
+    // into the exact content `contentForPath` serves, so the same provider
+    // converts them to UTF-16 below.
+    std::vector<fblang::OccurrenceSite> const sites = fblang::occurrencesAcross(
+        doc, normPath, offset, index_.get(),
+        [this](std::string const& p) { return contentForPath(p); });
+    if (sites.empty())
+    {
+        return rsp;
+    }
+
+    // Group the sorted sites by file; the version stays unset on every edit
+    // (null for clients: disk content is master for closed files, and open
+    // buffers match by uri). LSP 3.16 semantics.
+    struct FileEdits
+    {
+        std::string path;
+        std::vector<fblang::OccurrenceSite> sites;
+    };
+    std::vector<FileEdits> groups;
+    for (fblang::OccurrenceSite const& s : sites)
+    {
+        if (groups.empty() || groups.back().path != s.file)
+        {
+            groups.push_back(FileEdits{s.file, {}});
+        }
+        groups.back().sites.push_back(s);
+    }
+
+    rsp.result.documentChanges.emplace();
+    for (FileEdits const& g : groups)
+    {
+        std::optional<std::string> const src = contentForPath(g.path);
+        if (!src)
+        {
+            continue;
+        }
+        lsTextDocumentEdit edit;
+        edit.textDocument.uri = lsDocumentUri(AbsolutePath(g.path));
+        edit.textDocument.version = std::nullopt;
+        for (fblang::OccurrenceSite const& s : g.sites)
+        {
+            lsTextEdit te;
+            te.range = fblang::utf16Range(*src, s.range.beg, s.range.end);
+            te.newText = req.params.newName;
+            edit.edits.push_back(std::move(te));
+        }
+        rsp.result.documentChanges->emplace_back(
+            lsWorkspaceEdit::Either{std::move(edit), std::nullopt});
     }
     return rsp;
 }
