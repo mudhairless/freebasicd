@@ -7,7 +7,6 @@
 #   -portability-avoid-pragma-once                 # #pragma once everywhere
 #   -readability-identifier-length                 # short loop/iterator names
 #   -readability-function-cognitive-complexity     # informational only
-#   -misc-include-cleaner                          # umbrella headers by design
 #   -misc-no-recursion                             # parser is recursive
 #   -misc-non-private-member-variables-in-classes  # POD data structs
 #   -bugprone-easily-swappable-parameters          # call sites self-explain
@@ -27,7 +26,6 @@ Checks: >
   -portability-avoid-pragma-once,
   -readability-identifier-length,
   -readability-function-cognitive-complexity,
-  -misc-include-cleaner,
   -misc-no-recursion,
   -misc-non-private-member-variables-in-classes,
   -bugprone-easily-swappable-parameters,

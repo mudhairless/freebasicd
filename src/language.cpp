@@ -1,9 +1,13 @@
 #include "language.h"
+#include "symbols.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstring>
+#include <string>
+#include <string_view>
+#include <vector>
 
 // Length of the `$lang` metacommand keyword ('$' + "lang").
 #define LANG_DIRECTIVE_LEN 5

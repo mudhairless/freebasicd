@@ -1,16 +1,63 @@
 #include "session.h"
 
+#include "index.h"
 #include "language.h"
 #include "lexer.h"
 #include "parser.h"
 #include "resolve.h"
+#include "symbols.h"
 #include "utf16.h"
 
+#include "LibLsp/lsp/LanguageSession.h"
+#include "LibLsp/lsp/client/registerCapability.h"
+#include "LibLsp/lsp/general/exit.h"
+#include "LibLsp/lsp/general/initialize.h"
+#include "LibLsp/lsp/general/initialized.h"
+#include "LibLsp/lsp/general/lsTextDocumentClientCapabilities.h"
+#include "LibLsp/lsp/general/shutdown.h"
+#include "LibLsp/lsp/location_type.h"
+#include "LibLsp/lsp/lsAny.h"
+#include "LibLsp/lsp/lsMarkedString.h"
+#include "LibLsp/lsp/lsResponseError.h"
+#include "LibLsp/lsp/lsTextDocumentEdit.h"
+#include "LibLsp/lsp/lsTextEdit.h"
+#include "LibLsp/lsp/lsp_completion.h"
+#include "LibLsp/lsp/lsp_diagnostic.h"
+#include "LibLsp/lsp/symbol.h"
+#include "LibLsp/lsp/textDocument/completion.h"
+#include "LibLsp/lsp/textDocument/declaration_definition.h"
+#include "LibLsp/lsp/textDocument/did_change.h"
+#include "LibLsp/lsp/textDocument/did_close.h"
+#include "LibLsp/lsp/textDocument/did_open.h"
+#include "LibLsp/lsp/textDocument/did_save.h"
+#include "LibLsp/lsp/textDocument/document_symbol.h"
+#include "LibLsp/lsp/textDocument/foldingRange.h"
+#include "LibLsp/lsp/textDocument/highlight.h"
+#include "LibLsp/lsp/textDocument/hover.h"
+#include "LibLsp/lsp/textDocument/prepareRename.h"
+#include "LibLsp/lsp/textDocument/publishDiagnostics.h"
+#include "LibLsp/lsp/textDocument/references.h"
+#include "LibLsp/lsp/textDocument/rename.h"
+#include "LibLsp/lsp/textDocument/signature_help.h"
+#include "LibLsp/lsp/working_files.h"
+#include "LibLsp/lsp/workspace/did_change_watched_files.h"
+#include "LibLsp/lsp/workspace/symbol.h"
+
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <functional>
+#include <ios>
+#include <iterator>
+#include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
+#include <vector>
 
 // LSP WatchKind bitmask (didChangeWatchedFiles.h):
 // Create=1, Change=2, Delete=4.

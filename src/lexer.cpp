@@ -3,6 +3,9 @@
 #include "language.h"
 
 #include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <string_view>
 
 // Radix of FreeBASIC `&H`/`&O`/`&B` numeric-literal prefixes.
 #define HEX_RADIX 16

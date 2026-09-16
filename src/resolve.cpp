@@ -1,16 +1,19 @@
 #include "resolve.h"
 
+#include "index.h"
+#include "lexer.h"
+#include "parser.h"
+#include "symbols.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
-
-#include "language.h"
-#include "lexer.h"
-#include "parser.h"
+#include <vector>
 
 namespace fblang {
 

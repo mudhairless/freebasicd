@@ -1,6 +1,11 @@
 #include "utf16.h"
 
+#include "LibLsp/lsp/lsPosition.h"
+#include "LibLsp/lsp/lsRange.h"
+
 #include <cstddef>
+#include <cstdint>
+#include <string_view>
 
 // UTF-8 lead-byte thresholds, payload masks, and the UTF-16 surrogate-pair
 // boundary. A sequence's lead byte carries the codepoint's high bits (5/4/3

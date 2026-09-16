@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "index.h"
+#include "lexer.h"
 #include "symbols.h"
 
 namespace fblang {
@@ -21,8 +22,6 @@ namespace fblang {
 // module level. A declaration is a Dim/Const/Parameter symbol whose key (the
 // case-insensitive lowercased name including any suffix char) matches the
 // usage token.
-
-struct Token;
 
 // One document analyzed once: parse tree, full token stream (borrows the
 // `source` buffer passed to analyze — must not outlive it), and raw include

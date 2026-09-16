@@ -1,20 +1,25 @@
 #include "index.h"
 
-#include "lexer.h"
-#include "parser.h"
 #include "resolve.h"
+#include "symbols.h"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 namespace fblang {

@@ -55,23 +55,6 @@ recursive-descent parser.
 
 ---
 
-## misc-include-cleaner
-
-**Looks for:** Includes that are not directly used in the file, or symbols
-that are used but not included by a direct `#include` (i.e. only available
-transitively through an umbrella header).
-
-**Why suppressed:** The project intentionally uses umbrella headers —
-`src/symbols.h` includes all symbol declarations, `session.h` includes the
-index and LspCpp bindings.  Strict include-what-you-use would force dozens of
-per-type includes per file that do not match the current architecture.  This
-is the single largest source of noise.
-
-**Hit count:** ~135 (hits in every `.cpp` file; mostly `#include "symbols.h"`
-and `#include <optional>`).
-
----
-
 ## misc-no-recursion
 
 **Looks for:** Any function that calls itself, directly or indirectly,

@@ -2,10 +2,15 @@
 
 #include "language.h"
 #include "lexer.h"
+#include "symbols.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 // Hard cap on how many tokens the parser peeks ahead when scanning for the
