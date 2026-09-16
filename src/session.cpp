@@ -34,13 +34,26 @@ bool isWithinNormalized(std::string const& normalizedPath, std::string const& no
     return next == '/' || next == '\\';
 }
 
-// A directory that is its own project root (e.g. a git worktree). The dotted
-// `.git` entry is a directory for a regular checkout, a file for a worktree;
-// both count.
+// A directory that is its own project root: it holds any version-control
+// checkout marker. `.git` is a directory for a regular checkout and a file for
+// a worktree; fossil's `.fslckout`/`_FOSSIL_` (and the `.fossil` database) are
+// files; the DVCS markers (`.hg`, `.svn`, `.bzr`, `.darcs`, `.pijul`, `_MTN`)
+// are directories. `exists` accepts any of the two kinds.
 bool isProjectRoot(std::filesystem::path const& dir)
 {
+    static constexpr char const* const kVcsMarkers[] = {
+        ".git", ".hg",  ".svn", ".bzr",  ".fslckout", "_FOSSIL_", ".fossil",
+        ".darcs", ".pijul", "_MTN",
+    };
     std::error_code ec;
-    return std::filesystem::exists(dir / ".git", ec);
+    for (char const* marker : kVcsMarkers)
+    {
+        if (std::filesystem::exists(dir / marker, ec))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Nearest ancestor of `start` (inclusive) at or below `limit` that is a
@@ -58,7 +71,7 @@ std::optional<std::filesystem::path> nearestProjectRoot(std::filesystem::path st
         }
         if (start == limit)
         {
-            return std::nullopt;  // reached the client root without a .git marker
+            return std::nullopt;  // reached the client root without any VCS marker
         }
         std::filesystem::path const parent = start.parent_path();
         if (parent == start ||
@@ -323,10 +336,10 @@ std::optional<std::filesystem::path> FreeBasicServer::chooseIndexRoot(
         {
             return sessionRoot_;
         }
-        // A broad client root (no `.git` marker of its own, e.g. an editor that
-        // reports the home directory as the workspace) is narrowed to the opened
-        // document's project, so sibling FreeBASIC projects under it are never
-        // swept into the index.
+        // A broad client root (no version-control marker of its own, e.g. an
+        // editor that reports the home directory as the workspace) is narrowed
+        // to the opened document's project, so sibling FreeBASIC projects under
+        // it are never swept into the index.
         if (std::optional<std::filesystem::path> const project =
                 nearestProjectRoot(openedFile, sessionRoot_))
         {
@@ -453,8 +466,8 @@ td_initialize::response FreeBasicServer::onInitialize(td_initialize::request con
         else
         {
             (void)std::fprintf(stderr,
-                         "[freebasiclsp] workspace root %s has no .git marker; "
-                         "index scope deferred to the first opened document\n",
+                         "[freebasiclsp] workspace root %s has no version-control "
+                         "marker; index scope deferred to the first opened document\n",
                          rootPath.c_str());
         }
     }
@@ -519,10 +532,16 @@ void FreeBasicServer::onWatchedFiles(Notify_WorkspaceDidChangeWatchedFiles::noti
 
 void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify& notify)
 {
-    if (!index_)
+    std::filesystem::path const openedFile =
+        notify.params.textDocument.uri.GetAbsolutePath().path();
+    if (std::optional<std::filesystem::path> const root = chooseIndexRoot(openedFile))
     {
-        if (std::optional<std::filesystem::path> const root =
-                chooseIndexRoot(notify.params.textDocument.uri.GetAbsolutePath().path()))
+        // A broad client root (no VCS marker) is re-evaluated on every open so
+        // switching to a sibling project re-roots the index to that project.
+        bool const deferredBroadRoot = !sessionRoot_.empty() && !isProjectRoot(sessionRoot_);
+        bool const alreadyRooted =
+            index_ && fblang::normalizePath(index_->root()) == fblang::normalizePath(*root);
+        if (!index_ || (deferredBroadRoot && !alreadyRooted))
         {
             ensureWorkspaceIndex(*root);
         }

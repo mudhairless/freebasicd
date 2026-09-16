@@ -8,9 +8,11 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -960,6 +962,105 @@ void TestBroadRootNarrowsToOpenedProject()
     std::filesystem::remove_all(sandbox, ec);
 }
 
+// The broad-root narrowing must recognize every version-control marker the
+// finder supports, not just `.git`: mercurial, svn, bazaar, fossil, etc. Each
+// project sits under the same broad root; opening a document in it must narrow
+// the index scope to that project and leave the sibling tree alone.
+void TestBroadRootNarrowsToAnyVcsProject()
+{
+    struct MarkerCase
+    {
+        char const* marker;
+        char const* symbol;
+    };
+    static constexpr MarkerCase const cases[] = {
+        {".git", "fromGit"},     {".hg", "fromHg"},     {".svn", "fromSvn"},
+        {".bzr", "fromBzr"},     {".fslckout", "fromFossil"}, {"_FOSSIL_", "fromFossilLegacy"},
+        {".darcs", "fromDarcs"}, {".pijul", "fromPijul"},     {"_MTN", "fromMonotone"},
+    };
+
+    static std::atomic<long> counter{0};
+    std::filesystem::path const sandbox = std::filesystem::temp_directory_path() /
+        ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+         std::to_string(counter.fetch_add(1)));
+    std::filesystem::path const broad = sandbox / "broad";
+    std::filesystem::path const sibling = broad / "sibling";
+    std::filesystem::create_directories(sibling);
+    {
+        std::ofstream out2(sibling / "other.bas");
+        out2 << "sub siblingOnly()\nend sub\n";
+    }
+    std::vector<std::string> appUris;
+    for (std::size_t i = 0; i < std::size(cases); ++i)
+    {
+        std::filesystem::path const proj = broad / ("proj" + std::to_string(i));
+        std::filesystem::create_directories(proj / cases[i].marker);
+        std::ofstream out(proj / "app.bas");
+        out << "sub " << cases[i].symbol << "()\nend sub\n";
+        appUris.push_back("file://" + (proj / "app.bas").string());
+    }
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+
+    FreeBasicServer server(session);
+    server.setIndexCacheDir(sandbox / "cache");
+    server.registerHandlers();
+    session.start(input, output);
+
+    std::string const broadRootUri = "file://" + broad.string();
+    std::string const initFrame =
+        R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+        broadRootUri + "\"}}";
+    input->append(MakeLspFrame(initFrame.c_str()));
+    Expect(WaitForOutputContaining(output, "\"id\":\"init\"").find("\"workspaceSymbolProvider\":") !=
+               std::string::npos,
+           "initialize must advertise workspace/symbol");
+
+    auto querySymbol = [&](int n, std::string const& name) {
+        std::string const id = "\"id\":\"vcs" + std::to_string(n) + "\"";
+        std::string const request =
+            R"({"jsonrpc":"2.0","id":"vcs)" + std::to_string(n)
+            + R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+        input->append(MakeLspFrame(request.c_str()));
+        return WaitForOutputContaining(output, id, 50);
+    };
+
+    int idx = 0;
+    bool sawSibling = false;
+    for (std::size_t i = 0; i < std::size(cases); ++i)
+    {
+        std::string const openFrame =
+            R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+            R"({"uri":")" + appUris[i] + R"(","languageId":"basic","version":1,"text":")"
+            + ToJsonString(std::string("sub ") + cases[i].symbol + "()\nend sub\n") + "\"}}}";
+        input->append(MakeLspFrame(openFrame.c_str()));
+
+        bool found = false;
+        for (int n = 0; n < 60 && !found; ++n)
+        {
+            found = querySymbol(idx++, cases[i].symbol).find(
+                        std::string("\"name\":\"") + cases[i].symbol + "\"") !=
+                    std::string::npos;
+        }
+        Expect(found, (std::string("project marked by ") + cases[i].marker +
+                           " must narrow the index scope")
+                          .c_str());
+        for (int n = 0; !sawSibling && n < 25; ++n)
+        {
+            sawSibling = querySymbol(idx++, "siblingOnly").find("\"name\":\"siblingOnly\"") !=
+                         std::string::npos;
+        }
+    }
+    Expect(!sawSibling, "a sibling project under a broad root must not be indexed");
+
+    session.stop();
+    std::error_code ec;
+    std::filesystem::remove_all(sandbox, ec);
+}
+
 void TestMissingIncludePublishesDiagnostic()
 {
     static std::atomic<long> counter{0};
@@ -1126,6 +1227,7 @@ int main(int argc, char** argv)
     RUN_TEST(TestWorkspaceSymbolIndexesWorkspace);
     RUN_TEST(TestOutsideFileNotIndexed);
     RUN_TEST(TestBroadRootNarrowsToOpenedProject);
+    RUN_TEST(TestBroadRootNarrowsToAnyVcsProject);
     RUN_TEST(TestDidChangePushesDiagnostics);
     RUN_TEST(TestDidCloseEvictsAndPublishes);
     RUN_TEST(TestShutdownReturnsNullResult);
