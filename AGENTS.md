@@ -23,11 +23,6 @@ repository (default branch `main`).
   target. No Boost is required (`LSPCPP_STANDALONE_ASIO` is the default);
   build with `LSPCPP_BUILD_WEBSOCKETS=OFF`, `LSPCPP_BUILD_EXAMPLES=OFF`,
   `LSPCPP_BUILD_TESTS=OFF`.
-- **hash_sha256** (github.com/imahjoub/hash_sha256, header-only C++11 SHA-256)
-  is vendored as a **git submodule** at `third_party/hash_sha256`, **pinned to
-  commit `ad118c66b7f5b8ffb5119d0f0104724d0d6db14a`** (main, 2026-09). The
-  index keys every persisted source file and workspace by SHA-256 hex digest
-  of the normalized path; do not swap it for another hash or hasher.
 - **No simdjson** (dropped). LspCpp handles all protocol JSON via its bundled
   RapidJSON. Do not add simdjson back for protocol work.
 - Requires CMake 3.16+ and C++17.
@@ -74,6 +69,12 @@ must stay there. Encoding directives that the lexer/parser must honor:
   thread. Requests can run concurrently with each other; keep `max_workers=2`.
   Guard shared language state with a mutex; take the lock only to snapshot a
   parse, build responses lock-free.
+- **Index**: the per-workspace `WorkspaceIndex` is **in-memory only** — nothing
+  is ever written to disk. A background scan parses the workspace (plus a
+  debounced rescan on watched-file events); open-buffer entries are marked
+  `fromDisk=false` so scan's mtime/size cache-hit can never accept a live
+  buffer's parse. `main` runs a one-time `cleanupLegacyDiskIndex()` to remove
+  the on-disk cache older builds left behind.
 - Capabilities advertise only implemented features; `positionEncoding: "utf-16"`.
 
 ## Verification

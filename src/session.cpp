@@ -340,11 +340,6 @@ void FreeBasicServer::setExitHandler(std::function<void()> exitHandler)
     exitHandler_ = std::move(exitHandler);
 }
 
-void FreeBasicServer::setIndexCacheDir(std::filesystem::path cacheDir)
-{
-    indexCacheDir_ = std::move(cacheDir);
-}
-
 void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const& root)
 {
     if (root.empty())
@@ -361,7 +356,7 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const& root)
     {
         index_->close();
     }
-    index_ = std::make_unique<fblang::WorkspaceIndex>(root, indexCacheDir_);
+    index_ = std::make_unique<fblang::WorkspaceIndex>(root);
     index_->open();
     index_->scan(true);
 }
@@ -647,15 +642,15 @@ void FreeBasicServer::reparseAndPublish(std::shared_ptr<WorkingFile> const& file
             std::uint64_t mtime = 0;
             std::uint64_t size = 0;
             fblang::statFile(path, &mtime, &size);
-            // Open-buffer entries are never persisted: an unsaved buffer must
-            // not be written to the disk cache as on-disk truth, nor satisfy
-            // scan's mtime/size cache-hit. Include targets still resolve
-            // against disk, and unresolved ones publish include-not-found.
+            // Open-buffer entries come from the live buffer, not disk: scan's
+            // mtime/size cache-hit must never accept them, or an unsaved edit
+            // would shadow the source scan is about to read. Include targets
+            // still resolve against disk, and unresolved ones publish
+            // include-not-found.
             fblang::IndexedFile entry = fblang::indexedFileFromAnalysis(
                 fblang::normalizePath(path), mtime, size, std::move(doc), index_->root(), false);
             appendIncludeDiagnostics(content, entry, &diags);
             index_->upsert(std::move(entry));
-            index_->flushSoon();
         }
     }
 

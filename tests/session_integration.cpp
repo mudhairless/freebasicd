@@ -57,7 +57,6 @@ struct TwoFileFixture
 {
     std::filesystem::path sandbox;
     std::filesystem::path wsDir;
-    std::filesystem::path cacheDir;
     std::string libUri;
     std::string mainUri;
     std::string progUri;
@@ -71,7 +70,6 @@ struct TwoFileFixture
                   ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
                    std::to_string(counter.fetch_add(1)));
         wsDir = sandbox / "ws";
-        cacheDir = sandbox / "cache";
         std::filesystem::create_directories(wsDir);
         {
             std::ofstream out(wsDir / "lib.bi");
@@ -112,7 +110,6 @@ std::shared_ptr<FeedableIStream> StartIndexedSession(
     std::vector<std::pair<std::string, std::string>> const& opens)
 {
     auto input = std::make_shared<FeedableIStream>();
-    server.setIndexCacheDir(fix.cacheDir);
     server.registerHandlers();
     session.start(input, output);
 
@@ -915,7 +912,6 @@ void TestWorkspaceSymbolIndexesWorkspace()
     auto output = std::make_shared<StringOStream>();
 
     FreeBasicServer server(session);
-    server.setIndexCacheDir(sandbox / "cache");
     server.registerHandlers();
     session.start(input, output);
 
@@ -981,7 +977,6 @@ void TestOutsideFileNotIndexed()
     auto output = std::make_shared<StringOStream>();
 
     FreeBasicServer server(session);
-    server.setIndexCacheDir(sandbox / "cache");
     server.registerHandlers();
     session.start(input, output);
 
@@ -1054,7 +1049,6 @@ void TestBroadRootNarrowsToOpenedProject()
     auto output = std::make_shared<StringOStream>();
 
     FreeBasicServer server(session);
-    server.setIndexCacheDir(sandbox / "cache");
     server.registerHandlers();
     session.start(input, output);
 
@@ -1149,7 +1143,6 @@ void TestBroadRootNarrowsToAnyVcsProject()
     auto output = std::make_shared<StringOStream>();
 
     FreeBasicServer server(session);
-    server.setIndexCacheDir(sandbox / "cache");
     server.registerHandlers();
     session.start(input, output);
 
@@ -1222,7 +1215,6 @@ void TestMissingIncludePublishesDiagnostic()
     auto output = std::make_shared<StringOStream>();
 
     FreeBasicServer server(session);
-    server.setIndexCacheDir(sandbox / "cache");
     server.registerHandlers();
     session.start(input, output);
 
@@ -1286,7 +1278,6 @@ void TestWatchedFilesRescanConverges()
     auto output = std::make_shared<StringOStream>();
 
     FreeBasicServer server(session);
-    server.setIndexCacheDir(sandbox / "cache");
     server.registerHandlers();
     session.start(input, output);
 

@@ -14,7 +14,7 @@ remaining work.
 | M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
 | M2 — Lexer + parser language layer, dialects, fbc corpus | done |
 | M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done |
-| M4 — persistent workspace symbol index + `workspace/symbol` | done (rev'd 2026: platform index dir, SHA-256-keyed per-file cache) |
+| M4 — persistent workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an **in-memory-only** index — no on-disk cache; startup cleanup removes the legacy cache dir) |
 | M5 — workspace spine: occurrence projection + include graph | done |
 | M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
 | M6 — include resolution + watched files + missing-include diagnostics | done (2026-09: missing-include diagnostics, debounced watched-files rescan, `#pragma once` metadata) |
@@ -45,17 +45,11 @@ stable shape:
   `ParseResult`, `SourceRange` (byte offsets), `toLowerChars`.
 - `src/resolve.{h,cpp}` — same-file resolution: `resolveAt`, `occurrencesOf`,
   `visibleSymbols`, `innermostScope`, `parentOf`.
-- `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index with a
-  per-source-file JSON disk cache, background scan + debounced flusher
-  threads, immutable `IndexedFile` entries + snapshot reads. Cache layout:
-  each indexed `.bas`/`.bi` gets its own `<sha256Hex(normalized-path)>.json`
-  inside a per-workspace subdir `<sha256Hex(normalized-root)>`, itself under
-  the platform index dir (`~/.local/state/freebasiclsp/index` on Linux,
-  `%LOCALAPPDATA%\freebasiclsp\index` on Windows,
-  `~/Library/Application Support/freebasiclsp/index` on macOS; SHA-256 via the
-  vendored `hash_sha256` submodule, pinned `ad118c6`). Helpers:
-  `sha256Hex`, `normalizePath`, `workspaceKey`, `defaultCacheDir`,
-  `cacheFileFor`, `statFile`.
+- `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index, purely
+  in memory (nothing is ever written to disk), background scan + debounced
+  watched-files rescan threads, immutable `IndexedFile` entries + snapshot
+  reads. Helpers: `normalizePath`, `statFile`, `resolveIncludeTarget`,
+  `cleanupLegacyDiskIndex` (removes the pre-2026-09 disk cache at startup).
 - `src/utf16.{h,cpp}` — byte ↔ UTF-16 position conversion (session boundary).
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
   `WorkingFiles` + `WorkspaceIndex`, re-parses the buffer, pushes diagnostics.
@@ -134,25 +128,25 @@ index **before** building features on it.
   diverges on what a document contains.
 - **`IndexedFile` additions:** `includes` (resolved include targets + their
   source ranges + `once` flag), `occurrences` (def + resolved usage sites with
-  a `moduleScope` flag), `persisted` flag.
+  a `moduleScope` flag), `fromDisk` flag.
 - **Inverted projections** under the index mutex, maintained incrementally by
   `upsert`/`remove`: `byKey_` (lowercase key → sites across files) and
   `outInc_` (file → direct includes), plus `transitiveIncludes(file)` with a
   cycle guard.
-- **Disk cache v3** (bump from the M4-revamped per-file v2 layout; discarded
-  and rebuilt — warm-start only, acceptable).
-- **Buffer isolation:** open-buffer entries are `persisted=false` — served to
-  live queries but never written by the flusher and never trusted by scan's
-  mtime/size cache-hit. Fixes the §4.6 staleness wart.
+- **In-memory only** (2026-09 revision): the M4 disk cache is removed — the
+  index never writes to disk. The `persisted` flag narrows to `fromDisk`:
+  false for open-buffer entries, and scan's mtime/size cache-hit never accepts
+  one, so scan stays disk truth and buffers stay live truth. Startup calls
+  `cleanupLegacyDiskIndex()` to remove the cache older builds left behind.
 - Files: `symbols.h`, `resolve.{h,cpp}` (shared `analyze` + occurrence sweep,
   legacy ParseResult wrappers internally analyze-backed), `index.{h,cpp}`,
-  `session.cpp` (open-buffer upserts go through `analyze`, `persisted=false`),
+  `session.cpp` (open-buffer upserts go through `analyze`, `fromDisk=false`),
   `resolve_checks` + `index_checks` cases. **Delivery deviation:** `parser.cpp`
   untouched (include extraction uses the public `preprocessorWord()` seam);
   `Storage`/`Shared` tagging deferred to M7 (`moduleScope` = "is a file root").
-- Acceptance: `byKey_`/`outInc_` round-trip through the cache; transitive
-  closure correct on diamond + cycle (`a.bi`↔`b.bi`); non-persisted entries
-  never reach disk and never shadow scan hits; all 7 suites green.
+- Acceptance: `byKey_`/`outInc_` projections and the closure (diamond + cycle
+  `a.bi`↔`b.bi`) hold in memory across scans/upserts; `fromDisk=false` entries
+  never shadow scan hits; all 7 suites green.
 - Risk: occurrence-vector memory for large workspaces (mitigate: sites only,
   no payload text; FB files are tiny). Residual: request-side re-analyze per
   call remains until the M10 parse cache.
@@ -211,9 +205,8 @@ deviations rather than reworked.
   (`**/*.{bas,bi}`) plus a re-stat of the root is authoritative and cheap for
   FB-sized files.
 - **`#pragma once` recorded as metadata** (FreeBASIC.md §12.6): detected in
-  `analyze()`, carried on `IndexedFile.pragmaOnce`, round-tripped as an
-  optional cache-v3 field (warm-start cache, so no version bump). Recording
-  only; guard-state evaluation is still a documented divergence.
+  `analyze()`, carried on `IndexedFile.pragmaOnce`. Recording only;
+  guard-state evaluation is still a documented divergence.
 - Files: `resolve.{h,cpp}`, `index.{h,cpp}`, `session.{h,cpp}`,
   `resolve_checks`, `index_checks`, `session_integration`.
 - Acceptance (green): a `.bas` with a missing `.bi` publishes `include-not-found`
@@ -298,10 +291,10 @@ the design; sub-tasks land in order.
   semantics): the cross-resolved decl's in-document usages. `completion`
   merges closure module-scope roots (deduped by key) behind in-file
   `visibleSymbols` (gate applied), inner-scope keys shadowing closure keys.
-- Files: `symbols.h`, `parser.{h,cpp}` (storage tagging), `index.cpp` (cache
-  round-trip), `resolve.{h,cpp}` (`CrossDecl` + `resolveAcross` + gate),
-  `session.{h,cpp}` (four handlers + `contentForPath`), `resolve_checks`,
-  `index_checks`, `session_integration` (two-file frames). **Deviation:** M5's
+- Files: `symbols.h`, `parser.{h,cpp}` (storage tagging), `resolve.{h,cpp}`
+  (`CrossDecl` + `resolveAcross` + gate), `session.{h,cpp}` (four handlers +
+  `contentForPath`), `resolve_checks`, `index_checks`, `session_integration`
+  (two-file frames). **Deviation:** M5's
   "`Storage`/`Shared` tagging deferred to M7" lands exactly as deferred —
   `parser.cpp` is touched now. §12.1 suffix-collapse stays a tracked
   divergence (it touches the whole key model; not this milestone).
@@ -312,8 +305,8 @@ the design; sub-tasks land in order.
   *module level* in `main.bas` (textual include, probe-verified) but never
   inside a `main.bas` procedure (error-42-equivalent: resolves to nothing),
   while `dim shared` in the `.bi` resolves from procedures; a lenient
-  out-of-closure `byKey_` def still works; the `shared` flag survives a cache
-  round-trip; `ctest` 7/7 green.
+  out-of-closure `byKey_` def still works; the `shared` flag is carried on
+  the in-memory index entries; `ctest` 7/7 green.
 - Risk: closed files are read from disk per request for range conversion (FB
   files are tiny; M10's parse/content cache removes it). Duplicate
   module-scope keys across files disambiguate to the first closure hit — a
@@ -416,7 +409,7 @@ parser sees.
   Linux/macOS/Windows matrix (`checkout --recurse-submodules`); not enabled
   until the repo is pushed. Expect to fix Windows path handling in
   `index.cpp` defaults and any MSVC/LspCpp issues once it runs.
-- `workspace/didChangeConfiguration` + `Settings{ includePaths, cacheDirOverride,
+- `workspace/didChangeConfiguration` + `Settings{ includePaths,
   diagnosticsOn, semanticTokensOn, inlayHintsOn }`; index honors `includePaths`
   on rescan. Few keys, fixed defaults, forward-compatible unknown-key ignore.
   Config-driven watcher changes ride M5.5's `client/registerCapability` path

@@ -45,12 +45,11 @@ scratch vars).
 
 **Why suppressed:** Most hits are bitwise constants that are self-documenting
 in context: UTF-8 continuation masks (`0x80`, `0xC0`, `0x3F`, `0x1F`),
-SHA-256 hex nibble extraction (`0x0F`, shifts by `4`) and digest-size
-multiples (`* 2` per byte), radix prefixes, and peekahead caps.  Naming these
-would be ceremony that doesn't improve understanding.
+radix prefixes, and peekahead caps.  Naming these would be ceremony that
+doesn't improve understanding.
 
-**Hit count:** ~20 (scattered across index.cpp SHA-256 hex and lexer.cpp
-radix logic).
+**Hit count:** ~20 (scattered across lexer.cpp radix logic and index.cpp
+stat/mask constants).
 
 ---
 

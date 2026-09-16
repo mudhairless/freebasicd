@@ -374,7 +374,7 @@ static void TestOccurrencesAcrossCrossFile()
                            std::istreambuf_iterator<char>());
     };
 
-    WorkspaceIndex index(ws, sandbox / "cache");
+    WorkspaceIndex index(ws);
     index.open();
     index.scan(false);
     try

@@ -29,7 +29,7 @@ struct IncludeEdge {
     bool once = false;        // `#include once`
 };
 
-// One workspace file's cached symbol tree plus the disk state it was parsed
+// One workspace file's in-memory symbol tree plus the disk state it was parsed
 // from. Immutable once published; updates replace the shared_ptr wholesale.
 struct IndexedFile {
     std::string path;         // normalized absolute path
@@ -45,11 +45,11 @@ struct IndexedFile {
     // intentional and unaffected.
     bool pragmaOnce = false;
 
-    // Whether this entry may be written to the disk cache. False only for
-    // open-buffer entries: an unsaved buffer must never be persisted as if it
-    // were disk truth, and must never satisfy scan's mtime/size cache-hit.
-    // Never serialized.
-    bool persisted = true;
+    // Whether this entry came from a scan of the on-disk source (true) or from
+    // a live open buffer (false). Scan is disk truth, buffers are live truth:
+    // a `fromDisk=false` entry must never satisfy scan's mtime/size cache-hit,
+    // or an unsaved buffer would shadow the source that scan is about to read.
+    bool fromDisk = true;
 };
 
 // A module-scope declaration reachable through the #include closure from some
@@ -59,40 +59,31 @@ struct KeyedDecl {
     Symbol const* decl;
 };
 
-// Per-workspace symbol index. Live queries read an in-memory snapshot; a JSON
-// file per indexed source persists each file's symbols, occurrences, and
-// include edges outside the workspace so no symbol ever leaks into the
-// codebase on disk. Every cache filename is the SHA-256 hex digest of the
-// source path it caches (direct lookup), and each workspace owns a subdirectory
-// keyed by the SHA-256 of its root, so workspaces never share entries. The
-// cache is a warm-start optimization only: entries are validated against file
-// mtime/size on load and scan, and a corrupt or mismatched cache file is
-// discarded and rebuilt.
+// Per-workspace symbol index, purely in memory: no symbols or index state are
+// ever written to disk.
 //
 // Thread-safe for the LSP handler pool. A background scan thread parses the
-// workspace; a debounced flusher persists changes atomically (temp + rename).
+// workspace; entries are replaced wholesale on every update and queries read a
+// consistent shared_ptr snapshot.
 class WorkspaceIndex
 {
 public:
-    // `cacheDir` empty selects the platform index dir (see defaultCacheDir);
-    // tests pass a temp dir. The per-workspace subdirectory is derived from
-    // `root`, never from `cacheDir`.
-    explicit WorkspaceIndex(std::filesystem::path const& root,
-                            std::filesystem::path const& cacheDir = std::filesystem::path{});
+    explicit WorkspaceIndex(std::filesystem::path const& root);
     ~WorkspaceIndex();
 
     WorkspaceIndex(WorkspaceIndex const&) = delete;
     WorkspaceIndex& operator=(WorkspaceIndex const&) = delete;
 
-    // Load persisted entries and start the background flusher.
+    // Start the background threads (the debounced watched-files rescan).
     void open();
-    // Stop background threads and write any pending state.
+    // Stop background threads; nothing is written (the index is in memory).
     void close();
 
     // Re-stat every workspace file; parse changed/new files, drop vanished
-    // ones (and their cache files). Reuses persisted entries whose
-    // (mtime, size) still match. When `async` the scan runs on an internal
-    // thread (returns immediately).
+    // ones. Reuses entries whose (mtime, size) still match — open-buffer
+    // entries (fromDisk=false) never satisfy this cache-hit, so scan always
+    // replaces a lingering buffer parse with disk truth. When `async` the
+    // scan runs on an internal thread (returns immediately).
     void scan(bool async = true);
 
     // A `workspace/didChangeWatchedFiles` event arrived. A debounced rescan
@@ -101,8 +92,7 @@ public:
     // thread.
     void watchedFilesChanged();
 
-    // Feed a file parsed from a live buffer or scan. `flush` schedules the
-    // next debounced write.
+    // Feed a file parsed from a live buffer or scan.
     void upsert(IndexedFile entry);
     void remove(std::string const& path);
 
@@ -126,32 +116,20 @@ public:
     std::shared_ptr<IndexedFile const> fileAt(std::string const& normalizedPath) const;
 
     std::filesystem::path root() const;
-    std::filesystem::path cacheDir() const;    // platform index dir (or test override)
-    std::filesystem::path indexDir() const;    // this workspace's subdirectory
-    std::filesystem::path cachePathFor(std::string const& normalizedPath) const;
-
-    // Persistence primitives (also exercised directly by tests).
-    bool loadFromDisk();
-    void flushSoon();
 
 private:
-    void flushNow();
-    void flusherLoop();
     void rescanLoop();
-    void removeCacheFile(std::string const& normalizedPath);
     void addToProjections(std::shared_ptr<IndexedFile const> const& f);
     void subtractFromProjections(std::shared_ptr<IndexedFile const> const& f);
 
     // True when `normalizedPath` lies at or under this workspace's root
     // (compared in the normalized form used by normalizePath). The index is
     // strictly workspace-scoped: system headers and stray open buffers outside
-    // the root must never be indexed or persisted.
+    // the root must never be indexed.
     bool isInsideRoot(std::string const& normalizedPath) const;
 
     std::filesystem::path root_;
     std::string rootNorm_;  // normalizePath(root_) at construction
-    std::filesystem::path cacheDir_;
-    std::filesystem::path indexDir_;
 
     mutable std::mutex mu_;
     std::map<std::string, std::shared_ptr<IndexedFile const>> files_;
@@ -159,11 +137,7 @@ private:
     std::map<std::string, std::vector<IncludeEdge>> outInc_;              // path -> include edges
 
     std::atomic<bool> running_{false};
-    std::thread flusher_;
     std::thread scanner_;
-    std::mutex cvMu_;
-    std::condition_variable cv_;
-    bool dirty_ = false;
 
     // Debounced watched-files rescan: events coalesce in `rescanQueued_`, the
     // dedicated `rescanLoop` waits out a quiet window (kRescanDebounce), then
@@ -216,20 +190,21 @@ std::optional<std::string> resolveIncludeTarget(
 // describe the file the buffer or scan produced; include targets are resolved
 // against `workspaceRoot` from the including file's directory. `doc`'s symbol
 // tree is moved into `roots` (a moved-from AnalyzedDoc must not be reused for
-// indexing). `persisted=false` marks an open-buffer entry that must never be
-// written to the disk cache.
+// indexing). `fromDisk=false` marks an open-buffer entry that must never
+// satisfy scan's mtime/size cache-hit.
 IndexedFile indexedFileFromAnalysis(std::string const& normalizedPath, std::uint64_t mtime,
                                     std::uint64_t size, AnalyzedDoc&& doc,
                                     std::filesystem::path const& workspaceRoot,
-                                    bool persisted);
+                                    bool fromDisk);
 
-// Normalization + keying helpers, exposed for tests.
-std::string sha256Hex(std::string_view data);
+// One-time removal of the legacy on-disk index (the per-workspace JSON cache
+// layouts that predated the in-memory-only architecture). Best-effort and
+// idempotent; nothing but the platform index dir is touched, so it only ever
+// deletes files this server wrote. Exposed for tests and called from startup.
+void cleanupLegacyDiskIndex();
+
+// Normalization helpers, exposed for tests.
 std::string normalizePath(std::filesystem::path const& path);
-std::string workspaceKey(std::string const& normalizedRoot);
-std::filesystem::path defaultCacheDir();
-// Per-source cache file: `dir` / (<sha256 of normalized path>.json).
-std::filesystem::path cacheFileFor(std::filesystem::path const& dir, std::string const& normalizedPath);
 bool statFile(std::filesystem::path const& path, std::uint64_t* mtime, std::uint64_t* size);
 
 }  // namespace fblang

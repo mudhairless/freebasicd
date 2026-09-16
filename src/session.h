@@ -49,7 +49,6 @@ public:
 
     void registerHandlers();
     void setExitHandler(std::function<void()> exitHandler);
-    void setIndexCacheDir(std::filesystem::path cacheDir);
 
 private:
     lsp::LanguageSession& session_;
@@ -63,10 +62,9 @@ private:
     // the initialize reply.
     bool watchedFilesDynamic_ = false;
 
-    // Durable per-workspace symbol index (M4); null until a workspace root is
-    // known (initialize or first opened file).
+    // In-memory per-workspace symbol index (M4); null until a workspace root
+    // is known (initialize or first opened file). Never persisted to disk.
     std::unique_ptr<fblang::WorkspaceIndex> index_;
-    std::filesystem::path indexCacheDir_;  // override for tests (default = platform data dir)
 
     // Client-provided workspace root (`rootUri` / `workspaceFolders`), kept so a
     // later didOpen can narrow it to the opened document's project (see
