@@ -6,6 +6,7 @@
 #include "resolve.h"
 #include "utf16.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <optional>
@@ -751,17 +752,38 @@ td_definition::response FreeBasicServer::onDefinition(td_definition::request con
     }
     std::string_view const content = file->GetContentNoLock();
     std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+    std::string const normPath = fblang::normalizePath(req.params.textDocument.uri.GetAbsolutePath().path());
 
-    fblang::ParseResult const parse = fblang::parseDocument(content);
-    fblang::Symbol const* decl = fblang::resolveAt(parse, content, offset);
-    if (!decl)
+    fblang::AnalyzedDoc const doc = fblang::analyze(content);
+    fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
+    if (!target.decl)
     {
         return rsp;
     }
+
+    lsLocation loc;
+    if (!target.file)
+    {
+        loc = lsLocation(req.params.textDocument.uri,
+                         fblang::utf16Range(content, target.decl->selection.beg,
+                                            target.decl->selection.end));
+    }
+    else
+    {
+        // Remote declaration: convert against the target file's own content
+        // (open buffer or disk), and reference it by its own URI. The index
+        // snapshot that owns `target.decl` is pinned by `target.file`.
+        std::optional<std::string> const remote = contentForPath(target.file->path);
+        if (!remote)
+        {
+            return rsp;
+        }
+        loc = lsLocation(lsDocumentUri(AbsolutePath(target.file->path)),
+                         fblang::utf16Range(*remote, target.decl->selection.beg,
+                                            target.decl->selection.end));
+    }
     rsp.result.first.emplace();
-    rsp.result.first->push_back(
-        lsLocation(req.params.textDocument.uri, fblang::utf16Range(content, decl->selection.beg,
-                                                                   decl->selection.end)));
+    rsp.result.first->push_back(std::move(loc));
     return rsp;
 }
 
@@ -778,25 +800,97 @@ td_references::response FreeBasicServer::onReferences(td_references::request con
     }
     std::string_view const content = file->GetContentNoLock();
     std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+    std::string const normPath = fblang::normalizePath(req.params.textDocument.uri.GetAbsolutePath().path());
 
-    fblang::ParseResult const parse = fblang::parseDocument(content);
-    fblang::Symbol const* decl = fblang::resolveAt(parse, content, offset);
-    if (!decl)
+    fblang::AnalyzedDoc const doc = fblang::analyze(content);
+    fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
+    if (!target.decl)
     {
         return rsp;
     }
 
     bool const includeDecl = !req.params.context.includeDeclaration || *req.params.context.includeDeclaration;
+    fblang::SourceRange const sel = target.decl->selection;
+
+    // Closed (M7) file closure only: the requesting file plus every file in its
+    // transitive include closure, one textual module. A usage is a reference
+    // when re-resolving it (shadowing-aware) lands on the target declaration;
+    // same-named locals elsewhere never match. Out-of-closure byKey hits are
+    // excluded by construction.
+    struct Site
+    {
+        std::string path;
+        fblang::SourceRange range;
+    };
+    std::vector<Site> sites;
     if (includeDecl)
     {
-        rsp.result.push_back(lsLocation(req.params.textDocument.uri,
-                                        fblang::utf16Range(content, decl->selection.beg,
-                                                           decl->selection.end)));
+        sites.push_back(Site{target.file ? target.file->path : normPath, sel});
     }
-    for (auto const& ref : fblang::occurrencesOf(parse, content, *decl))
+
+    auto collect = [&](fblang::AnalyzedDoc const& d, std::string const& fpath)
     {
-        rsp.result.push_back(
-            lsLocation(req.params.textDocument.uri, fblang::utf16Range(content, ref.beg, ref.end)));
+        // The decl's own file is parsed afresh here, so its module root is a
+        // different Symbol object than the index entry the cross-file requests
+        // compare against. Re-resolve the decl to that local identity (tier 1)
+        // and compare pointer-wise; shadowing locals in the owner file correctly
+        // fail the match.
+        bool const ownerFile = fpath == (target.file ? target.file->path : normPath);
+        fblang::Symbol const* const ownerLocal =
+            ownerFile && target.file ? fblang::resolveAt(d, sel.beg) : nullptr;
+        for (fblang::Token const& t : d.tokens)
+        {
+            if (t.kind != fblang::TokenKind::Identifier ||
+                fblang::toLowerChars(t.text()) != target.decl->key)
+            {
+                continue;
+            }
+            if (t.beg == sel.beg && t.end == sel.end)
+            {
+                continue;  // the declaration name token itself
+            }
+            bool const match = ownerLocal
+                                   ? fblang::resolveAt(d, t.beg) == ownerLocal
+                                   : resolveAtOrAcross(d, fpath, t.beg) == target;
+            if (match)
+            {
+                sites.push_back(Site{fpath, {t.beg, t.end}});
+            }
+        }
+    };
+
+    collect(doc, normPath);
+    if (index_)
+    {
+        for (std::string const& closurePath : index_->transitiveIncludes(normPath))
+        {
+            std::optional<std::string> const remote = contentForPath(closurePath);
+            if (!remote)
+            {
+                continue;
+            }
+            collect(fblang::analyze(*remote), fblang::normalizePath(
+                                                    std::filesystem::path(closurePath)));
+        }
+    }
+
+    std::sort(sites.begin(), sites.end(), [](Site const& a, Site const& b)
+              {
+                  if (a.path != b.path)
+                  {
+                      return a.path < b.path;
+                  }
+                  return a.range.beg < b.range.beg;
+              });
+    for (Site const& s : sites)
+    {
+        std::optional<std::string> const source = contentForPath(s.path);
+        if (!source)
+        {
+            continue;
+        }
+        rsp.result.push_back(lsLocation(lsDocumentUri(AbsolutePath(s.path)),
+                                        fblang::utf16Range(*source, s.range.beg, s.range.end)));
     }
     return rsp;
 }
@@ -814,10 +908,11 @@ td_highlight::response FreeBasicServer::onHighlight(td_highlight::request const&
     }
     std::string_view content = file->GetContentNoLock();
     std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
+    std::string const normPath = fblang::normalizePath(req.params.textDocument.uri.GetAbsolutePath().path());
 
-    fblang::ParseResult const parse = fblang::parseDocument(content);
-    fblang::Symbol const* decl = fblang::resolveAt(parse, content, offset);
-    if (!decl)
+    fblang::AnalyzedDoc const doc = fblang::analyze(content);
+    fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
+    if (!target.decl)
     {
         return rsp;
     }
@@ -829,10 +924,30 @@ td_highlight::response FreeBasicServer::onHighlight(td_highlight::request const&
         hl.kind.emplace(lsDocumentHighlightKind::Text);
         rsp.result.push_back(hl);
     };
-    add(decl->selection);
-    for (auto const& ref : fblang::occurrencesOf(parse, content, *decl))
+
+    // Highlight is per-document: the declaration's in-document usages only, so
+    // a remote declaration contributes its identically-named sites here (each
+    // re-resolved against the closure) and no foreign range.
+    fblang::SourceRange const sel = target.decl->selection;
+    if (!target.file)
     {
-        add(ref);
+        add(sel);
+    }
+    for (fblang::Token const& t : doc.tokens)
+    {
+        if (t.kind != fblang::TokenKind::Identifier ||
+            fblang::toLowerChars(t.text()) != target.decl->key)
+        {
+            continue;
+        }
+        if (!target.file && t.beg == sel.beg && t.end == sel.end)
+        {
+            continue;  // the declaration name token, already added above
+        }
+        if (resolveAtOrAcross(doc, normPath, t.beg) == target)
+        {
+            add({t.beg, t.end});
+        }
     }
     return rsp;
 }
@@ -852,7 +967,7 @@ td_completion::response FreeBasicServer::onCompletion(td_completion::request con
     std::uint32_t const offset = fblang::byteOffsetForUtf16Position(content, req.params.position);
     std::string const prefix = fblang::toLowerChars(completionPrefix(content, offset));
 
-    fblang::ParseResult const parse = fblang::parseDocument(content);
+    fblang::AnalyzedDoc const doc = fblang::analyze(content);
 
     for (std::string_view const w : fblang::reservedWords())
     {
@@ -893,7 +1008,7 @@ td_completion::response FreeBasicServer::onCompletion(td_completion::request con
     }
 
     std::vector<std::string> seen;
-    for (fblang::Symbol const* sym : fblang::visibleSymbols(parse, offset))
+    for (fblang::Symbol const* sym : fblang::visibleSymbols(doc, offset))
     {
         if (!hasPrefix(sym->key, prefix))
         {
@@ -921,6 +1036,59 @@ td_completion::response FreeBasicServer::onCompletion(td_completion::request con
             item.detail.emplace(sym->signature);
         }
         rsp.result.items.push_back(std::move(item));
+    }
+
+    // Closure module-scope roots come behind the in-file symbols, deduped by
+    // key: an inner-scope name shadows a same-named closure global (the first
+    // entry in `seen` won). The storage gate applies to the closure the same
+    // way it does in-file: from inside a block, plain module-level Dim roots of
+    // included headers are not visible.
+    if (index_)
+    {
+        bool const insideBlock = fblang::innermostScope(doc.parse, offset) != nullptr;
+        std::string const normPath =
+            fblang::normalizePath(req.params.textDocument.uri.GetAbsolutePath().path());
+        for (std::string const& closurePath : index_->transitiveIncludes(normPath))
+        {
+            std::shared_ptr<fblang::IndexedFile const> const closure = index_->fileAt(closurePath);
+            if (!closure)
+            {
+                continue;
+            }
+            for (fblang::Symbol const& root : closure->roots)
+            {
+                if (root.key.empty() || !hasPrefix(root.key, prefix))
+                {
+                    continue;
+                }
+                if (insideBlock && root.kind == fblang::SymbolKind::Dim && !root.shared)
+                {
+                    continue;
+                }
+                bool dup = false;
+                for (auto const& k : seen)
+                {
+                    if (k == root.key)
+                    {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (dup)
+                {
+                    continue;
+                }
+                seen.push_back(root.key);
+                lsCompletionItem item;
+                item.label = root.name;
+                item.kind.emplace(completionKindFor(root.kind));
+                if (!root.signature.empty())
+                {
+                    item.detail.emplace(root.signature);
+                }
+                rsp.result.items.push_back(std::move(item));
+            }
+        }
     }
     return rsp;
 }
@@ -1166,4 +1334,35 @@ void FreeBasicServer::publishDiagnostics(lsDocumentUri const& uri, std::vector<l
     publish.params.uri = uri;
     publish.params.diagnostics = std::move(diagnostics);
     session_.endpoint().send(publish);
+}
+
+std::optional<std::string> FreeBasicServer::contentForPath(std::filesystem::path const& path)
+{
+    // An open buffer is live truth: unsaved edits must drive range conversion
+    // (and, via the index, resolution) even before they hit disk.
+    if (std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(AbsolutePath(path.string())))
+    {
+        return std::string(file->GetContentNoLock());
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        return std::nullopt;
+    }
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+fblang::CrossDecl FreeBasicServer::resolveAtOrAcross(fblang::AnalyzedDoc const& doc,
+                                                     std::string const& normalizedPath,
+                                                     std::uint32_t off) const
+{
+    if (index_)
+    {
+        return fblang::resolveAcross(doc, normalizedPath, off, *index_);
+    }
+    if (fblang::Symbol const* const local = fblang::resolveAt(doc, off))
+    {
+        return fblang::CrossDecl{nullptr, local};
+    }
+    return {};
 }

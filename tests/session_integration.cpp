@@ -8,10 +8,12 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace
@@ -21,6 +23,143 @@ using test::FeedableIStream;
 using test::MakeLspFrame;
 using test::StringOStream;
 using test::WaitForOutputContaining;
+
+// M7 two-file fixture: a header declaring a shared module var, a plain module
+// var, and a proc that reads the shared one; a client .bas that includes it and
+// uses the shared var at module level and inside a proc (where the plain var
+// must stay invisible); and a completion probe projecting the plain var's name
+// under the module-level and in-block prefixes.
+char const kLibContent[] =
+    "dim shared globalCount as integer\n"
+    "dim localOnly as integer\n"
+    "sub libProc()\n"
+    "    print globalCount\n"
+    "end sub\n";
+char const kMainContent[] =
+    "#include \"lib.bi\"\n"
+    "dim head as integer\n"
+    "head = globalCount + localOnly + earlyBird\n"
+    "sub mainProc()\n"
+    "    globalCount = globalCount + 1\n"
+    "    localOnly = 5\n"
+    "end sub\n";
+char const kProgContent[] =
+    "#include \"lib.bi\"\n"
+    "dim loc\n"
+    "sub prog()\n"
+    "    dim loc\n"
+    "end sub\n";
+char const kExtraContent[] = "dim shared earlyBird as integer\n";
+
+std::string ToJsonString(std::string const& s);  // defined below in this namespace
+
+struct TwoFileFixture
+{
+    std::filesystem::path sandbox;
+    std::filesystem::path wsDir;
+    std::filesystem::path cacheDir;
+    std::string libUri;
+    std::string mainUri;
+    std::string progUri;
+    std::string extraUri;
+    std::string rootUri;
+
+    TwoFileFixture()
+    {
+        static std::atomic<long> counter{0};
+        sandbox = std::filesystem::temp_directory_path() /
+                  ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+                   std::to_string(counter.fetch_add(1)));
+        wsDir = sandbox / "ws";
+        cacheDir = sandbox / "cache";
+        std::filesystem::create_directories(wsDir);
+        {
+            std::ofstream out(wsDir / "lib.bi");
+            out << kLibContent;
+        }
+        {
+            std::ofstream out(wsDir / "main.bas");
+            out << kMainContent;
+        }
+        {
+            std::ofstream out(wsDir / "prog.bas");
+            out << kProgContent;
+        }
+        {
+            std::ofstream out(wsDir / "extra.bi");
+            out << kExtraContent;
+        }
+        libUri = "file://" + (wsDir / "lib.bi").string();
+        mainUri = "file://" + (wsDir / "main.bas").string();
+        progUri = "file://" + (wsDir / "prog.bas").string();
+        extraUri = "file://" + (wsDir / "extra.bi").string();
+        rootUri = "file://" + wsDir.string();
+    }
+
+    ~TwoFileFixture()
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(sandbox, ec);
+    }
+};
+
+// Start a session rooted at the fixture workspace, index it, and didOpen every
+// fixture source from its buffer (open buffers, not disk, are the live truth
+// the cross-file handlers serve).
+std::shared_ptr<FeedableIStream> StartIndexedSession(
+    lsp::LanguageSession& session, FreeBasicServer& server,
+    std::shared_ptr<StringOStream> const& output, TwoFileFixture const& fix,
+    std::vector<std::pair<std::string, std::string>> const& opens)
+{
+    auto input = std::make_shared<FeedableIStream>();
+    server.setIndexCacheDir(fix.cacheDir);
+    server.registerHandlers();
+    session.start(input, output);
+
+    std::string const initFrame =
+        R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")"
+        + fix.rootUri + "\"}}";
+    input->append(MakeLspFrame(initFrame.c_str()));
+    Expect(WaitForOutputContaining(output, "\"id\":\"init\"").find("\"workspaceSymbolProvider\":") !=
+               std::string::npos,
+           "initialize must advertise workspace/symbol");
+
+    for (auto const& open : opens)
+    {
+        std::string const frame =
+            R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+            R"({"uri":")" + open.first + R"(","languageId":"basic","version":1,"text":")"
+            + ToJsonString(open.second) + "\"}}}";
+        input->append(MakeLspFrame(frame.c_str()));
+    }
+    return input;
+}
+
+// Append the given request repeatedly (each attempt gets a fresh numeric id) and
+// return the first reply that contains `needle` — used to wait for the
+// asynchronous workspace scan to settle the index behind a cross-file resolve.
+std::string PollRequest(std::shared_ptr<FeedableIStream> const& input,
+                        std::shared_ptr<StringOStream> const& output, std::string const& prefix,
+                        std::string const& needle,
+                        std::function<std::string(std::string const&)> const& frame,
+                        int attempts = 40)
+{
+    std::string last;
+    for (int n = 0; n < attempts; ++n)
+    {
+        std::string const id = "\"id\":\"" + prefix + std::to_string(n) + "\"";
+        input->append(MakeLspFrame(frame(prefix + std::to_string(n)).c_str()));
+        std::string const snapshot = WaitForOutputContaining(output, id, 50);
+        if (snapshot.find(needle) != std::string::npos)
+        {
+            // Clip to the tail of the stream so callers can make negative
+            // assertions without seeing earlier replies of the same session.
+            return snapshot.substr(snapshot.rfind(id));
+        }
+        last = snapshot;
+    }
+    return last;
+}
 
 char const* kUri = "file:///tmp/hello.bas";
 
@@ -1207,6 +1346,191 @@ void TestWatchedFilesRescanConverges()
     std::filesystem::remove_all(sandbox, ec);
 }
 
+void TestCrossFileDefinitionReferencesHighlight()
+{
+    TwoFileFixture const fix;
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto output = std::make_shared<StringOStream>();
+    FreeBasicServer server(session);
+    auto input = StartIndexedSession(session, server, output, fix,
+                                     {{fix.libUri, kLibContent}, {fix.mainUri, kMainContent}});
+
+    // Definition: the module-level usage of globalCount jumps into lib.bi.
+    // Poll until the background scan has indexed the closure.
+    std::string const def = PollRequest(
+        input, output, "cdef", fix.libUri,
+        [&](std::string const& id) {
+            return R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"textDocument/definition","params":{"textDocument":{"uri":")" +
+                   fix.mainUri + R"("},"position":{"line":2,"character":7}}})";
+        });
+    Expect(def.find("\"start\":{\"line\":0,\"character\":11}") != std::string::npos &&
+               def.find("\"end\":{\"line\":0,\"character\":22}") != std::string::npos,
+           "definition must land on the globalCount declaration name in lib.bi");
+    Expect(def.find(fix.mainUri + "\"") == std::string::npos ||
+               def.find(fix.libUri + "\"") != std::string::npos,
+           "definition must point at the header, not the client file");
+
+    // References: the declaration plus every closure usage, project files
+    // sorted lexically (lib.bi before main.bas), sites by byte offset.
+    std::string const refs = PollRequest(
+        input, output, "cref", "\"start\":{\"line\":3,\"character\":10}",
+        [&](std::string const& id) {
+            return R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"textDocument/references","params":{"textDocument":{"uri":")" +
+                   fix.mainUri +
+                   R"("},"position":{"line":2,"character":7},"context":{"includeDeclaration":true}}})";
+        });
+    Expect(refs.find("\"start\":{\"line\":0,\"character\":11}") != std::string::npos &&
+               refs.find("\"end\":{\"line\":0,\"character\":22}") != std::string::npos,
+           "references must include the declaration site in lib.bi");
+    Expect(refs.find("\"start\":{\"line\":3,\"character\":10}") != std::string::npos,
+           "references must include the print usage inside libProc");
+    Expect(refs.find("\"start\":{\"line\":2,\"character\":7}") != std::string::npos,
+           "references must include the main.bas module usage");
+    Expect(refs.find("\"start\":{\"line\":4,\"character\":4}") != std::string::npos &&
+               refs.find("\"start\":{\"line\":4,\"character\":18}") != std::string::npos,
+           "references must include both in-sub usages of globalCount in main.bas");
+
+    // Highlight is per-document: grouped usages in main.bas only (the remote
+    // declaration contributes no foreign range) — module and both in-sub sites.
+    std::string const hl = PollRequest(
+        input, output, "chl", "\"line\":4",
+        [&](std::string const& id) {
+            return R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"textDocument/documentHighlight","params":{"textDocument":{"uri":")" +
+                   fix.mainUri + R"("},"position":{"line":2,"character":7}}})";
+        });
+    std::size_t hlCount = 0;
+    std::size_t pos = 0;
+    while ((pos = hl.find("\"start\":", pos)) != std::string::npos)
+    {
+        ++hlCount;
+        pos += 8;
+    }
+    Expect(hlCount == 3, "highlight must cover the three in-document globalCount usages");
+    Expect(hl.find("\"start\":{\"line\":2,\"character\":7}") != std::string::npos &&
+               hl.find("\"start\":{\"line\":4,\"character\":4}") != std::string::npos &&
+               hl.find("\"start\":{\"line\":4,\"character\":18}") != std::string::npos,
+           "each in-document usage must be a highlight site");
+
+    session.stop();
+}
+
+void TestCrossFileStorageGate()
+{
+    TwoFileFixture const fix;
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto output = std::make_shared<StringOStream>();
+    FreeBasicServer server(session);
+    auto input = StartIndexedSession(session, server, output, fix,
+                                     {{fix.libUri, kLibContent}, {fix.mainUri, kMainContent}});
+
+    // localOnly is a file-root plain dim in lib.bi: visible from module level.
+    std::string const moduleLevel = PollRequest(
+        input, output, "cg1", fix.libUri,
+        [&](std::string const& id) {
+            return R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"textDocument/definition","params":{"textDocument":{"uri":")" +
+                   fix.mainUri + R"("},"position":{"line":2,"character":22}}})";
+        });
+    Expect(moduleLevel.find("\"start\":{\"line\":1,\"character\":4}") != std::string::npos &&
+               moduleLevel.find("\"end\":{\"line\":1,\"character\":13}") != std::string::npos,
+           "module-level use of a plain header dim must resolve into the header");
+
+    // The same name inside a procedure must not resolve at all (fbc error 42).
+    std::string const inside = PollRequest(
+        input, output, "cg2", "\"result\":null",
+        [&](std::string const& id) {
+            return R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"textDocument/definition","params":{"textDocument":{"uri":")" +
+                   fix.mainUri + R"("},"position":{"line":5,"character":4}}})";
+        });
+    Expect(inside.find(fix.libUri) == std::string::npos &&
+               inside.find(fix.mainUri) == std::string::npos,
+           "a gated plain module dim must not resolve from inside a block");
+
+    session.stop();
+}
+
+void TestCrossFileCompletionHonorsGate()
+{
+    TwoFileFixture const fix;
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto output = std::make_shared<StringOStream>();
+    FreeBasicServer server(session);
+    auto input = StartIndexedSession(session, server, output, fix,
+                                     {{fix.libUri, kLibContent}, {fix.progUri, kProgContent}});
+
+    // Module level: the closure's plain dim and the in-file loc are both
+    // visible behind the "loc" prefix.
+    std::string const moduleLevel = PollRequest(
+        input, output, "ccm", "\"label\":\"loc\"",
+        [&](std::string const& id) {
+            return R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"textDocument/completion","params":{"textDocument":{"uri":")" +
+                   fix.progUri + R"("},"position":{"line":1,"character":8}}})";
+        });
+    Expect(moduleLevel.find("\"label\":\"loc\"") != std::string::npos,
+           "module-level completion must offer the in-file loc");
+    Expect(moduleLevel.find("\"label\":\"localOnly\"") != std::string::npos,
+           "module-level completion must offer the closure's plain dim");
+
+    // Inside the sub: the local loc completes, the closure's plain dim is
+    // gated out.
+    std::string const inside = PollRequest(
+        input, output, "cci", "\"label\":\"loc\"",
+        [&](std::string const& id) {
+            return R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"textDocument/completion","params":{"textDocument":{"uri":")" +
+                   fix.progUri + R"("},"position":{"line":3,"character":12}}})";
+        });
+    Expect(inside.find("\"label\":\"loc\"") != std::string::npos,
+           "in-block completion must offer the local loc");
+    Expect(inside.find("\"label\":\"localOnly\"") == std::string::npos,
+           "a plain module dim of an included header must not complete inside a block");
+
+    session.stop();
+}
+
+// Tier-3 leniency: a name the closure does not declare at all still resolves
+// to any workspace root `byKey` knows about — a not-yet-included header. Tracked
+// as a divergence (FreeBASIC.md §12), accepted by PLAN M7.
+void TestCrossFileLenientByKeyFallback()
+{
+    TwoFileFixture const fix;
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto output = std::make_shared<StringOStream>();
+    FreeBasicServer server(session);
+    // Only the client is opened; extra.bi is never touched by the client, so
+    // only the workspace scan can index it.
+    auto input = StartIndexedSession(session, server, output, fix,
+                                     {{fix.mainUri, kMainContent}});
+
+    std::string const def = PollRequest(
+        input, output, "cby", fix.extraUri,
+        [&](std::string const& id) {
+            return R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"textDocument/definition","params":{"textDocument":{"uri":")" +
+                   fix.mainUri + R"("},"position":{"line":2,"character":33}}})";
+        });
+    Expect(def.find(fix.extraUri) != std::string::npos,
+           "an out-of-closure byKey hit must still resolve its declaration");
+    Expect(def.find("\"start\":{\"line\":0,\"character\":11}") != std::string::npos &&
+               def.find("\"end\":{\"line\":0,\"character\":20}") != std::string::npos,
+           "the lenient fallback must land on the extra.bi declaration name");
+
+    session.stop();
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -1237,5 +1561,9 @@ int main(int argc, char** argv)
     RUN_TEST(TestWatchedFilesRescanConverges);
     RUN_TEST(TestExitNotifiesSession);
     RUN_TEST(TestEndToEndLifecycle);
+    RUN_TEST(TestCrossFileDefinitionReferencesHighlight);
+    RUN_TEST(TestCrossFileStorageGate);
+    RUN_TEST(TestCrossFileCompletionHonorsGate);
+    RUN_TEST(TestCrossFileLenientByKeyFallback);
     return test::Failures() == 0 ? 0 : 1;
 }

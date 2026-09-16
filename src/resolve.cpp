@@ -123,6 +123,11 @@ SourceRange rangeOf(Token const& t)
 // The declaration a usage at `off` resolves to, over a pre-lexed stream. This
 // is the single resolution walk shared by analyze's occurrence sweep and the
 // on-demand ParseResult legacy API (which used to re-lex per call).
+//
+// Honors the §12.2 storage gate: a usage inside any block may only match a
+// module-scope Dim-kind declaration carrying the `Shared` modifier; at module
+// level every root is visible. Procedure/type/enum/const roots are never
+// gated.
 Symbol const* declAt(ParseResult const& parse, std::vector<Token> const& tokens,
                      std::uint32_t off)
 {
@@ -132,13 +137,19 @@ Symbol const* declAt(ParseResult const& parse, std::vector<Token> const& tokens,
         return nullptr;
     }
     std::string const key = toLowerChars(tok->text());
-
-    for (Symbol const* cur = innermostScope(parse, off);; cur = cur ? parentOf(parse, cur) : nullptr)
+    Symbol const* const siteScope = innermostScope(parse, off);
+    for (Symbol const* cur = siteScope;; cur = cur ? parentOf(parse, cur) : nullptr)
     {
         std::vector<Symbol> const& cands = cur ? cur->children : parse.roots;
         for (auto const& c : cands)
         {
-            if (!c.key.empty() && c.key == key)
+            if (c.key.empty() || c.key != key)
+            {
+                continue;
+            }
+            bool const gated = cur == nullptr && siteScope != nullptr &&
+                               c.kind == SymbolKind::Dim && !c.shared;
+            if (!gated)
             {
                 return &c;
             }
@@ -353,6 +364,61 @@ std::vector<Occurrence> occurrencesOf(AnalyzedDoc const& doc, Symbol const& decl
     return decl.occurrences;
 }
 
+CrossDecl resolveAcross(AnalyzedDoc const& doc, std::string const& normalizedPath,
+                        std::uint32_t off, WorkspaceIndex const& index)
+{
+    Token const* const tok = tokenAt(doc.tokens, off);
+    if (!tok)
+    {
+        return {};
+    }
+
+    // Tier 1: in-file scopes, shadowing wins.
+    if (Symbol const* const local = declAt(doc.parse, doc.tokens, off))
+    {
+        return CrossDecl{nullptr, local};
+    }
+
+    std::string const key = toLowerChars(tok->text());
+    bool const insideBlock = innermostScope(doc.parse, off) != nullptr;
+    auto gated = [insideBlock](Symbol const& root)
+    {
+        return insideBlock && root.kind == SymbolKind::Dim && !root.shared;
+    };
+
+    // Tier 2: module scope of each closure file, textual include pre-order,
+    // first key match. The closure is treated as one textual module (FreeBASIC
+    // .md §9): the same storage gate applies to its roots as to the requesting
+    // file's own module level.
+    for (std::string const& closurePath : index.transitiveIncludes(normalizedPath))
+    {
+        std::shared_ptr<IndexedFile const> const file = index.fileAt(closurePath);
+        if (!file)
+        {
+            continue;
+        }
+        for (Symbol const& root : file->roots)
+        {
+            if (root.key == key && !gated(root))
+            {
+                return CrossDecl{file, &root};
+            }
+        }
+    }
+
+    // Tier 3: lenient `byKey` workspace fallback for still-unincluded headers
+    // (recorded divergence, FreeBASIC.md §12). byKey indexes file roots only,
+    // so a procedure-local name can never resolve here.
+    for (KeyedDecl const& kd : index.byKey(key))
+    {
+        if (!gated(*kd.decl))
+        {
+            return CrossDecl{kd.file, kd.decl};
+        }
+    }
+    return {};
+}
+
 std::vector<Symbol const*> visibleSymbols(AnalyzedDoc const& doc, std::uint32_t off)
 {
     return visibleSymbols(doc.parse, off);
@@ -388,15 +454,24 @@ std::vector<SourceRange> occurrencesOf(ParseResult const& parse, std::string_vie
 std::vector<Symbol const*> visibleSymbols(ParseResult const& parse, std::uint32_t off)
 {
     std::vector<Symbol const*> out;
-    for (Symbol const* cur = innermostScope(parse, off);; cur = cur ? parentOf(parse, cur) : nullptr)
+    Symbol const* const siteScope = innermostScope(parse, off);
+    for (Symbol const* cur = siteScope;; cur = cur ? parentOf(parse, cur) : nullptr)
     {
         std::vector<Symbol> const& cands = cur ? cur->children : parse.roots;
         for (auto const& c : cands)
         {
-            if (!c.key.empty())
+            if (c.key.empty())
             {
-                out.push_back(&c);
+                continue;
             }
+            // §12.2 gate: from inside a block, module-level Dim-kind names
+            // require the Shared modifier; at module level everything shows.
+            if (cur == nullptr && siteScope != nullptr && c.kind == SymbolKind::Dim &&
+                !c.shared)
+            {
+                continue;
+            }
+            out.push_back(&c);
         }
         if (!cur)
         {

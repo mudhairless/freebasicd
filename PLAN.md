@@ -18,7 +18,7 @@ remaining work.
 | M5 — workspace spine: occurrence projection + include graph | done |
 | M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
 | M6 — include resolution + watched files + missing-include diagnostics | done (2026-09: missing-include diagnostics, debounced watched-files rescan, `#pragma once` metadata) |
-| M7 — cross-file definition / references / highlight / completion | next |
+| M7 — cross-file definition / references / highlight / completion | done (2026-09: `resolveAcross` tiers, `Shared` storage gate, four cross-file handlers, two-file tests) |
 | M8 — `prepareRename` + `rename` (workspace) | next |
 | M9 — semantic tokens + inlay hints + highlight grammar | next |
 | M10 — intrinsic catalog + request-side parse cache | next |
@@ -227,22 +227,102 @@ deviations rather than reworked.
 
 ### M7 — Cross-file definition / references / highlight / completion
 
-All four consumer features share one new primitive in `resolve.cpp`:
-`resolveAcross(parse, src, off)` — local scopes first (shadowing wins), then
-module-scope  of each file in `transitiveIncludes`, then `byKey_` workspace
-fallback for names that resolve nowhere locally.
+> Status: landed 2026-09, `ctest` 7/7 green. Realized as designed below, one
+> detail beyond the sketch: `references` re-resolves the decl's own file to its
+> local parse identity too (an afresh parse of a header cannot pointer-match the
+> index entry), so the target's in-file usages are attributed by re-resolution
+> exactly like every other site. The tier-3 leniency and the `.`/`..` escape
+> hatch remain tracked §12 divergences.
 
-- `definition` returns the target file's URI + range (offset conversion per
-  target buffer). `references`/`highlight` use `byKey_` filtered by the
-  closure, def/usage sites joined back to real ranges. `completion` merges
-  visible module-scope names from the closure (deduped, shadow-aware).
-- Open files resolve from `WorkingFile`; closed files from index snapshots
-  (mtime re-validated).
-- Files: `resolve.{h,cpp}`, `session.{h,cpp}`, `resolve_checks`,
-  `session_integration` (two-file frames).
-- Acceptance: def at a call site in `main.bas` lands in `lib.bi`; a local dim
-  shadowing a header global still resolves locally; a procedure-local name in
-  a `.bi` never resolves from `.bas`; references enumerate only closure files.
+The four consumer features share one new primitive in `resolve.cpp`, behind a
+storage-tagging first step that the `FreeBASIC.md` §12.2 gate needs. This is
+the design; sub-tasks land in order.
+
+- **Storage tagging (§12.2 gate, sub-task 1).** `Symbol` gains `bool shared`
+  (default false); the parser tags any **module-level** var declaration carrying
+  the `Shared` modifier (`Dim Shared`, `Redim Shared`, `Common Shared`,
+  `[Static] Var Shared` — wiki KeyPgShared syntax box) as `shared=true`; plain
+  module-level `Dim`/`Common` stay `false`. Detection: a `seenShared` flag in
+  `handleVarDecls` (today `shared` is silently skipped at parser.cpp:818),
+  honored only while the parser's block stack is empty — `Shared` inside scope
+  blocks is not supported (wiki KeyPgShared: "inside scope blocks … is not
+  supported"), so procedure-local dims never carry the flag. One routing tweak
+  beyond `handleVarDecls`: module-level `Static Shared x` today dies in the
+  `static` branch (parser.cpp:417 requires the next token to be an
+  *identifier*, but `shared` is a keyword) — make that branch treat
+  `static` + keyword `shared` as a var decl too.
+  Procedure/type/enum/**const** roots are storage-less and always visible:
+  module-level `Const` was probe-verified to work inside a `Sub` with
+  fbc 1.10.2 (wiki KeyPgConst is silent on this — resolved by probe). The gate
+  applies in `declAt` (in-file resolution **and** the `analyze()` occurrence
+  sweep) and in `visibleSymbols`: from inside any block, module-scope
+  `Dim`-kind candidates require `shared`; at module level everything is
+  visible. This fixes the §12.2 over-resolution whose exact rule cross-file
+  resolution then reuses. The §8 rows are wiki + fbc verified: plain module
+  `Dim`/`Common` → "module-level only; NOT inside procedures" (probe:
+  `Dim plain_v As Integer` + `Print plain_v` in a `Sub` → error 42; wiki
+  KeyPgShared "the variable is only visible to the module-level code in that
+  file", KeyPgCommon "The Shared optional parameter makes the variable global
+  so that it can be used inside subs and functions"); `Dim Shared` →
+  compiles and prints from a `Sub`. The include-closure side is probed too:
+  `#include "globals.bi"` with `Dim plain_counter` in the `.bi` is visible at
+  *module level* in the includer (compiles, prints) but error 42 inside an
+  includer `Sub`, while `.bi` `Dim Shared` works from both — so the closure is
+  treated as **one textual module** for resolution (tier-2 below), exactly the
+  §9 model.
+- **`resolveAcross`** (sub-task 2): `AnalyzedDoc` + the document's normalized
+  path + `off` + `WorkspaceIndex const&` → three tiers: (1) in-file scopes,
+  shadowing wins; (2) module scope of each closure file in
+  `transitiveIncludes` textual pre-order, first key match (honoring the gate);
+  (3) `byKey_` workspace fallback when the closure resolves nothing — a
+  leniency for still-unincluded headers, recorded as a divergence in
+  `FreeBASIC.md` §12. Returns a `CrossDecl{file, decl}`: `file==null` ⇒ `decl`
+  points into the request-local `AnalyzedDoc`; else `file` is an index
+  snapshot shared_ptr the caller keeps alive. `byKey_` indexes file roots
+  only, so a procedure-local name in a `.bi` cannot resolve from a `.bas` by
+  construction.
+- **Session plumbing** (sub-task 3): a `contentForPath(path)` helper serves
+  open buffers from `WorkingFile` and closed files from disk (lifting the
+  `workspace/symbol` ifstream pattern); every remote range converts UTF-16
+  against that file's own content; remote URIs build as
+  `lsDocumentUri(AbsolutePath(normalizedPath))` — the proven
+  `onWorkspaceSymbol` mapping. All four handlers drive `analyze()` once per
+  request (dropping the per-handler `parseDocument`/`lexAll` churn).
+- **Handlers** (sub-task 4): `definition` returns the resolved `CrossDecl`;
+  the remote case converts the decl's `selection` against the target content.
+  `references` = the target decl's own file's stored `occurrences`, plus
+  identifier tokens in every closure file whose own in-file resolution reaches
+  a module-scope decl of the target key (shadowing-aware re-resolution per
+  site; `includeDeclaration` honored); out-of-closure `byKey_` hits are
+  excluded (acceptance: closure only). `highlight` stays per-document (LSP
+  semantics): the cross-resolved decl's in-document usages. `completion`
+  merges closure module-scope roots (deduped by key) behind in-file
+  `visibleSymbols` (gate applied), inner-scope keys shadowing closure keys.
+- Files: `symbols.h`, `parser.{h,cpp}` (storage tagging), `index.cpp` (cache
+  round-trip), `resolve.{h,cpp}` (`CrossDecl` + `resolveAcross` + gate),
+  `session.{h,cpp}` (four handlers + `contentForPath`), `resolve_checks`,
+  `index_checks`, `session_integration` (two-file frames). **Deviation:** M5's
+  "`Storage`/`Shared` tagging deferred to M7" lands exactly as deferred —
+  `parser.cpp` is touched now. §12.1 suffix-collapse stays a tracked
+  divergence (it touches the whole key model; not this milestone).
+- Acceptance (all green): def at a call site in `main.bas` lands in `lib.bi`;
+  a local dim shadowing a header global still resolves locally; a
+  procedure-local name in a `.bi` never resolves from `.bas`; references
+  enumerate only closure files; a plain module `dim` in a `.bi` resolves at
+  *module level* in `main.bas` (textual include, probe-verified) but never
+  inside a `main.bas` procedure (error-42-equivalent: resolves to nothing),
+  while `dim shared` in the `.bi` resolves from procedures; a lenient
+  out-of-closure `byKey_` def still works; the `shared` flag survives a cache
+  round-trip; `ctest` 7/7 green.
+- Risk: closed files are read from disk per request for range conversion (FB
+  files are tiny; M10's parse/content cache removes it). Duplicate
+  module-scope keys across files disambiguate to the first closure hit — a
+  documented edge case. The tier-3 leniency can point outside the closure —
+  tracked as a divergence, per the plan's stated fallback. The `.`/`..`
+  prefix escape hatch to reach a shadowed module global (wiki KeyPgDim
+  dialect differences) is unmodeled: "shadowing wins" is absolute, matching
+  fbc only for code that does not use the prefix — recorded as a §12
+  divergence.
 
 ### M8 — `prepareRename` + `rename` (workspace)
 

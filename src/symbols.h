@@ -72,6 +72,14 @@ struct Symbol {
     // itself excluded. Open buffers populate both; the disk cache stores them.
     bool moduleScope = false;
     std::vector<Occurrence> occurrences;
+
+    // M7 storage tagging (FreeBASIC.md §8/§12.2): true only for a module-level
+    // `Dim`-kind declaration carrying the `Shared` modifier (`Dim Shared`,
+    // `Redim Shared`, `Common Shared`, `[Static] Var Shared`). Module-scope
+    // plain `Dim`/`Common` stay false. Inside any block, module-scope Dim-kind
+    // candidates require `shared`; at module level everything is visible.
+    // Procedure/type/enum/const roots are storage-less and never gated.
+    bool shared = false;
 };
 
 enum class Severity {

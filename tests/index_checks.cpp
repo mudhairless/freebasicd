@@ -298,6 +298,40 @@ int main()
         occ2.close();
     }
 
+    // The §12.2 storage tag round-trips: `dim shared` and plain `dim` re-load
+    // with their distinct `shared` flags, so cross-file resolution can gate the
+    // plain one from inside a block.
+    {
+        writeFile(ws / "shared.bi", "dim shared sharedFlag as integer\ndim plainP as integer\n");
+        {
+            WorkspaceIndex sf(ws, cache);
+            sf.open();
+            sf.scan(false);
+            sf.close();
+        }
+        WorkspaceIndex sf2(ws, cache);
+        sf2.open();
+        std::string const sharedNorm = normalizePath(ws / "shared.bi");
+        auto const file = findFile(sf2, sharedNorm);
+        CHECK_MSG(file != nullptr, "the shared/plain fixture must load from the cache");
+        bool sawShared = false;
+        bool sawPlain = false;
+        for (Symbol const& root : file->roots)
+        {
+            if (root.key == "sharedflag")
+            {
+                sawShared = root.shared;
+            }
+            if (root.key == "plainp")
+            {
+                sawPlain = !root.shared;
+            }
+        }
+        CHECK_MSG(sawShared, "dim shared must round-trip with shared=true");
+        CHECK_MSG(sawPlain, "plain dim must round-trip with shared=false");
+        sf2.close();
+    }
+
     // byKey + transitiveIncludes: diamond closure, cycle termination, and
     // round-trip of the projections through the disk cache.
     {

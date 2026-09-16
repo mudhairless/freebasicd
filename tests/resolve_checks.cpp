@@ -1,6 +1,7 @@
 // Identifier resolution checks: FreeBASIC scoping over a parsed document.
 // Byte-offset and LSP-agnostic.
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -182,6 +183,73 @@ static void TestAnalyzePragmaOnce()
     CHECK_MSG(!other.pragmaOnce, "a #pragma with a different directive must not set the flag");
 }
 
+// The §12.2 storage gate (FreeBASIC.md §8): from inside any block, a plain
+// module-level Dim is not visible — only `Dim Shared` module declarations are.
+// At module level everything is. This is fbc-probe-verified (error 42).
+static void TestStorageGate()
+{
+    std::string const src =
+        "dim g as integer\n"
+        "dim shared s as integer\n"
+        "sub run()\n"
+        "    dim t as integer\n"
+        "    g = 1\n"
+        "    s = 2\n"
+        "    static shared st as integer\n"
+        "    st = 3\n"
+        "end sub\n";
+    AnalyzedDoc const doc = analyze(src);
+
+    std::uint32_t const gOff = static_cast<std::uint32_t>(src.find("dim g") + 4);
+    Symbol const* moduleG = resolveAt(doc, gOff);
+    CHECK_MSG(moduleG && moduleG->kind == SymbolKind::Dim && moduleG->name == "g",
+              "a plain module dim is a Dim root at module level");
+    CHECK_MSG(moduleG && !moduleG->shared, "plain Dim is not tagged shared");
+
+    std::uint32_t const sOff = static_cast<std::uint32_t>(src.find("dim shared") + 11);
+    Symbol const* sharedS = resolveAt(doc, sOff);
+    CHECK_MSG(sharedS && sharedS->kind == SymbolKind::Dim && sharedS->name == "s",
+              "dim shared records a module-level Dim");
+    CHECK_MSG(sharedS && sharedS->shared, "Dim Shared is tagged shared");
+
+    // At module level both forms resolve.
+    std::uint32_t const moduleUse = static_cast<std::uint32_t>(src.find("g = 1"));
+    CHECK_MSG(resolveAt(doc, moduleUse) == nullptr,
+              "a gated plain module dim must not resolve from inside a block");
+
+    std::uint32_t const sUse = static_cast<std::uint32_t>(src.find("s = 2"));
+    CHECK_MSG(resolveAt(doc, sUse) == sharedS, "dim shared is visible inside a block");
+
+    // A usage inside a procedure must not see the plain module dim at all.
+    std::uint32_t const staticShared = static_cast<std::uint32_t>(src.find("shared st"));
+    Symbol const* staticSt = resolveAt(doc, staticShared + 8);
+    CHECK_MSG(staticSt && staticSt->kind == SymbolKind::Dim && staticSt->name == "st",
+              "static shared parses as a Dim declaration");
+    CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(src.find("st = 3"))) == staticSt,
+              "a static shared var is visible where it lives");
+
+    // The occurrence sweep honors the gate too: the gated usage is not an
+    // occurrence of the plain module dim, while the shared uses are.
+    CHECK_MSG(occurrencesOf(doc, *moduleG).empty(),
+              "a gated usage must not be projected as an occurrence");
+    CHECK_MSG(occurrencesOf(doc, *sharedS).size() == 1,
+              "the visible shared usage stays a real occurrence");
+
+    // visibleSymbols respects the gate for completion: inside the block the
+    // shared name and the static are listed, the plain module dim is not.
+    std::vector<std::string> keys;
+    for (Symbol const* sym : visibleSymbols(doc, sUse))
+    {
+        keys.push_back(sym->key);
+    }
+    auto has = [&keys](std::string const& k) {
+        return std::find(keys.begin(), keys.end(), k) != keys.end();
+    };
+    CHECK_MSG(has("s"), "visibleSymbols must keep the shared module dim inside a block");
+    CHECK_MSG(has("st"), "visibleSymbols must keep the static shared var");
+    CHECK_MSG(!has("g"), "visibleSymbols must drop a plain module dim inside a block");
+}
+
 int main()
 {
     TestScopingResolvesCorrectly();
@@ -190,6 +258,7 @@ int main()
     TestAnalyze();
     TestAnalyzeIncludes();
     TestAnalyzePragmaOnce();
+    TestStorageGate();
     std::printf("resolve_checks: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;
 }

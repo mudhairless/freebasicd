@@ -1,9 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
+#include "index.h"
 #include "symbols.h"
 
 namespace fblang {
@@ -52,6 +55,30 @@ std::vector<Symbol const*> visibleSymbols(AnalyzedDoc const& doc, std::uint32_t 
 // Innermost declaration-block scope containing `off`, or nullptr for module
 // level. Dim/Const/Parameter nodes are not scopes and are walked through.
 Symbol const* innermostScope(ParseResult const& parse, std::uint32_t off);
+
+// Where a cross-file resolution landed. `file == nullptr` means `decl` points
+// into the request-local `AnalyzedDoc` (tier 1); otherwise `file` pins the
+// workspace snapshot that owns `decl` (tiers 2/3), kept alive by the caller.
+struct CrossDecl {
+    std::shared_ptr<IndexedFile const> file;
+    Symbol const* decl = nullptr;
+
+    bool operator==(CrossDecl const& other) const
+    {
+        return file.get() == other.file.get() && decl == other.decl;
+    }
+};
+
+// Cross-file resolution over an analyzed document, three tiers (FreeBASIC.md
+// §9/§12.2): (1) in-file scopes, shadowing wins; (2) module scope of each
+// file in `index`'s transitive include closure of `normalizedPath`, textual
+// pre-order, first key match honoring the storage gate; (3) a lenient
+// `byKey` workspace fallback for names that resolve nowhere in the closure
+// (still-unincluded headers — a documented divergence). Returns an empty
+// CrossDecl when `off` is not an identifier token or no tier resolves.
+// `normalizedPath` is the request document's normalized absolute path.
+CrossDecl resolveAcross(AnalyzedDoc const& doc, std::string const& normalizedPath,
+                        std::uint32_t off, WorkspaceIndex const& index);
 
 // The declaration a usage at `off` resolves to, or nullptr when the offset is
 // not an identifier token or the name is unknown in every enclosing scope.

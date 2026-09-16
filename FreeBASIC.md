@@ -217,11 +217,19 @@ to "the language is what the lexer does":
    where fbc 1.10.2 ignores the suffix (warning 44) and aliases both to one
    symbol. The parser records the dialect; the resolve/session layer must
    collapse suffix-distinct keys in `fb`.
-2. **Module-level visibility over-resolution.** `resolve.cpp`/`resolveAt`
-   walks innermost → module level; fbc does *not* make plain module-level
-   `Dim`/`Common` visible inside procedures (§8). Procedure-body resolution
-   currently over-resolves. Revisit before M7 (cross-file) — same rule gates
-   definitions/references/completion.
+2. **Module-level visibility: fixed at M7, one cross-file leniency remains.**
+   `dim`-kind module declarations are only visible to module-level code; inside
+   procedures only `Shared` module declarations (plus `Const` and locals)
+   resolve (§8, probed: fbc error 42). Since M7 the parser tags module-level
+   `Shared` var declarations (`Symbol.shared`), and
+   `declAt`/`visibleSymbols`/`resolveAcross` skip a plain module `Dim`/`Common`
+   root whenever the resolution site is inside a block. The remaining
+   divergence is tier-3 lenient cross-file resolution: a name the requesting
+   file's include closure does not declare still resolves to a workspace root
+   of the same key (a header that is not included yet). Real fbc would treat
+   such a name as an undeclared symbol; we resolve it as a convenience, so
+   references/definitions can point outside the closure until the include is
+   added.
 3. **Multi-line comments (`/' ... '/`) are not lexed** (nestable, §5). Lexer
    must treat them as comment tokens before real-world `.bas` files parse
    cleanly.
@@ -237,3 +245,10 @@ to "the language is what the lexer does":
    self-include is treated as a cycle and terminated like `#include once`.
    Since M6, `#pragma once` and `#include once` are recorded as metadata
    (`IndexedFile.pragmaOnce`, the edge's `once` flag) but not enforced.
+7. **`.name`/`..name` shadow escape hatch is unmodeled** (wiki KeyPgDim,
+   "Differences from QB" / dialect notes): a block-local variable shadowing a
+   module global can be referenced with a dot prefix (`.SomeSymbol`, and in a
+   `With` block `..SomeSymbol`). The lexer treats `.` as member access and
+   resolution always picks the innermost scope, so "shadowing wins" is
+   absolute in this implementation. Correct for code that does not use the
+   prefix; recorded so resolution never silently "fixes" the divergence.

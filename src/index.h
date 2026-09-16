@@ -120,6 +120,11 @@ public:
     // diamond; cycles (a.bi <-> b.bi) terminate.
     std::vector<std::string> transitiveIncludes(std::string const& normalizedPath) const;
 
+    // The indexed entry for a normalized path, or nullptr when the index has
+    // no entry (never indexed / not scanned yet). Includes open-buffer
+    // entries. The returned shared_ptr pins the immutable snapshot.
+    std::shared_ptr<IndexedFile const> fileAt(std::string const& normalizedPath) const;
+
     std::filesystem::path root() const;
     std::filesystem::path cacheDir() const;    // platform index dir (or test override)
     std::filesystem::path indexDir() const;    // this workspace's subdirectory

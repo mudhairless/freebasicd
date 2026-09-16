@@ -414,7 +414,13 @@ private:
                 handleStatement();
                 return;
             }
-            if (w == "static" && nxt.kind == TokenKind::Identifier)
+            // `Static x` and `Static Shared x` are both var declarations; the
+            // two-token form needs the shared keyword routed here (the old
+            // code required an identifier and let `static shared` fall into
+            // skipStatement).
+            if (w == "static" &&
+                (nxt.kind == TokenKind::Identifier ||
+                 (nxt.kind == TokenKind::Keyword && toLowerChars(nxt.text()) == "shared")))
             {
                 handleVarDecls(SymbolKind::Dim);
                 return;
@@ -766,6 +772,7 @@ private:
         advance();
         bool atName = true;
         bool first = true;
+        bool seenShared = false;
         for (;;)
         {
             TokenKind const tk = cur_.kind;
@@ -793,6 +800,12 @@ private:
                     s.key = toLowerChars(s.name);
                     s.selection.beg = s.range.beg = cur_.beg;
                     s.selection.end = s.range.end = cur_.end;
+                    // Storage tagging (§12.2 gate): the `Shared` modifier marks
+                    // a module-level var decl as visible inside procedures.
+                    // Honored only at module level (FreeBASIC.md §8): Shared
+                    // inside scope blocks is not supported, and const decls are
+                    // storage-less and always visible.
+                    s.shared = seenShared && blocks_.empty() && k == SymbolKind::Dim;
                     s.signature = headerText(openTok);
                     if (first)
                     {
@@ -812,6 +825,12 @@ private:
                     {
                         advance();
                     }
+                    continue;
+                }
+                else if (tk == TokenKind::Keyword && toLowerChars(cur_.text()) == "shared")
+                {
+                    seenShared = true;
+                    advance();
                     continue;
                 }
                 else

@@ -32,6 +32,7 @@
 #include "LibLsp/lsp/workspace/did_change_watched_files.h"
 
 #include "index.h"
+#include "resolve.h"
 
 #include <filesystem>
 #include <functional>
@@ -95,4 +96,16 @@ private:
 
     void reparseAndPublish(std::shared_ptr<WorkingFile> const& file, lsDocumentUri const& uri);
     void publishDiagnostics(lsDocumentUri const& uri, std::vector<lsDiagnostic> diagnostics);
+
+    // Live content of `path`: the open buffer when the client has one on the
+    // wire, else the file on disk. Lifts the workspace/symbol ifstream pattern
+    // so every remote reply converts ranges against the target's own content.
+    std::optional<std::string> contentForPath(std::filesystem::path const& path);
+
+    // resolveAcross over the workspace, falling back to in-file-only resolution
+    // when no index exists (single-file mode). The returned CrossDecl has
+    // `file == nullptr` in both cases; the caller keeps `doc` alive.
+    fblang::CrossDecl resolveAtOrAcross(fblang::AnalyzedDoc const& doc,
+                                        std::string const& normalizedPath,
+                                        std::uint32_t off) const;
 };

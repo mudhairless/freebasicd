@@ -82,6 +82,8 @@ void writeSymbol(rapidjson::Writer<rapidjson::StringBuffer>& w, Symbol const& s)
     w.String(s.doc.c_str(), static_cast<rapidjson::SizeType>(s.doc.size()));
     w.Key("moduleScope");
     w.Bool(s.moduleScope);
+    w.Key("shared");
+    w.Bool(s.shared);
     w.Key("occurrences");
     w.StartArray();
     for (Occurrence const& o : s.occurrences)
@@ -154,6 +156,11 @@ bool readSymbol(rapidjson::Value const& v, Symbol* out)
     if (v.HasMember("moduleScope") && v["moduleScope"].IsBool())
     {
         out->moduleScope = v["moduleScope"].GetBool();
+    }
+    out->shared = false;
+    if (v.HasMember("shared") && v["shared"].IsBool())
+    {
+        out->shared = v["shared"].GetBool();
     }
     out->occurrences.clear();
     if (v.HasMember("occurrences") && v["occurrences"].IsArray())
@@ -993,6 +1000,17 @@ std::vector<KeyedDecl> WorkspaceIndex::byKey(std::string const& key) const
     if (it == byKey_.end())
     {
         return {};
+    }
+    return it->second;
+}
+
+std::shared_ptr<IndexedFile const> WorkspaceIndex::fileAt(std::string const& normalizedPath) const
+{
+    std::lock_guard<std::mutex> const lk(mu_);
+    auto it = files_.find(normalizePath(normalizedPath));
+    if (it == files_.end())
+    {
+        return nullptr;
     }
     return it->second;
 }
