@@ -85,29 +85,29 @@ plan engineers around:
 
 ## 4. Gaps — what is yet needed
 
-1. `definition`/`references`/`highlight`/`completion` resolve **only within
-   the open file** (`resolve.cpp` is single-`ParseResult`); the M4 index holds
-   per-file symbol trees but nothing cross-file is wired.
-2. Include edges and missing-include diagnostics are live (M6), but include-once
+1. Include edges and missing-include diagnostics are live (M6), but include-once
    *guard states* are not evaluated — `#include once` / `#pragma once` / `#ifndef`
    are processed as recorded metadata, not macros (FreeBASIC.md §12.6) — and
    `#inclib` is not treated as a source include.
-3. No semantic tokens, no inlay hints (LspCpp bundles the types; unused), and
+2. No semantic tokens, no inlay hints (LspCpp bundles the types; unused), and
    no static highlight grammar — editors get no syntax coloring of any kind
    until M9 ships both.
-4. Session re-parses the whole buffer on every request (`documentSymbol`,
-   hover, folding, def/refs/highlight, completion all call `parseDocument`);
-   `resolve.cpp` re-lexes on every call (`lexAll` per `resolveAt`).
-5. `initialized` + dynamic capability registration landed (M5.5): a dynamic
+3. Session re-parses the whole buffer on every request: `documentSymbol`/`hover`/
+   `foldingRange`/`signatureHelp` call `parseDocument`, and the resolution path
+   (`definition`/`references`/`highlight`/`completion`/`prepareRename`/`rename`)
+   calls `analyze()` per request — parse plus a full token stream — while
+   `occurrencesAcross` re-analyzes every closure file from disk for cross-file
+   sites. No request-side cache until M10.
+4. `initialized` + dynamic capability registration landed (M5.5): a dynamic
    client is registered for `workspace/didChangeWatchedFiles` on `initialized`
    via `client/registerCapability`; a static client is served watchers in the
    `initialize` reply. The watcher handler and the debounced rescan landed in
    M6 (they fan into `WorkspaceIndex::watchedFilesChanged`); only
    `workspace/didChangeWorkspaceFolders` remains unhandled (single-root
    assumption, M11).
-6. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
+5. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
    built-in intrinsic-function completion catalog.
-7. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
+6. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
    `callHierarchy`, `codeLens` (M12), and pull diagnostics (M13). None is
    required by the target editors; each ships as its own milestone.
 
@@ -396,7 +396,7 @@ parser sees.
   handling (`Left`/`Left$`) and statement-vs-expression position filtering.
 - **Parse cache** in `session`: cache `ParseResult` + token vector per open
   document keyed by content (WorkingFiles version); invalidate on
-  `didChange`. Removes the §4.5 repeated-full-parse across 8 handlers and the
+  `didChange`. Removes the §4.3 repeated-full-parse across 10 handlers and the
   `lexAll`-per-`resolveAt` tax.
 - Files: `language.{h,cpp}`, `session.{h,cpp}`, tests (`language_checks`,
   `session_integration`).
