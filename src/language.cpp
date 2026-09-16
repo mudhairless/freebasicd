@@ -5,6 +5,9 @@
 #include <cctype>
 #include <cstring>
 
+// Length of the `$lang` metacommand keyword ('$' + "lang").
+#define LANG_DIRECTIVE_LEN 5
+
 namespace fblang {
 
 namespace {
@@ -655,17 +658,19 @@ bool langFromMetaDirective(std::string_view text, LangMode *out) {
   // `$`-metacommands live inside comments: `'$LANG: "qb"` or `rem $LANG:"qb"`.
   // The comment body is passed in; scan for `$lang` (case-insensitive)
   // followed by whitespace, an optional ':', and a quoted dialect name.
-  auto ci = [](char c, char want) { return (c | 0x20) == want; };
+  // Case-insensitive compare: ORing an ASCII letter with the space bit (0x20)
+  // lowercases it, so `want` can be given lowercase.
+  auto ci = [](char c, char want) { return (c | ' ') == want; };
   auto ws = [](char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
   };
   size_t const n = text.size();
-  for (size_t i = 0; i + 4 < n; ++i) {
+  for (size_t i = 0; i + LANG_DIRECTIVE_LEN - 1 < n; ++i) {
     if (text[i] != '$' || !ci(text[i + 1], 'l') || !ci(text[i + 2], 'a') ||
         !ci(text[i + 3], 'n') || !ci(text[i + 4], 'g')) {
       continue;
     }
-    size_t j = i + 5;
+    size_t j = i + LANG_DIRECTIVE_LEN;
     while (j < n && ws(text[j])) {
       ++j;
     }

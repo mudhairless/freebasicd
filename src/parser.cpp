@@ -8,6 +8,12 @@
 #include <unordered_set>
 #include <vector>
 
+// Hard cap on how many tokens the parser peeks ahead when scanning for the
+// end of a line or a one-line construct.
+#define MAX_LINE_PEEK 512
+// Expected token count of a one-line `IF` statement's tail (reserve hint).
+#define IF_TAIL_RESERVE 32
+
 namespace fblang {
 namespace {
 
@@ -202,7 +208,7 @@ private:
   }
 
   uint32_t currentLineEnd() {
-    for (int i = 0; i < 512; ++i) {
+    for (int i = 0; i < MAX_LINE_PEEK; ++i) {
       Token const t = lex_.peek(i);
       if (t.kind == TokenKind::Newline) {
         return t.beg;
@@ -585,7 +591,7 @@ private:
                  toLowerChars(cur_.text()) == "as") {
         alias = true;
       } else {
-        for (int i = 0; i < 512; ++i) {
+        for (int i = 0; i < MAX_LINE_PEEK; ++i) {
           Token const t = lex_.peek(i);
           if (t.kind == TokenKind::Newline || t.kind == TokenKind::Eof ||
               t.kind == TokenKind::Comment) {
@@ -734,8 +740,8 @@ private:
   void handleIf() {
     Token const ifTok = cur_;
     std::vector<Token> tail;
-    tail.reserve(32);
-    for (int i = 0; i < 512; ++i) {
+    tail.reserve(IF_TAIL_RESERVE);
+    for (int i = 0; i < MAX_LINE_PEEK; ++i) {
       Token const t = lex_.peek(i);
       if (t.kind == TokenKind::Newline || t.kind == TokenKind::Eof ||
           t.kind == TokenKind::Comment || t.kind == TokenKind::DocComment) {

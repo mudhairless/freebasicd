@@ -2,6 +2,20 @@
 
 #include <cstddef>
 
+// UTF-8 lead-byte thresholds, payload masks, and the UTF-16 surrogate-pair
+// boundary. A sequence's lead byte carries the codepoint's high bits (5/4/3
+// for 2/3/4-byte sequences); each continuation byte adds 6 more.
+#define UTF8_MIN_MULTIBYTE 0x80          // first lead byte of a multi-byte seq.
+#define UTF8_LEAD2_MIN 0xC0              // first lead byte of a 2-byte sequence
+#define UTF8_LEAD3_MIN 0xE0              // first lead byte of a 3-byte sequence
+#define UTF8_LEAD4_MIN 0xF0              // first lead byte of a 4-byte sequence
+#define UTF8_LEAD2_PAYLOAD_MASK 0x1F     // payload bits kept in a 2-byte lead
+#define UTF8_LEAD3_PAYLOAD_MASK 0x0F     // payload bits kept in a 3-byte lead
+#define UTF8_LEAD4_PAYLOAD_MASK 0x07     // payload bits kept in a 4-byte lead
+#define UTF8_CONT_PAYLOAD_MASK 0x3F      // payload bits kept per continuation
+#define UTF8_CONT_BITS 6                 // payload bits added per continuation
+#define UTF16_SURROGATE_PAIR_MIN 0x10000 // first codepoint needing 2 units
+
 namespace fblang {
 
 namespace {
@@ -10,21 +24,21 @@ namespace {
 // i past the whole code point (or past a single malformed byte).
 int utf16UnitsOfCodePoint(std::string_view text, std::size_t &i) {
   unsigned char const c = static_cast<unsigned char>(text[i]);
-  if (c < 0x80) {
+  if (c < UTF8_MIN_MULTIBYTE) {
     ++i;
     return 1;
   }
   int len;
   std::uint32_t cp;
-  if (c >= 0xF0) {
+  if (c >= UTF8_LEAD4_MIN) {
     len = 4;
-    cp = c & 0x07U;
-  } else if (c >= 0xE0) {
+    cp = c & UTF8_LEAD4_PAYLOAD_MASK;
+  } else if (c >= UTF8_LEAD3_MIN) {
     len = 3;
-    cp = c & 0x0FU;
-  } else if (c >= 0xC0) {
+    cp = c & UTF8_LEAD3_PAYLOAD_MASK;
+  } else if (c >= UTF8_LEAD2_MIN) {
     len = 2;
-    cp = c & 0x1FU;
+    cp = c & UTF8_LEAD2_PAYLOAD_MASK;
   } else {
     ++i; // stray continuation byte: count as one unit
     return 1;
@@ -34,11 +48,12 @@ int utf16UnitsOfCodePoint(std::string_view text, std::size_t &i) {
     return 1;
   }
   for (int k = 1; k < len; ++k) {
-    cp = (cp << 6) | static_cast<std::uint32_t>(
-                         text[i + static_cast<std::size_t>(k)] & 0x3FU);
+    cp = (cp << UTF8_CONT_BITS) |
+         static_cast<std::uint32_t>(text[i + static_cast<std::size_t>(k)] &
+                                    UTF8_CONT_PAYLOAD_MASK);
   }
   i += static_cast<std::size_t>(len);
-  return cp >= 0x10000U ? 2 : 1;
+  return cp >= UTF16_SURROGATE_PAIR_MIN ? 2 : 1;
 }
 
 } // namespace

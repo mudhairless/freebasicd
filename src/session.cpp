@@ -12,6 +12,12 @@
 #include <optional>
 #include <utility>
 
+// LSP WatchKind bitmask (didChangeWatchedFiles.h):
+// Create=1, Change=2, Delete=4.
+#define WATCH_KIND_CREATE 1
+#define WATCH_KIND_CHANGE 2
+#define WATCH_KIND_DELETE 4
+
 namespace {
 
 // True when `normalizedPath` lies at or under `normalizedRoot` (lexical
@@ -465,7 +471,8 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   if (!watchedFilesDynamic_) {
     lsFileSystemWatcher watcher;
     watcher.globPattern = "**/*.{bas,bi}";
-    watcher.kind.emplace(7); // WatchKind Create | Change | Delete
+    watcher.kind.emplace(WATCH_KIND_CREATE | WATCH_KIND_CHANGE |
+                         WATCH_KIND_DELETE);
     rsp.result.capabilities.workspace.emplace();
     rsp.result.capabilities.workspace->didChangeWatchedFiles.emplace();
     rsp.result.capabilities.workspace->didChangeWatchedFiles->watchers

@@ -4,6 +4,11 @@
 
 #include <cctype>
 
+// Radix of FreeBASIC `&H`/`&O`/`&B` numeric-literal prefixes.
+#define HEX_RADIX 16
+#define OCT_RADIX 8
+#define BIN_RADIX 2
+
 namespace fblang {
 
 namespace {
@@ -305,7 +310,8 @@ Token Lexer::lexNumber() {
     if (c >= '0' && c <= '9') {
       return c - '0' < radix;
     }
-    return radix == 16 && ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
+    return radix == HEX_RADIX &&
+           ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
   };
 
   if (*p_ == '&') {
@@ -313,11 +319,11 @@ Token Lexer::lexNumber() {
         std::tolower(static_cast<unsigned char>(peekChar(1))));
     int radix = 0;
     if (r == 'h') {
-      radix = 16;
+      radix = HEX_RADIX;
     } else if (r == 'o') {
-      radix = 8;
+      radix = OCT_RADIX;
     } else if (r == 'b') {
-      radix = 2;
+      radix = BIN_RADIX;
     }
     if (radix != 0) {
       advance();

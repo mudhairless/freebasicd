@@ -38,21 +38,6 @@ scratch vars).
 
 ---
 
-## readability-magic-numbers
-
-**Looks for:** Numeric literals that are not one of a small allowlist (0, 1,
--1, 2, 100, etc.) and appear outside enum definitions.
-
-**Why suppressed:** Most hits are bitwise constants that are self-documenting
-in context: UTF-8 continuation masks (`0x80`, `0xC0`, `0x3F`, `0x1F`),
-radix prefixes, and peekahead caps.  Naming these would be ceremony that
-doesn't improve understanding.
-
-**Hit count:** ~20 (scattered across lexer.cpp radix logic and index.cpp
-stat/mask constants).
-
----
-
 ## readability-implicit-bool-conversion
 
 **Looks for:** Implicit conversions to or from `bool`: `if (ptr)` instead of
