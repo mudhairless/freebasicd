@@ -23,8 +23,7 @@ repository (default branch `main`).
   target. No Boost is required (`LSPCPP_STANDALONE_ASIO` is the default);
   build with `LSPCPP_BUILD_WEBSOCKETS=OFF`, `LSPCPP_BUILD_EXAMPLES=OFF`,
   `LSPCPP_BUILD_TESTS=OFF`.
-- **No simdjson** (dropped). LspCpp handles all protocol JSON via its bundled
-  RapidJSON. Do not add simdjson back for protocol work.
+- LspCpp handles all protocol JSON via its bundled RapidJSON. 
 - Requires CMake 3.16+ and C++17.
 
 ## FreeBASIC facts (encode these in the lexer/parser)

@@ -9,9 +9,7 @@ regress to them — this file wins.
 
 Provenance tags:
 - `(wiki)` — from FBWiki `ProPg*` pages; not yet probe-verified.
-- `(fbc)` — verified against `fbc` 1.10.2; probes live in
-  `/tmp/opencode/fbcheck/` (note: that `fbc` ignores `-o`, output is named
-  after the source basename).
+- `(fbc)` — verified against `fbc` 1.10.2
 
 The keyword catalog (~250 words from `CatPgFullIndex`) is **data in
 `src/language.cpp`**, not prose: `kReserved` holds the set, plus per-word wiki
@@ -90,7 +88,7 @@ parse their argument as the named type.
   `'$LANG: "qb"`, `rem $LANG: "qb"`, `$DYNAMIC`, `$STATIC`, `$INCLUDE`…
   A bare `$` statement is a syntax error; a leading `''` (two quotes)
   suppresses metacommand parsing in the comment `(wiki)`.
-- Doc comments: `///` and `''` lines directly above a declaration → hover
+- Doc comments: `/''` (multi-line comment start) and `''` lines directly above a declaration → hover
   text. **This is this server's convention, not a FreeBASIC language feature.**
   `''` in fb really only means "may not hold a metacommand".
 
@@ -117,7 +115,7 @@ Non-`END` closures: `FOR ... NEXT` (closed by `NEXT`, no `END FOR`);
 `WHILE ... WEND` (**`WEND` only** — `END WHILE` is rejected by fbc);
 `DO ... LOOP`; preprocessor `#IF..#ENDIF` and `#MACRO..#ENDMACRO`.
 
-- `END` **alone** is the END statement (terminate program), not a closer.
+- `END` **alone** or with a numeric parameter is the END statement (terminate program), not a closer.
 - Single-line `IF...THEN` takes no closer.
 - `EXIT`/`CONTINUE` take a block-target keyword (`EXIT FOR`, `CONTINUE DO`…).
 
