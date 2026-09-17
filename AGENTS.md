@@ -158,6 +158,16 @@ Gotchas learned the hard way (2026-09):
   milestone deliverable (e.g. lexer/parser, an LSP feature, a docs refresh) is
   complete. Commit even if the milestone is "small"; never commit half-finished
   or failing work.
+- **Update `PLAN.md` in the same wave as the milestone.** Completing a
+  milestone means more than green tests: flip its row in the §1 table to
+  `done` (with a date + one-line summary of what shipped), add a `> Status:`
+  block under the milestone heading recording the landed shape and any
+  deviations from the sketch, and refresh the now-stale cross-references —
+  §2 module map / implemented-methods list, §4 gaps (delete resolved ones and
+  renumber), and any "until M<n>" forward notes. Commit the plan update
+  alongside the code when it is part of the same change, or as a follow-up
+  `docs(plan): mark M<n> done…` commit. Do not leave a finished milestone
+  marked `next`.
 - Keep the working tree clean between milestones: stage only intended files,
   never build artifacts or secrets, and write a short conventional `scope:`-style
   message summarizing what the milestone delivers (see PLAN.md §5 forward plan, §7 acceptance).
