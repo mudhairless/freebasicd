@@ -46,8 +46,8 @@ static std::string const kDoc = "dim total as integer\n"
                                 "end sub\n";
 
 static void TestScopingResolvesCorrectly() {
-  auto parse = parseDocument(kDoc);
-  CHECK(parse.roots.size() == 2); // dim total, sub bump
+  AnalyzedDoc const doc = analyze(kDoc);
+  CHECK(doc.parse.roots.size() == 2); // dim total, sub bump
 
   std::size_t const dimTotal = kDoc.find("dim total");
   std::size_t const usage = kDoc.find("total = total");
@@ -55,59 +55,94 @@ static void TestScopingResolvesCorrectly() {
   std::size_t const localUsage = kDoc.find("total = n");
   std::size_t const nUsage = kDoc.find("n = 2");
 
-  Symbol const *moduleTotal = resolveAt(parse, kDoc, dimTotal + 4);
+  Symbol const *moduleTotal =
+      resolveAt(doc, static_cast<std::uint32_t>(dimTotal + 4));
   CHECK(moduleTotal && moduleTotal->kind == SymbolKind::Dim &&
         moduleTotal->name == "total");
 
-  Symbol const *usageTotal = resolveAt(parse, kDoc, usage);
+  Symbol const *usageTotal = resolveAt(doc, static_cast<std::uint32_t>(usage));
   CHECK_MSG(usageTotal == moduleTotal,
             "module-level usage must resolve to the module dim");
 
-  Symbol const *local = resolveAt(parse, kDoc, localDim + 8);
+  Symbol const *local =
+      resolveAt(doc, static_cast<std::uint32_t>(localDim + 8));
   CHECK(local && local->kind == SymbolKind::Dim && local->name == "total");
 
-  Symbol const *localUse = resolveAt(parse, kDoc, localUsage + 4);
+  Symbol const *localUse =
+      resolveAt(doc, static_cast<std::uint32_t>(localUsage + 4));
   CHECK_MSG(
       localUse == local,
       "a usage inside the sub must resolve to the local dim, shadowing module");
 
-  Symbol const *param = resolveAt(parse, kDoc, nUsage);
+  Symbol const *param = resolveAt(doc, static_cast<std::uint32_t>(nUsage));
   CHECK(param && param->kind == SymbolKind::Parameter && param->name == "n");
 }
 
 static void TestUnknownAndNonIdentifiersResolveNull() {
-  auto parse = parseDocument(kDoc);
+  AnalyzedDoc const doc = analyze(kDoc);
 
   std::size_t const unknown =
       kDoc.find("1\nsub"); // the literal `1` is a number
-  CHECK_MSG(resolveAt(parse, kDoc, unknown) == nullptr,
+  CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(unknown)) == nullptr,
             "numbers must be unresolvable");
 
   std::size_t const keyword = kDoc.find("dim total");
-  CHECK_MSG(resolveAt(parse, kDoc, keyword + 2) == nullptr,
+  CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(keyword + 2)) == nullptr,
             "keywords must be unresolvable");
 }
 
 static void TestOccurrences() {
-  auto parse = parseDocument(kDoc);
+  AnalyzedDoc const doc = analyze(kDoc);
 
   std::size_t const dimTotal = kDoc.find("dim total");
-  Symbol const *moduleTotal = resolveAt(parse, kDoc, dimTotal + 4);
-  auto refs = occurrencesOf(parse, kDoc, *moduleTotal);
+  Symbol const *moduleTotal =
+      resolveAt(doc, static_cast<std::uint32_t>(dimTotal + 4));
+  std::vector<Occurrence> const refs = occurrencesOf(doc, *moduleTotal);
   CHECK_MSG(refs.size() == 2, "module total must be referenced exactly twice");
   for (auto const &r : refs) {
-    CHECK_MSG(r.beg >= kDoc.find("total = total") &&
-                  r.beg < kDoc.find("sub bump"),
+    CHECK_MSG(r.range.beg >= kDoc.find("total = total") &&
+                  r.range.beg < kDoc.find("sub bump"),
               "both references sit in the module-level statement");
   }
 
   std::size_t const nUsage = kDoc.find("n = 2");
-  Symbol const *param = resolveAt(parse, kDoc, nUsage);
-  auto paramRefs = occurrencesOf(parse, kDoc, *param);
+  Symbol const *param = resolveAt(doc, static_cast<std::uint32_t>(nUsage));
+  std::vector<Occurrence> const paramRefs = occurrencesOf(doc, *param);
   CHECK_MSG(paramRefs.size() == 2,
             "param n must be referenced twice (total=n and n=2)");
-  CHECK_MSG(paramRefs.size() >= 1 && paramRefs[0].beg < paramRefs[1].beg,
+  CHECK_MSG(paramRefs.size() >= 1 &&
+                paramRefs[0].range.beg < paramRefs[1].range.beg,
             "references must be sorted");
+}
+
+static void TestAnalyzeIsDeterministic() {
+  // Two analyses of identical content must produce identical projections:
+  // token stream, parse tree, and usage sites. Content-addressed caching only
+  // serves one analysis per (path, content) when that is true — if a second
+  // analysis could ever differ, a cache hit would be a lie.
+  AnalyzedDoc const a = analyze(kDoc);
+  AnalyzedDoc const b = analyze(kDoc);
+  CHECK_MSG(a.tokens.size() == b.tokens.size(),
+            "the token stream length is deterministic");
+  for (std::size_t i = 0; i < a.tokens.size(); ++i) {
+    bool const sameKind = a.tokens[i].kind == b.tokens[i].kind;
+    bool const sameRange = a.tokens[i].beg == b.tokens[i].beg &&
+                           a.tokens[i].end == b.tokens[i].end;
+    CHECK_MSG(sameKind && sameRange,
+              "every token's kind and range is deterministic");
+  }
+  CHECK_MSG(a.parse.roots.size() == b.parse.roots.size(),
+            "the symbol tree shape is deterministic");
+  for (std::size_t i = 0; i < a.parse.roots.size(); ++i) {
+    bool const sameKey = a.parse.roots[i].key == b.parse.roots[i].key;
+    bool const sameOcc = a.parse.roots[i].occurrences.size() ==
+                         b.parse.roots[i].occurrences.size();
+    bool const sameSel =
+        a.parse.roots[i].selection.beg == b.parse.roots[i].selection.beg &&
+        a.parse.roots[i].selection.end == b.parse.roots[i].selection.end;
+    CHECK_MSG(sameKey && sameOcc && sameSel,
+              "roots agree on key, selection, and usage-count");
+  }
 }
 
 static void TestAnalyze() {
@@ -285,6 +320,17 @@ static void WriteFile(std::filesystem::path const &path,
   out.write(content.data(), static_cast<std::streamsize>(content.size()));
 }
 
+// The content seam serves content and its analysis as one pinned unit. The
+// analysis borrows the unit's own bytes, so the unit must own them before
+// analyze runs.
+static std::shared_ptr<DocumentContent const>
+MakeContentUnit(std::string content) {
+  auto unit = std::make_shared<DocumentContent>();
+  unit->content = std::move(content);
+  unit->analysis = analyze(unit->content);
+  return unit;
+}
+
 // Single-file mode (nullptr index): sites of the module dim span its
 // declaration and both usages, never the shadowing sub-local; sites of the
 // sub-local span only its own declaration and usage, never the module dim.
@@ -296,8 +342,9 @@ static void TestOccurrencesAcrossSingleFile() {
                           "    total = n\n"
                           "end sub\n";
   std::string const path = "/virtual/single.bas";
-  ContentProvider const content = [&src, &path](std::string const &p) {
-    return p == path ? std::optional<std::string>(src) : std::nullopt;
+  std::shared_ptr<DocumentContent const> const unit = MakeContentUnit(src);
+  ContentProvider const content = [&unit, &path](std::string const &p) {
+    return p == path ? unit : std::shared_ptr<DocumentContent const>();
   };
 
   AnalyzedDoc const doc = analyze(src);
@@ -369,14 +416,13 @@ static void TestOccurrencesAcrossCrossFile() {
 
   std::string const libNorm = normalizePath(ws / "lib.bi");
   std::string const mainNorm = normalizePath(ws / "main.bas");
-  ContentProvider const content =
-      [](std::string const &p) -> std::optional<std::string> {
+  ContentProvider const content = [](std::string const &p) {
     std::ifstream in(std::filesystem::path(p), std::ios::binary);
     if (!in) {
-      return std::nullopt;
+      return std::shared_ptr<DocumentContent const>();
     }
-    return std::string(std::istreambuf_iterator<char>(in),
-                       std::istreambuf_iterator<char>());
+    return MakeContentUnit(std::string(std::istreambuf_iterator<char>(in),
+                                       std::istreambuf_iterator<char>()));
   };
 
   WorkspaceIndex index(ws);
@@ -493,6 +539,7 @@ int main() {
   TestUnknownAndNonIdentifiersResolveNull();
   TestOccurrences();
   TestAnalyze();
+  TestAnalyzeIsDeterministic();
   TestAnalyzeIncludes();
   TestAnalyzePragmaOnce();
   TestStorageGate();

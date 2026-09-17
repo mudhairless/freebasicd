@@ -254,7 +254,7 @@ resolveIncludeTarget(std::string_view literal,
 
 IndexedFile indexedFileFromAnalysis(std::string const &normalizedPath,
                                     std::uint64_t mtime, std::uint64_t size,
-                                    AnalyzedDoc &&doc,
+                                    AnalyzedDoc const &doc,
                                     std::filesystem::path const &workspaceRoot,
                                     bool fromDisk) {
   IndexedFile f;
@@ -262,7 +262,7 @@ IndexedFile indexedFileFromAnalysis(std::string const &normalizedPath,
   f.mtime = mtime;
   f.size = size;
   f.lang = doc.parse.lang;
-  f.roots = std::move(doc.parse.roots);
+  f.roots = doc.parse.roots;
   f.pragmaOnce = doc.pragmaOnce;
   f.fromDisk = fromDisk;
   for (IncludeDirective const &inc : doc.includes) {
@@ -433,9 +433,8 @@ void WorkspaceIndex::scan(bool async) {
     if (!readTextFile(entry, &content)) {
       continue;
     }
-    AnalyzedDoc doc = analyze(content);
-    upsert(indexedFileFromAnalysis(norm, mtime, size, std::move(doc), root_,
-                                   true));
+    AnalyzedDoc const doc = analyze(content);
+    upsert(indexedFileFromAnalysis(norm, mtime, size, doc, root_, true));
   }
 
   {

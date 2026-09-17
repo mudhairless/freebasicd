@@ -738,17 +738,27 @@ void FreeBasicServer::onDidClose(
   if (!workingFiles_.OnClose(notify.params.textDocument)) {
     return;
   }
+  // The buffer's cache entries are live-truth pinned to the buffer's bytes;
+  // drop them so a later didOpen of the same file starts fresh (the disk is
+  // master for closed files).
+  analysisCache_.removePath(fblang::normalizePath(
+      notify.params.textDocument.uri.GetAbsolutePath().path()));
   publishDiagnostics(notify.params.textDocument.uri, {});
 }
 
 void FreeBasicServer::reparseAndPublish(
     std::shared_ptr<WorkingFile> const &file, lsDocumentUri const &uri) {
-  std::string_view const content = file->GetContentNoLock();
-  fblang::AnalyzedDoc doc = fblang::analyze(content);
+  std::string const path = uri.GetAbsolutePath().path();
+  std::string const normPath = fblang::normalizePath(path);
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      analysisCache_.get(normPath, file->GetContentNoLock(),
+                         static_cast<std::uint64_t>(file->version),
+                         /*fromBuffer=*/true, /*insert=*/true);
+  std::string_view const content = cached->content;
+  fblang::AnalyzedDoc const &doc = cached->analysis;
   std::vector<lsDiagnostic> diags = convertDiagnostics(content, doc.parse);
 
   if (index_) {
-    std::string const path = uri.GetAbsolutePath().path();
     std::string const ext =
         fblang::toLowerChars(std::filesystem::path(path).extension().string());
     if (ext == ".bas" || ext == ".bi") {
@@ -759,10 +769,10 @@ void FreeBasicServer::reparseAndPublish(
       // mtime/size cache-hit must never accept them, or an unsaved edit
       // would shadow the source scan is about to read. Include targets
       // still resolve against disk, and unresolved ones publish
-      // include-not-found.
+      // include-not-found. The entry's roots copy the cached analysis
+      // (which stays pinned for the request path).
       fblang::IndexedFile entry = fblang::indexedFileFromAnalysis(
-          fblang::normalizePath(path), mtime, size, std::move(doc),
-          index_->root(), false);
+          normPath, mtime, size, doc, index_->root(), false);
       appendIncludeDiagnostics(content, entry, &diags);
       index_->upsert(std::move(entry));
     }
@@ -776,14 +786,13 @@ FreeBasicServer::onDocumentSymbol(td_symbol::request const &req) {
   td_symbol::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
-  fblang::ParseResult const parse = fblang::parseDocument(content);
-  for (auto const &root : parse.roots) {
+  std::string_view const content = cached->content;
+  for (auto const &root : cached->analysis.parse.roots) {
     if (root.kind == fblang::SymbolKind::Scope) {
       continue;
     }
@@ -796,17 +805,17 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
   td_hover::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
+  std::string_view const content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
 
-  fblang::ParseResult const parse = fblang::parseDocument(content);
-  fblang::Symbol const *sym = deepestSymbolAt(parse.roots, offset);
+  fblang::Symbol const *sym =
+      deepestSymbolAt(cached->analysis.parse.roots, offset);
   if (sym == nullptr) {
     // No user symbol here: hover a reserved keyword with its wiki link.
     if (offset < content.size() && isWordChar(content[offset])) {
@@ -856,15 +865,14 @@ FreeBasicServer::onFoldingRange(td_foldingRange::request const &req) {
   td_foldingRange::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
-  fblang::ParseResult const parse = fblang::parseDocument(content);
+  std::string_view const content = cached->content;
 
-  for (auto const &br : parse.blockRanges) {
+  for (auto const &br : cached->analysis.parse.blockRanges) {
     lsPosition const start = fblang::utf16Position(content, br.beg);
     lsPosition const closer = fblang::utf16Position(content, br.end);
     if (closer.line <= start.line) {
@@ -891,18 +899,18 @@ FreeBasicServer::onDefinition(td_definition::request const &req) {
   td_definition::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
+  std::string_view const content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
   std::string const normPath = fblang::normalizePath(
       req.params.textDocument.uri.GetAbsolutePath().path());
 
-  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  fblang::AnalyzedDoc const &doc = cached->analysis;
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
   if (target.decl == nullptr) {
     return rsp;
@@ -935,18 +943,18 @@ FreeBasicServer::onReferences(td_references::request const &req) {
   td_references::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
+  std::string_view const content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
   std::string const normPath = fblang::normalizePath(
       req.params.textDocument.uri.GetAbsolutePath().path());
 
-  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  fblang::AnalyzedDoc const &doc = cached->analysis;
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
   if (target.decl == nullptr) {
     return rsp;
@@ -1001,11 +1009,12 @@ FreeBasicServer::onReferences(td_references::request const &req) {
   if (index_) {
     for (std::string const &closurePath :
          index_->transitiveIncludes(normPath)) {
-      std::optional<std::string> const remote = contentForPath(closurePath);
+      std::shared_ptr<fblang::DocumentContent const> const remote =
+          contentForPathAnalysis(closurePath);
       if (!remote) {
         continue;
       }
-      collect(fblang::analyze(*remote),
+      collect(remote->analysis,
               fblang::normalizePath(std::filesystem::path(closurePath)));
     }
   }
@@ -1033,18 +1042,18 @@ FreeBasicServer::onHighlight(td_highlight::request const &req) {
   td_highlight::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view content = file->GetContentNoLock();
+  std::string_view content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
   std::string const normPath = fblang::normalizePath(
       req.params.textDocument.uri.GetAbsolutePath().path());
 
-  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  fblang::AnalyzedDoc const &doc = cached->analysis;
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
   if (target.decl == nullptr) {
     return rsp;
@@ -1084,18 +1093,18 @@ FreeBasicServer::onPrepareRename(td_prepareRename::request const &req) {
   td_prepareRename::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
+  std::string_view const content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
   std::string const normPath = fblang::normalizePath(
       req.params.textDocument.uri.GetAbsolutePath().path());
 
-  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  fblang::AnalyzedDoc const &doc = cached->analysis;
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
   if (target.decl == nullptr) {
     // Keyword, non-identifier, or an unknown name: not renameable (the
@@ -1129,18 +1138,18 @@ td_rename::response FreeBasicServer::onRename(td_rename::request const &req) {
                             "invalid new name: \"" + req.params.newName + "\"");
   }
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
+  std::string_view const content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
   std::string const normPath = fblang::normalizePath(
       req.params.textDocument.uri.GetAbsolutePath().path());
 
-  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  fblang::AnalyzedDoc const &doc = cached->analysis;
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
   if (target.decl == nullptr) {
     throw lsp::RequestError(
@@ -1186,11 +1195,12 @@ td_rename::response FreeBasicServer::onRename(td_rename::request const &req) {
   // The rename site set: requesting file + include closure + reverse
   // reachability, every token re-resolved shadowing-aware so a same-named
   // local that shadows the declaration is untouched. Ranges are byte offsets
-  // into the exact content `contentForPath` serves, so the same provider
-  // converts them to UTF-16 below.
+  // into the exact content the shared content seam serves, so the same
+  // provider converts them to UTF-16 below.
   std::vector<fblang::OccurrenceSite> const sites = fblang::occurrencesAcross(
-      doc, normPath, offset, index_.get(),
-      [this](std::string const &p) { return contentForPath(p); });
+      doc, normPath, offset, index_.get(), [this](std::string const &p) {
+        return contentForPathAnalysis(std::filesystem::path(p));
+      });
   if (sites.empty()) {
     return rsp;
   }
@@ -1236,18 +1246,18 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
   td_completion::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
+  std::string_view const content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
   std::string const prefix =
       fblang::toLowerChars(completionPrefix(content, offset));
 
-  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  fblang::AnalyzedDoc const &doc = cached->analysis;
 
   for (std::string_view const w : fblang::reservedWords()) {
     if (!hasPrefix(w, prefix)) {
@@ -1361,24 +1371,18 @@ FreeBasicServer::onSignatureHelp(td_signatureHelp::request const &req) {
   td_signatureHelp::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
+  std::string_view const content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
 
-  fblang::Lexer lx(content);
-  std::vector<fblang::Token> toks;
-  for (;;) {
-    fblang::Token const t = lx.next();
-    toks.push_back(t);
-    if (t.kind == fblang::TokenKind::Eof) {
-      break;
-    }
-  }
+  // The analyzed document already carries the full token stream; reuse it
+  // instead of re-lexing the buffer per signatureHelp request.
+  std::vector<fblang::Token> const &toks = cached->analysis.tokens;
   if (toks.empty()) {
     return rsp;
   }
@@ -1428,9 +1432,9 @@ FreeBasicServer::onSignatureHelp(td_signatureHelp::request const &req) {
   int const openIdx = openStack.back();
   int const nameIdx = calleeStack.back();
 
-  fblang::ParseResult const parse = fblang::parseDocument(content);
   fblang::Token const &calleeTok = toks[static_cast<std::size_t>(nameIdx)];
-  fblang::Symbol const *decl = fblang::resolveAt(parse, content, calleeTok.beg);
+  fblang::Symbol const *decl =
+      fblang::resolveAt(cached->analysis, calleeTok.beg);
   if (decl == nullptr) {
     return rsp;
   }
@@ -1535,15 +1539,11 @@ FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
   }
 
   for (auto &hit : hits) {
-    std::string content;
-    {
-      std::ifstream in(hit.file->path, std::ios::binary);
-      if (!in) {
-        continue;
-      }
-      content.assign(std::istreambuf_iterator<char>(in),
-                     std::istreambuf_iterator<char>());
+    std::optional<std::string> const src = contentForPath(hit.file->path);
+    if (!src) {
+      continue;
     }
+    std::string_view const content = *src;
     for (auto &m : hit.matches) {
       lsSymbolInformation info;
       info.name = m.sym->name;
@@ -1566,13 +1566,13 @@ td_semanticTokens_full::response FreeBasicServer::onSemanticTokensFull(
   td_semanticTokens_full::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
-  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  std::string_view const content = cached->content;
+  fblang::AnalyzedDoc const &doc = cached->analysis;
   std::vector<std::int32_t> const data =
       fblang::encodeTokenData(fblang::semanticTokens(doc, content));
 
@@ -1588,13 +1588,13 @@ td_semanticTokens_full_delta::response FreeBasicServer::onSemanticTokensDelta(
   td_semanticTokens_full_delta::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
-  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  std::string_view const content = cached->content;
+  fblang::AnalyzedDoc const &doc = cached->analysis;
   std::vector<std::int32_t> const current =
       fblang::encodeTokenData(fblang::semanticTokens(doc, content));
 
@@ -1633,13 +1633,13 @@ td_semanticTokens_range::response FreeBasicServer::onSemanticTokensRange(
   td_semanticTokens_range::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
-  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  std::string_view const content = cached->content;
+  fblang::AnalyzedDoc const &doc = cached->analysis;
   std::vector<fblang::SemanticTokenEntry> const inRange = fblang::filterTokens(
       fblang::semanticTokens(doc, content), req.params.range.start.line,
       req.params.range.end.line);
@@ -1661,13 +1661,13 @@ FreeBasicServer::onInlayHint(td_inlayHint::request const &req) {
   td_inlayHint::response rsp;
   rsp.id = req.id;
 
-  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
-      req.params.textDocument.uri.GetAbsolutePath());
-  if (!file) {
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
     return rsp;
   }
-  std::string_view const content = file->GetContentNoLock();
-  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  std::string_view const content = cached->content;
+  fblang::AnalyzedDoc const &doc = cached->analysis;
   for (fblang::InlayHintItem const &item : fblang::inlayHints(doc, content)) {
     lsPosition const pos = fblang::utf16Position(content, item.bytePos);
     if (pos.line < req.params.range.start.line ||
@@ -1706,18 +1706,54 @@ void FreeBasicServer::publishDiagnostics(
 
 std::optional<std::string>
 FreeBasicServer::contentForPath(std::filesystem::path const &path) {
-  // An open buffer is live truth: unsaved edits must drive range conversion
-  // (and, via the index, resolution) even before they hit disk.
-  if (std::shared_ptr<WorkingFile> const file =
-          workingFiles_.GetFileByFilename(AbsolutePath(path.string()))) {
-    return std::string(file->GetContentNoLock());
-  }
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
+  std::shared_ptr<fblang::DocumentContent const> const dc =
+      contentForPathAnalysis(path);
+  if (!dc) {
     return std::nullopt;
   }
-  return std::string(std::istreambuf_iterator<char>(in),
-                     std::istreambuf_iterator<char>());
+  return dc->content;
+}
+
+std::shared_ptr<fblang::DocumentContent const>
+FreeBasicServer::contentForPathAnalysis(std::filesystem::path const &path) {
+  std::string const normPath = fblang::normalizePath(path);
+  // An open buffer is live truth: unsaved edits must drive range conversion
+  // (and, via the index, resolution) even before they hit disk. The cache
+  // entry was filled by that buffer's didOpen/didChange (insert=false here:
+  // request threads never own open-buffer inserts).
+  if (std::shared_ptr<WorkingFile> const file =
+          workingFiles_.GetFileByFilename(AbsolutePath(path.string()))) {
+    return analysisCache_.get(normPath, file->GetContentNoLock(),
+                              static_cast<std::uint64_t>(file->version),
+                              /*fromBuffer=*/true, /*insert=*/false);
+  }
+  // Closed file: a disk read, content-addressed and self-warming
+  // (fromBuffer=false entries are FIFO-evicted past the cache cap).
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return nullptr;
+  }
+  std::string const disk{std::istreambuf_iterator<char>(in),
+                         std::istreambuf_iterator<char>()};
+  return analysisCache_.get(normPath, disk, 0, /*fromBuffer=*/false,
+                            /*insert=*/true);
+}
+
+fblang::AnalysisCache::Stats FreeBasicServer::analysisStats() const {
+  return analysisCache_.stats();
+}
+
+std::shared_ptr<fblang::AnalysisCache::Entry const>
+FreeBasicServer::cachedRequestAnalysis(lsDocumentUri const &uri) {
+  std::shared_ptr<WorkingFile> const file =
+      workingFiles_.GetFileByFilename(uri.GetAbsolutePath());
+  if (!file) {
+    return nullptr;
+  }
+  return analysisCache_.get(fblang::normalizePath(uri.GetAbsolutePath().path()),
+                            file->GetContentNoLock(),
+                            static_cast<std::uint64_t>(file->version),
+                            /*fromBuffer=*/true, /*insert=*/false);
 }
 
 fblang::CrossDecl

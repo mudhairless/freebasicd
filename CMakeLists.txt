@@ -22,6 +22,7 @@ add_subdirectory(third_party/LspCpp)
 # offsets; the session converts to/from LSP positions at the boundary. The
 # workspace index (M4) is in-memory only.
 add_library(freebasiclsp_lang STATIC
+    src/analysis_cache.cpp
     src/index.cpp
     src/inlay_hints.cpp
     src/language.cpp
@@ -51,6 +52,13 @@ add_executable(lexer_checks
 target_include_directories(lexer_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(lexer_checks PRIVATE freebasiclsp_lang)
 add_test(NAME lexer_checks COMMAND lexer_checks)
+
+add_executable(analysis_cache_checks
+    tests/analysis_cache_checks.cpp
+)
+target_include_directories(analysis_cache_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(analysis_cache_checks PRIVATE freebasiclsp_lang)
+add_test(NAME analysis_cache_checks COMMAND analysis_cache_checks)
 
 add_executable(parser_checks
     tests/parser_checks.cpp

@@ -35,6 +35,7 @@
 #include "LibLsp/lsp/workspace/did_change_watched_files.h"
 #include "LibLsp/lsp/workspace/symbol.h"
 
+#include "analysis_cache.h"
 #include "index.h"
 #include "resolve.h"
 #include "semantic_tokens_lsp.h"
@@ -56,6 +57,11 @@ public:
   void registerHandlers();
   void setExitHandler(std::function<void()> exitHandler);
 
+  // Test hook: a snapshot of the content-addressed analysis-cache counters,
+  // used by session_integration to assert that repeat requests reuse the one
+  // cached analysis instead of re-parsing the buffer.
+  fblang::AnalysisCache::Stats analysisStats() const;
+
 private:
   lsp::LanguageSession &session_;
   std::function<void()> exitHandler_;
@@ -71,6 +77,13 @@ private:
   // In-memory per-workspace symbol index (M4); null until a workspace root
   // is known (initialize or first opened file). Never persisted to disk.
   std::unique_ptr<fblang::WorkspaceIndex> index_;
+
+  // Content-addressed analysis memo (M10). Every request-path handler reads
+  // the open buffer through this, and the cross-file providers
+  // (references/rename closures, remote range conversion) share it with the
+  // open buffers, so one (path, content) pair is analyzed at most once per
+  // version and repeat requests never re-parse.
+  fblang::AnalysisCache analysisCache_;
 
   // Client-provided workspace root (`rootUri` / `workspaceFolders`), kept so a
   // later didOpen can narrow it to the opened document's project (see
@@ -136,6 +149,20 @@ private:
   // wire, else the file on disk. Lifts the workspace/symbol ifstream pattern
   // so every remote reply converts ranges against the target's own content.
   std::optional<std::string> contentForPath(std::filesystem::path const &path);
+
+  // Analysis-carrying variant of contentForPath: content+analysis for a file,
+  // fed through the content-addressed cache. Open buffers and closed files
+  // both go through it, so repeated reads (references/rename closures, range
+  // conversion) reuse the single analysis per (path, content).
+  std::shared_ptr<fblang::DocumentContent const>
+  contentForPathAnalysis(std::filesystem::path const &path);
+
+  // Cached analysis of the request document's open buffer, or nullptr when the
+  // file is not open. Handlers read this instead of re-analyzing per request;
+  // a miss analyzes locally without inserting (the didChange fill owns the
+  // open-buffer inserts).
+  std::shared_ptr<fblang::AnalysisCache::Entry const>
+  cachedRequestAnalysis(lsDocumentUri const &uri);
 
   // resolveAcross over the workspace, falling back to in-file-only resolution
   // when no index exists (single-file mode). The returned CrossDecl has

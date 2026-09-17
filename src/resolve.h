@@ -95,28 +95,6 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
                         std::string const &normalizedPath, std::uint32_t off,
                         WorkspaceIndex const &index);
 
-// The declaration a usage at `off` resolves to, or nullptr when the offset is
-// not an identifier token or the name is unknown in every enclosing scope.
-//
-// Legacy ParseResult-based forms (each lexes the source once), kept so
-// existing ParseResult-only callers stay green; prefer the AnalyzedDoc
-// overloads in new code.
-Symbol const *resolveAt(ParseResult const &parse, std::string_view src,
-                        std::uint32_t off);
-
-// Reference sites of `decl` (usages that resolve to it), sorted by byte
-// offset, excluding `decl`'s own name token. `decl` must point into `parse`'s
-// symbol tree (as returned by resolveAt / parse.roots).
-std::vector<SourceRange> occurrencesOf(ParseResult const &parse,
-                                       std::string_view src,
-                                       Symbol const &decl);
-
-// Pointers to every named declaration visible at `off`, innermost scope first.
-// A name listed earlier shadows any later entry with the same key (module
-// level is last). Used to build completion candidates.
-std::vector<Symbol const *> visibleSymbols(ParseResult const &parse,
-                                           std::uint32_t off);
-
 // --- Cross-file rename support (M8) ---
 
 // A single rename site: the file and byte range to replace.
@@ -125,10 +103,22 @@ struct OccurrenceSite {
   SourceRange range; // byte range of the token to replace
 };
 
-// Content provider for occurrencesAcross: returns file content from open
-// buffers or disk, or nullopt if unavailable.
+// One immutable content+analysis unit served by the cross-file content seam.
+// `analysis` borrows `content`'s bytes (Token::data == content.data() + beg,
+// lexer.h), and both members live in the same heap object, so pinning the
+// shared_ptr pins a coherent pair. Callers must never dismantle a
+// DocumentContent while its analysis is in use.
+struct DocumentContent {
+  std::string content;
+  AnalyzedDoc analysis;
+};
+
+// Content provider for occurrencesAcross: returns a content+analysis unit for
+// a file (open buffer or disk), or nullptr when unavailable. The analysis
+// must have been built from exactly that content (content-addressed callers
+// guarantee this); ranges in the result are byte offsets into it.
 using ContentProvider =
-    std::function<std::optional<std::string>(std::string const &)>;
+    std::function<std::shared_ptr<DocumentContent const>(std::string const &)>;
 
 // All reference sites of the symbol the usage at `off` resolves to, across the
 // workspace: the requesting file, its forward include closure, the resolving

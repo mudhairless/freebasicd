@@ -193,12 +193,12 @@ std::optional<std::string> resolveIncludeTarget(
 // An IndexedFile built from one shared analysis. `doc`, `mtime`, and `size`
 // describe the file the buffer or scan produced; include targets are resolved
 // against `workspaceRoot` from the including file's directory. `doc`'s symbol
-// tree is moved into `roots` (a moved-from AnalyzedDoc must not be reused for
-// indexing). `fromDisk=false` marks an open-buffer entry that must never
-// satisfy scan's mtime/size cache-hit.
+// tree is copied into `roots` (the caller keeps `doc` alive). `fromDisk=false`
+// marks an open-buffer entry that must never satisfy scan's mtime/size
+// cache-hit.
 IndexedFile indexedFileFromAnalysis(std::string const &normalizedPath,
                                     std::uint64_t mtime, std::uint64_t size,
-                                    AnalyzedDoc &&doc,
+                                    AnalyzedDoc const &doc,
                                     std::filesystem::path const &workspaceRoot,
                                     bool fromDisk);
 

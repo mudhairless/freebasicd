@@ -139,23 +139,11 @@ Token const *tokenAt(std::vector<Token> const &tokens, std::uint32_t off) {
   return nullptr;
 }
 
-std::vector<Token> lexAll(std::string_view src) {
-  Lexer lx(src);
-  std::vector<Token> out;
-  for (;;) {
-    Token const t = lx.next();
-    out.push_back(t);
-    if (t.kind == TokenKind::Eof) {
-      return out;
-    }
-  }
-}
-
 SourceRange rangeOf(Token const &t) { return {t.beg, t.end}; }
 
 // The declaration a usage at `off` resolves to, over a pre-lexed stream. This
 // is the single resolution walk shared by analyze's occurrence sweep and the
-// on-demand ParseResult legacy API (which used to re-lex per call).
+// on-demand resolution API (which used to re-lex per call).
 //
 // Honors the §12.2 storage gate: a usage inside any block may only match a
 // module-scope Dim-kind declaration carrying the `Shared` modifier; at module
@@ -478,11 +466,11 @@ std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
   }
 
   for (std::string const &fpath : files) {
-    std::optional<std::string> const src = content(fpath);
-    if (!src) {
+    std::shared_ptr<DocumentContent const> const dc = content(fpath);
+    if (!dc) {
       continue;
     }
-    AnalyzedDoc const d = analyze(*src);
+    AnalyzedDoc const &d = dc->analysis;
     for (Token const &t : d.tokens) {
       if (t.kind != TokenKind::Identifier ||
           toLowerChars(t.text()) != target.decl->key) {
@@ -510,35 +498,7 @@ std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
 
 std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
                                            std::uint32_t off) {
-  return visibleSymbols(doc.parse, off);
-}
-
-Symbol const *resolveAt(ParseResult const &parse, std::string_view src,
-                        std::uint32_t off) {
-  return declAt(parse, lexAll(src), off);
-}
-
-std::vector<SourceRange> occurrencesOf(ParseResult const &parse,
-                                       std::string_view src,
-                                       Symbol const &decl) {
-  std::vector<SourceRange> out;
-  std::vector<Token> const tokens = lexAll(src);
-  for (auto const &t : tokens) {
-    if (t.kind != TokenKind::Identifier ||
-        (t.beg == decl.selection.beg && t.end == decl.selection.end)) {
-      continue;
-    }
-    if (declAt(parse, tokens, t.beg) == &decl) {
-      out.push_back(rangeOf(t));
-    }
-  }
-  std::sort(out.begin(), out.end(),
-            [](SourceRange a, SourceRange b) { return a.beg < b.beg; });
-  return out;
-}
-
-std::vector<Symbol const *> visibleSymbols(ParseResult const &parse,
-                                           std::uint32_t off) {
+  ParseResult const &parse = doc.parse;
   std::vector<Symbol const *> out;
   Symbol const *const siteScope = innermostScope(parse, off);
   for (Symbol const *cur = siteScope;;

@@ -267,7 +267,7 @@ int main() {
     // A buffer diverges from disk; the upserted entry must not shadow what
     // scan sees.
     AnalyzedDoc doc = analyze("dim ghost as string\nprint ghost\n");
-    live.upsert(indexedFileFromAnalysis(bufNorm, mt, sz, std::move(doc), ws,
+    live.upsert(indexedFileFromAnalysis(bufNorm, mt, sz, doc, ws,
                                         /*fromDisk=*/false));
     {
       auto const f = live.fileAt(bufNorm);
@@ -351,7 +351,7 @@ int main() {
     std::uint64_t sz = 0;
     statFile(outDir / "rogue.bi", &mt, &sz);
     AnalyzedDoc doc = analyze("dim rogue as integer\n");
-    a.upsert(indexedFileFromAnalysis(rogueNorm, mt, sz, std::move(doc), wsS,
+    a.upsert(indexedFileFromAnalysis(rogueNorm, mt, sz, doc, wsS,
                                      /*fromDisk=*/false));
     CHECK_MSG(a.size() == 1, "upsert outside the root is dropped");
     CHECK_MSG(findFile(a, rogueNorm) == nullptr,
