@@ -15,7 +15,12 @@ The keyword catalog (~250 words from `CatPgFullIndex`) is **data in
 `src/language.cpp`**, not prose: `kReserved` holds the set, plus per-word wiki
 doc URLs and block-closer facts (block closures in §7 are `(fbc)`).
 
+Documentation Table of Contents: https://www.freebasic.net/wiki/DocToc
+
 ## 1. Identifiers
+
+Documentation: https://www.freebasic.net/wiki/ProPgIdentifierRules
+Documentation: https://www.freebasic.net/wiki/ProPgIdentifierLookup
 
 - Charset `[A-Za-z0-9_]`; first char must be a letter or `_`; a digit is not
   allowed first `(wiki)`.
@@ -32,7 +37,7 @@ doc URLs and block-closer facts (block closures in §7 are `(fbc)`).
 
 ## 2. Type suffixes and dialect gating
 
-Suffix chars on identifiers, attached at the end of the bare name:
+Suffix chars on identifiers, attached at the end of the bare name (only in ):
 
 | suffix | type | sizeof (this linux-x64 `fbc`) |
 |--------|------|-------------------------------|
@@ -58,6 +63,9 @@ Suffix chars on identifiers, attached at the end of the bare name:
 
 ## 3. Built-in types
 
+Documentation: https://www.freebasic.net/wiki/CatPgStdDataTypes
+Documentation: https://www.freebasic.net/wiki/TblVarTypes
+
 `Boolean`, `Byte/UByte`, `Short/UShort`, `Integer/UInteger`, `Long/ULong`,
 `LongInt/ULongInt`, `Single`, `Double`, `String`, `WString`, `ZString`,
 `Object`, `Any`, `Pointer`/`Ptr`. `C*`-prefixed numeric-conversion functions
@@ -65,6 +73,8 @@ Suffix chars on identifiers, attached at the end of the bare name:
 parse their argument as the named type.
 
 ## 4. Literals
+
+Documentation: https://www.freebasic.net/wiki/ProPgLiterals
 
 - Integer: decimal; radix prefixes `&H`/`&h` hex, `&O`/`&o` or `&` octal,
   `&B`/`&b` binary `(wiki)`. Integer size suffixes: `%` Integer, `L`/`&` Long,
@@ -77,6 +87,9 @@ parse their argument as the named type.
 - `...` is the variadic-parameter marker; `?` is a `PRINT` shortcut.
 
 ## 5. Comments and metacommands
+
+Documentation: https://www.freebasic.net/wiki/ProPgComments
+Documentation: https://www.freebasic.net/wiki/CatPgCompilerSwitches
 
 - Single-line: `'` to EOL and `REM` to EOL (a statement, usable mid-line after
   code/`:`). `'` inside a string is not a comment `(fbc)`.
@@ -93,6 +106,10 @@ parse their argument as the named type.
   `''` in fb really only means "may not hold a metacommand".
 
 ## 6. Lines, continuation, separators, labels
+
+Documentation: https://www.freebasic.net/wiki/ProPgLabels
+Documentation: https://www.freebasic.net/wiki/ProPgLineContinuation
+Documentation: https://www.freebasic.net/wiki/ProPgLineSeparator
 
 - Line continuation: trailing `_` (whitespace-tolerant), must not follow an
   identifier/word without a space. Statements split on `:`. `$`/`#` lines
@@ -120,6 +137,8 @@ Non-`END` closures: `FOR ... NEXT` (closed by `NEXT`, no `END FOR`);
 - `EXIT`/`CONTINUE` take a block-target keyword (`EXIT FOR`, `CONTINUE DO`…).
 
 ## 8. Scope and visibility
+
+Documentation: https://www.freebasic.net/wiki/ProPgVariableScope
 
 Four storage categories `(wiki)`, visibility probe-verified `(fbc)`:
 
@@ -168,6 +187,8 @@ procedures).
 
 ## 10. Preprocessor and macros
 
+Documentation: https://www.freebasic.net/wiki/CatPgPreProcess
+
 - Preprocessor lines start with `#` at line start (not continuable):
   `#include [once]`, `#inclib`, `#define`, `#undef`, `#if/#elseif/#else/
   #endif`, `#ifdef/#ifndef`, `#assert`, `#error`, `#lang`, `#libpath`, `#line`,
@@ -186,6 +207,8 @@ procedures).
   syntax `(wiki, ProPgConditionalCompilation)`.
 
 ## 11. Dialects
+
+Documentation: https://www.freebasic.net/wiki/CompilerDialects
 
 - Dialects: `fb` (default), `fblite`, `qb`, `deprecated`. **This server
   implements only `fb`**; other dialects get a best-effort `fb` parse plus one
