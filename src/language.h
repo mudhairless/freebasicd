@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "lexer.h"
 #include "symbols.h"
 
 namespace fblang {
@@ -77,5 +78,43 @@ bool langFromDirective(std::string_view line, LangMode *out);
 bool langFromMetaDirective(std::string_view text, LangMode *out);
 
 const char *langName(LangMode mode);
+
+// Built-in procedure/function catalog (the `keywordDocsUrl` per-word idiom,
+// extended with the signature consumers need). FreeBASIC's keyword lexer and
+// its standard headers both contribute names that users call without declaring
+// them; the catalog is the machine form of that surface, so completion, hover,
+// and signatureHelp agree on one spelling, signature, and wiki page.
+enum class IntrinsicKind {
+  Function,  // callable in an expression: Left$, Mid, Val, CInt, ...
+  Statement, // callable in statement position: Print, Cls, Seek, ...
+};
+
+struct Intrinsic {
+  std::string_view key;   // lowercase bare name, no type suffix
+  bool hasDollar = false; // fb aliases left/left$ into one symbol
+  IntrinsicKind kind = IntrinsicKind::Function;
+  std::string_view signature; // canonical call form, one per base name
+  std::string_view page;      // KeyPg suffix; "" derives via keywordDocsUrl
+};
+
+// The catalog row for `nameWithSuffix` (one trailing type-suffix char is
+// stripped, so `left` and `left$` resolve to the same row), or nullptr.
+Intrinsic const *intrinsicFor(std::string_view nameWithSuffix);
+
+// Every catalog row, key-sorted. Views reference static storage.
+std::vector<Intrinsic const *> intrinsics();
+
+// Wiki URL of the intrinsic's page (explicit `page`, else the keyword rule).
+std::string intrinsicDocsUrl(Intrinsic const &fn);
+
+// Parameter labels parsed from the canonical signature: the identifier before
+// ` As ` in each top-level comma-separated parameter, or `...` for a variadic
+// tail. Statement rows without a `(` yield an empty list.
+std::vector<std::string_view> signatureParamLabels(Intrinsic const &fn);
+
+// True when the cursor at `off` sits where a statement may start: right after
+// a logical newline, a `:` separator, or `Then`/`Else`. Conservative by
+// design — a false "expression" only withholds statement completion.
+bool statementPosition(std::vector<Token> const &tokens, std::uint32_t off);
 
 } // namespace fblang

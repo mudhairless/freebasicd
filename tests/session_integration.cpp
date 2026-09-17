@@ -41,9 +41,9 @@ char const kMainContent[] = "#include \"lib.bi\"\n"
                             "    localOnly = 5\n"
                             "end sub\n";
 char const kProgContent[] = "#include \"lib.bi\"\n"
-                            "dim loc\n"
+                            "dim counter\n"
                             "sub prog()\n"
-                            "    dim loc\n"
+                            "    dim counter\n"
                             "end sub\n";
 char const kExtraContent[] = "dim shared earlyBird as integer\n";
 
@@ -250,6 +250,34 @@ char const *kSignatureHelpFrame =
 char const *kKeywordHoverFrame =
     R"FB({"jsonrpc":"2.0","id":"khh","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/calls.bas"},"position":{"line":4,"character":0}}})FB";
+
+// Intrinsic catalog document: expression-prefix positions (`s = le`, `s = pr`),
+// a statement-position prefix (`pr`), an intrinsic call for signature help, and
+// a `$`-suffixed hover target.
+char const kDidOpenIntrinsicFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/intr.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"dim s as string\ns = le\ns = pr\npr\ns = mid$( \"abcdef\", 2 )\ns = left$\n"}}})FB";
+
+char const *kIntrinsicExprLeFrame =
+    R"FB({"jsonrpc":"2.0","id":"ile","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/intr.bas"},"position":{"line":1,"character":6}}})FB";
+
+char const *kIntrinsicExprPrFrame =
+    R"FB({"jsonrpc":"2.0","id":"iep","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/intr.bas"},"position":{"line":2,"character":6}}})FB";
+
+char const *kIntrinsicStmtPrFrame =
+    R"FB({"jsonrpc":"2.0","id":"isp","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/intr.bas"},"position":{"line":3,"character":2}}})FB";
+
+char const *kIntrinsicSignatureFrame =
+    R"FB({"jsonrpc":"2.0","id":"isg","method":"textDocument/signatureHelp","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/intr.bas"},"position":{"line":4,"character":20}}})FB";
+
+char const *kIntrinsicHoverFrame =
+    R"FB({"jsonrpc":"2.0","id":"ihv","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/intr.bas"},"position":{"line":5,"character":4}}})FB";
 
 // A semantic-tokens document: `dim`/`as` keywords, a declared variable with a
 // declaration modifier, its usage, `=`/`+` operators, and two numbers. The
@@ -733,6 +761,108 @@ void TestSignatureHelpShowsParamsAndActiveIndex() {
          "signature help must mark the only signature active");
   Expect(response.find("\"activeParameter\":1") != std::string::npos,
          "signature help must select the second parameter after the comma");
+
+  session.stop();
+}
+
+void TestCompletionOffersIntrinsicCatalogItems() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenIntrinsicFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "intrinsic document didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kIntrinsicExprLeFrame));
+  std::string const le = WaitForOutputContaining(output, "\"id\":\"ile\"");
+  Expect(le.find("\"label\":\"Left$\"") != std::string::npos,
+         "completion must offer the Left$ intrinsic under the `le` prefix");
+  Expect(le.find(
+             "\"detail\":\"Left$( str As String, n As Integer ) As String\"") !=
+             std::string::npos,
+         "the intrinsic item must carry its canonical signature");
+  Expect(le.find("https://www.freebasic.net/wiki/KeyPgLeft") !=
+             std::string::npos,
+         "the intrinsic item must link to its wiki page");
+  Expect(le.find("\"label\":\"left\"") == std::string::npos,
+         "the bare keyword entry must be replaced by the catalog item, not "
+         "duplicated");
+
+  // Statement rows stay out of expression position...
+  input->append(MakeLspFrame(kIntrinsicExprPrFrame));
+  std::string const exprPr = WaitForOutputContaining(output, "\"id\":\"iep\"");
+  Expect(exprPr.find("\"label\":\"Procptr\"") != std::string::npos,
+         "function intrinsics must still complete in expression position");
+  Expect(exprPr.find("\"label\":\"Print\"") == std::string::npos,
+         "statement intrinsics must not complete in an expression");
+
+  // ...and are offered where a statement may start.
+  input->append(MakeLspFrame(kIntrinsicStmtPrFrame));
+  std::string const stmtPr = WaitForOutputContaining(output, "\"id\":\"isp\"");
+  Expect(stmtPr.find("\"label\":\"Print\"") != std::string::npos,
+         "statement intrinsics must complete at statement position");
+  Expect(stmtPr.find("\"detail\":\"Print [ #filenum, ]") != std::string::npos,
+         "the statement item must carry its usage signature");
+
+  session.stop();
+}
+
+void TestHoverShowsIntrinsicSignature() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenIntrinsicFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "intrinsic document didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kIntrinsicHoverFrame));
+  std::string const hov = WaitForOutputContaining(output, "\"id\":\"ihv\"");
+  Expect(hov.find("Left$( str As String, n As Integer ) As String") !=
+             std::string::npos,
+         "hover on Left$ must show the catalog signature");
+  Expect(hov.find("https://www.freebasic.net/wiki/KeyPgLeft") !=
+             std::string::npos,
+         "intrinsic hover must link to the FreeBASIC wiki page");
+
+  session.stop();
+}
+
+void TestSignatureHelpResolvesIntrinsic() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenIntrinsicFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "intrinsic document didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kIntrinsicSignatureFrame));
+  std::string const sig = WaitForOutputContaining(output, "\"id\":\"isg\"");
+  Expect(sig.find("Mid$( str As String, start As Integer ) As String") !=
+             std::string::npos,
+         "signature help must resolve the keyword-lexed Mid$ intrinsic");
+  Expect(sig.find("\"label\":\"str\"") != std::string::npos &&
+             sig.find("\"label\":\"start\"") != std::string::npos,
+         "intrinsic signature help must list the catalog parameters");
+  Expect(sig.find("\"activeParameter\":1") != std::string::npos,
+         "the comma must advance the active parameter");
 
   session.stop();
 }
@@ -1579,29 +1709,34 @@ void TestCrossFileCompletionHonorsGate() {
       session, server, output, fix,
       {{fix.libUri, kLibContent}, {fix.progUri, kProgContent}});
 
-  // Module level: the closure's plain dim and the in-file loc are both
-  // visible behind the "loc" prefix.
+  // Module level, empty prefix (start of the `dim counter` line, so the whole
+  // list is produced): the closure's plain dim and the in-file counter are
+  // both visible. Wait on the closure symbol so the asynchronous index scan
+  // has settled before the assertions (a pre-index reply has only in-file
+  // names).
   std::string const moduleLevel = PollRequest(
-      input, output, "ccm", "\"label\":\"loc\"", [&](std::string const &id) {
+      input, output, "ccm", "\"label\":\"localOnly\"",
+      [&](std::string const &id) {
         return R"({"jsonrpc":"2.0","id":")" + id +
                R"(","method":"textDocument/completion","params":{"textDocument":{"uri":")" +
-               fix.progUri + R"("},"position":{"line":1,"character":8}}})";
+               fix.progUri + R"("},"position":{"line":1,"character":0}}})";
       });
-  Expect(moduleLevel.find("\"label\":\"loc\"") != std::string::npos,
-         "module-level completion must offer the in-file loc");
   Expect(moduleLevel.find("\"label\":\"localOnly\"") != std::string::npos,
          "module-level completion must offer the closure's plain dim");
+  Expect(moduleLevel.find("\"label\":\"counter\"") != std::string::npos,
+         "module-level completion must offer the in-file counter");
 
-  // Inside the sub: the local loc completes, the closure's plain dim is
+  // Inside the sub: the local counter completes, the closure's plain dim is
   // gated out.
   std::string const inside = PollRequest(
-      input, output, "cci", "\"label\":\"loc\"", [&](std::string const &id) {
+      input, output, "cci", "\"label\":\"counter\"",
+      [&](std::string const &id) {
         return R"({"jsonrpc":"2.0","id":")" + id +
                R"(","method":"textDocument/completion","params":{"textDocument":{"uri":")" +
-               fix.progUri + R"("},"position":{"line":3,"character":12}}})";
+               fix.progUri + R"("},"position":{"line":3,"character":0}}})";
       });
-  Expect(inside.find("\"label\":\"loc\"") != std::string::npos,
-         "in-block completion must offer the local loc");
+  Expect(inside.find("\"label\":\"counter\"") != std::string::npos,
+         "in-block completion must offer the local counter");
   Expect(inside.find("\"label\":\"localOnly\"") == std::string::npos,
          "a plain module dim of an included header must not complete inside a "
          "block");
@@ -2210,6 +2345,9 @@ int main(int argc, char **argv) {
   RUN_TEST(TestCompletionOffersKeywordsAndSymbols);
   RUN_TEST(TestHoverLinksKeywordDocs);
   RUN_TEST(TestSignatureHelpShowsParamsAndActiveIndex);
+  RUN_TEST(TestCompletionOffersIntrinsicCatalogItems);
+  RUN_TEST(TestHoverShowsIntrinsicSignature);
+  RUN_TEST(TestSignatureHelpResolvesIntrinsic);
   RUN_TEST(TestWorkspaceSymbolIndexesWorkspace);
   RUN_TEST(TestOutsideFileNotIndexed);
   RUN_TEST(TestBroadRootNarrowsToOpenedProject);

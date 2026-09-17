@@ -60,6 +60,13 @@ target_include_directories(analysis_cache_checks PRIVATE ${CMAKE_SOURCE_DIR}/src
 target_link_libraries(analysis_cache_checks PRIVATE freebasiclsp_lang)
 add_test(NAME analysis_cache_checks COMMAND analysis_cache_checks)
 
+add_executable(language_checks
+    tests/language_checks.cpp
+)
+target_include_directories(language_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(language_checks PRIVATE freebasiclsp_lang)
+add_test(NAME language_checks COMMAND language_checks)
+
 add_executable(parser_checks
     tests/parser_checks.cpp
 )

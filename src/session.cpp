@@ -817,7 +817,8 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
   fblang::Symbol const *sym =
       deepestSymbolAt(cached->analysis.parse.roots, offset);
   if (sym == nullptr) {
-    // No user symbol here: hover a reserved keyword with its wiki link.
+    // No user symbol here: the intrinsic catalog owns most callables; fall
+    // back to a plain reserved-keyword wiki link for the rest.
     if (offset < content.size() && isWordChar(content[offset])) {
       std::uint32_t beg = offset;
       while (beg > 0 && isWordChar(content[beg - 1])) {
@@ -827,12 +828,27 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
       while (end < content.size() && isWordChar(content[end])) {
         ++end;
       }
-      std::string const word =
-          fblang::toLowerChars(std::string(content.substr(beg, end - beg)));
-      std::string const url = fblang::keywordDocsUrl(word);
+      std::string_view const raw = content.substr(beg, end - beg);
+      if (fblang::Intrinsic const *fn = fblang::intrinsicFor(raw)) {
+        std::string markdown = "```basic\n" + std::string(fn->signature) +
+                               "\n```\n\nFreeBASIC intrinsic";
+        std::string const url = fblang::intrinsicDocsUrl(*fn);
+        if (!url.empty()) {
+          markdown += " — [FreeBASIC docs](" + url + ")";
+        }
+        rsp.result.contents.second.emplace(
+            MarkupContent{std::string("markdown"), std::move(markdown)});
+        rsp.result.range.emplace(fblang::utf16Range(content, beg, end));
+        return rsp;
+      }
+      std::string bare = fblang::toLowerChars(std::string(raw));
+      if (!bare.empty() && fblang::isSuffixChar(bare.back())) {
+        bare.pop_back();
+      }
+      std::string const url = fblang::keywordDocsUrl(bare);
       if (!url.empty()) {
         rsp.result.contents.second.emplace(MarkupContent{
-            std::string("markdown"), "`" + word +
+            std::string("markdown"), "`" + bare +
                                          "` — FreeBASIC keyword\n\n"
                                          "[FreeBASIC docs](" +
                                          url + ")"});
@@ -1260,6 +1276,11 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
   fblang::AnalyzedDoc const &doc = cached->analysis;
 
   for (std::string_view const w : fblang::reservedWords()) {
+    if (fblang::intrinsicFor(w) != nullptr) {
+      // The catalog owns this name: one richer item (signature + wiki page)
+      // replaces the bare keyword entry below.
+      continue;
+    }
     if (!hasPrefix(w, prefix)) {
       continue;
     }
@@ -1363,6 +1384,54 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
       }
     }
   }
+
+  // Built-in intrinsics come last. The catalog owns their canonical spelling,
+  // signature, and wiki page; `seen` still wins so a user symbol shadows a
+  // header-provided name (e.g. a local `Format`). Statement rows appear only
+  // where a statement may begin, so expression completion stays call-shaped.
+  bool const atStatement = fblang::statementPosition(doc.tokens, offset);
+  for (fblang::Intrinsic const *fn : fblang::intrinsics()) {
+    if (fn->kind == fblang::IntrinsicKind::Statement && !atStatement) {
+      continue;
+    }
+    std::string_view const signature = fn->signature;
+    std::size_t const cut = signature.find_first_of(" (");
+    std::string_view const name =
+        cut == std::string_view::npos ? signature : signature.substr(0, cut);
+    std::string const labelLower = fblang::toLowerChars(std::string(name));
+    if (!hasPrefix(labelLower, prefix)) {
+      continue;
+    }
+    bool dup = false;
+    for (auto const &k : seen) {
+      std::string bare = k; // seen keys carry a type suffix; compare bare
+      if (!bare.empty() && fblang::isSuffixChar(bare.back())) {
+        bare.pop_back();
+      }
+      if (bare == fn->key) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup) {
+      continue;
+    }
+    seen.emplace_back(fn->key);
+    lsCompletionItem item;
+    item.label = std::string(name);
+    item.kind.emplace(fn->kind == fblang::IntrinsicKind::Function
+                          ? lsCompletionItemKind::Function
+                          : lsCompletionItemKind::Keyword);
+    item.detail.emplace(std::string(signature));
+    std::string const url = fblang::intrinsicDocsUrl(*fn);
+    if (!url.empty()) {
+      item.documentation.emplace();
+      item.documentation->second.emplace(MarkupContent{
+          std::string("markdown"), std::string("**FreeBASIC intrinsic**\n\n[") +
+                                       std::string(name) + "](" + url + ")"});
+    }
+    rsp.result.items.push_back(std::move(item));
+  }
   return rsp;
 }
 
@@ -1415,11 +1484,11 @@ FreeBasicServer::onSignatureHelp(td_signatureHelp::request const &req) {
       if (prev.kind == fblang::TokenKind::Newline) {
         break;
       }
-      if (prev.kind == fblang::TokenKind::Identifier) {
+      if (prev.kind == fblang::TokenKind::Identifier ||
+          prev.kind == fblang::TokenKind::Keyword) {
+        // Keywords can be callees too: `mid$` lexes as a keyword, and the
+        // intrinsic catalog resolves it below when no user declaration does.
         callee = static_cast<int>(j - 1);
-        break;
-      }
-      if (prev.kind == fblang::TokenKind::Keyword) {
         break;
       }
     }
@@ -1435,28 +1504,47 @@ FreeBasicServer::onSignatureHelp(td_signatureHelp::request const &req) {
   fblang::Token const &calleeTok = toks[static_cast<std::size_t>(nameIdx)];
   fblang::Symbol const *decl =
       fblang::resolveAt(cached->analysis, calleeTok.beg);
-  if (decl == nullptr) {
-    return rsp;
+  bool userCallable = false;
+  if (decl != nullptr) {
+    switch (decl->kind) {
+    case fblang::SymbolKind::Sub:
+    case fblang::SymbolKind::Function:
+    case fblang::SymbolKind::Property:
+    case fblang::SymbolKind::Constructor:
+    case fblang::SymbolKind::Destructor:
+    case fblang::SymbolKind::Operator:
+      userCallable = true;
+      break;
+    default:
+      break;
+    }
   }
-  switch (decl->kind) {
-  case fblang::SymbolKind::Sub:
-  case fblang::SymbolKind::Function:
-  case fblang::SymbolKind::Property:
-  case fblang::SymbolKind::Constructor:
-  case fblang::SymbolKind::Destructor:
-  case fblang::SymbolKind::Operator:
-    break;
-  default:
-    return rsp;
+
+  fblang::Intrinsic const *intr = nullptr;
+  if (!userCallable) {
+    // No user declaration: a built-in function still gets a signature.
+    intr = fblang::intrinsicFor(calleeTok.text());
+    if (intr == nullptr || intr->kind != fblang::IntrinsicKind::Function) {
+      return rsp;
+    }
   }
 
   lsSignatureInformation info;
-  info.label = decl->signature.empty() ? decl->name : decl->signature;
-  for (auto const &p : decl->children) {
-    if (p.kind == fblang::SymbolKind::Parameter) {
+  if (intr != nullptr) {
+    info.label = std::string(intr->signature);
+    for (std::string_view const label : fblang::signatureParamLabels(*intr)) {
       lsParameterInformation pi;
-      pi.label = p.name;
+      pi.label = std::string(label);
       info.parameters.push_back(std::move(pi));
+    }
+  } else {
+    info.label = decl->signature.empty() ? decl->name : decl->signature;
+    for (auto const &p : decl->children) {
+      if (p.kind == fblang::SymbolKind::Parameter) {
+        lsParameterInformation pi;
+        pi.label = p.name;
+        info.parameters.push_back(std::move(pi));
+      }
     }
   }
 
