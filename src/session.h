@@ -8,6 +8,7 @@
 #include "LibLsp/lsp/general/lsTextDocumentClientCapabilities.h"
 #include "LibLsp/lsp/general/shutdown.h"
 #include "LibLsp/lsp/lsAny.h"
+#include "LibLsp/lsp/textDocument/SemanticTokens.h"
 #include "LibLsp/lsp/textDocument/completion.h"
 #include "LibLsp/lsp/textDocument/declaration_definition.h"
 #include "LibLsp/lsp/textDocument/did_change.h"
@@ -18,6 +19,7 @@
 #include "LibLsp/lsp/textDocument/foldingRange.h"
 #include "LibLsp/lsp/textDocument/highlight.h"
 #include "LibLsp/lsp/textDocument/hover.h"
+#include "LibLsp/lsp/textDocument/inlayHint.h"
 #include "LibLsp/lsp/textDocument/prepareRename.h"
 #include "LibLsp/lsp/textDocument/publishDiagnostics.h"
 #include "LibLsp/lsp/textDocument/references.h"
@@ -35,11 +37,16 @@
 
 #include "index.h"
 #include "resolve.h"
+#include "semantic_tokens_lsp.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 class FreeBasicServer {
@@ -70,6 +77,16 @@ private:
   // onDidOpen); empty when the client sent none.
   std::filesystem::path sessionRoot_;
 
+  // Semantic-tokens delta cache (M9). Only `full` results are stored: a
+  // `range` result carries a fresh resultId but is never cached, so a delta can
+  // never be diffed against a viewport-scoped token set. Handlers run on the
+  // pool concurrently, so every access holds deltaMutex_; responses are built
+  // from a copied snapshot, lock-free.
+  std::mutex deltaMutex_;
+  std::unordered_map<std::string, std::vector<std::int32_t>> deltaCache_;
+  std::vector<std::string> deltaOrder_; // insertion order, for eviction
+  std::uint64_t nextResultId_ = 1;
+
   void ensureWorkspaceIndex(std::filesystem::path const &root);
   std::optional<std::filesystem::path>
   chooseIndexRoot(std::filesystem::path const &openedFile);
@@ -98,6 +115,17 @@ private:
   onPrepareRename(td_prepareRename::request const &req);
   td_rename::response onRename(td_rename::request const &req);
   wp_symbol::response onWorkspaceSymbol(wp_symbol::request const &req);
+  td_semanticTokens_full::response
+  onSemanticTokensFull(td_semanticTokens_full::request const &req);
+  td_semanticTokens_full_delta::response
+  onSemanticTokensDelta(td_semanticTokens_full_delta::request const &req);
+  td_semanticTokens_range::response
+  onSemanticTokensRange(td_semanticTokens_range::request const &req);
+  td_inlayHint::response onInlayHint(td_inlayHint::request const &req);
+
+  // Allocate a fresh resultId ("st<counter>") and record `data` under it as
+  // the current delta baseline, evicting the oldest entry past a fixed cap.
+  std::string storeDelta(std::vector<std::int32_t> const &data);
 
   void reparseAndPublish(std::shared_ptr<WorkingFile> const &file,
                          lsDocumentUri const &uri);

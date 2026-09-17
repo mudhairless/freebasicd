@@ -23,10 +23,12 @@ add_subdirectory(third_party/LspCpp)
 # workspace index (M4) is in-memory only.
 add_library(freebasiclsp_lang STATIC
     src/index.cpp
+    src/inlay_hints.cpp
     src/language.cpp
     src/lexer.cpp
     src/parser.cpp
     src/resolve.cpp
+    src/semantic_tokens.cpp
 )
 target_include_directories(freebasiclsp_lang PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
@@ -79,6 +81,53 @@ add_executable(utf16_checks
 target_include_directories(utf16_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(utf16_checks PRIVATE freebasiclsp_core lspcpp)
 add_test(NAME utf16_checks COMMAND utf16_checks)
+
+add_executable(semantic_tokens_checks
+    tests/semantic_tokens_checks.cpp
+)
+target_include_directories(semantic_tokens_checks PRIVATE
+    ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(semantic_tokens_checks PRIVATE freebasiclsp_lang)
+add_test(NAME semantic_tokens_checks COMMAND semantic_tokens_checks)
+
+add_executable(inlay_hints_checks
+    tests/inlay_hints_checks.cpp
+)
+target_include_directories(inlay_hints_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(inlay_hints_checks PRIVATE freebasiclsp_lang)
+add_test(NAME inlay_hints_checks COMMAND inlay_hints_checks)
+
+# M9 editor grammars: a deterministic emitter shared by the writer tool and the
+# freshness test. RapidJSON is compile-time only (the emitter parses its own
+# output back before returning).
+add_library(freebasiclsp_grammar STATIC
+    tools/grammar_emitter.cpp
+)
+target_include_directories(freebasiclsp_grammar PUBLIC ${CMAKE_SOURCE_DIR}/tools)
+target_include_directories(freebasiclsp_grammar PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/LspCpp/third_party/rapidjson/include)
+target_link_libraries(freebasiclsp_grammar PRIVATE freebasiclsp_lang)
+
+add_executable(gen_grammar
+    tools/gen_grammar.cpp
+)
+target_link_libraries(gen_grammar PRIVATE freebasiclsp_grammar)
+
+add_custom_target(grammar
+    COMMAND gen_grammar ${CMAKE_SOURCE_DIR}/editors
+    DEPENDS gen_grammar
+    COMMENT "Regenerating editors/ from src/language.cpp")
+
+add_executable(grammar_checks
+    tests/grammar_checks.cpp
+)
+target_include_directories(grammar_checks PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/LspCpp/third_party/rapidjson/include)
+target_compile_definitions(grammar_checks PRIVATE
+    EDITORS_DIR="${CMAKE_SOURCE_DIR}/editors")
+target_link_libraries(grammar_checks PRIVATE freebasiclsp_grammar freebasiclsp_lang)
+add_test(NAME grammar_checks COMMAND grammar_checks)
 
 add_executable(index_checks
     tests/index_checks.cpp

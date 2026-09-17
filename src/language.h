@@ -47,6 +47,17 @@ std::string_view preprocessorWord(std::string_view line);
 // Type-suffix characters attached to identifiers/numbers.
 bool isSuffixChar(char c);
 
+// Machine-form operator table mirroring Lexer::lexSymbol() (src/lexer.cpp).
+// The semantic-token classifier and the grammar generator consume it;
+// lexer_checks asserts each entry lexes as TokenKind::Symbol so the two
+// cannot drift. Pure punctuation (( ) , : ; [ ] { } #) is deliberately not
+// in the table.
+std::vector<std::string_view> symbolOperators();
+
+// True for the 8 keyword-lexed combined assigns: and= or= xor= eqv= imp=
+// mod= shl= shr= (lexer.cpp lexes them as one Keyword token).
+bool isCombinedAssignKeyword(std::string_view wordLower);
+
 // Dialect declared by a #LANG directive. Only Fb is implemented; the others
 // are recognized so the server can report that it is parsing best-effort.
 enum class LangMode {

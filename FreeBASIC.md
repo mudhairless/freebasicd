@@ -250,3 +250,17 @@ to "the language is what the lexer does":
    resolution always picks the innermost scope, so "shadowing wins" is
    absolute in this implementation. Correct for code that does not use the
    prefix; recorded so resolution never silently "fixes" the divergence.
+8. **Inlay-hint inferred types come from the identifier suffix even in `fb`
+   mode** (§2 suffix table), where fbc ignores suffixes (warning 44). The
+   `dim x$` → `As String` hint is **cosmetic display only** and has no effect
+   on resolution.
+9. **No `DEFINT`-family default-type inference for `dim x`.** A bare `dim x`
+   (no suffix, no `AS`) gets no inferred-type hint; the QB-only default-type
+   machinery (§2 `error 147` in `fb`) is out of scope.
+10. **Semantic-token `range` is served only to clients that request it** via
+    `textDocument.semanticTokens.requests.range`; other clients fall back to
+    `full`. This is standard LSP behavior (the server never advertises a
+    provider a client cannot call), not a server limitation.
+11. **Vim block-comment `/'...'/` nesting is approximated** (vim region
+    semantics); the generated TextMate grammar nests via `begin/end` pairs.
+    Grammar-side limitation only.

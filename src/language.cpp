@@ -592,6 +592,25 @@ bool isSuffixChar(char c) {
   return c == '$' || c == '%' || c == '&' || c == '!' || c == '#';
 }
 
+std::vector<std::string_view> symbolOperators() {
+  // Order matters only for readability; callers that need longest-match
+  // ordering sort themselves. Mirrors Lexer::lexSymbol() (src/lexer.cpp):
+  // multi-char symbols first, then single chars. `&` is the address-of
+  // operator (never a suffix), `?` the PRINT shortcut, `.` member access,
+  // `...` the variadic marker. `^`, `|`, `~` and `=` lex through the default
+  // single-char case.
+  static constexpr std::string_view const kOperators[] = {
+      "...", ".", "->", "-=", "-", "+=", "+", "*=", "*", "/=", "/", "\\=", "\\",
+      "&=",  "&", "<=", "<>", "<", ">=", ">", "=",  "^", "|",  "~", "@",   "?"};
+  return {std::begin(kOperators), std::end(kOperators)};
+}
+
+bool isCombinedAssignKeyword(std::string_view wordLower) {
+  return wordLower == "and=" || wordLower == "or=" || wordLower == "xor=" ||
+         wordLower == "eqv=" || wordLower == "imp=" || wordLower == "mod=" ||
+         wordLower == "shl=" || wordLower == "shr=";
+}
+
 bool langFromDirective(std::string_view line, LangMode *out) {
   // Line starts at '#'. Expect `#LANG "name"`.
   size_t i = 1;

@@ -20,7 +20,7 @@ remaining work.
 | M6 — include resolution + watched files + missing-include diagnostics | done (2026-09: missing-include diagnostics, debounced watched-files rescan, `#pragma once` metadata) |
 | M7 — cross-file definition / references / highlight / completion | done (2026-09: `resolveAcross` tiers, `Shared` storage gate, four cross-file handlers, two-file tests) |
 | M8 — `prepareRename` + `rename` (workspace) | done |
-| M9 — semantic tokens + inlay hints + highlight grammar | next |
+| M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
 | M10 — intrinsic catalog + request-side parse cache | next |
 | M11 — README / editor setup, CI, configuration, workspace folders | next |
 | M12 — editor extras: selectionRange, callHierarchy, codeLens | next |
@@ -89,25 +89,22 @@ plan engineers around:
    *guard states* are not evaluated — `#include once` / `#pragma once` / `#ifndef`
    are processed as recorded metadata, not macros (FreeBASIC.md §12.6) — and
    `#inclib` is not treated as a source include.
-2. No semantic tokens, no inlay hints (LspCpp bundles the types; unused), and
-   no static highlight grammar — editors get no syntax coloring of any kind
-   until M9 ships both.
-3. Session re-parses the whole buffer on every request: `documentSymbol`/`hover`/
+2. Session re-parses the whole buffer on every request: `documentSymbol`/`hover`/
    `foldingRange`/`signatureHelp` call `parseDocument`, and the resolution path
    (`definition`/`references`/`highlight`/`completion`/`prepareRename`/`rename`)
    calls `analyze()` per request — parse plus a full token stream — while
    `occurrencesAcross` re-analyzes every closure file from disk for cross-file
    sites. No request-side cache until M10.
-4. `initialized` + dynamic capability registration landed (M5.5): a dynamic
+3. `initialized` + dynamic capability registration landed (M5.5): a dynamic
    client is registered for `workspace/didChangeWatchedFiles` on `initialized`
    via `client/registerCapability`; a static client is served watchers in the
    `initialize` reply. The watcher handler and the debounced rescan landed in
    M6 (they fan into `WorkspaceIndex::watchedFilesChanged`); only
    `workspace/didChangeWorkspaceFolders` remains unhandled (single-root
    assumption, M11).
-5. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
+4. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
    built-in intrinsic-function completion catalog.
-6. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
+5. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
    `callHierarchy`, `codeLens` (M12), and pull diagnostics (M13). None is
    required by the target editors; each ships as its own milestone.
 
@@ -345,6 +342,17 @@ the design; sub-tasks land in order.
   behavior, not a bug.
 
 ### M9 — Semantic tokens + inlay hints + highlight grammar
+
+> Status: landed 2026-09, `ctest` 10/10 green. Realized as designed, three
+> deviations from the sketch: the vendored `SemanticTokensEdit` was reshaped to
+> the wire `start`/`deleteCount`/`data` form (third local LspCpp commit
+> `45846f7`) instead of adding a translation layer, so generic reflection is
+> correct at every call depth; only `full` results enter the delta cache (a
+> `range` resultId is never a baseline, so a delta can never diff against a
+> viewport-scoped set); and the grammar emitter is a shared
+> `tools/grammar_emitter` module consumed by both the `gen_grammar` tool and
+> `grammar_checks`, so the freshness gate byte-diffs by construction rather than
+> regenerating into a temp dir.
 
 Independent UX wins; LspCpp typed types confirmed present (`td_semanticTokens_full`,
 `td_inlayHint`). Together these deliver the full editor-highlighting story:

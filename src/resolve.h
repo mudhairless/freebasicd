@@ -65,6 +65,12 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
 // level. Dim/Const/Parameter nodes are not scopes and are walked through.
 Symbol const *innermostScope(ParseResult const &parse, std::uint32_t off);
 
+// Parent of `node` in the parse symbol tree (the declaration block or module
+// root owning it), or nullptr for a file root. Enum members are Const
+// children of their Enum root — use this to tell an enum member from a
+// statement-level Const (semantic token classification).
+Symbol const *parentOf(ParseResult const &parse, Symbol const *node);
+
 // Where a cross-file resolution landed. `file == nullptr` means `decl` points
 // into the request-local `AnalyzedDoc` (tier 1); otherwise `file` pins the
 // workspace snapshot that owns `decl` (tiers 2/3), kept alive by the caller.

@@ -9,16 +9,21 @@ repository (default branch `main`).
 - **LspCpp** (github.com/kuafuwang/LspCpp) is the LSP/JSON-RPC library. It is
   vendored as a **git submodule** at `third_party/LspCpp`, **pinned to a fork
   of commit `19150d12c4ae26239d75258ed598ba8ea3587cb7`** (upstream master,
-  2026-08-21; no release tag exists yet) **plus two local commits**:
+  2026-08-21; no release tag exists yet) **plus three local commits**:
   `310e1e6` adding the watched-files registration types upstream lacks —
   `lsFileSystemWatcher`/`lsDidChangeWatchedFilesOptions`
   (`workspace/did_change_watched_files.h`), `Registration::registerOptions`
   (`client/registerCapability.h`), and
   `WorkspaceServerCapabilities::didChangeWatchedFiles`
-  (`general/lsServerCapabilities.h`) — and `f0cd2fa` covering them with
+  (`general/lsServerCapabilities.h`) — `f0cd2fa` covering them with
   round-trip/parse tests plus a self-contained `client/registerCapability.h`
   (it calls `DEFINE_REQUEST_RESPONSE_TYPE` from `RequestInMessage.h` and must
-  include it directly). Restore with `git submodule update --init`. Consumed
+  include it directly), and `45846f7` fixing `SemanticTokensEdit` serialization
+  (`textDocument/SemanticTokens.h`): the struct now carries the LSP wire shape
+  (`start`/`deleteCount` in flat-array elements, `data`) so generic reflection
+  is correct at every call depth, instead of the token-count projection whose
+  non-template `Reflect` overload only won for direct top-level calls. Restore
+  with `git submodule update --init`. Consumed
   via `add_subdirectory(third_party/LspCpp)` and linked as the `lspcpp`
   target. No Boost is required (`LSPCPP_STANDALONE_ASIO` is the default);
   build with `LSPCPP_BUILD_WEBSOCKETS=OFF`, `LSPCPP_BUILD_EXAMPLES=OFF`,
@@ -91,7 +96,7 @@ Formatting is **part of the milestone gate** (unlike tidy): the repo's
 files:
 
 ```
-clang-format --dry-run --Werror src/*.cpp src/*.h tests/*.cpp
+clang-format --dry-run --Werror src/*.cpp src/*.h tests/*.cpp tools/*.cpp
 ```
 
 Apply with `clang-format -i <file>` (or `--lines=start:end` for a region, e.g.

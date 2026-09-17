@@ -1,10 +1,12 @@
 #include "session.h"
 
 #include "index.h"
+#include "inlay_hints.h"
 #include "language.h"
 #include "lexer.h"
 #include "parser.h"
 #include "resolve.h"
+#include "semantic_tokens.h"
 #include "symbols.h"
 #include "utf16.h"
 
@@ -347,6 +349,43 @@ char const *const kBlockOpeners[] = {
     "type",   "union",    "enum",     "namespace", "scope",       "if",
     "select", "with",     "extern",   "asm"};
 
+// Two flat token arrays (5 ints per token) are equal at token index `a`
+// (into `x`) and `b` (into `y`).
+bool tokenEqual(std::vector<std::int32_t> const &x, std::size_t a,
+                std::vector<std::int32_t> const &y, std::size_t b) {
+  return std::equal(x.begin() + static_cast<std::ptrdiff_t>(a * 5),
+                    x.begin() + static_cast<std::ptrdiff_t>(a * 5 + 5),
+                    y.begin() + static_cast<std::ptrdiff_t>(b * 5));
+}
+
+// Single semantic-tokens edit from a common-prefix/suffix trim of two flat
+// arrays. LSP's SemanticTokensEdit indexes the flat `data` array in element
+// units (five integers per token).
+SemanticTokensEdit diffTokenData(std::vector<std::int32_t> const &previous,
+                                 std::vector<std::int32_t> const &current) {
+  std::size_t const prevTokens = previous.size() / 5;
+  std::size_t const curTokens = current.size() / 5;
+
+  std::size_t prefix = 0;
+  while (prefix < prevTokens && prefix < curTokens &&
+         tokenEqual(previous, prefix, current, prefix)) {
+    ++prefix;
+  }
+  std::size_t suffix = 0;
+  while (suffix < prevTokens - prefix && suffix < curTokens - prefix &&
+         tokenEqual(previous, prevTokens - 1 - suffix, current,
+                    curTokens - 1 - suffix)) {
+    ++suffix;
+  }
+
+  SemanticTokensEdit edit;
+  edit.start = static_cast<unsigned>(prefix * 5);
+  edit.deleteCount = static_cast<unsigned>((prevTokens - prefix - suffix) * 5);
+  edit.data.assign(current.begin() + static_cast<std::ptrdiff_t>(prefix * 5),
+                   current.end() - static_cast<std::ptrdiff_t>(suffix * 5));
+  return edit;
+}
+
 } // namespace
 
 FreeBasicServer::FreeBasicServer(lsp::LanguageSession &session)
@@ -447,6 +486,17 @@ void FreeBasicServer::registerHandlers() {
   session_.on([this](td_rename::request const &req) { return onRename(req); });
   session_.on(
       [this](wp_symbol::request const &req) { return onWorkspaceSymbol(req); });
+  session_.on([this](td_semanticTokens_full::request const &req) {
+    return onSemanticTokensFull(req);
+  });
+  session_.on([this](td_semanticTokens_full_delta::request const &req) {
+    return onSemanticTokensDelta(req);
+  });
+  session_.on([this](td_semanticTokens_range::request const &req) {
+    return onSemanticTokensRange(req);
+  });
+  session_.on(
+      [this](td_inlayHint::request const &req) { return onInlayHint(req); });
 
   // The server->client client/registerCapability request is sent from the
   // `initialized` handler, after the parse/notification pools are running;
@@ -503,6 +553,34 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
 
   rsp.result.capabilities.workspaceSymbolProvider.emplace();
   rsp.result.capabilities.workspaceSymbolProvider->first.emplace(true);
+
+  // Semantic tokens: the legend always; full + delta always; the viewport
+  // `range` provider only when the client asks for it (clients that don't fall
+  // back to `full`). SemanticTokensServerFull.delta defaults to false, so the
+  // flag MUST be set or full/delta serializes as unsupported and clients never
+  // send the delta request.
+  rsp.result.capabilities.semanticTokensProvider.emplace();
+  rsp.result.capabilities.semanticTokensProvider->legend.tokenTypes =
+      fblang::semanticTokenTypes();
+  rsp.result.capabilities.semanticTokensProvider->legend.tokenModifiers =
+      fblang::semanticTokenModifiers();
+  rsp.result.capabilities.semanticTokensProvider->full.emplace();
+  rsp.result.capabilities.semanticTokensProvider->full->second.emplace();
+  rsp.result.capabilities.semanticTokensProvider->full->second->delta = true;
+  bool const rangeRequested =
+      req.params.capabilities.textDocument &&
+      req.params.capabilities.textDocument->semanticTokens &&
+      req.params.capabilities.textDocument->semanticTokens->requests.range;
+  if (rangeRequested) {
+    // Bool arm true; no options payload needed — serializes `"range": true`.
+    rsp.result.capabilities.semanticTokensProvider->range.emplace();
+    rsp.result.capabilities.semanticTokensProvider->range->first.emplace(true);
+  }
+
+  // Inlay hints: options arm (like renameProvider), resolveProvider unset —
+  // no resolve request is advertised or handled.
+  rsp.result.capabilities.inlayHintProvider.emplace();
+  rsp.result.capabilities.inlayHintProvider->second.emplace();
 
   // Watched-file negotiation: a client with
   // workspace.didChangeWatchedFiles.dynamicRegistration gets the watcher
@@ -1481,6 +1559,141 @@ FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
     }
   }
   return rsp;
+}
+
+td_semanticTokens_full::response FreeBasicServer::onSemanticTokensFull(
+    td_semanticTokens_full::request const &req) {
+  td_semanticTokens_full::response rsp;
+  rsp.id = req.id;
+
+  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
+      req.params.textDocument.uri.GetAbsolutePath());
+  if (!file) {
+    return rsp;
+  }
+  std::string_view const content = file->GetContentNoLock();
+  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  std::vector<std::int32_t> const data =
+      fblang::encodeTokenData(fblang::semanticTokens(doc, content));
+
+  SemanticTokens tokens;
+  tokens.data = data;
+  tokens.resultId.emplace(storeDelta(data));
+  rsp.result.emplace(std::move(tokens));
+  return rsp;
+}
+
+td_semanticTokens_full_delta::response FreeBasicServer::onSemanticTokensDelta(
+    td_semanticTokens_full_delta::request const &req) {
+  td_semanticTokens_full_delta::response rsp;
+  rsp.id = req.id;
+
+  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
+      req.params.textDocument.uri.GetAbsolutePath());
+  if (!file) {
+    return rsp;
+  }
+  std::string_view const content = file->GetContentNoLock();
+  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  std::vector<std::int32_t> const current =
+      fblang::encodeTokenData(fblang::semanticTokens(doc, content));
+
+  std::vector<std::int32_t> previous;
+  bool known = false;
+  {
+    std::lock_guard<std::mutex> const lock(deltaMutex_);
+    auto const it = deltaCache_.find(req.params.previousResultId);
+    if (it != deltaCache_.end()) {
+      previous = it->second;
+      known = true;
+    }
+  }
+
+  SemanticTokensOrDelta out;
+  if (!known) {
+    // Unknown id — a stale id, a range resultId (never cached), or a fresh
+    // client: fall back to a full response with a new baseline.
+    out.tokens.emplace(current);
+    out.resultId.emplace(storeDelta(current));
+  } else if (previous == current) {
+    // Identical content: an empty edit list, resultId unchanged.
+    out.edits.emplace();
+    out.resultId.emplace(req.params.previousResultId);
+  } else {
+    out.edits.emplace();
+    out.edits->push_back(diffTokenData(previous, current));
+    out.resultId.emplace(storeDelta(current));
+  }
+  rsp.result.emplace(std::move(out));
+  return rsp;
+}
+
+td_semanticTokens_range::response FreeBasicServer::onSemanticTokensRange(
+    td_semanticTokens_range::request const &req) {
+  td_semanticTokens_range::response rsp;
+  rsp.id = req.id;
+
+  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
+      req.params.textDocument.uri.GetAbsolutePath());
+  if (!file) {
+    return rsp;
+  }
+  std::string_view const content = file->GetContentNoLock();
+  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  std::vector<fblang::SemanticTokenEntry> const inRange = fblang::filterTokens(
+      fblang::semanticTokens(doc, content), req.params.range.start.line,
+      req.params.range.end.line);
+
+  SemanticTokens tokens;
+  tokens.data = fblang::encodeTokenData(inRange);
+  // Fresh resultId, but never stored: a delta diffed against a viewport-scoped
+  // set would corrupt the client. An unknown id already falls back to `full`.
+  {
+    std::lock_guard<std::mutex> const lock(deltaMutex_);
+    tokens.resultId.emplace("st" + std::to_string(nextResultId_++));
+  }
+  rsp.result.emplace(std::move(tokens));
+  return rsp;
+}
+
+td_inlayHint::response
+FreeBasicServer::onInlayHint(td_inlayHint::request const &req) {
+  td_inlayHint::response rsp;
+  rsp.id = req.id;
+
+  std::shared_ptr<WorkingFile> const file = workingFiles_.GetFileByFilename(
+      req.params.textDocument.uri.GetAbsolutePath());
+  if (!file) {
+    return rsp;
+  }
+  std::string_view const content = file->GetContentNoLock();
+  fblang::AnalyzedDoc const doc = fblang::analyze(content);
+  for (fblang::InlayHintItem const &item : fblang::inlayHints(doc, content)) {
+    lsPosition const pos = fblang::utf16Position(content, item.bytePos);
+    if (pos.line < req.params.range.start.line ||
+        pos.line > req.params.range.end.line) {
+      continue; // outside the requested viewport
+    }
+    lsInlayHint hint;
+    hint.position = pos;
+    hint.label = item.label;
+    rsp.result.push_back(std::move(hint));
+  }
+  return rsp;
+}
+
+std::string FreeBasicServer::storeDelta(std::vector<std::int32_t> const &data) {
+  std::lock_guard<std::mutex> const lock(deltaMutex_);
+  std::string const id = "st" + std::to_string(nextResultId_++);
+  deltaCache_[id] = data;
+  deltaOrder_.push_back(id);
+  constexpr std::size_t kMaxCachedResults = 64;
+  if (deltaCache_.size() > kMaxCachedResults) {
+    std::string const oldest = deltaOrder_.front();
+    deltaOrder_.erase(deltaOrder_.begin());
+    deltaCache_.erase(oldest);
+  }
+  return id;
 }
 
 void FreeBasicServer::publishDiagnostics(

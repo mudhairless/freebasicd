@@ -160,14 +160,30 @@ int main() {
     CHECK(std::string(ts[3].text()) == "...");
   }
 
-  // Combined assignment keywords are single tokens.
+  // Operator table stays in lockstep with the lexer: every symbolOperators()
+  // entry lexes as one Symbol token with exactly that text. Spaced between
+  // identifiers so no entry is read as a radix prefix (e.g. `&H`) or number.
+  for (std::string_view const op : symbolOperators()) {
+    std::string const src = "a " + std::string(op) + " b";
+    auto ts = tokensOf(src.c_str());
+    CHECK(ts.size() == 4); // a, op, b, Eof
+    if (ts.size() == 4) {
+      CHECK(ts[1].kind == TokenKind::Symbol);
+      CHECK(ts[1].text() == op);
+    }
+  }
+
+  // Combined-assignment keywords are single tokens the classifier maps to
+  // `operator`; the predicate must cover exactly those spellings.
+  for (char const *const word :
+       {"and=", "or=", "xor=", "eqv=", "imp=", "mod=", "shl=", "shr="}) {
+    CHECK(isCombinedAssignKeyword(word));
+    checkKinds(word, {TokenKind::Keyword});
+  }
+  CHECK(!isCombinedAssignKeyword("and"));
+  CHECK(!isCombinedAssignKeyword("+="));
   checkKinds("x and= 1",
              {TokenKind::Identifier, TokenKind::Keyword, TokenKind::Number});
-  {
-    auto ts = tokensOf("or= shr=");
-    CHECK(std::string(ts[0].text()) == "or=");
-    CHECK(std::string(ts[1].text()) == "shr=");
-  }
 
   // '?' is the PRINT shortcut symbol.
   checkKinds("? x", {TokenKind::Symbol, TokenKind::Identifier});

@@ -128,15 +128,6 @@ Symbol const *findParent(Symbol const &cur, Symbol const *node) {
   return nullptr;
 }
 
-Symbol const *parentOf(ParseResult const &parse, Symbol const *node) {
-  for (auto const &root : parse.roots) {
-    if (Symbol const *p = findParent(root, node)) {
-      return p;
-    }
-  }
-  return nullptr;
-}
-
 // Identifier token at `off`, or nullptr. A cursor between two characters is
 // considered inside a token that spans it.
 Token const *tokenAt(std::vector<Token> const &tokens, std::uint32_t off) {
@@ -328,6 +319,17 @@ void collectIncludes(std::string_view source, std::vector<Token> const &tokens,
 }
 
 } // namespace
+
+// Exported (resolve.h): parent of `node` in the parse symbol tree. Uses the
+// file-local findParent above.
+Symbol const *parentOf(ParseResult const &parse, Symbol const *node) {
+  for (auto const &root : parse.roots) {
+    if (Symbol const *p = findParent(root, node)) {
+      return p;
+    }
+  }
+  return nullptr;
+}
 
 Symbol const *innermostScope(ParseResult const &parse, std::uint32_t off) {
   Symbol const *best = nullptr;
