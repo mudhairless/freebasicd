@@ -21,7 +21,7 @@ remaining work.
 | M7 — cross-file definition / references / highlight / completion | done (2026-09: `resolveAcross` tiers, `Shared` storage gate, four cross-file handlers, two-file tests) |
 | M8 — `prepareRename` + `rename` (workspace) | done |
 | M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
-| M10 — intrinsic catalog + request-side parse cache | next |
+| M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
 | M11 — README / editor setup, CI, configuration, workspace folders | next |
 | M12 — editor extras: selectionRange, callHierarchy, codeLens | next |
 | M13 — pull diagnostics (backlog) | next |
@@ -40,7 +40,12 @@ stable shape:
   (`roots`, `diagnostics`, `blockRanges`, `lang`); decl extraction, block
   matching, dialect detection, doc comments.
 - `src/language.{h,cpp}` — reserved-word catalog, block-closer facts, wiki doc
-  URLs, dialect detection helpers, `isSuffixChar`.
+  URLs, dialect detection helpers, `isSuffixChar`, and the 247-row `Intrinsic`
+  catalog (`intrinsicFor`, `intrinsics`, `intrinsicDocsUrl`,
+  `signatureParamLabels`, `statementPosition`).
+- `src/analysis_cache.{h,cpp}` — `AnalysisCache`: content-addressed
+  `ParseResult` + token vector per path (FNV-1a content hash as the identity),
+  open-buffer entries exempt from FIFO eviction, `removePath` on close.
 - `src/symbols.h` — shared model: `Symbol`, `SymbolKind`, `Diagnostic`,
   `ParseResult`, `SourceRange` (byte offsets), `toLowerChars`.
 - `src/resolve.{h,cpp}` — same-file resolution: `resolveAt`, `occurrencesOf`,
@@ -51,15 +56,17 @@ stable shape:
   reads. Helpers: `normalizePath`, `statFile`, `resolveIncludeTarget`.
 - `src/utf16.{h,cpp}` — byte ↔ UTF-16 position conversion (session boundary).
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
-  `WorkingFiles` + `WorkspaceIndex`, re-parses the buffer, pushes diagnostics.
+  `WorkingFiles` + `WorkspaceIndex`, serves a content-addressed
+  `AnalysisCache` (replacing per-request reparse), pushes diagnostics.
 - `src/main.cpp` — stdio entry; `LanguageSession` + exit condition.
 
 Implemented LSP methods: `initialize`/`shutdown`/`exit`, `didOpen`/`didChange`/
 `didSave`/`didClose`, `publishDiagnostics`, `documentSymbol`, `hover` (symbols +
-keyword wiki links), `foldingRange`, `definition`, `references`,
-`documentHighlight`, `completion` (keywords + `END`-block snippets + in-scope
-symbols), `signatureHelp`, `workspace/symbol`, `prepareRename`, `rename`
-(resolution-based workspace edits).
+intrinsic signatures + keyword wiki links), `foldingRange`, `definition`,
+`references`, `documentHighlight`, `completion` (keywords + `END`-block
+snippets + in-scope symbols + intrinsic catalog), `signatureHelp` (user
+declarations and built-in functions), `workspace/symbol`, `prepareRename`,
+`rename` (resolution-based workspace edits).
 
 ## 3. FreeBASIC semantics that gate the remaining work
 
@@ -89,22 +96,15 @@ plan engineers around:
    *guard states* are not evaluated — `#include once` / `#pragma once` / `#ifndef`
    are processed as recorded metadata, not macros (FreeBASIC.md §12.6) — and
    `#inclib` is not treated as a source include.
-2. Session re-parses the whole buffer on every request: `documentSymbol`/`hover`/
-   `foldingRange`/`signatureHelp` call `parseDocument`, and the resolution path
-   (`definition`/`references`/`highlight`/`completion`/`prepareRename`/`rename`)
-   calls `analyze()` per request — parse plus a full token stream — while
-   `occurrencesAcross` re-analyzes every closure file from disk for cross-file
-   sites. No request-side cache until M10.
-3. `initialized` + dynamic capability registration landed (M5.5): a dynamic
+2. `initialized` + dynamic capability registration landed (M5.5): a dynamic
    client is registered for `workspace/didChangeWatchedFiles` on `initialized`
    via `client/registerCapability`; a static client is served watchers in the
    `initialize` reply. The watcher handler and the debounced rescan landed in
    M6 (they fan into `WorkspaceIndex::watchedFilesChanged`); only
    `workspace/didChangeWorkspaceFolders` remains unhandled (single-root
    assumption, M11).
-4. No README, editor-setup docs, CI matrix, `didChangeConfiguration`, or
-   built-in intrinsic-function completion catalog.
-5. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
+3. No README, editor-setup docs, CI matrix, or `didChangeConfiguration`.
+4. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
    `callHierarchy`, `codeLens` (M12), and pull diagnostics (M13). None is
    required by the target editors; each ships as its own milestone.
 
@@ -144,7 +144,7 @@ index **before** building features on it.
   never shadow scan hits; all 7 suites green.
 - Risk: occurrence-vector memory for large workspaces (mitigate: sites only,
   no payload text; FB files are tiny). Residual: request-side re-analyze per
-  call remains until the M10 parse cache.
+  call — removed by M10's content-addressed analysis cache.
 
 ### M5.5 — Lifecycle: `initialized` + dynamic capability registration
 
@@ -303,7 +303,8 @@ the design; sub-tasks land in order.
   out-of-closure `byKey_` def still works; the `shared` flag is carried on
   the in-memory index entries; `ctest` 7/7 green.
 - Risk: closed files are read from disk per request for range conversion (FB
-  files are tiny; M10's parse/content cache removes it). Duplicate
+  files are tiny; M10's content-addressed cache serves repeat reads without
+  re-reading or re-parsing). Duplicate
   module-scope keys across files disambiguate to the first closure hit — a
   documented edge case. The tier-3 leniency can point outside the closure —
   tracked as a divergence, per the plan's stated fallback. The `.`/`..`
@@ -396,6 +397,19 @@ parser sees.
   cannot ship without a matching grammar update.
 
 ### M10 — Intrinsic catalog + request-side parse cache
+
+> Status: landed 2026-09, `ctest` 12/12 green. Both halves shipped. The cache
+> is **content-addressed**, not version-gated: entry identity is an FNV-1a hash
+> of the buffer (plus a size/head verify), so a `didChange` that bumps the
+> version with byte-identical text still hits, and the open-buffer path never
+> inserts (the `didChange` fill owns inserts) — staleness is structurally
+> impossible rather than invalidated by hand. Cache entries own their content,
+> so cached tokens stay valid. The catalog is one row per base key
+> (`hasDollar` marks the `left`/`left$` alias), built from the wiki's function
+> index and cleaned to 247 live rows; dead parser-only keys (`printpp`,
+> `seekreturn`, …) are dropped. Its names are not all reserved — 33 are
+> header-provided functions (`now`, `format`, `year`, …), so lookup relies on
+> user-symbol precedence and `seen` dedupe, not a reserved-word assertion.
 
 - **Intrinsic catalog** in `language.cpp` (pattern: the `keywordDocsUrl`
   per-word table): ~200 intrinsics (`Left$`, `Mid`, `Print`, `Val`, `CInt`,
