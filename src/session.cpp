@@ -212,7 +212,7 @@ std::vector<lsDiagnostic> convertDiagnostics(std::string_view content,
 // Unresolved `#include`/`#include once` literals of an indexed entry become
 // `include-not-found` Errors at the literal's own range. Only the open
 // buffer's own edges are diagnosed (M6); inter-file closure diagnostics wait
-// for pull diagnostics (M13).
+// for pull diagnostics (M14).
 void appendIncludeDiagnostics(std::string_view content,
                               fblang::IndexedFile const &entry,
                               std::vector<lsDiagnostic> *out) {

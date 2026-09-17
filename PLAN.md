@@ -23,12 +23,13 @@ remaining work.
 | M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
 | M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
 | M11 — configuration + workspace folders | next |
-| M12 — editor extras: selectionRange, callHierarchy, codeLens | next |
-| M13 — pull diagnostics (backlog) | next |
-| M14 — type/go-to + type hierarchy (backlog) | next |
-| M15 — document links + completion resolve + polish (backlog) | next |
-| M16 — FreeBASIC formatter (backlog, scope TBD) | next |
-| M17 — public release: README / editor setup, CI (moved from M11) | next |
+| M12 — code actions: quick fixes for missing includes + block closers | next |
+| M13 — editor extras: selectionRange, callHierarchy, codeLens | next |
+| M14 — pull diagnostics (backlog) | next |
+| M15 — type/go-to + type hierarchy (backlog) | next |
+| M16 — document links + completion resolve + polish (backlog) | next |
+| M17 — FreeBASIC formatter (backlog, scope TBD) | next |
+| M18 — public release: README / editor setup, CI (moved from M11) | next |
 
 ## 2. What exists (condensed)
 
@@ -106,7 +107,7 @@ plan engineers around:
    assumption, M11).
 3. No README, editor-setup docs, CI matrix, or `didChangeConfiguration`.
 4. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
-   `callHierarchy`, `codeLens` (M12), and pull diagnostics (M13). None is
+   `callHierarchy`, `codeLens` (M13), and pull diagnostics (M14). None is
    required by the target editors; each ships as its own milestone.
 
 ## 5. Forward plan
@@ -190,7 +191,7 @@ deviations rather than reworked.
   edges, and emits an `include-not-found` `Error` covering the filename
   literal for every own `#include`/`#include once` whose literal resolved to
   nothing — one analysis, one resolution, one publish, merged with the parse
-  diagnostics. Inter-file closure diagnostics wait for pull diagnostics (M13).
+  diagnostics. Inter-file closure diagnostics wait for pull diagnostics (M14).
 - **Watched-files convergence:** the session registers the vendored
   `Notify_WorkspaceDidChangeWatchedFiles` and fans every event into a new
   `WorkspaceIndex::watchedFilesChanged()`. A dedicated debounce thread (300ms
@@ -394,7 +395,7 @@ parser sees.
   no unclassified tokens; block opener offers its closer hint; `ctest` green.
 - Risk: token-type string spellings must match the 3.17 legend exactly;
   delta-encoding correctness (mitigate: full first, delta second); the grammar is
-  easy to let rot — M17 CI regenerates it from the catalog so a catalog edit
+  easy to let rot — M18 CI regenerates it from the catalog so a catalog edit
   cannot ship without a matching grammar update.
 
 ### M10 — Intrinsic catalog + request-side parse cache
@@ -430,7 +431,7 @@ parser sees.
 ### M11 — Configuration + workspace folders
 
 > Re-scoped (2026-09): the release-facing deliverables (README, editor setup,
-> CI) moved out to M17. M11 is now the server-configuration and multi-root
+> CI) moved out to M18. M11 is now the server-configuration and multi-root
 > milestone; the public-release polish ships last, after the feature work.
 
 - **Configuration** — `workspace/didChangeConfiguration` + `Settings{
@@ -449,7 +450,30 @@ parser sees.
   workspace makes its symbols answer `workspace/symbol` and removing one drops
   them; single-root sessions behave exactly as before; `ctest` green.
 
-### M12 — Editor extras: selectionRange, callHierarchy, codeLens
+### M12 — Code actions
+
+> Promoted from the §6 "not doing (soon)" list (2026-09): thin while
+> diagnostics were syntax-level only, now that M6 ships include diagnostics the
+> two quick fixes below are cheap and high-value.
+
+`textDocument/codeAction` returns fixes keyed off the published diagnostics
+(`codeActionProvider = { codeActionKinds: ["quickfix"] }`); each fix is a
+single-file `WorkspaceEdit` whose application clears the diagnostic on the next
+publish.
+
+- **Insert missing `#include`** — for the M6 `include-not-found` diagnostic:
+  insert the missing `#include "literal"` line at the top of the file (the
+  literal is already known from the include edge).
+- **Insert `END` block closer** — for parse diagnostics where a block opener
+  lacks its closer: propose the exact closer per the `language.cpp` closer
+  facts (`END SUB`, `NEXT`, `WEND`, `END IF`, …) inserted at the block end
+  (from `blockRanges`).
+- Files: `src/code_actions.{h,cpp}`, `session.{h,cpp}`, tests
+  (`session_integration`).
+- Acceptance: each quick fix applies its edit and clears the diagnostic on
+  re-parse; unrelated diagnostics offer no (code-action) fixes; `ctest` green.
+
+### M13 — Editor extras: selectionRange, callHierarchy, codeLens
 
 Three independently useful features; all build on the M7 closure/occurrence
 primitives, none touches the language model.
@@ -470,7 +494,7 @@ primitives, none touches the language model.
   two-file fixture shows outgoing and incoming calls; a referenced procedure
   carries a "2 references" lens.
 
-### M13 — Pull diagnostics (backlog)
+### M14 — Pull diagnostics (backlog)
 
 `textDocument/diagnostic` + `workspace/diagnostic` + `workspace/diagnostic/refresh`
 (3.17) as a client-negotiated alternative to pushed `publishDiagnostics`
@@ -479,21 +503,21 @@ primitives, none touches the language model.
 `relatedDocument` reports. Push stays the default; only worth building if a
 target editor prefers pull.
 
-### M14 — Type/go-to + type hierarchy (backlog)
+### M15 — Type/go-to + type hierarchy (backlog)
 
 `typeDefinition`, `implementation`, and typeHierarchy need inheritance facts
 (`Type ... : base`, `Interface`, `Extends`) the parser does not emit yet. Land
 the parser edges first, then reuse `byKey` + closure — otherwise identical in
 shape and plumbing to M7.
 
-### M15 — Document links + completion resolve + polish (backlog)
+### M16 — Document links + completion resolve + polish (backlog)
 
 `documentLink` over keyword/wiki URLs (hover already carries them), optional
 `completionItem/resolve` once the M10 catalog makes items heavy, advertised
 `willSave`, `window/logMessage` + `$/progress`/`workDoneProgress` for long
 scans, and small telemetry. Individually tiny; bundle as one polish drop.
 
-### M16 — FreeBASIC formatter (backlog, scope TBD)
+### M17 — FreeBASIC formatter (backlog, scope TBD)
 
 There is no community formatter standard for FreeBASIC — the plan previously
 called that "low payback / don't do". Reconsidered: the absence of a standard
@@ -506,12 +530,13 @@ with the M5.5/6 file pipeline, format-on-type triggers) is deliberately
 unspecified here; it gets fleshed out as a dedicated design pass before
 implementation.
 
-### M17 — Public release: README, editor setup, CI
+### M18 — Public release: README, editor setup, CI
 
 > Moved out of M11 (2026-09): the user-facing and shipping artifacts land
-> after the configuration/workspace-folder and editor-extras milestones, at the
-> end of the near-term plan. The `.github/workflows/ci.yml` scaffold is already
-> committed; everything else here is new.
+> after the configuration/workspace-folder, code-action, and editor-extras
+> milestones, at the end of the near-term plan. The
+> `.github/workflows/ci.yml` scaffold is already committed; everything else
+> here is new.
 
 - `README.md`: build/test, capability table, position-encoding note, per-editor
   wiring (`docs/editors/` — neovim builtin LSP, minimal vscode client,
@@ -529,9 +554,6 @@ implementation.
 
 ## 6. Not doing (soon)
 
-- **Code actions** — thin while diagnostics are syntax-level only; revisit
-  once M6 adds include diagnostics (quick-fix candidates then: "insert missing
-  `#include`, `END` block closer").
 - **QB / fblite / deprecated dialects** — current behavior (best-effort `fb`
   parse + `lang-mode` Information diagnostic) degrades gracefully; full dialect
   semantics is niche.
@@ -539,16 +561,16 @@ implementation.
 - **Recorded non-starters** (never scheduled): `moniker`, `linkedEditingRange`,
   `documentColor`/`colorPresentation`, the deprecated `declaration` alias —
   exercises for editors we do not target.
-- **Scheduled but deferred** (each lives in §5 as a backlog milestone, M13–M16):
+- **Scheduled but deferred** (each lives in §5 as a backlog milestone, M14–M17):
   pull diagnostics, type/go-to + type hierarchy, document links + completion
-  resolve + protocol polish, and the FreeBASIC formatter (M16; high-payback —
+  resolve + protocol polish, and the FreeBASIC formatter (M17; high-payback —
   sets the de-facto standard, scope TBD by a dedicated design pass).
 
 ## 7. Cross-cutting engineering notes
 
 - **Concurrency (implemented as-is):** LspCpp handler pool runs requests
   concurrently; the index is snapshot-based and mutex-guarded, responses build
-  lock-free. New M5.5–M17 handlers must follow the same snapshot discipline
+  lock-free. New M5.5–M18 handlers must follow the same snapshot discipline
   (shared_ptr copies only).
 - **Per-milestone acceptance:** `cmake --build` + `ctest` green, milestone
   deliverable complete, commit on `main`, push only on request.
