@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +22,12 @@ namespace {
 // Words per TextMate keyword alternation / vim `syn keyword` group. Keeps each
 // Oniguruma pattern well under any practical length limit.
 constexpr std::size_t kWordGroupSize = 150;
+
+// Control characters (below ASCII space) are emitted as `\u00xx` escapes. The
+// escape is exactly 6 chars plus the NUL terminator, which an 8-byte buffer
+// always fits.
+constexpr unsigned char kControlCharLimit = 0x20;
+constexpr std::size_t kUnicodeEscapeBufSize = 8;
 
 std::string jsonEscape(std::string_view s) {
   std::string out;
@@ -44,10 +51,16 @@ std::string jsonEscape(std::string_view s) {
       out += "\\t";
       break;
     default:
-      if (c < 0x20) {
-        char buf[8];
-        std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-        out += buf;
+      if (c < kControlCharLimit) {
+        // snprintf's result is checked and used so a failure can never
+        // silently emit a truncated escape; truncation also cannot occur
+        // for this fixed format at this range.
+        char buf[kUnicodeEscapeBufSize];
+        int const written = std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+        if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(buf)) {
+          std::abort();
+        }
+        out.append(buf, static_cast<std::size_t>(written));
       } else {
         out.push_back(static_cast<char>(c));
       }
@@ -117,11 +130,13 @@ std::string validateJson(std::string const &json) {
   rapidjson::Document doc;
   doc.Parse(json.c_str());
   if (doc.HasParseError()) {
-    std::fprintf(stderr,
-                 "grammar_emitter: emitted TextMate JSON does not parse: %s "
-                 "(offset %zu)\n",
-                 rapidjson::GetParseError_En(doc.GetParseError()),
-                 static_cast<std::size_t>(doc.GetErrorOffset()));
+    // The emitted grammar must always parse; a parse failure is a hard emitter
+    // bug and is fatal. The diagnostic goes through std::cerr rather than
+    // fprintf so there is no return value to disregard on a path that can
+    // only end in abort() anyway.
+    std::cerr << "grammar_emitter: emitted TextMate JSON does not parse: "
+              << rapidjson::GetParseError_En(doc.GetParseError()) << " (offset "
+              << doc.GetErrorOffset() << ")\n";
     std::abort();
   }
   return json;
