@@ -22,12 +22,13 @@ remaining work.
 | M8 — `prepareRename` + `rename` (workspace) | done |
 | M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
 | M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
-| M11 — README / editor setup, CI, configuration, workspace folders | next |
+| M11 — configuration + workspace folders | next |
 | M12 — editor extras: selectionRange, callHierarchy, codeLens | next |
 | M13 — pull diagnostics (backlog) | next |
 | M14 — type/go-to + type hierarchy (backlog) | next |
 | M15 — document links + completion resolve + polish (backlog) | next |
 | M16 — FreeBASIC formatter (backlog, scope TBD) | next |
+| M17 — public release: README / editor setup, CI (moved from M11) | next |
 
 ## 2. What exists (condensed)
 
@@ -393,7 +394,7 @@ parser sees.
   no unclassified tokens; block opener offers its closer hint; `ctest` green.
 - Risk: token-type string spellings must match the 3.17 legend exactly;
   delta-encoding correctness (mitigate: full first, delta second); the grammar is
-  easy to let rot — M11 CI regenerates it from the catalog so a catalog edit
+  easy to let rot — M17 CI regenerates it from the catalog so a catalog edit
   cannot ship without a matching grammar update.
 
 ### M10 — Intrinsic catalog + request-side parse cache
@@ -426,30 +427,27 @@ parser sees.
   wiki link; two sequential requests on an unchanged buffer served from the
   same cached parse (identical result, no reparse observable).
 
-### M11 — README / editor setup, CI, configuration, workspace folders
+### M11 — Configuration + workspace folders
 
-- `README.md`: build/test, capability table, position-encoding note, per-editor
-  wiring (`docs/editors/` — neovim builtin LSP, minimal vscode client,
-  emacs `lsp-mode`). Each wiring doc installs the M9 grammar (`editors/`) and
-  turns on semantic tokens.
-- `.github/workflows/ci.yml`: **scaffolded** — build + `ctest` on a
-  Linux/macOS/Windows matrix (`checkout --recurse-submodules`); not enabled
-  until the repo is pushed. Expect to fix Windows path handling in
-  `index.cpp` defaults and any MSVC/LspCpp issues once it runs.
-- `workspace/didChangeConfiguration` + `Settings{ includePaths,
-  diagnosticsOn, semanticTokensOn, inlayHintsOn }`; index honors `includePaths`
-  on rescan. Few keys, fixed defaults, forward-compatible unknown-key ignore.
-  Config-driven watcher changes ride M5.5's `client/registerCapability` path
-  (unregister old globs, register new).
-- Workspace folders: handle `workspace/didChangeWorkspaceFolders` — added
-  folders get their own `WorkspaceIndex` (keyed by normalized root), removed
-  ones close/scan-drop; single-root behavior stays the default. Server-side
+> Re-scoped (2026-09): the release-facing deliverables (README, editor setup,
+> CI) moved out to M17. M11 is now the server-configuration and multi-root
+> milestone; the public-release polish ships last, after the feature work.
+
+- **Configuration** — `workspace/didChangeConfiguration` + `Settings{
+  includePaths, diagnosticsOn, semanticTokensOn, inlayHintsOn }`; few keys,
+  fixed defaults, forward-compatible unknown-key ignore. The index honors
+  `includePaths` on rescan, wiring the per-workspace include-search seam §M6
+  already reserves. Config-driven watcher changes ride M5.5's
+  `client/registerCapability` path (unregister old globs, register new).
+- **Workspace folders** — `workspace/didChangeWorkspaceFolders`: added folders
+  get their own `WorkspaceIndex` (keyed by normalized root), removed ones
+  close/scan-drop; single-root behavior stays the default. Server-side
   settings apply per active folder.
-- Files: README, `.github/`, `src/settings.{h,cpp}`, `session.cpp`,
-  `index.{h,cpp}`, tests.
-- Acceptance: CI green on all three OSes; a `didChangeConfiguration` with a new
-  include path makes a previously-missing `#include` resolve; adding a folder
-  to the workspace makes its symbols answer `workspace/symbol`.
+- Files: `src/settings.{h,cpp}`, `session.{h,cpp}`, `index.{h,cpp}`, tests.
+- Acceptance: a `didChangeConfiguration` with a new include path makes a
+  previously-missing `#include` resolve on rescan; adding a folder to the
+  workspace makes its symbols answer `workspace/symbol` and removing one drops
+  them; single-root sessions behave exactly as before; `ctest` green.
 
 ### M12 — Editor extras: selectionRange, callHierarchy, codeLens
 
@@ -508,6 +506,27 @@ with the M5.5/6 file pipeline, format-on-type triggers) is deliberately
 unspecified here; it gets fleshed out as a dedicated design pass before
 implementation.
 
+### M17 — Public release: README, editor setup, CI
+
+> Moved out of M11 (2026-09): the user-facing and shipping artifacts land
+> after the configuration/workspace-folder and editor-extras milestones, at the
+> end of the near-term plan. The `.github/workflows/ci.yml` scaffold is already
+> committed; everything else here is new.
+
+- `README.md`: build/test, capability table, position-encoding note, per-editor
+  wiring (`docs/editors/` — neovim builtin LSP, minimal vscode client,
+  emacs `lsp-mode`). Each wiring doc installs the M9 grammar (`editors/`) and
+  turns on semantic tokens.
+- `.github/workflows/ci.yml`: build + `ctest` on a Linux/macOS/Windows matrix
+  (`checkout --recurse-submodules`); not enabled until the repo is pushed.
+  Expect to fix Windows path handling in `index.cpp` defaults and any
+  MSVC/LspCpp issues once it runs. The CI also regenerates the M9 grammar from
+  the catalog (the M9 freshness gate) so a catalog edit cannot ship without a
+  matching grammar update.
+- Files: `README.md`, `docs/editors/`, `.github/`.
+- Acceptance: README + wiring docs accurate end-to-end on all three editors;
+  CI green on Linux/macOS/Windows once the repo is pushed and enabled.
+
 ## 6. Not doing (soon)
 
 - **Code actions** — thin while diagnostics are syntax-level only; revisit
@@ -529,7 +548,7 @@ implementation.
 
 - **Concurrency (implemented as-is):** LspCpp handler pool runs requests
   concurrently; the index is snapshot-based and mutex-guarded, responses build
-  lock-free. New M5.5–M16 handlers must follow the same snapshot discipline
+  lock-free. New M5.5–M17 handlers must follow the same snapshot discipline
   (shared_ptr copies only).
 - **Per-milestone acceptance:** `cmake --build` + `ctest` green, milestone
   deliverable complete, commit on `main`, push only on request.

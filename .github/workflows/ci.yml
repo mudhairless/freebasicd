@@ -1,6 +1,6 @@
 name: CI
 
-# Scaffolded ahead of first run (M11). Not enabled until the repo is pushed
+# Scaffolded ahead of first run (M17). Not enabled until the repo is pushed
 # to GitHub; expect Windows/macOS fixes on the first real run.
 "on":
   push:
