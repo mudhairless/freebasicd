@@ -562,4 +562,301 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
   return out;
 }
 
+std::string declaredTypeName(Symbol const &decl) {
+  std::string_view const sig = decl.signature;
+  size_t i = 0;
+  while (i < sig.size()) {
+    while (i < sig.size() && (sig[i] == ' ' || sig[i] == '\t')) {
+      ++i;
+    }
+    size_t const wb = i;
+    while (i < sig.size() &&
+           ((sig[i] >= 'a' && sig[i] <= 'z') ||
+            (sig[i] >= 'A' && sig[i] <= 'Z') || sig[i] == '_' ||
+            (sig[i] >= '0' && sig[i] <= '9'))) {
+      ++i;
+    }
+    std::string_view const w = sig.substr(wb, i - wb);
+    if (toLowerChars(w) == "as") {
+      while (i < sig.size() && (sig[i] == ' ' || sig[i] == '\t')) {
+        ++i;
+      }
+      size_t const tb = i;
+      while (i < sig.size() &&
+             ((sig[i] >= 'a' && sig[i] <= 'z') ||
+              (sig[i] >= 'A' && sig[i] <= 'Z') || sig[i] == '_' ||
+              (sig[i] >= '0' && sig[i] <= '9'))) {
+        ++i;
+      }
+      std::string_view const t = sig.substr(tb, i - tb);
+      std::string const tl = toLowerChars(t);
+      // `as const integer x`, `as byref UDT x`: drop a leading type modifier
+      // so the type name itself is returned.
+      if (tl == "const" || tl == "byref" || tl == "byval" || tl == "shared" ||
+          tl == "static" || tl == "export") {
+        while (i < sig.size() && (sig[i] == ' ' || sig[i] == '\t')) {
+          ++i;
+        }
+        size_t const tb2 = i;
+        while (i < sig.size() &&
+               ((sig[i] >= 'a' && sig[i] <= 'z') ||
+                (sig[i] >= 'A' && sig[i] <= 'Z') || sig[i] == '_' ||
+                (sig[i] >= '0' && sig[i] <= '9'))) {
+          ++i;
+        }
+        if (tb2 < i) {
+          return std::string(sig.substr(tb2, i - tb2));
+        }
+      }
+      if (tb < i) {
+        return std::string(sig.substr(tb, i - tb));
+      }
+      return {};
+    }
+  }
+  return {};
+}
+
+Symbol const *findMember(Symbol const &typeDecl, std::string const &memberKey) {
+  for (Symbol const &c : typeDecl.children) {
+    if (!c.key.empty() && c.key == memberKey) {
+      return &c;
+    }
+  }
+  return nullptr;
+}
+
+namespace {
+
+// The Type/Union root of `roots` whose key equals `typeKey`, or nullptr.
+Symbol const *typeRootIn(std::vector<Symbol> const &roots,
+                         std::string const &typeKey) {
+  for (Symbol const &r : roots) {
+    if ((r.kind == SymbolKind::Type || r.kind == SymbolKind::Union) &&
+        !r.key.empty() && r.key == typeKey) {
+      return &r;
+    }
+  }
+  return nullptr;
+}
+
+// Identifier token at `off` and its index in `tokens`, or (nullptr, 0).
+std::pair<Token const *, size_t> tokenAndIndex(std::vector<Token> const &tokens,
+                                               std::uint32_t off) {
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    Token const &t = tokens[i];
+    if (t.kind == TokenKind::Identifier && t.beg <= off && off <= t.end) {
+      return {&t, i};
+    }
+  }
+  return {nullptr, 0};
+}
+
+// The `with`-target identifier of the innermost WITH block containing `off`,
+// or nullptr when no enclosing `with` exists or its target is not a plain
+// identifier.
+Token const *withTargetOf(ParseResult const &parse,
+                          std::vector<Token> const &tokens, std::uint32_t off) {
+  Symbol const *scope = innermostScope(parse, off);
+  while (scope != nullptr) {
+    if (scope->kind == SymbolKind::Scope && scope->name == "with") {
+      // `scope->range.beg` is the `with` keyword; the target is the first
+      // identifier on that line.
+      for (Token const &t : tokens) {
+        if (t.beg < scope->range.beg) {
+          continue;
+        }
+        if (t.kind == TokenKind::Identifier) {
+          return &t;
+        }
+        if (t.kind == TokenKind::Newline) {
+          return nullptr;
+        }
+      }
+      return nullptr;
+    }
+    scope = parentOf(parse, scope);
+  }
+  return nullptr;
+}
+
+} // namespace
+
+CrossDecl findTypeDecl(AnalyzedDoc const &doc,
+                       std::string const &normalizedPath,
+                       std::string const &typeKey,
+                       WorkspaceIndex const *index) {
+  if (Symbol const *const t = typeRootIn(doc.parse.roots, typeKey)) {
+    return CrossDecl{nullptr, t};
+  }
+  if (index == nullptr) {
+    return {};
+  }
+  for (std::string const &p : index->transitiveIncludes(normalizedPath)) {
+    std::shared_ptr<IndexedFile const> const file = index->fileAt(p);
+    if (!file) {
+      continue;
+    }
+    if (Symbol const *const t = typeRootIn(file->roots, typeKey)) {
+      return CrossDecl{file, t};
+    }
+  }
+  return {};
+}
+
+MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
+                                 std::string const &normalizedPath,
+                                 std::uint32_t off,
+                                 WorkspaceIndex const *index) {
+  MemberAccess out;
+  std::vector<Token> const &tokens = doc.tokens;
+
+  auto const hover = tokenAndIndex(tokens, off);
+  if (hover.first == nullptr || hover.second == 0) {
+    return out;
+  }
+  Token const &op = tokens[hover.second - 1];
+  if (op.kind != TokenKind::Symbol || (op.text() != "." && op.text() != "->")) {
+    return out;
+  }
+
+  // Collect the member chain, right to left. Each segment is an identifier
+  // token; the token between segments is the `.`/`->` operator. The chain
+  // either bottoms out at a plain variable identifier (`w.v1`) or at a
+  // leading `.` whose base is the enclosing `with` target (implicit).
+  struct Seg {
+    std::string name; // lowercased lookup key
+    size_t tokIdx = 0;
+  };
+  std::vector<Seg> segs;
+  bool implicit = false;
+  size_t i = hover.second;
+  for (;;) {
+    segs.push_back({toLowerChars(tokens[i].text()), i});
+    if (i == 0) {
+      break; // leftmost segment is a variable
+    }
+    Token const &beforeOp = tokens[i - 1];
+    if (beforeOp.kind != TokenKind::Symbol ||
+        (beforeOp.text() != "." && beforeOp.text() != "->")) {
+      break; // this segment is a plain variable; chain ends
+    }
+    if (i < 2) {
+      implicit = true; // leading `.member`
+      break;
+    }
+    Token const &lhs = tokens[i - 2];
+    if (lhs.kind == TokenKind::Identifier) {
+      i = i - 2; // `a.b.c`: keep walking
+      continue;
+    }
+    if (lhs.kind == TokenKind::Symbol &&
+        (lhs.text() == ")" || lhs.text() == "]")) {
+      // Indexed/called member: `.arr(i).field`. Hop over the call to the
+      // identifier that opens it.
+      int depth = 1;
+      size_t j = i - 2;
+      while (j > 0 && depth > 0) {
+        --j;
+        TokenKind const jk = tokens[j].kind;
+        if (jk == TokenKind::Symbol &&
+            (tokens[j].text() == ")" || tokens[j].text() == "]")) {
+          ++depth;
+        } else if (jk == TokenKind::Symbol &&
+                   (tokens[j].text() == "(" || tokens[j].text() == "[")) {
+          --depth;
+        }
+      }
+      if (j > 0 && tokens[j - 1].kind == TokenKind::Identifier) {
+        i = j - 1;
+        continue;
+      }
+      implicit = true;
+      break;
+    }
+    implicit = true; // `.member` after `=`, `(`, a keyword, ...
+    break;
+  }
+  std::reverse(segs.begin(), segs.end());
+  if (segs.empty()) {
+    return out;
+  }
+
+  // The chain root: either the with-target variable or the first identifier.
+  auto const resolveVar = [&](std::uint32_t voff) -> CrossDecl {
+    if (index != nullptr) {
+      return resolveAcross(doc, normalizedPath, voff, *index);
+    }
+    if (Symbol const *const d = resolveAt(doc, voff)) {
+      return CrossDecl{nullptr, d};
+    }
+    return {};
+  };
+
+  CrossDecl typeDecl;
+  size_t first = 0;
+  if (implicit) {
+    Token const *const target = withTargetOf(doc.parse, tokens, off);
+    if (target == nullptr) {
+      return out;
+    }
+    CrossDecl const base = resolveVar(target->beg);
+    if (base.decl == nullptr) {
+      return out;
+    }
+    std::string const tn = declaredTypeName(*base.decl);
+    if (tn.empty()) {
+      return out;
+    }
+    typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+    if (typeDecl.decl == nullptr) {
+      return out;
+    }
+    out.baseName = std::string(base.decl->name);
+  } else {
+    Seg const &root = segs.front();
+    CrossDecl const base = resolveVar(tokens[root.tokIdx].beg);
+    if (base.decl == nullptr) {
+      return out;
+    }
+    std::string const tn = declaredTypeName(*base.decl);
+    if (tn.empty()) {
+      return out;
+    }
+    typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+    if (typeDecl.decl == nullptr) {
+      return out;
+    }
+    out.baseName = std::string(base.decl->name);
+    first = 1;
+  }
+  if (first >= segs.size()) {
+    return out;
+  }
+
+  // Walk intermediate members so a chained access (`w.wallColor.a`) resolves
+  // through each declared type; the hovered member is the last segment.
+  for (size_t k = first; k + 1 < segs.size(); ++k) {
+    Symbol const *const m = findMember(*typeDecl.decl, segs[k].name);
+    if (m == nullptr) {
+      return out;
+    }
+    std::string const tn = declaredTypeName(*m);
+    if (tn.empty()) {
+      return out;
+    }
+    typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+    if (typeDecl.decl == nullptr) {
+      return out;
+    }
+  }
+  out.member = findMember(*typeDecl.decl, segs.back().name);
+  if (out.member == nullptr) {
+    return out;
+  }
+  out.ownerTypeName = std::string(typeDecl.decl->name);
+  out.direct = (first + 1 == segs.size());
+  return out;
+}
+
 } // namespace fblang

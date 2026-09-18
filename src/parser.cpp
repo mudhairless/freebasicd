@@ -324,18 +324,22 @@ private:
     }
   }
 
-  void skipStatement() {
+  void skipStatement(bool suppressMemberCapture = false) {
     bool captureMember = false;
+    bool inRecord = false; // inside a TYPE/UNION body: capture field members
     SymbolKind mk = SymbolKind::Variable;
-    if (!blocks_.empty()) {
+    if (!suppressMemberCapture && !blocks_.empty()) {
       BlockKind const bk = blocks_.back().kind;
       if (bk == BlockKind::Type || bk == BlockKind::Union) {
         captureMember = true;
+        inRecord = true;
       } else if (bk == BlockKind::Enum) {
         captureMember = true;
         mk = SymbolKind::Const;
       }
     }
+    Token const stmtStart = cur_;
+    int parenDepth = 0;
     for (;;) {
       TokenKind const k = cur_.kind;
       if (k == TokenKind::Newline || k == TokenKind::Eof ||
@@ -349,6 +353,32 @@ private:
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "bad-continuation",
                       "expected end of line after '_'");
       }
+      if (inRecord && k == TokenKind::Symbol && cur_.text() == "(") {
+        ++parenDepth;
+      } else if (inRecord && k == TokenKind::Symbol && cur_.text() == ")") {
+        if (parenDepth > 0) {
+          --parenDepth;
+        }
+      } else if (inRecord && k == TokenKind::Symbol && cur_.text() == "," &&
+                 parenDepth == 0) {
+        // `as integer a, b` declares a whole list of members on one line.
+        captureMember = true;
+      }
+      if (captureMember && k == TokenKind::Keyword &&
+          toLowerChars(cur_.text()) == "as") {
+        // Type-first member: `as <type> name`. Skip the type name (builtin
+        // keyword or user-defined type) so the *member* is captured, not the
+        // type — drd/temp/inc/world.bi's `as Wall walls(MAX_WALLS - 1)` used
+        // to register `wall`. The member's signature still covers the full
+        // line so the declared type survives for hover/resolve.
+        advance();
+        if (cur_.kind == TokenKind::Identifier ||
+            (cur_.kind == TokenKind::Keyword &&
+             isBuiltinType(toLowerChars(cur_.text())))) {
+          advance();
+        }
+        continue;
+      }
       if (captureMember && k == TokenKind::Identifier) {
         Symbol m;
         m.kind = mk;
@@ -356,6 +386,8 @@ private:
         m.key = toLowerChars(m.name);
         m.selection.beg = m.range.beg = cur_.beg;
         m.selection.end = m.range.end = cur_.end;
+        m.signature =
+            headerText(stmtStart); // full field line: carries the type
         m.doc = takeDoc();
         addSymbol(std::move(m));
         captureMember = false;
@@ -652,6 +684,16 @@ private:
         p.key = toLowerChars(p.name);
         p.selection.beg = p.range.beg = t.beg;
         p.selection.end = p.range.end = t.end;
+        // Signature carries the full parameter text (`byref map as map_struct`)
+        // so hover/member-access can recover the declared type.
+        std::string sig;
+        for (const Token &e : entry) {
+          if (!sig.empty()) {
+            sig += " ";
+          }
+          sig.append(e.text());
+        }
+        p.signature = std::move(sig);
         s.children.push_back(std::move(p));
         break;
       }
@@ -733,13 +775,17 @@ private:
     advance(); // past DECLARE
     if (cur_.kind != TokenKind::Keyword) {
       resetDoc();
-      skipStatement();
+      // A prototype line (`declare constructor(...)`, `declare operator...`)
+      // inside a TYPE body declares no fields; its parameter identifiers must
+      // not be captured as members (raymath.bi's Matrix/Vector2 declare their
+      // constructors before their fields).
+      skipStatement(/*suppressMemberCapture=*/true);
       return;
     }
     std::string const w = toLowerChars(cur_.text());
     if (w != "sub" && w != "function" && w != "property") {
       resetDoc();
-      skipStatement();
+      skipStatement(/*suppressMemberCapture=*/true);
       return;
     }
     Symbol s;

@@ -703,6 +703,129 @@ static void TestOccurrencesAcrossCrossFile() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+// Member access resolution (`.member`, `->`, `with`-implicit bases, chained
+// and indexed member chains) must resolve through the base variable's declared
+// type and land on the *field* declaration — never the enclosing procedure.
+static void TestMemberAccessResolution() {
+  std::string const src =
+      "type Wall\n"
+      "    as integer v1, v2\n"
+      "    as integer sectorID\n"
+      "end type\n"
+      "type Vector2\n"
+      "    as single x, y\n"
+      "end type\n"
+      "type Sector\n"
+      "    as single floorHeight\n"
+      "end type\n"
+      "type Map\n"
+      "    as Vector2 vertices(10)\n"
+      "    as Wall walls(10)\n"
+      "    as Sector sectors(10)\n"
+      "end type\n"
+      "sub run(byref map as Map, secIndex as integer)\n"
+      "    with map\n"
+      "        dim as Wall w = .walls(secIndex)\n"
+      "        dim as Vector2 v1 = .vertices(w.v1)\n"
+      "        dim as single f = .sectors(secIndex).floorHeight\n"
+      "        dim as single g = w.v1\n"
+      "        dim as single h = v1.x\n"
+      "        if .walls(secIndex).sectorID <> 0 then\n"
+      "        end if\n"
+      "    end with\n"
+      "end sub\n";
+  AnalyzedDoc const doc = analyze(src);
+
+  // `.walls` in a `with` block: the leading dot is the with-target base.
+  std::uint32_t const wallsOff =
+      static_cast<std::uint32_t>(src.find("w = .walls") + 6);
+  MemberAccess const walls =
+      resolveMemberAccess(doc, "x.bas", wallsOff, nullptr);
+  CHECK_MSG(walls.member != nullptr && walls.member->key == "walls",
+            "`.walls` resolves to the Map field");
+  CHECK_MSG(walls.member != nullptr &&
+                walls.member->signature == "as Wall walls(10)",
+            "the field's signature carries its declaration line");
+  CHECK_MSG(walls.baseName == "map" && walls.ownerTypeName == "Map",
+            "`with`-implicit member reports the with-target and its type");
+  CHECK_MSG(walls.direct, "a first-level member is direct");
+
+  // `.vertices` behaves identically.
+  std::uint32_t const vertsOff =
+      static_cast<std::uint32_t>(src.find(".vertices") + 1);
+  MemberAccess const verts =
+      resolveMemberAccess(doc, "x.bas", vertsOff, nullptr);
+  CHECK_MSG(verts.member != nullptr && verts.member->key == "vertices" &&
+                verts.baseName == "map" && verts.ownerTypeName == "Map",
+            "`.vertices` resolves through the with-target");
+
+  // `w.v1`: base is a plain variable.
+  std::uint32_t const v1Off = static_cast<std::uint32_t>(src.find("w.v1") + 2);
+  MemberAccess const v1 = resolveMemberAccess(doc, "x.bas", v1Off, nullptr);
+  CHECK_MSG(v1.member != nullptr && v1.member->key == "v1" &&
+                v1.baseName == "w" && v1.ownerTypeName == "Wall" && v1.direct,
+            "`w.v1` resolves through the local Wall variable");
+
+  // `.sectors(secIndex).floorHeight`: indexed member access, element type
+  // drives the next lookup, so the member lands on Sector (not on the map).
+  std::uint32_t const floorOff =
+      static_cast<std::uint32_t>(src.find(".floorHeight") + 1);
+  MemberAccess const floor =
+      resolveMemberAccess(doc, "x.bas", floorOff, nullptr);
+  CHECK_MSG(floor.member != nullptr && floor.member->key == "floorheight" &&
+                floor.ownerTypeName == "Sector" && !floor.direct,
+            "`.sectors(i).floorHeight` lands on the Sector field");
+  CHECK_MSG(floor.baseName == "map",
+            "the chain still reports the root with-target");
+
+  // `.walls(secIndex).sectorID`: second member of an indexed chain.
+  std::uint32_t const sectorIDOff =
+      static_cast<std::uint32_t>(src.find(".sectorID") + 1);
+  MemberAccess const sid =
+      resolveMemberAccess(doc, "x.bas", sectorIDOff, nullptr);
+  CHECK_MSG(sid.member != nullptr && sid.member->key == "sectorid" &&
+                sid.ownerTypeName == "Wall" && !sid.direct,
+            "`.walls(i).sectorID` lands on the Wall field");
+
+  // `v1.x`: chained through the intermediate Vector2 variable.
+  std::uint32_t const xOff = static_cast<std::uint32_t>(src.find("v1.x") + 3);
+  MemberAccess const x = resolveMemberAccess(doc, "x.bas", xOff, nullptr);
+  CHECK_MSG(x.member != nullptr && x.member->key == "x" && x.baseName == "v1" &&
+                x.ownerTypeName == "Vector2" && x.direct,
+            "`v1.x` resolves through the Vector2 variable");
+
+  // Non-member positions resolve to nothing: the variable itself and an
+  // argument inside an index.
+  std::uint32_t const wOff =
+      static_cast<std::uint32_t>(src.find("Wall w =") + 5); // the `w`
+  CHECK_MSG(resolveMemberAccess(doc, "x.bas", wOff, nullptr).member == nullptr,
+            "a plain variable position is not a member access");
+  std::uint32_t const idxArg =
+      static_cast<std::uint32_t>(src.find("(secIndex)") + 1); // the arg
+  CHECK_MSG(resolveMemberAccess(doc, "x.bas", idxArg, nullptr).member ==
+                nullptr,
+            "an identifier inside an index is not a member access");
+
+  // declaredTypeName: the word after the first `as`, for Dims and params.
+  Symbol const *wDecl =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("Wall w =") + 5));
+  CHECK_MSG(wDecl != nullptr && declaredTypeName(*wDecl) == "Wall",
+            "Dim type recovery");
+  Symbol const *mapParam =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("byref map") + 6));
+  CHECK_MSG(mapParam != nullptr && declaredTypeName(*mapParam) == "Map",
+            "parameter type recovery from the signature");
+
+  // findTypeDecl (in-file) + findMember: key match walks the fields, a
+  // missing member returns nullptr.
+  CrossDecl const mapType = findTypeDecl(doc, "x.bas", "map", nullptr);
+  CHECK_MSG(mapType.decl != nullptr,
+            "findTypeDecl finds the Map type in the requesting doc");
+  CHECK_MSG(findMember(*mapType.decl, "walls") != nullptr &&
+                findMember(*mapType.decl, "nope") == nullptr,
+            "findMember matches by key only");
+}
+
 int main() {
   TestScopingResolvesCorrectly();
   TestUnknownAndNonIdentifiersResolveNull();
@@ -714,6 +837,7 @@ int main() {
   TestStorageGate();
   TestBlockScopesShadowAndDie();
   TestForCounterIsLoopLocal();
+  TestMemberAccessResolution();
   TestStorageGateInControlBlocks();
   TestOccurrencesAcrossSingleFile();
   TestOccurrencesAcrossCrossFile();

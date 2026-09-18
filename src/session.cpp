@@ -945,6 +945,34 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
     }
   };
 
+  // Member access (`.` / `->`): hover shows the field declaration, not the
+  // enclosing procedure. `expr.member` resolves through the base variable's
+  // declared type (across the include closure) and each intermediate member's
+  // own declared type for chained access (`.sectors(i).floorHeight`).
+  fblang::MemberAccess const access =
+      fblang::resolveMemberAccess(doc, normPath, offset, index_.get());
+  if (access.member != nullptr) {
+    std::string markdown;
+    if (!access.member->signature.empty()) {
+      markdown = "```basic\n" + access.member->signature + "\n```";
+    } else {
+      markdown = "`" + access.member->name + "`";
+    }
+    if (access.direct && !access.baseName.empty()) {
+      markdown += "\n\nMember of `" + access.baseName + "` (`" +
+                  access.ownerTypeName + "`).";
+    } else {
+      markdown += "\n\nMember of `" + access.ownerTypeName + "`.";
+    }
+    if (!access.member->doc.empty()) {
+      markdown += "\n\n---\n" + access.member->doc;
+    }
+    rsp.result.contents.second.emplace(
+        MarkupContent{std::string("markdown"), std::move(markdown)});
+    setRange(tokRange);
+    return rsp;
+  }
+
   // Hover on a variable *usage* shows the declaration it resolves to: a use
   // must show the declaring Dim/Const/Param, not the enclosing symbol.
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);

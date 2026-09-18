@@ -252,6 +252,50 @@ char const *kModuleDimHoverFrame =
     R"FB({"jsonrpc":"2.0","id":"hvm","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":0}}})FB";
 
+// Member-access hover (the reported regression): a WITH + inline UDT
+// document mirroring drd/temp's world.bi/engine.bas shape. Hovering
+// `.walls`, `.sectors(i).floorHeight` or `w.v1` must show the *field*
+// declaration and its owning variable/type — never the enclosing sub.
+char const kDidOpenMemberHoverFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/hovmem.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"type Wall\n)FB"
+    R"FB(    as integer v1, v2\n)FB"
+    R"FB(end type\n)FB"
+    R"FB(type Vector2\n)FB"
+    R"FB(    as single x, y\n)FB"
+    R"FB(end type\n)FB"
+    R"FB(type Sector\n)FB"
+    R"FB(    as single floorHeight\n)FB"
+    R"FB(end type\n)FB"
+    R"FB(type Map\n)FB"
+    R"FB(    as Vector2 vertices(10)\n)FB"
+    R"FB(    as Wall walls(10)\n)FB"
+    R"FB(    as Sector sectors(10)\n)FB"
+    R"FB(end type\n)FB"
+    R"FB(sub run(map as Map, secIndex as integer)\n)FB"
+    R"FB(    with map\n)FB"
+    R"FB(        dim as Wall w = .walls(secIndex)\n)FB"
+    R"FB(        dim as single f = .sectors(secIndex).floorHeight\n)FB"
+    R"FB(        dim as single g = w.v1\n)FB"
+    R"FB(    end with\n)FB"
+    R"FB(end sub\n"}}})FB";
+
+// Hover the `walls` member of the with-target (line 16, char 26).
+char const *kMemberHoverWallFrame =
+    R"FB({"jsonrpc":"2.0","id":"hmm","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovmem.bas"},"position":{"line":16,"character":26}}})FB";
+
+// Hover `floorHeight` through the indexed chain (line 17, char 50).
+char const *kMemberHoverFloorFrame =
+    R"FB({"jsonrpc":"2.0","id":"hmf","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovmem.bas"},"position":{"line":17,"character":50}}})FB";
+
+// Hover `v1` of the plain local variable (line 18, char 29).
+char const *kMemberHoverLocalFrame =
+    R"FB({"jsonrpc":"2.0","id":"hml","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovmem.bas"},"position":{"line":18,"character":29}}})FB";
+
 char const *kFoldingRangeFrame =
     R"FB({"jsonrpc":"2.0","id":"fold","method":"textDocument/foldingRange","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"}}})FB";
@@ -662,6 +706,56 @@ void TestHoverResolvesUsageToDeclaration() {
       WaitForOutputContaining(output, "\"id\":\"hvm\"");
   Expect(moduleHover.find("Module-level variable") != std::string::npos,
          "hover on a module-level usage must label it module-level");
+
+  session.stop();
+}
+
+void TestHoverShowsMemberAccess() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenMemberHoverFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  // `.walls` — the reported regression: the member of the with-target, not
+  // the enclosing sub's signature.
+  input->append(MakeLspFrame(kMemberHoverWallFrame));
+  std::string const wallHover =
+      WaitForOutputContaining(output, "\"id\":\"hmm\"");
+  Expect(wallHover.find("\"id\":\"hmm\"") != std::string::npos,
+         "member hover request must receive a response");
+  Expect(wallHover.find("as Wall walls(10)") != std::string::npos,
+         "member hover shows the field's declaration line (type + name)");
+  Expect(wallHover.find("Member of `map` (`Map`).") != std::string::npos,
+         "a with-implicit member names the with-target variable and its type");
+  Expect(wallHover.find("sub run(") == std::string::npos,
+         "member hover must never fall back to the enclosing sub signature");
+
+  // `.sectors(secIndex).floorHeight` — indexed chain lands on the element
+  // type, so the owning type is Sector, not Map.
+  input->append(MakeLspFrame(kMemberHoverFloorFrame));
+  std::string const floorHover =
+      WaitForOutputContaining(output, "\"id\":\"hmf\"");
+  Expect(floorHover.find("as single floorHeight") != std::string::npos,
+         "chained member hover shows the leaf field's declaration");
+  Expect(floorHover.find("Member of `Sector`.") != std::string::npos,
+         "a deep member names its owning type (indexed element type)");
+
+  // `w.v1` — plain local variable base names the variable and its type.
+  input->append(MakeLspFrame(kMemberHoverLocalFrame));
+  std::string const localHover =
+      WaitForOutputContaining(output, "\"id\":\"hml\"");
+  Expect(localHover.find("as integer v1, v2") != std::string::npos,
+         "member hover shows the whole field list of the declaration line");
+  Expect(localHover.find("Member of `w` (`Wall`).") != std::string::npos,
+         "a variable member names the base variable and its type");
 
   session.stop();
 }
@@ -2465,6 +2559,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestDocumentSymbolsReturnHierarchy);
   RUN_TEST(TestHoverShowsSignatureAndDoc);
   RUN_TEST(TestHoverResolvesUsageToDeclaration);
+  RUN_TEST(TestHoverShowsMemberAccess);
   RUN_TEST(TestFoldingRangesReturned);
   RUN_TEST(TestDefinitionResolvesToDeclaration);
   RUN_TEST(TestReferencesListAllSites);

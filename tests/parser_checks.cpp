@@ -455,7 +455,53 @@ int main() {
     CHECK(r.diagnostics.empty());
   }
 
-  // A declaration-list comma at paren depth 0 still splits: `DIM a = 1, b = 2`
+  // TYPE members are captured as the declared *member* names, never the type
+  // names: `as Wall walls(MAX_WALLS - 1)` registers `walls`, comma lists
+  // register every member, and each member's signature carries its full
+  // declaration line so the declared type survives for hover/resolve.
+  // Prototype lines (`declare constructor(...)`, as raymath.bi uses) declare
+  // no fields, so their parameter/name identifiers register nothing.
+  {
+    ParseResult r = parseDocument("type Vec\n"
+                                  "    x as single\n"
+                                  "    as Wall walls(10)\n"
+                                  "    as integer a, b\n"
+                                  "    declare constructor(x as single, "
+                                  "y as single)\n"
+                                  "    declare sub Init()\n"
+                                  "end type\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *vec = find(r.roots, "vec", SymbolKind::Type);
+    CHECK(vec != nullptr);
+    const Symbol *x = find(vec->children, "x", SymbolKind::Variable);
+    CHECK(x != nullptr && x->signature == "x as single");
+    const Symbol *walls = find(vec->children, "walls", SymbolKind::Variable);
+    CHECK(walls != nullptr && walls->signature == "as Wall walls(10)");
+    const Symbol *a = find(vec->children, "a", SymbolKind::Variable);
+    const Symbol *b = find(vec->children, "b", SymbolKind::Variable);
+    CHECK(a != nullptr && b != nullptr);
+    CHECK(a->signature == "as integer a, b");
+    // The type name and the declare prototypes must not leak into the fields.
+    CHECK(find(vec->children, "wall", SymbolKind::Variable) == nullptr);
+    CHECK(find(vec->children, "x", SymbolKind::Const) == nullptr);
+    CHECK(vec->children.size() == 5); // 4 fields + the declared Sub prototype
+    CHECK(find(vec->children, "init", SymbolKind::Sub) != nullptr);
+  }
+
+  // Parameters carry their full declaration text (modifiers + type) so
+  // member-access resolution can recover the declared type of a base variable.
+  {
+    ParseResult r =
+        parseDocument("sub s(byref map as Map, secIndex as integer)\n"
+                      "end sub\n");
+    const Symbol *s = find(r.roots, "s", SymbolKind::Sub);
+    CHECK(s != nullptr);
+    const Symbol *map = find(s->children, "map", SymbolKind::Parameter);
+    CHECK(map != nullptr);
+    CHECK(map->signature == "byref map as Map");
+    const Symbol *si = find(s->children, "secindex", SymbolKind::Parameter);
+    CHECK(si != nullptr && si->signature == "secIndex as integer");
+  }
   // declares both, and a multi-dim array `DIM grid(0 to 5, 0 to 5)` never
   // splits on the comma inside its bounds.
   {

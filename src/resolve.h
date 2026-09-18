@@ -106,6 +106,47 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
                         std::string const &normalizedPath, std::uint32_t off,
                         WorkspaceIndex const &index);
 
+// --- Member access (M9) ---
+
+// The declared type name of `decl`, recovered from its signature line (the
+// word after the first `as`, skipping `const`/`byref`-style modifiers), or
+// empty when the declaration carries no explicit type (`dim v = expr`).
+std::string declaredTypeName(Symbol const &decl);
+
+// The member of a Type/Union declaration whose key equals `memberKey`
+// (lowercased name including suffix char), or nullptr.
+Symbol const *findMember(Symbol const &typeDecl, std::string const &memberKey);
+
+// Cross-file lookup of a Type/Union declaration by key: the requesting doc's
+// roots first (tier 1), then each file of the index's transitive include
+// closure of `normalizedPath` in textual pre-order. `index == nullptr`
+// restricts the search to the requesting doc.
+CrossDecl findTypeDecl(AnalyzedDoc const &doc,
+                       std::string const &normalizedPath,
+                       std::string const &typeKey, WorkspaceIndex const *index);
+
+// Result of resolving a `.`/`->` member access under the cursor.
+struct MemberAccess {
+  Symbol const *member = nullptr; // the field declaration found, or nullptr
+  std::string baseName;      // root variable (`with` target or lhs identifier),
+                             // for "member of `map`" display; empty for chained
+                             // access whose owner is a plain type
+  std::string ownerTypeName; // display name of the type that owns `member`
+  bool direct = false; // `member` hangs directly off `baseName`'s declared type
+};
+
+// Resolves `expr.member` at `off`, where `off` may sit anywhere on the member
+// identifier. Handles the implicit `with`-target base (`with map`: a leading
+// `.member`), `var.member`, chained `a.b.c`, and indexed member access
+// (`.arr(i).field` — the declared element type drives the next lookup).
+// `index == nullptr` restricts base-variable resolution to the requesting doc
+// (the with-scope scan is always in-file). Returns an empty MemberAccess when
+// `off` is not a member access or any link of the chain fails to resolve.
+MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
+                                 std::string const &normalizedPath,
+                                 std::uint32_t off,
+                                 WorkspaceIndex const *index);
+
 // --- Cross-file rename support (M8) ---
 
 // A single rename site: the file and byte range to replace.

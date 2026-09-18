@@ -2,7 +2,7 @@
 
 ## 1. State summary
 
-Repository `main`, clean working tree, `ctest` 7/7 green. LspCpp (vendored,
+Repository `main`, clean working tree, `ctest` 12/12 green. LspCpp (vendored,
 pinned `19150d12`) supplies framing/JSON-RPC/typed 3.17 messages; the language
 layer is LSP-agnostic and byte-offset based. Full language reference (keyword
 catalog, block closers verified against fbc 1.10.2, dialect and scope rules)
@@ -13,7 +13,7 @@ remaining work.
 |-----------|--------|
 | M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
 | M2 — Lexer + parser language layer, dialects, fbc corpus | done |
-| M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done |
+| M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done (2026-09: hover resolves member access `.`/`->` through the base variable's declared type — cross-file, `with`-implicit, and indexed/chained — instead of falling back to the enclosing routine) |
 | M4 — persistent workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an **in-memory-only** index — no on-disk cache) |
 | M5 — workspace spine: occurrence projection + include graph | done |
 | M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
@@ -51,7 +51,9 @@ stable shape:
 - `src/symbols.h` — shared model: `Symbol`, `SymbolKind`, `Diagnostic`,
   `ParseResult`, `SourceRange` (byte offsets), `toLowerChars`.
 - `src/resolve.{h,cpp}` — same-file resolution: `resolveAt`, `occurrencesOf`,
-  `visibleSymbols`, `innermostScope`, `parentOf`.
+  `visibleSymbols`, `innermostScope`, `parentOf`, and the cross-file member
+  chain: `declaredTypeName`, `findMember`, `findTypeDecl`,
+  `resolveMemberAccess` (`.`/`->`, `with`-implicit, indexed/chained).
 - `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index, purely
   in memory (nothing is ever written to disk), background scan + debounced
   watched-files rescan threads, immutable `IndexedFile` entries + snapshot
@@ -64,7 +66,8 @@ stable shape:
 
 Implemented LSP methods: `initialize`/`shutdown`/`exit`, `didOpen`/`didChange`/
 `didSave`/`didClose`, `publishDiagnostics`, `documentSymbol`, `hover` (symbols +
-intrinsic signatures + keyword wiki links), `foldingRange`, `definition`,
+member access + intrinsic signatures + keyword wiki links), `foldingRange`,
+`definition`,
 `references`, `documentHighlight`, `completion` (keywords + `END`-block
 snippets + in-scope symbols + intrinsic catalog), `signatureHelp` (user
 declarations and built-in functions), `workspace/symbol`, `prepareRename`,
