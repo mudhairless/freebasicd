@@ -215,6 +215,38 @@ char const *kHoverOnBodyFrame =
     R"FB({"jsonrpc":"2.0","id":"hov2","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"},"position":{"line":5,"character":4}}})FB";
 
+// A WITH + FOR + IF document mirroring drd/temp/src/engine.bas: a block-local
+// `v1` used inside a `type(...)` initializer. Hovering the *usage* must show
+// v1's declaration, not the enclosing block.
+char const kDidOpenHoverUsageFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/hovuse.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"sub ProcessSectorPhysics(map as map_struct, secIndex as integer)\n)FB"
+    R"FB(    with map\n)FB"
+    R"FB(        for i as integer = 0 to 3\n)FB"
+    R"FB(            dim as Vector2 v1 = .vertices(i)\n)FB"
+    R"FB(            if v1.x <> 0 then\n)FB"
+    R"FB(                dim as Vector3 b = type(v1.x, .sectors(secIndex).floorHeight, v1.y)\n)FB"
+    R"FB(            end if\n)FB"
+    R"FB(        next i\n)FB"
+    R"FB(    end with\n)FB"
+    R"FB(end sub\n"}}})FB";
+
+// Hover the `v1` usage inside the `type(...)` initializer (line 5, char 40).
+char const *kHoverUsageFrame =
+    R"FB({"jsonrpc":"2.0","id":"hvu","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovuse.bas"},"position":{"line":5,"character":40}}})FB";
+
+// Hover the `v1` declaration itself (line 3, char 27).
+char const *kHoverDeclFrame =
+    R"FB({"jsonrpc":"2.0","id":"hvd","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovuse.bas"},"position":{"line":3,"character":27}}})FB";
+
+// Hover a module-level Dim usage (resolve.bas line 1, char 0 = `counter`).
+char const *kModuleDimHoverFrame =
+    R"FB({"jsonrpc":"2.0","id":"hvm","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":0}}})FB";
+
 char const *kFoldingRangeFrame =
     R"FB({"jsonrpc":"2.0","id":"fold","method":"textDocument/foldingRange","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"}}})FB";
@@ -568,6 +600,54 @@ void TestHoverShowsSignatureAndDoc() {
       WaitForOutputContaining(output, "\"id\":\"hov2\"");
   Expect(bodyHover.find("function clamp(v as integer") != std::string::npos,
          "hover anywhere inside a function must resolve to that function");
+
+  session.stop();
+}
+
+void TestHoverResolvesUsageToDeclaration() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenHoverUsageFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kHoverUsageFrame));
+  std::string const usageHover =
+      WaitForOutputContaining(output, "\"id\":\"hvu\"");
+  Expect(usageHover.find("\"id\":\"hvu\"") != std::string::npos,
+         "usage hover request must receive a response");
+  Expect(usageHover.find("dim as Vector2 v1 = .vertices(i)") !=
+             std::string::npos,
+         "hover on a usage must show the declaring Dim with its type and "
+         "initializer");
+  Expect(usageHover.find("Local variable in Sub `ProcessSectorPhysics`, "
+                         "inside the `for` block.") != std::string::npos,
+         "hover must describe the variable's kind and the block it lives in");
+  Expect(usageHover.find("`if`") == std::string::npos,
+         "hover must never surface a scope-block node as the symbol");
+
+  input->append(MakeLspFrame(kHoverDeclFrame));
+  std::string const declHover =
+      WaitForOutputContaining(output, "\"id\":\"hvd\"");
+  Expect(declHover.find("dim as Vector2 v1 = .vertices(i)") !=
+             std::string::npos,
+         "hover on the declaration itself must show the same symbol info");
+
+  input->append(MakeLspFrame(kDidOpenResolveFrame));
+  Expect(WaitForPublishedUri(output, 2).empty() == false,
+         "second didOpen must publish diagnostics");
+  input->append(MakeLspFrame(kModuleDimHoverFrame));
+  std::string const moduleHover =
+      WaitForOutputContaining(output, "\"id\":\"hvm\"");
+  Expect(moduleHover.find("Module-level variable") != std::string::npos,
+         "hover on a module-level usage must label it module-level");
 
   session.stop();
 }
@@ -2370,6 +2450,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestDiagnosticsRespectDeclarationScopes);
   RUN_TEST(TestDocumentSymbolsReturnHierarchy);
   RUN_TEST(TestHoverShowsSignatureAndDoc);
+  RUN_TEST(TestHoverResolvesUsageToDeclaration);
   RUN_TEST(TestFoldingRangesReturned);
   RUN_TEST(TestDefinitionResolvesToDeclaration);
   RUN_TEST(TestReferencesListAllSites);

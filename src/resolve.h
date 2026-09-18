@@ -78,6 +78,9 @@ bool insideProcedureBody(ParseResult const &parse, Symbol const *siteScope);
 // children of their Enum root — use this to tell an enum member from a
 // statement-level Const (semantic token classification).
 Symbol const *parentOf(ParseResult const &parse, Symbol const *node);
+// Overload over a bare root list: cross-file resolution may land on a decl
+// owned by an IndexedFile's roots (workspace snapshot, no ParseResult).
+Symbol const *parentOf(std::vector<Symbol> const &roots, Symbol const *node);
 
 // Where a cross-file resolution landed. `file == nullptr` means `decl` points
 // into the request-local `AnalyzedDoc` (tier 1); otherwise `file` pins the

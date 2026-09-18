@@ -316,10 +316,19 @@ void collectIncludes(std::string_view source, std::vector<Token> const &tokens,
 
 } // namespace
 
-// Exported (resolve.h): parent of `node` in the parse symbol tree. Uses the
-// file-local findParent above.
+// Exported (resolve.h): parent of `node` in the parse symbol tree (the
+// declaration block or module root owning it), or nullptr for a file root.
+// Enum members are Const children of their Enum root — use this to tell an
+// enum member from a statement-level Const (semantic token classification).
 Symbol const *parentOf(ParseResult const &parse, Symbol const *node) {
-  for (auto const &root : parse.roots) {
+  return parentOf(parse.roots, node);
+}
+
+// Overload over a bare root list: cross-file resolution may land on a decl
+// owned by an IndexedFile (workspace snapshot), which stores roots without a
+// ParseResult wrapper.
+Symbol const *parentOf(std::vector<Symbol> const &roots, Symbol const *node) {
+  for (auto const &root : roots) {
     if (Symbol const *p = findParent(root, node)) {
       return p;
     }

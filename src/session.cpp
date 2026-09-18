@@ -299,6 +299,116 @@ bool isWordChar(char c) {
          (c >= '0' && c <= '9') || c == '_' || fblang::isSuffixChar(c);
 }
 
+bool isProcKind(fblang::SymbolKind kind) {
+  switch (kind) {
+  case fblang::SymbolKind::Sub:
+  case fblang::SymbolKind::Function:
+  case fblang::SymbolKind::Property:
+  case fblang::SymbolKind::Constructor:
+  case fblang::SymbolKind::Destructor:
+  case fblang::SymbolKind::Operator:
+    return true;
+  default:
+    return false;
+  }
+}
+
+char const *procKindName(fblang::SymbolKind kind) {
+  switch (kind) {
+  case fblang::SymbolKind::Sub:
+    return "Sub";
+  case fblang::SymbolKind::Function:
+    return "Function";
+  case fblang::SymbolKind::Property:
+    return "Property";
+  case fblang::SymbolKind::Constructor:
+    return "Constructor";
+  case fblang::SymbolKind::Destructor:
+    return "Destructor";
+  case fblang::SymbolKind::Operator:
+    return "Operator";
+  default:
+    return "procedure";
+  }
+}
+
+// Second paragraph of a declaration hover: what the symbol is and where it
+// lives. Walks `decl`'s ancestors (via `roots`, which must own `decl`) to find
+// the enclosing procedure and the declaration-scope blocks (for/if/with/...),
+// so a usage hover reads like "Local variable in Sub X, inside the `for`
+// block" instead of the bare declaration line.
+std::string symbolKindLine(fblang::Symbol const *decl,
+                           std::vector<fblang::Symbol> const &roots) {
+  fblang::Symbol const *const parent = fblang::parentOf(roots, decl);
+  fblang::Symbol const *proc = nullptr;
+  std::vector<std::string> blocks; // innermost first
+  for (fblang::Symbol const *cur = parent; cur != nullptr;
+       cur = fblang::parentOf(roots, cur)) {
+    if (isProcKind(cur->kind) && proc == nullptr) {
+      proc = cur;
+    }
+    if (cur->kind == fblang::SymbolKind::Scope) {
+      blocks.push_back(cur->name);
+    }
+  }
+  auto blockSuffix = [&]() -> std::string {
+    return blocks.empty() ? std::string()
+                          : ", inside the `" + blocks.front() + "` block";
+  };
+  switch (decl->kind) {
+  case fblang::SymbolKind::Dim:
+    if (proc != nullptr) {
+      return "Local variable in " + std::string(procKindName(proc->kind)) +
+             " `" + proc->name + "`" + blockSuffix() + ".";
+    }
+    return "Module-level variable" +
+           (decl->shared ? std::string(" — `Shared` (visible inside "
+                                       "procedures)")
+                         : std::string()) +
+           blockSuffix() + ".";
+  case fblang::SymbolKind::Const:
+    if (parent != nullptr && parent->kind == fblang::SymbolKind::Enum) {
+      return "Enum member of `" + parent->name + "`.";
+    }
+    if (proc != nullptr) {
+      return "Local constant in " + std::string(procKindName(proc->kind)) +
+             " `" + proc->name + "`" + blockSuffix() + ".";
+    }
+    return "Module-level constant" + blockSuffix() + ".";
+  case fblang::SymbolKind::Parameter:
+    if (proc != nullptr) {
+      return "Parameter of " + std::string(procKindName(proc->kind)) + " `" +
+             proc->name + "`.";
+    }
+    return "Parameter.";
+  case fblang::SymbolKind::Variable:
+    if (parent != nullptr && parent->kind != fblang::SymbolKind::Scope) {
+      return "Field of type `" + parent->name + "`.";
+    }
+    return "Field.";
+  case fblang::SymbolKind::Label:
+    return "Line label.";
+  case fblang::SymbolKind::Type:
+    return "User-defined type.";
+  case fblang::SymbolKind::Union:
+    return "Union.";
+  case fblang::SymbolKind::Enum:
+    return "Enumeration.";
+  case fblang::SymbolKind::Namespace:
+    return "Namespace.";
+  case fblang::SymbolKind::Sub:
+  case fblang::SymbolKind::Function:
+  case fblang::SymbolKind::Property:
+  case fblang::SymbolKind::Constructor:
+  case fblang::SymbolKind::Destructor:
+  case fblang::SymbolKind::Operator:
+    return std::string(procKindName(decl->kind)) + ".";
+  case fblang::SymbolKind::Scope:
+    return "Declaration scope.";
+  }
+  return "Declaration.";
+}
+
 // A valid FreeBASIC identifier (a rename target must lex as a single
 // identifier token): a letter or underscore followed by letters/digits/
 // underscores, plus an optional trailing type-suffix char — and never a
@@ -813,66 +923,114 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
   std::string_view const content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
+  std::string const normPath = fblang::normalizePath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  fblang::AnalyzedDoc const &doc = cached->analysis;
 
-  fblang::Symbol const *sym =
-      deepestSymbolAt(cached->analysis.parse.roots, offset);
-  if (sym == nullptr) {
-    // No user symbol here: the intrinsic catalog owns most callables; fall
-    // back to a plain reserved-keyword wiki link for the rest.
-    if (offset < content.size() && isWordChar(content[offset])) {
-      std::uint32_t beg = offset;
-      while (beg > 0 && isWordChar(content[beg - 1])) {
-        --beg;
-      }
-      std::uint32_t end = offset;
-      while (end < content.size() && isWordChar(content[end])) {
-        ++end;
-      }
-      std::string_view const raw = content.substr(beg, end - beg);
-      if (fblang::Intrinsic const *fn = fblang::intrinsicFor(raw)) {
-        std::string markdown = "```basic\n" + std::string(fn->signature) +
-                               "\n```\n\nFreeBASIC intrinsic";
-        std::string const url = fblang::intrinsicDocsUrl(*fn);
-        if (!url.empty()) {
-          markdown += " — [FreeBASIC docs](" + url + ")";
-        }
-        rsp.result.contents.second.emplace(
-            MarkupContent{std::string("markdown"), std::move(markdown)});
-        rsp.result.range.emplace(fblang::utf16Range(content, beg, end));
-        return rsp;
-      }
-      std::string bare = fblang::toLowerChars(std::string(raw));
-      if (!bare.empty() && fblang::isSuffixChar(bare.back())) {
-        bare.pop_back();
-      }
-      std::string const url = fblang::keywordDocsUrl(bare);
-      if (!url.empty()) {
-        rsp.result.contents.second.emplace(MarkupContent{
-            std::string("markdown"), "`" + bare +
-                                         "` — FreeBASIC keyword\n\n"
-                                         "[FreeBASIC docs](" +
-                                         url + ")"});
-        rsp.result.range.emplace(fblang::utf16Range(content, beg, end));
-        return rsp;
-      }
+  // The hovered word in the requesting document (a usage and its declaration
+  // live in different files when resolution is cross-file).
+  fblang::SourceRange const tokRange = fblang::tokenRangeAt(doc, offset);
+
+  auto setRange = [&](fblang::SourceRange const &r) {
+    if (r.beg < r.end && r.end <= content.size()) {
+      rsp.result.range.emplace(fblang::utf16Range(content, r.beg, r.end));
+    }
+  };
+
+  // Hover on a variable *usage* shows the declaration it resolves to: a use
+  // must show the declaring Dim/Const/Param, not the enclosing symbol.
+  fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
+  if (target.decl != nullptr &&
+      target.decl->kind != fblang::SymbolKind::Scope) {
+    std::string markdown;
+    if (!target.decl->signature.empty()) {
+      markdown = "```basic\n" + target.decl->signature + "\n```";
+    } else {
+      markdown = "`" + target.decl->name + "`";
+    }
+    std::vector<fblang::Symbol> const &roots =
+        target.file ? target.file->roots : doc.parse.roots;
+    markdown += "\n\n" + symbolKindLine(target.decl, roots);
+    if (!target.decl->doc.empty()) {
+      markdown += "\n\n---\n" + target.decl->doc;
+    }
+    rsp.result.contents.second.emplace(
+        MarkupContent{std::string("markdown"), std::move(markdown)});
+    if (tokRange.beg < tokRange.end) {
+      setRange(tokRange);
+    } else {
+      setRange(target.decl->selection);
     }
     return rsp;
   }
 
-  std::string markdown;
-  if (!sym->signature.empty()) {
-    markdown = "```basic\n" + sym->signature + "\n```";
-  } else {
-    markdown = "`" + sym->name + "`";
+  // No declaration under the cursor: hover on the enclosing declaration for
+  // context. Declaration-scope (Scope) nodes are structure, not symbols, so
+  // climb past them — a Scope node's `name` is the opener word ("if") and was
+  // being shown as the whole hover.
+  fblang::Symbol const *encl = deepestSymbolAt(doc.parse.roots, offset);
+  while (encl != nullptr && encl->kind == fblang::SymbolKind::Scope) {
+    encl = fblang::parentOf(doc.parse, encl);
   }
-  if (!sym->doc.empty()) {
-    markdown += "\n\n---\n" + sym->doc;
+  if (encl != nullptr) {
+    std::string markdown;
+    if (!encl->signature.empty()) {
+      markdown = "```basic\n" + encl->signature + "\n```";
+    } else {
+      markdown = "`" + encl->name + "`";
+    }
+    if (!encl->doc.empty()) {
+      markdown += "\n\n---\n" + encl->doc;
+    }
+    rsp.result.contents.second.emplace(
+        MarkupContent{std::string("markdown"), std::move(markdown)});
+    if (tokRange.beg < tokRange.end) {
+      setRange(tokRange);
+    } else {
+      setRange(encl->selection);
+    }
+    return rsp;
   }
 
-  rsp.result.contents.second.emplace(
-      MarkupContent{std::string("markdown"), std::move(markdown)});
-  rsp.result.range.emplace(
-      fblang::utf16Range(content, sym->selection.beg, sym->selection.end));
+  // No user symbol here: the intrinsic catalog owns most callables; fall
+  // back to a plain reserved-keyword wiki link for the rest.
+  if (offset < content.size() && isWordChar(content[offset])) {
+    std::uint32_t beg = offset;
+    while (beg > 0 && isWordChar(content[beg - 1])) {
+      --beg;
+    }
+    std::uint32_t end = offset;
+    while (end < content.size() && isWordChar(content[end])) {
+      ++end;
+    }
+    std::string_view const raw = content.substr(beg, end - beg);
+    if (fblang::Intrinsic const *fn = fblang::intrinsicFor(raw)) {
+      std::string markdown = "```basic\n" + std::string(fn->signature) +
+                             "\n```\n\nFreeBASIC intrinsic";
+      std::string const url = fblang::intrinsicDocsUrl(*fn);
+      if (!url.empty()) {
+        markdown += " — [FreeBASIC docs](" + url + ")";
+      }
+      rsp.result.contents.second.emplace(
+          MarkupContent{std::string("markdown"), std::move(markdown)});
+      rsp.result.range.emplace(fblang::utf16Range(content, beg, end));
+      return rsp;
+    }
+    std::string bare = fblang::toLowerChars(std::string(raw));
+    if (!bare.empty() && fblang::isSuffixChar(bare.back())) {
+      bare.pop_back();
+    }
+    std::string const url = fblang::keywordDocsUrl(bare);
+    if (!url.empty()) {
+      rsp.result.contents.second.emplace(
+          MarkupContent{std::string("markdown"), "`" + bare +
+                                                     "` — FreeBASIC keyword\n\n"
+                                                     "[FreeBASIC docs](" +
+                                                     url + ")"});
+      rsp.result.range.emplace(fblang::utf16Range(content, beg, end));
+      return rsp;
+    }
+  }
   return rsp;
 }
 
