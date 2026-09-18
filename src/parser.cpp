@@ -730,6 +730,7 @@ private:
     bool atName = true;
     bool first = true;
     bool seenShared = false;
+    int parenDepth = 0;
     for (;;) {
       TokenKind const tk = cur_.kind;
       if (tk == TokenKind::Newline || tk == TokenKind::Eof) {
@@ -739,7 +740,27 @@ private:
         break;
       }
       if (tk == TokenKind::Symbol && cur_.text() == ",") {
-        atName = true;
+        // A comma splits a declaration list (`DIM a = 1, b = 2`) only at
+        // paren depth 0. Inside a parenthesized initializer it is an argument
+        // separator (`type(x, .sectors(i).h, y)`, `Foo(a, b)`); treating it as
+        // a declaration separator registered `.sectors` and `y` as fake
+        // definitions, tripping false "duplicate definition" warnings
+        // (drd/temp/src/engine.bas).
+        if (parenDepth == 0) {
+          atName = true;
+        }
+        advance();
+        continue;
+      }
+      if (tk == TokenKind::Symbol && cur_.text() == "(") {
+        ++parenDepth;
+        advance();
+        continue;
+      }
+      if (tk == TokenKind::Symbol && cur_.text() == ")") {
+        if (parenDepth > 0) {
+          --parenDepth;
+        }
         advance();
         continue;
       }

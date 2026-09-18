@@ -333,6 +333,81 @@ int main() {
     CHECK(diagnosticCount(r, "duplicate-definition") == 1);
   }
 
+  // Commas inside a parenthesized initializer are *argument* separators, not
+  // declaration-list separators. The UDT-literal / member-access pattern from
+  // drd/temp/src/engine.bas (`dim as Vector3 b = type(a.x, .sectors(0).h,
+  // a.y)`) produced 37 false "duplicate definition" warnings because every `,`
+  // (even at paren depth > 0) re-armed the atName state, registering
+  // `.sectors` and the second `a` as new definitions. Only the declared
+  // names may land in the symbol tree.
+  {
+    ParseResult r = parseDocument("dim as single a = 1\n"
+                                  "dim as Vector3 b = type(a.x, "
+                                  ".sectors(0).floorHeight, a.y)\n"
+                                  "dim as Vector3 c = type(b.x, "
+                                  ".sectors(0).ceilingHeight, b.y)\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(r.roots.size() == 3);
+    const Symbol *b = find(r.roots, "b", SymbolKind::Dim);
+    CHECK(b != nullptr);
+    CHECK(b->children.empty()); // a, sectors, a.y: never definitions
+  }
+  {
+    ParseResult r = parseDocument("dim as Integer c = 0\n"
+                                  "dim as Integer d = Calc(c, c + 1)\n");
+    CHECK(r.diagnostics.empty());
+  }
+  // The same nesting that produced the report: WITH + FOR + IF blocks with
+  // `type(v.x, .sectors(i).h, v.y)` initializers parse clean, and a loop-local
+  // Dim reused across the loop body is not a duplicate.
+  {
+    ParseResult r = parseDocument("type V2\n"
+                                  "    as single x, y\n"
+                                  "end type\n"
+                                  "type V3\n"
+                                  "    as single x, y, z\n"
+                                  "end type\n"
+                                  "type Sector\n"
+                                  "    as single floorHeight\n"
+                                  "    as single ceilingHeight\n"
+                                  "end type\n"
+                                  "type Map\n"
+                                  "    as V2 vertices(10)\n"
+                                  "    as Sector sectors(10)\n"
+                                  "end type\n"
+                                  "sub s(map as Map, secIndex as integer)\n"
+                                  "    with map\n"
+                                  "        for i as integer = 0 to 3\n"
+                                  "            dim as V2 p = .vertices(i)\n"
+                                  "            if p.x <> 0 then\n"
+                                  "                dim as V3 bl = type(p.x, "
+                                  ".sectors(secIndex).floorHeight, p.y)\n"
+                                  "                dim as V3 tr = type(p.x, "
+                                  ".sectors(secIndex).ceilingHeight, p.y)\n"
+                                  "            end if\n"
+                                  "        next i\n"
+                                  "    end with\n"
+                                  "end sub\n");
+    CHECK(r.diagnostics.empty());
+  }
+
+  // A declaration-list comma at paren depth 0 still splits: `DIM a = 1, b = 2`
+  // declares both, and a multi-dim array `DIM grid(0 to 5, 0 to 5)` never
+  // splits on the comma inside its bounds.
+  {
+    ParseResult r = parseDocument("dim a = 1, b = 2\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+    CHECK(r.roots.size() == 2);
+    CHECK(find(r.roots, "a", SymbolKind::Dim) != nullptr);
+    CHECK(find(r.roots, "b", SymbolKind::Dim) != nullptr);
+  }
+  {
+    ParseResult r = parseDocument("dim grid(0 to 5, 0 to 5) as Integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+    CHECK(r.roots.size() == 1);
+    CHECK(find(r.roots, "grid", SymbolKind::Dim) != nullptr);
+  }
+
   // Strings and continuations.
   {
     ParseResult r = parseDocument("dim s as string\nprint \"abc\n");
