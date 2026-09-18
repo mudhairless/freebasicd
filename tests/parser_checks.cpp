@@ -136,6 +136,70 @@ int main() {
     CHECK(forScope->children[0].key.empty());
   }
 
+  // For-loop counters declared with `as` become loop-local Dims (fbc ground
+  // truth: invisible after `next`). A header without `as` reuses an existing
+  // variable (undeclared is error 42 in fbc, no auto-declare), so nothing is
+  // registered for it.
+  {
+    ParseResult r = parseDocument("sub foo()\n"
+                                  "    for i as integer = 0 to 3\n"
+                                  "        print i\n"
+                                  "    next i\n"
+                                  "    for j = 1 to 5\n"
+                                  "        print j\n"
+                                  "    next j\n"
+                                  "    for i as single = 0.5 to 2.5\n"
+                                  "    next i\n"
+                                  "end sub\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *foo = find(r.roots, "foo", SymbolKind::Sub);
+    CHECK(foo != nullptr);
+    // Three FOR declaration scopes: `as`-typed counter, bare reuse, `as`-typed
+    // counter with the same name as the first (own container -> no dup).
+    std::vector<const Symbol *> scopes;
+    for (const Symbol &c : foo->children) {
+      if (c.kind == SymbolKind::Scope && c.name == "for") {
+        scopes.push_back(&c);
+      }
+    }
+    CHECK(scopes.size() == 3);
+    CHECK(scopes[0]->children.size() == 1);
+    CHECK(scopes[0]->children[0].name == "i");
+    CHECK(scopes[0]->children[0].kind == SymbolKind::Dim);
+    CHECK(scopes[0]->children[0].loopVar);
+    CHECK(scopes[0]->children[0].signature == "for i as integer = 0 to 3");
+    CHECK(scopes[0]->children[0].doc.empty());
+    CHECK(scopes[1]->children.empty()); // `for j = ...` reuses, no declaration
+    CHECK(scopes[2]->children.size() == 1);
+    CHECK(scopes[2]->children[0].name == "i");
+    CHECK(scopes[2]->children[0].loopVar);
+    CHECK(scopes[2]->children[0].signature == "for i as single = 0.5 to 2.5");
+  }
+
+  // Nested `for ... as` counters shadow with their own container: no
+  // duplicate-definition diagnostic.
+  {
+    ParseResult r = parseDocument("for i as integer = 0 to 2\n"
+                                  "    for i as integer = 0 to 2\n"
+                                  "    next i\n"
+                                  "next i\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *outer = nullptr;
+    for (const Symbol &root : r.roots) {
+      if (root.kind == SymbolKind::Scope && root.name == "for") {
+        outer = &root;
+      }
+    }
+    CHECK(outer != nullptr);
+    CHECK(outer->children.size() == 2);
+    CHECK(outer->children[0].name == "i");
+    CHECK(outer->children[0].loopVar);
+    CHECK(outer->children[1].kind == SymbolKind::Scope); // inner loop
+    CHECK(outer->children[1].children.size() == 1);
+    CHECK(outer->children[1].children[0].name == "i");
+    CHECK(outer->children[1].children[0].loopVar);
+  }
+
   // Type alias vs UDT vs one-line UDT.
   {
     ParseResult r = parseDocument("type pt\n"

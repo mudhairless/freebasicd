@@ -468,6 +468,10 @@ private:
       skipStatement();
       return;
     }
+    if (w == "for") {
+      handleFor();
+      return;
+    }
     if (isControlOpenerWord(w)) {
       pushBlockFromOpener(w);
       resetDoc();
@@ -515,6 +519,48 @@ private:
     if (b->sym != nullptr) {
       containers_.push_back(Container(b->sym));
     }
+  }
+
+  // `for`-loop header: `for <counter> [as <type>] = min [to max [step n]]`.
+  // `for each ...` is not a FreeBASIC form, so the first identifier after
+  // `for` is always the counter. fbc ground truth (FreeBASIC.md §8): a header
+  // with `as` declares a NEW counter scoped to the loop (invisible after
+  // `next`); a header without `as` reuses an already-declared variable
+  // (undeclared is error 42, fbc does not auto-declare it), so nothing is
+  // registered and resolution finds the outer declaration naturally.
+  void handleFor() {
+    Token const openTok = cur_;
+    pushBlockFromOpener("for");
+    // Peek the header while the lexer still sits on `for` (peek is relative
+    // to the token after cur_): peek(0) is the counter, peek(1) the `as`.
+    registerForCounter(openTok);
+    advance(); // past `for`
+    resetDoc();
+    skipStatement();
+  }
+
+  void registerForCounter(Token const &openTok) {
+    // Counter candidate must be an identifier immediately followed by `as`;
+    // a header without `as` reuses an outer declaration and registers nothing.
+    Token const nameTok = lex_.peek(0);
+    if (nameTok.kind != TokenKind::Identifier) {
+      return;
+    }
+    Token const asTok = lex_.peek(1);
+    if (asTok.kind != TokenKind::Keyword ||
+        toLowerChars(asTok.text()) != "as") {
+      return;
+    }
+    Symbol s;
+    s.kind = SymbolKind::Dim;
+    s.name = std::string(nameTok.text());
+    s.key = toLowerChars(s.name);
+    s.selection.beg = s.range.beg = nameTok.beg;
+    s.selection.end = s.range.end = nameTok.end;
+    s.signature = headerText(openTok); // carries the `as <type>` clause
+    s.doc = takeDoc();
+    s.loopVar = true;
+    addSymbol(std::move(s));
   }
 
   void handleDeclBlock(const std::string &openWord, SymbolKind k) {

@@ -242,6 +242,11 @@ char const *kHoverDeclFrame =
     R"FB({"jsonrpc":"2.0","id":"hvd","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/hovuse.bas"},"position":{"line":3,"character":27}}})FB";
 
+// Hover the loop counter `i` in the for header (line 2, char 12).
+char const *kHoverCounterFrame =
+    R"FB({"jsonrpc":"2.0","id":"hvc","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovuse.bas"},"position":{"line":2,"character":12}}})FB";
+
 // Hover a module-level Dim usage (resolve.bas line 1, char 0 = `counter`).
 char const *kModuleDimHoverFrame =
     R"FB({"jsonrpc":"2.0","id":"hvm","method":"textDocument/hover","params":)FB"
@@ -639,6 +644,15 @@ void TestHoverResolvesUsageToDeclaration() {
   Expect(declHover.find("dim as Vector2 v1 = .vertices(i)") !=
              std::string::npos,
          "hover on the declaration itself must show the same symbol info");
+
+  input->append(MakeLspFrame(kHoverCounterFrame));
+  std::string const counterHover =
+      WaitForOutputContaining(output, "\"id\":\"hvc\"");
+  Expect(counterHover.find("for i as integer = 0 to 3") != std::string::npos,
+         "hover on a for-loop counter must show the header with its type");
+  Expect(counterHover.find("Loop counter in Sub `ProcessSectorPhysics`.") !=
+             std::string::npos,
+         "hover must label the counter as a loop counter in its procedure");
 
   input->append(MakeLspFrame(kDidOpenResolveFrame));
   Expect(WaitForPublishedUri(output, 2).empty() == false,

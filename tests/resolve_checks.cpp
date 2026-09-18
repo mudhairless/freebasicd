@@ -385,6 +385,59 @@ static void TestBlockScopesShadowAndDie() {
             "the block x keeps its in-block usage only");
 }
 
+// A `for <name> as <type>` counter is a real loop-local Dim (fbc ground
+// truth, FreeBASIC.md §8): uses inside the loop resolve to it, nothing is
+// visible after `next`, and a header without `as` reuses the enclosing
+// declaration instead of declaring (undeclared would be error 42 in fbc).
+static void TestForCounterIsLoopLocal() {
+  std::string const src = "sub run()\n"
+                          "    for i as integer = 0 to 3\n"
+                          "        print i\n"
+                          "        dim j as integer\n"
+                          "        j = i + 1\n"
+                          "    next i\n"
+                          "    i = 9\n"
+                          "    dim k as integer\n"
+                          "    for k = 0 to 2\n"
+                          "        k = 1\n"
+                          "    next k\n"
+                          "    k = 4\n"
+                          "end sub\n";
+  AnalyzedDoc const doc = analyze(src);
+
+  Symbol const *counter =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("for i as") + 4));
+  CHECK_MSG(counter && counter->kind == SymbolKind::Dim && counter->loopVar,
+            "the `as` counter registers as a loop-local Dim marked loopVar");
+  CHECK_MSG(counter && counter->signature.find("for i as integer = 0 to 3") !=
+                           std::string::npos,
+            "the counter's signature carries the header with its type");
+  std::uint32_t const printUse =
+      static_cast<std::uint32_t>(src.find("print i") + 6);
+  std::uint32_t const bodyUse =
+      static_cast<std::uint32_t>(src.find("j = i + 1") + 4);
+  CHECK_MSG(resolveAt(doc, printUse) == counter,
+            "an in-loop use of the counter resolves to the loop-local Dim");
+  CHECK_MSG(resolveAt(doc, bodyUse) == counter,
+            "a use inside an initializer resolves to the loop-local Dim");
+  std::uint32_t const after = static_cast<std::uint32_t>(src.find("i = 9"));
+  CHECK_MSG(resolveAt(doc, after) == nullptr,
+            "the `as` counter is invisible after NEXT (fbc ground truth)");
+
+  // A predeclared counter reused without `as` is the very same declaration.
+  Symbol const *kDecl =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("dim k") + 4));
+  std::uint32_t const reuse =
+      static_cast<std::uint32_t>(src.find("for k =") + 4);
+  CHECK_MSG(kDecl && kDecl->kind == SymbolKind::Dim, "dim k registers");
+  CHECK_MSG(!kDecl->loopVar, "a reused counter is not a new loopVar Dim");
+  CHECK_MSG(resolveAt(doc, reuse) == kDecl,
+            "a header without `as` reuses the enclosing declaration");
+  CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(src.find("k = 4"))) ==
+                kDecl,
+            "the reused counter stays declared after the loop");
+}
+
 // A module-level plain Dim stays visible inside a module-level declaration
 // scope (FreeBASIC.md §8 probe sc.bas), and the storage gate still applies in
 // a procedure-local control block (module plain Dims stay invisible there).
@@ -660,6 +713,7 @@ int main() {
   TestAnalyzePragmaOnce();
   TestStorageGate();
   TestBlockScopesShadowAndDie();
+  TestForCounterIsLoopLocal();
   TestStorageGateInControlBlocks();
   TestOccurrencesAcrossSingleFile();
   TestOccurrencesAcrossCrossFile();

@@ -357,6 +357,14 @@ std::string symbolKindLine(fblang::Symbol const *decl,
   };
   switch (decl->kind) {
   case fblang::SymbolKind::Dim:
+    if (decl->loopVar) {
+      // Counter declared in the header (`for i as integer = ...`), local to
+      // its own loop: the `for` block is implied, so no block suffix.
+      return proc != nullptr
+                 ? "Loop counter in " + std::string(procKindName(proc->kind)) +
+                       " `" + proc->name + "`."
+                 : "Loop counter.";
+    }
     if (proc != nullptr) {
       return "Local variable in " + std::string(procKindName(proc->kind)) +
              " `" + proc->name + "`" + blockSuffix() + ".";

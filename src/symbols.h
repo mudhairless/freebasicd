@@ -80,6 +80,13 @@ struct Symbol {
   // candidates require `shared`; at module level everything is visible.
   // Procedure/type/enum/const roots are storage-less and never gated.
   bool shared = false;
+
+  // True for a `for <name> as <type> = ...` loop counter: a Dim local to the
+  // loop, declared in the header. fbc ground truth (FreeBASIC.md §8): the
+  // counter is invisible after `next`, and a header *without* `as` reuses an
+  // existing declaration (undeclared is error 42), so only the `as` form
+  // declares. Distinguishes the iterator from a plain Dim in the loop body.
+  bool loopVar = false;
 };
 
 enum class Severity { Error = 1, Warning = 2, Information = 3, Hint = 4 };
