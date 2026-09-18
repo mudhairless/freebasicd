@@ -245,9 +245,14 @@ the design; sub-tasks land in order.
   module-level `Const` was probe-verified to work inside a `Sub` with
   fbc 1.10.2 (wiki KeyPgConst is silent on this — resolved by probe). The gate
   applies in `declAt` (in-file resolution **and** the `analyze()` occurrence
-  sweep) and in `visibleSymbols`: from inside any block, module-scope
-  `Dim`-kind candidates require `shared`; at module level everything is
-  visible. This fixes the §12.2 over-resolution whose exact rule cross-file
+  sweep) and in `visibleSymbols`: from inside a procedure body (its own
+  control blocks included), module-scope `Dim`-kind candidates require
+  `shared`; at module level — SCOPE/IF/FOR/... control blocks inherit
+  module scope, so plain module dims stay visible inside them (probe:
+  `Dim outer` at module level is visible inside a `SCOPE` block) — everything
+  is visible. The gate therefore keys on a procedure boundary
+  (`insideProcedureBody`), not on "inside any block". This fixes the §12.2
+  over-resolution whose exact rule cross-file
   resolution then reuses. The §8 rows are wiki + fbc verified: plain module
   `Dim`/`Common` → "module-level only; NOT inside procedures" (probe:
   `Dim plain_v As Integer` + `Print plain_v` in a `Sub` → error 42; wiki

@@ -164,6 +164,27 @@ private:
            w == "asm" || w == "for" || w == "while" || w == "do";
   }
 
+  // Whether a control block also declares a lexical scope: a `Dim` inside it
+  // is local to the block, shadows the enclosing scope, and dies at the
+  // closer. fbc-probed (FreeBASIC.md §8): every statement block does —
+  // `scope`, `for`, `while`, `do`, `if`, `select`, `with`. `extern` does not
+  // (a `Dim` there lives on in module scope) and `asm` bodies are raw
+  // assembly, so neither scopes its declarations.
+  static bool isScopeBlock(BlockKind k) {
+    switch (k) {
+    case BlockKind::Scope:
+    case BlockKind::For:
+    case BlockKind::While:
+    case BlockKind::Do:
+    case BlockKind::If:
+    case BlockKind::Select:
+    case BlockKind::With:
+      return true;
+    default:
+      return false;
+    }
+  }
+
   static SymbolKind declKindFor(const std::string &w) {
     if (w == "sub") {
       return SymbolKind::Sub;
@@ -467,7 +488,33 @@ private:
     b.needsEnd = c.needsEnd;
     b.begOpen = cur_.beg;
     b.endOpen = cur_.end;
+    attachScopeBlock(&b, w);
     blocks_.push_back(b);
+  }
+
+  // Give a freshly opened control block its own declaration scope: a Scope
+  // symbol for the enclosing scope to adopt (a file root at module level, a
+  // procedure's child inside one) plus a dedupe container. Declarations inside
+  // the block then shadow the enclosing scope instead of tripping
+  // "duplicate definition" against it, and this is what resolution walks so an
+  // in-block `Dim` shadows the outer name and is gone after the closer
+  // (FreeBASIC.md §8, fbc-probed). Scope nodes are structure, not symbols:
+  // they carry no key, so they never index, resolve, or autocomplete.
+  void attachScopeBlock(Block *b, std::string const &name) {
+    if (!isScopeBlock(b->kind)) {
+      return;
+    }
+    Symbol s;
+    s.kind = SymbolKind::Scope;
+    s.name = name;
+    s.key.clear();
+    s.selection.beg = s.range.beg = b->begOpen;
+    s.selection.end = s.range.end = b->endOpen;
+    s.signature = name;
+    b->sym = addSymbol(std::move(s));
+    if (b->sym != nullptr) {
+      containers_.push_back(Container(b->sym));
+    }
   }
 
   void handleDeclBlock(const std::string &openWord, SymbolKind k) {
@@ -795,6 +842,7 @@ private:
     b.needsEnd = true;
     b.begOpen = ifTok.beg;
     b.endOpen = ifTok.end;
+    attachScopeBlock(&b, "if");
     blocks_.push_back(b);
     resetDoc();
     advance();

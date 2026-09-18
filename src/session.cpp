@@ -1341,11 +1341,11 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
   // Closure module-scope roots come behind the in-file symbols, deduped by
   // key: an inner-scope name shadows a same-named closure global (the first
   // entry in `seen` won). The storage gate applies to the closure the same
-  // way it does in-file: from inside a block, plain module-level Dim roots of
-  // included headers are not visible.
+  // way it does in-file: from inside a procedure body, plain module-level Dim
+  // roots of included headers are not visible.
   if (index_) {
-    bool const insideBlock =
-        fblang::innermostScope(doc.parse, offset) != nullptr;
+    bool const storageGated = fblang::insideProcedureBody(
+        doc.parse, fblang::innermostScope(doc.parse, offset));
     std::string const normPath = fblang::normalizePath(
         req.params.textDocument.uri.GetAbsolutePath().path());
     for (std::string const &closurePath :
@@ -1359,7 +1359,7 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
         if (root.key.empty() || !hasPrefix(root.key, prefix)) {
           continue;
         }
-        if (insideBlock && root.kind == fblang::SymbolKind::Dim &&
+        if (storageGated && root.kind == fblang::SymbolKind::Dim &&
             !root.shared) {
           continue;
         }

@@ -87,13 +87,15 @@ int main() {
     ParseResult r = parseDocument(src);
     CHECK(r.diagnostics.empty());
     CHECK(r.lang == "fb");
-    CHECK(r.roots.size() == 6); // clamp, vec2, keys, p, i, app
+    CHECK(r.roots.size() == 7); // clamp, vec2, keys, p, i, app, for-scope
 
     const Symbol *clamp = find(r.roots, "clamp", SymbolKind::Function);
     CHECK(clamp != nullptr);
-    CHECK(clamp->children.size() == 3);
+    // three parameters plus the IF block's declaration scope inside the body
+    CHECK(clamp->children.size() == 4);
     CHECK(clamp->children[0].kind == SymbolKind::Parameter);
     CHECK(clamp->children[0].name == "v");
+    CHECK(clamp->children[3].kind == SymbolKind::Scope);
     CHECK(clamp->doc == " Draws something");
 
     const Symbol *vec2 = find(r.roots, "vec2", SymbolKind::Type);
@@ -117,6 +119,21 @@ int main() {
     CHECK(app->children[0].kind == SymbolKind::Sub);
     CHECK(app->children[0].children.size() == 1);
     CHECK(app->children[0].children[0].name == "s");
+
+    // The module-level FOR block became a declaration-scope root (structure,
+    // not a symbol: no key, so it never indexes or resolves).
+    const Symbol *forScope = nullptr;
+    for (const Symbol &root : r.roots) {
+      if (root.kind == SymbolKind::Scope && root.name == "for") {
+        forScope = &root;
+      }
+    }
+    CHECK(forScope != nullptr);
+    CHECK(forScope->key.empty());
+    CHECK(forScope->children.size() == 1); // the SELECT block's scope
+    CHECK(forScope->children[0].kind == SymbolKind::Scope);
+    CHECK(forScope->children[0].name == "select");
+    CHECK(forScope->children[0].key.empty());
   }
 
   // Type alias vs UDT vs one-line UDT.
@@ -201,6 +218,119 @@ int main() {
   {
     ParseResult r = parseDocument("declare sub f()\nsub f()\nend sub\n");
     CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+  }
+
+  // A variable *usage* is never a redefinition (BUGS.md).
+  {
+    ParseResult r = parseDocument("dim x as integer\n"
+                                  "x = 1\n"
+                                  "print \"X is: \", x\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+    CHECK(r.diagnostics.empty());
+  }
+
+  // Declaration-scope blocks (scope/if/for/while/do/select/with) can reuse a
+  // name declared in the enclosing scope: the block-local Dim dies at the
+  // closer (fbc-probed), so it is not a duplicate and a fresh module-level
+  // Dim after the block is not one either.
+  {
+    ParseResult r = parseDocument("dim x as integer = 1\n"
+                                  "scope\n"
+                                  "    dim x as string = \"Hello\"\n"
+                                  "end scope\n"
+                                  "dim x as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 1); // only the last:
+    CHECK(r.diagnostics[0].range.beg ==
+          static_cast<uint32_t>(std::string("dim x as integer = 1\n"
+                                            "scope\n"
+                                            "    dim x as string = "
+                                            "\"Hello\"\n"
+                                            "end scope\n")
+                                    .size() +
+                                4));
+  }
+  {
+    ParseResult r = parseDocument("if true then\n"
+                                  "    dim x as string\n"
+                                  "end if\n"
+                                  "dim x as integer\n");
+    CHECK(r.diagnostics.empty());
+  }
+  {
+    ParseResult r = parseDocument("dim x as integer\n"
+                                  "for i = 1 to 3\n"
+                                  "    dim x as string\n"
+                                  "next i\n"
+                                  "while false\n"
+                                  "    dim x as string\n"
+                                  "wend\n"
+                                  "do\n"
+                                  "    dim x as string\n"
+                                  "loop\n"
+                                  "select case 1\n"
+                                  "case 1\n"
+                                  "    dim x as string\n"
+                                  "end select\n"
+                                  "with p\n"
+                                  "    dim x as string\n"
+                                  "end with\n");
+    CHECK(r.diagnostics.empty());
+  }
+
+  // A same-scope redefinition stays a duplicate even inside a block, and a
+  // module-level redefinition after a shadowing block still hits the
+  // module-level declaration.
+  {
+    ParseResult r = parseDocument("scope\n"
+                                  "    dim x as string\n"
+                                  "    dim x as integer\n"
+                                  "end scope\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 1);
+  }
+  {
+    ParseResult r = parseDocument("dim x as integer\n"
+                                  "if true then\n"
+                                  "    dim x as string\n"
+                                  "end if\n"
+                                  "dim x as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 1);
+    CHECK(r.diagnostics[0].range.beg ==
+          static_cast<uint32_t>(std::string("dim x as integer\n"
+                                            "if true then\n"
+                                            "    dim x as string\n"
+                                            "end if\n")
+                                    .size() +
+                                4));
+  }
+
+  // EXTERN is not a declaration scope: a Dim inside leaks to module scope and
+  // duplicates a module-level declaration (fbc-probed, error 4).
+  {
+    ParseResult r = parseDocument("extern \"C\"\n"
+                                  "    dim x as integer\n"
+                                  "end extern\n"
+                                  "dim x as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 1);
+  }
+
+  // The BUGS.md function example: only `dim y` twice in the same procedure is
+  // a duplicate; the loop iterator, the module-level `x`, and every usage are
+  // not.
+  {
+    ParseResult r = parseDocument("function do_something() as integer\n"
+                                  "    dim x as integer = 1\n"
+                                  "    dim y as integer\n"
+                                  "    for x = 1 to 100\n"
+                                  "        y = x + 1\n"
+                                  "    next x\n"
+                                  "    dim y as integer\n"
+                                  "    y = x * 2\n"
+                                  "    return y\n"
+                                  "end function\n"
+                                  "dim x as integer\n"
+                                  "x = do_something()\n"
+                                  "print \"X is:\", x\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 1);
   }
 
   // Strings and continuations.

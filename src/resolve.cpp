@@ -145,10 +145,11 @@ SourceRange rangeOf(Token const &t) { return {t.beg, t.end}; }
 // is the single resolution walk shared by analyze's occurrence sweep and the
 // on-demand resolution API (which used to re-lex per call).
 //
-// Honors the §12.2 storage gate: a usage inside any block may only match a
-// module-scope Dim-kind declaration carrying the `Shared` modifier; at module
-// level every root is visible. Procedure/type/enum/const roots are never
-// gated.
+// Honors the §12.2 storage gate: a usage inside a procedure body (its control
+// blocks included) may only match a module-scope Dim-kind declaration carrying
+// the `Shared` modifier; at module level, and inside module-level control
+// blocks (scope/for/if/...), every root is visible. Procedure/type/enum/const
+// roots are never gated.
 Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
                      std::uint32_t off) {
   Token const *tok = tokenAt(tokens, off);
@@ -157,6 +158,7 @@ Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
   }
   std::string const key = toLowerChars(tok->text());
   Symbol const *const siteScope = innermostScope(parse, off);
+  bool const storageGated = insideProcedureBody(parse, siteScope);
   for (Symbol const *cur = siteScope;;
        cur = cur != nullptr ? parentOf(parse, cur) : nullptr) {
     std::vector<Symbol> const &cands =
@@ -165,7 +167,7 @@ Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
       if (c.key.empty() || c.key != key) {
         continue;
       }
-      bool const gated = cur == nullptr && siteScope != nullptr &&
+      bool const gated = cur == nullptr && storageGated &&
                          c.kind == SymbolKind::Dim && !c.shared;
       if (!gated) {
         return &c;
@@ -183,7 +185,13 @@ Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
 // by construction, into the tree we are filling.
 void attachOccurrences(ParseResult &parse, std::vector<Token> const &tokens) {
   for (Symbol &root : parse.roots) {
-    root.moduleScope = true;
+    // Scope nodes are structure, not declarations: a module-level control
+    // block must never look like a file-root decl (index projection skips
+    // empty keys; be explicit anyway) or leak its block-local dims to module
+    // scope.
+    if (root.kind != SymbolKind::Scope) {
+      root.moduleScope = true;
+    }
   }
   for (Token const &t : tokens) {
     if (t.kind != TokenKind::Identifier) {
@@ -332,6 +340,24 @@ Symbol const *innermostScope(ParseResult const &parse, std::uint32_t off) {
   return best;
 }
 
+bool insideProcedureBody(ParseResult const &parse, Symbol const *siteScope) {
+  for (Symbol const *cur = siteScope; cur != nullptr;
+       cur = parentOf(parse, cur)) {
+    switch (cur->kind) {
+    case SymbolKind::Sub:
+    case SymbolKind::Function:
+    case SymbolKind::Property:
+    case SymbolKind::Constructor:
+    case SymbolKind::Destructor:
+    case SymbolKind::Operator:
+      return true;
+    default:
+      break;
+    }
+  }
+  return false;
+}
+
 AnalyzedDoc analyze(std::string_view source) {
   AnalyzedDoc doc;
   doc.parse = parseDocument(source);
@@ -380,9 +406,10 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
   }
 
   std::string const key = toLowerChars(tok->text());
-  bool const insideBlock = innermostScope(doc.parse, off) != nullptr;
-  auto gated = [insideBlock](Symbol const &root) {
-    return insideBlock && root.kind == SymbolKind::Dim && !root.shared;
+  bool const storageGated =
+      insideProcedureBody(doc.parse, innermostScope(doc.parse, off));
+  auto gated = [storageGated](Symbol const &root) {
+    return storageGated && root.kind == SymbolKind::Dim && !root.shared;
   };
 
   // Tier 2: module scope of each closure file, textual include pre-order,
@@ -501,6 +528,7 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
   ParseResult const &parse = doc.parse;
   std::vector<Symbol const *> out;
   Symbol const *const siteScope = innermostScope(parse, off);
+  bool const storageGated = insideProcedureBody(parse, siteScope);
   for (Symbol const *cur = siteScope;;
        cur = cur != nullptr ? parentOf(parse, cur) : nullptr) {
     std::vector<Symbol> const &cands =
@@ -509,9 +537,10 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
       if (c.key.empty()) {
         continue;
       }
-      // §12.2 gate: from inside a block, module-level Dim-kind names
-      // require the Shared modifier; at module level everything shows.
-      if (cur == nullptr && siteScope != nullptr && c.kind == SymbolKind::Dim &&
+      // §12.2 gate: from inside a procedure body, module-level Dim-kind names
+      // require the Shared modifier; at module level (control blocks
+      // included) everything shows.
+      if (cur == nullptr && storageGated && c.kind == SymbolKind::Dim &&
           !c.shared) {
         continue;
       }

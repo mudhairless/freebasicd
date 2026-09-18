@@ -65,6 +65,14 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
 // level. Dim/Const/Parameter nodes are not scopes and are walked through.
 Symbol const *innermostScope(ParseResult const &parse, std::uint32_t off);
 
+// The §12.2 storage-gate predicate (FreeBASIC.md §8): whether `siteScope`
+// (the innermost scope of the site, or nullptr) sits inside a procedure body.
+// Module-level plain `Dim`/`Common` (no `Shared`) are invisible only then —
+// fbc keeps error 42 for a procedure write. SCOPE/IF/FOR/... control blocks
+// at module level inherit module scope, so the gate must key on a procedure
+// boundary, not on "inside any block".
+bool insideProcedureBody(ParseResult const &parse, Symbol const *siteScope);
+
 // Parent of `node` in the parse symbol tree (the declaration block or module
 // root owning it), or nullptr for a file root. Enum members are Const
 // children of their Enum root — use this to tell an enum member from a

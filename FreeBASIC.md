@@ -244,7 +244,11 @@ to "the language is what the lexer does":
    resolve (§8, probed: fbc error 42). Since M7 the parser tags module-level
    `Shared` var declarations (`Symbol.shared`), and
    `declAt`/`visibleSymbols`/`resolveAcross` skip a plain module `Dim`/`Common`
-   root whenever the resolution site is inside a block. The remaining
+   root whenever the resolution site is inside a **procedure body** — its
+   control blocks included, and control blocks at module level
+   (SCOPE/IF/FOR/...) inherit module scope, so plain module dims stay visible
+   inside them (probe: `Dim outer` at module level is visible inside a `SCOPE`
+   block). The remaining
    divergence is tier-3 lenient cross-file resolution: a name the requesting
    file's include closure does not declare still resolves to a workspace root
    of the same key (a header that is not included yet). Real fbc would treat

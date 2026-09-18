@@ -231,9 +231,12 @@ static void TestAnalyzePragmaOnce() {
             "a #pragma with a different directive must not set the flag");
 }
 
-// The §12.2 storage gate (FreeBASIC.md §8): from inside any block, a plain
-// module-level Dim is not visible — only `Dim Shared` module declarations are.
-// At module level everything is. This is fbc-probe-verified (error 42).
+// The §12.2 storage gate (FreeBASIC.md §8): from inside a procedure body
+// (its own control blocks included), a plain module-level Dim is not
+// visible — only `Dim Shared` module declarations are. At module level every
+// root is visible, and module-level control blocks (scope/for/if/...) inherit
+// module scope, so a plain module Dim stays visible inside a SCOPE block.
+// This is fbc-probe-verified (error 42 / sc.bas).
 static void TestStorageGate() {
   std::string const src = "dim g as integer\n"
                           "dim shared s as integer\n"
@@ -300,6 +303,119 @@ static void TestStorageGate() {
   CHECK_MSG(has("st"), "visibleSymbols must keep the static shared var");
   CHECK_MSG(!has("g"),
             "visibleSymbols must drop a plain module dim inside a block");
+}
+
+// Declaration-scope blocks shadow: a `Dim` inside SCOPE/IF/FOR/SELECT (etc.)
+// is its own declaration, visible inside its block and gone after it, and it
+// may reuse an enclosing name without being a duplicate (BUGS.md, fbc-probed).
+static void TestBlockScopesShadowAndDie() {
+  std::string const src = "dim x as integer\n"
+                          "scope\n"
+                          "    dim x as string\n"
+                          "    x = \"hi\"\n"
+                          "end scope\n"
+                          "x = 1\n"
+                          "if true then\n"
+                          "    dim y as integer\n"
+                          "    y = 2\n"
+                          "end if\n"
+                          "y = 3\n"
+                          "sub run()\n"
+                          "    dim z as integer\n"
+                          "    for i = 1 to 3\n"
+                          "        dim z as string\n"
+                          "        z = \"loop\"\n"
+                          "    next i\n"
+                          "    z = 4\n"
+                          "end sub\n";
+  AnalyzedDoc const doc = analyze(src);
+
+  // Module `x` root, and a module-level SCOPE Scope root holding the block x.
+  Symbol const *moduleX =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("dim x") + 4));
+  CHECK_MSG(moduleX && moduleX->kind == SymbolKind::Dim,
+            "the module x is a Dim root");
+  CHECK_MSG(moduleX && moduleX->moduleScope, "the module x is file-scoped");
+  Symbol const *blockX = resolveAt(
+      doc,
+      static_cast<std::uint32_t>(src.find("dim x", src.find("scope")) + 4));
+  CHECK_MSG(blockX && blockX->kind == SymbolKind::Dim,
+            "the SCOPE-block x is its own Dim");
+  CHECK_MSG(blockX && !blockX->moduleScope,
+            "a block-local Dim is never file-scoped");
+
+  // The block use resolves to the local x; the after-block use to the module x.
+  std::uint32_t const blockUse =
+      static_cast<std::uint32_t>(src.find("x = \"hi\""));
+  CHECK_MSG(resolveAt(doc, blockUse) == blockX,
+            "an in-block use must resolve to the block-local Dim");
+  std::uint32_t const afterBlock =
+      static_cast<std::uint32_t>(src.find("x = 1\nif"));
+  CHECK_MSG(resolveAt(doc, afterBlock) == moduleX,
+            "after the SCOPE block the module Dim is visible again");
+
+  // y is declared only inside the IF block: no module `y` exists.
+  std::uint32_t const yUse = static_cast<std::uint32_t>(src.find("y = 3"));
+  CHECK_MSG(resolveAt(doc, yUse) == nullptr,
+            "a block-local name must not resolve after its block");
+
+  // A FOR block nested in a procedure shadows the procedure's Dim; back in the
+  // procedure body the outer Dim is visible again.
+  std::uint32_t const procZ =
+      static_cast<std::uint32_t>(src.find("dim z as integer") + 4);
+  std::uint32_t const loopZ =
+      static_cast<std::uint32_t>(src.find("dim z as string") + 4);
+  std::uint32_t const loopUse = static_cast<std::uint32_t>(src.find("z = \""));
+  Symbol const *outerZ = resolveAt(doc, procZ);
+  Symbol const *loopLocal = resolveAt(doc, loopZ);
+  CHECK_MSG(outerZ && outerZ->kind == SymbolKind::Dim,
+            "the procedure z is a Dim");
+  CHECK_MSG(loopLocal && loopLocal->kind == SymbolKind::Dim,
+            "the FOR-loop z is its own Dim");
+  CHECK_MSG(resolveAt(doc, loopUse) == loopLocal,
+            "the loop use must resolve to the loop-local Dim");
+  std::uint32_t const procUse = static_cast<std::uint32_t>(src.find("z = 4"));
+  CHECK_MSG(resolveAt(doc, procUse) == outerZ,
+            "after the loop the procedure Dim is visible again");
+
+  // Occurrences split: each Dim collects only its own use.
+  CHECK_MSG(occurrencesOf(doc, *moduleX).size() == 1,
+            "the module x keeps its after-block usage only");
+  CHECK_MSG(occurrencesOf(doc, *blockX).size() == 1,
+            "the block x keeps its in-block usage only");
+}
+
+// A module-level plain Dim stays visible inside a module-level declaration
+// scope (FreeBASIC.md §8 probe sc.bas), and the storage gate still applies in
+// a procedure-local control block (module plain Dims stay invisible there).
+static void TestStorageGateInControlBlocks() {
+  std::string const src = "dim g as integer\n"
+                          "scope\n"
+                          "    g = 1\n"
+                          "end scope\n"
+                          "sub run()\n"
+                          "    scope\n"
+                          "        g = 2\n"
+                          "    end scope\n"
+                          "end sub\n"
+                          "if true then\n"
+                          "    g = 3\n"
+                          "end if\n";
+  AnalyzedDoc const doc = analyze(src);
+  Symbol const *moduleG =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("dim g") + 4));
+  CHECK_MSG(moduleG && moduleG->kind == SymbolKind::Dim,
+            "the plain module Dim resolves at its declaration");
+  CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(src.find("g = 1"))) ==
+                moduleG,
+            "a SCOPE block at module level inherits the plain module Dim");
+  CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(src.find("g = 3"))) ==
+                moduleG,
+            "an IF block at module level inherits the plain module Dim");
+  CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(src.find("g = 2"))) ==
+                nullptr,
+            "inside a procedure-local block the plain module Dim is still "
+            "storage-gated");
 }
 
 // --- M8: occurrencesAcross ---
@@ -543,6 +659,8 @@ int main() {
   TestAnalyzeIncludes();
   TestAnalyzePragmaOnce();
   TestStorageGate();
+  TestBlockScopesShadowAndDie();
+  TestStorageGateInControlBlocks();
   TestOccurrencesAcrossSingleFile();
   TestOccurrencesAcrossCrossFile();
   std::printf("resolve_checks: %s\n", failures == 0 ? "PASS" : "FAIL");

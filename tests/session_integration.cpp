@@ -188,6 +188,13 @@ char const kDidOpenDupFrame[] =
     R"FB({"uri":"file:///tmp/hello.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"dim x as integer\ndim x as string"}}})FB";
 
+// BUGS.md reuse example: a block-local `dim x` shadows the module `dim x`
+// (valid FreeBASIC), so must not be reported as a duplicate definition.
+char const kDidOpenScopeDupFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/hello.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"dim x as integer = 1\nscope\n    dim x as string = \"Hello\"\nend scope\nx = x + 1\n"}}})FB";
+
 char const kDidOpenHierFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
     R"FB({"uri":"file:///tmp/hello.bas","languageId":"basic","version":1,)FB"
@@ -462,6 +469,30 @@ void TestDiagnosticsReflectParseErrors() {
   Expect(output_all.find("\"end\":{\"line\":1,\"character\":5}") !=
              std::string::npos,
          "the duplicate range must end after the second 'x' name token");
+
+  session.stop();
+}
+
+// BUGS.md: a block-local `dim` that shadows an outer name must not be
+// reported as a duplicate definition — declaration scopes reuse parent names.
+void TestDiagnosticsRespectDeclarationScopes() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenScopeDupFrame));
+  std::string const output_all = WaitForPublishedUri(output, 1);
+
+  Expect(output_all.find("\"code\":\"duplicate-definition\"") ==
+             std::string::npos,
+         "a block-local Dim shadowing an outer Dim is not a duplicate");
+  Expect(output_all.find("\"diagnostics\":[]") != std::string::npos,
+         "a shadowing block must publish a healthy diagnostic list");
 
   session.stop();
 }
@@ -2336,6 +2367,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestInitializeReportsSyncCapabilities);
   RUN_TEST(TestDidOpenPublishesDiagnostics);
   RUN_TEST(TestDiagnosticsReflectParseErrors);
+  RUN_TEST(TestDiagnosticsRespectDeclarationScopes);
   RUN_TEST(TestDocumentSymbolsReturnHierarchy);
   RUN_TEST(TestHoverShowsSignatureAndDoc);
   RUN_TEST(TestFoldingRangesReturned);
