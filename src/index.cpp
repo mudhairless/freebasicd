@@ -520,6 +520,17 @@ void WorkspaceIndex::scan(bool async) {
   {
     std::lock_guard<std::mutex> const lk(mu_);
     for (auto itm = files_.begin(); itm != files_.end();) {
+      // Open-buffer entries (fromDisk=false) are live truth and survive the
+      // scan even when the file is not on disk (a new file, or an in-memory
+      // client buffer whose path only exists in the editor). Evicting them
+      // would drop an open document from the index mid-session. Only
+      // disk-derived state is subject to disk truth; a closed-then-deleted
+      // file's stale open entry is replaced by the next scan's disk read (the
+      // cache-hit guard never accepts it, so scan re-reads and re-upserts).
+      if (!itm->second->fromDisk) {
+        ++itm;
+        continue;
+      }
       if (!std::filesystem::exists(itm->second->path, ec) ||
           seen.count(itm->second->path) == 0) {
         subtractFromProjections(itm->second);
