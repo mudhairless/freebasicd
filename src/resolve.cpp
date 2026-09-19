@@ -701,6 +701,18 @@ CrossDecl findTypeDecl(AnalyzedDoc const &doc,
       return CrossDecl{file, t};
     }
   }
+  // Tier 3, mirroring resolveAcross (§12.2): a type the include closure does
+  // not declare still resolves to a workspace root of the same key — a header
+  // that is not included yet. Keeps `expr.member` hover/definition on the same
+  // footing as usage resolution when the declaring header sits outside the
+  // requesting file's closure (e.g. an unresolvable include path).
+  for (KeyedDecl const &kd : index->byKey(typeKey)) {
+    if (kd.decl != nullptr && !kd.decl->key.empty() &&
+        (kd.decl->kind == SymbolKind::Type ||
+         kd.decl->kind == SymbolKind::Union)) {
+      return CrossDecl{kd.file, kd.decl};
+    }
+  }
   return {};
 }
 

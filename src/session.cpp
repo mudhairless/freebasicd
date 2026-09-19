@@ -1003,11 +1003,35 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
     return rsp;
   }
 
+  // A reserved keyword never names a user symbol. Inside a procedure body a
+  // keyword was falling through to the enclosing procedure's signature
+  // (hover `as`, `with`, `end` and get the SUB's header), while at module
+  // level the same word shows its wiki link. Match module level: a keyword
+  // token goes straight to the intrinsic/wiki-link renderer below, unless
+  // the keyword opens the very declaration that starts there (`type Map`,
+  // `sub run`) — the declaration is more useful than a generic link.
+  fblang::Token const *hoveredTok = nullptr;
+  for (fblang::Token const &t : doc.tokens) {
+    if (t.beg <= offset && offset <= t.end) {
+      hoveredTok = &t;
+      break;
+    }
+  }
+  fblang::Symbol const *const innermost =
+      deepestSymbolAt(doc.parse.roots, offset);
+  bool const keywordHover =
+      hoveredTok != nullptr && hoveredTok->kind == fblang::TokenKind::Keyword;
+  bool const keywordOpensDeclaration =
+      keywordHover && innermost != nullptr &&
+      innermost->kind != fblang::SymbolKind::Scope &&
+      innermost->range.beg == hoveredTok->beg;
+
   // No declaration under the cursor: hover on the enclosing declaration for
   // context. Declaration-scope (Scope) nodes are structure, not symbols, so
   // climb past them — a Scope node's `name` is the opener word ("if") and was
   // being shown as the whole hover.
-  fblang::Symbol const *encl = deepestSymbolAt(doc.parse.roots, offset);
+  fblang::Symbol const *encl =
+      keywordHover && !keywordOpensDeclaration ? nullptr : innermost;
   while (encl != nullptr && encl->kind == fblang::SymbolKind::Scope) {
     encl = fblang::parentOf(doc.parse, encl);
   }

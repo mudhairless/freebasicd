@@ -339,6 +339,68 @@ char const *kKeywordHoverFrame =
     R"FB({"jsonrpc":"2.0","id":"khh","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/calls.bas"},"position":{"line":4,"character":0}}})FB";
 
+// A procedure whose body is a dense run of reserved keywords: hovering any of
+// them must show the keyword wiki link, never the enclosing sub signature (the
+// reported regression). `sub` at its own header still shows the signature.
+char const kDidOpenKeywordBodyFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/keybody.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"sub run(m as Map, secIndex as integer)\n)FB"
+    R"FB(    dim as integer walls\n)FB"
+    R"FB(    with map\n)FB"
+    R"FB(        dim as integer w = .walls(secIndex)\n)FB"
+    R"FB(    end with\n"}}})FB";
+
+// Hover the `dim` inside the body (line 1, char 4).
+char const *kKeywordBodyDimFrame =
+    R"FB({"jsonrpc":"2.0","id":"hkd","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/keybody.bas"},"position":{"line":1,"character":4}}})FB";
+
+// Hover the `with` inside the body (line 2, char 4).
+char const *kKeywordBodyWithFrame =
+    R"FB({"jsonrpc":"2.0","id":"hkw","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/keybody.bas"},"position":{"line":2,"character":4}}})FB";
+
+// Hover the `end` closer (line 4, char 4).
+char const *kKeywordBodyEndFrame =
+    R"FB({"jsonrpc":"2.0","id":"hke","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/keybody.bas"},"position":{"line":4,"character":4}}})FB";
+
+// Hover the `sub` word of its own header (line 0, char 0): the keyword opens
+// the declaration, so the signature — not a generic wiki link — is shown.
+char const *kKeywordBodySubHeadFrame =
+    R"FB({"jsonrpc":"2.0","id":"hks","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/keybody.bas"},"position":{"line":0,"character":0}}})FB";
+
+// Cross-file member hover: the field's type lives in a header the requesting
+// file's include closure cannot reach (the `#include` names a missing file),
+// so even then a member whose name collides with a local variable must resolve
+// to the *member* through the workspace byKey fallback, not to the variable
+// and not to the enclosing sub. Types are only in the second buffer.
+char const kDidOpenCrossTypeMainFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/hovx.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"#include once \"zzz_unresolved.bi\"\n)FB"
+    R"FB(sub run(m as Map)\n)FB"
+    R"FB(    dim as integer walls\n)FB"
+    R"FB(    dim as integer w = m.walls(1)\n)FB"
+    R"FB(end sub\n"}}})FB";
+
+char const kDidOpenCrossTypeWorldFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/world.bi","languageId":"basic","version":1,)FB"
+    R"FB("text":"type Wall\n)FB"
+    R"FB(    as integer v1, v2\n)FB"
+    R"FB(end type\n)FB"
+    R"FB(type Map\n)FB"
+    R"FB(    as Wall walls(10)\n)FB"
+    R"FB(end type\n"}}})FB";
+
+// Hover the `walls` member in `m.walls(1)` (line 3, char 26).
+char const *kCrossTypeMemberFrame =
+    R"FB({"jsonrpc":"2.0","id":"hxm","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovx.bas"},"position":{"line":3,"character":26}}})FB";
+
 // Intrinsic catalog document: expression-prefix positions (`s = le`, `s = pr`),
 // a statement-position prefix (`pr`), an intrinsic call for signature help, and
 // a `$`-suffixed hover target.
@@ -756,6 +818,90 @@ void TestHoverShowsMemberAccess() {
          "member hover shows the whole field list of the declaration line");
   Expect(localHover.find("Member of `w` (`Wall`).") != std::string::npos,
          "a variable member names the base variable and its type");
+
+  session.stop();
+}
+
+void TestKeywordHoverInsideProcedureShowsWikiLink() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenKeywordBodyFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  auto hover = [&](char const *frame, char const *id) {
+    input->append(MakeLspFrame(frame));
+    return WaitForOutputContaining(output, id);
+  };
+
+  // The reported regression: hovering a keyword inside a body used to show the
+  // enclosing procedure's signature. It must show the keyword's wiki link.
+  std::string const dimHover = hover(kKeywordBodyDimFrame, "\"id\":\"hkd\"");
+  Expect(dimHover.find("\"id\":\"hkd\"") != std::string::npos,
+         "keyword hover request must receive a response");
+  Expect(dimHover.find("KeyPgDim") != std::string::npos,
+         "the `dim` keyword inside a body shows its wiki link");
+  Expect(dimHover.find("sub run(m as Map") == std::string::npos,
+         "the `dim` keyword inside a body must not show the enclosing sub");
+
+  std::string const withHover = hover(kKeywordBodyWithFrame, "\"id\":\"hkw\"");
+  Expect(withHover.find("KeyPgWith") != std::string::npos,
+         "the `with` keyword inside a body shows its wiki link");
+  Expect(withHover.find("sub run(m as Map") == std::string::npos,
+         "the `with` keyword inside a body must not show the enclosing sub");
+
+  std::string const endHover = hover(kKeywordBodyEndFrame, "\"id\":\"hke\"");
+  Expect(endHover.find("KeyPgEnd") != std::string::npos,
+         "the `end` keyword inside a body shows its wiki link");
+  Expect(endHover.find("sub run(m as Map") == std::string::npos,
+         "the `end` keyword inside a body must not show the enclosing sub");
+
+  // The opener of a declaration is not a generic keyword: hovering the `sub`
+  // word of its own header must keep showing the procedure signature.
+  std::string const subHead = hover(kKeywordBodySubHeadFrame, "\"id\":\"hks\"");
+  Expect(subHead.find("sub run(m as Map") != std::string::npos,
+         "the `sub` word of its own header still shows the signature");
+
+  session.stop();
+}
+
+void TestMemberHoverResolvesCrossFileTypeOutsideClosure() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  // The include names a file that does not exist, so the type can only be
+  // reached through the workspace byKey fallback, not the include closure.
+  input->append(MakeLspFrame(kDidOpenCrossTypeMainFrame));
+  input->append(MakeLspFrame(kDidOpenCrossTypeWorldFrame));
+  Expect(WaitForPublishedUri(output, 2).empty() == false,
+         "both didOpens must publish diagnostics");
+
+  input->append(MakeLspFrame(kCrossTypeMemberFrame));
+  std::string const hover = WaitForOutputContaining(output, "\"id\":\"hxm\"");
+  Expect(hover.find("\"id\":\"hxm\"") != std::string::npos,
+         "member hover request must receive a response");
+  Expect(hover.find("as Wall walls(10)") != std::string::npos,
+         "a member whose type is outside the include closure still resolves to "
+         "the field declaration");
+  Expect(hover.find("Member of `m` (`Map`).") != std::string::npos,
+         "the outside-closure member names the base variable and its type");
+  Expect(hover.find("dim as integer walls") == std::string::npos,
+         "the member must not fall back to the colliding local variable");
+  Expect(hover.find("sub run(") == std::string::npos,
+         "the member must not fall back to the enclosing sub signature");
 
   session.stop();
 }
@@ -2662,6 +2808,8 @@ int main(int argc, char **argv) {
   RUN_TEST(TestHoverShowsSignatureAndDoc);
   RUN_TEST(TestHoverResolvesUsageToDeclaration);
   RUN_TEST(TestHoverShowsMemberAccess);
+  RUN_TEST(TestKeywordHoverInsideProcedureShowsWikiLink);
+  RUN_TEST(TestMemberHoverResolvesCrossFileTypeOutsideClosure);
   RUN_TEST(TestFoldingRangesReturned);
   RUN_TEST(TestDefinitionResolvesToDeclaration);
   RUN_TEST(TestReferencesListAllSites);

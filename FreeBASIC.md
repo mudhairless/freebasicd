@@ -254,7 +254,11 @@ to "the language is what the lexer does":
    of the same key (a header that is not included yet). Real fbc would treat
    such a name as an undeclared symbol; we resolve it as a convenience, so
    references/definitions can point outside the closure until the include is
-   added.
+   added. The member-access type lookup (`findTypeDecl`, used by `expr.member`
+   hover/definition through the base variable's and each intermediate member's
+   declared type) takes the same tier-3 `byKey` fallback, so a member chain
+   keeps resolving when its type's header sits outside the requesting file's
+   closure.
 3. **Multi-line comments (`/' ... '/`) are not lexed** (nestable, §5). Lexer
    must treat them as comment tokens before real-world `.bas` files parse
    cleanly.
