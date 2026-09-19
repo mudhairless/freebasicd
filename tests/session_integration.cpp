@@ -401,6 +401,42 @@ char const *kCrossTypeMemberFrame =
     R"FB({"jsonrpc":"2.0","id":"hxm","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/hovx.bas"},"position":{"line":3,"character":26}}})FB";
 
+// FreeBASIC lets reserved words name type members (`as string name`), so
+// hovering `t.name` must show the member/type info — never the intrinsic/
+// keyword page that would otherwise attach to the reserved word (fbc-verified,
+// FreeBASIC.md §2).
+char const kDidOpenKeywordMemberFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/hovkw.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"type Mytype\n)FB"
+    R"FB(    as string name\n)FB"
+    R"FB(    as integer other\n)FB"
+    R"FB(end type\n)FB"
+    R"FB(dim t as Mytype\n)FB"
+    R"FB(t.name = \"A Name\"\n)FB"
+    R"FB(sub s\n)FB"
+    R"FB(    dim v as Mytype\n)FB"
+    R"FB(    v.name = \"x\"\n)FB"
+    R"FB(end sub\n"}}})FB";
+
+// Hover `name` *inside* the word in `t.name` at module level (line 5, char
+// 3) — a cursor on the first char after `.` lands on the `.` token, which is
+// a separate pre-existing wart, so poke the middle of the word.
+char const *kKeywordMemberHoverModuleFrame =
+    R"FB({"jsonrpc":"2.0","id":"hkm","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovkw.bas"},"position":{"line":5,"character":3}}})FB";
+
+// Hover the member's own declaration `name` in `as string name` (line 1,
+// char 15): must behave like any identifier field, not the keyword page.
+char const *kKeywordMemberHoverDeclFrame =
+    R"FB({"jsonrpc":"2.0","id":"hkd","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovkw.bas"},"position":{"line":1,"character":15}}})FB";
+
+// Hover `name` in `v.name` inside a sub body (line 8, char 7).
+char const *kKeywordMemberHoverSubFrame =
+    R"FB({"jsonrpc":"2.0","id":"hks","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovkw.bas"},"position":{"line":8,"character":7}}})FB";
+
 // Unknown declared type: `map` is `as Shape`, but no `Shape` type exists
 // anywhere (not in this file, not the workspace). Hovering `.walls` inside the
 // `with` block must still say "Member of `map`." and must not fall back to the
@@ -939,6 +975,63 @@ void TestMemberHoverResolvesCrossFileTypeOutsideClosure() {
          "the member must not fall back to the colliding local variable");
   Expect(hover.find("sub run(") == std::string::npos,
          "the member must not fall back to the enclosing sub signature");
+
+  session.stop();
+}
+
+void TestMemberHoverKeywordNamedMember() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenKeywordMemberFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  // `t.name` at module level: the reserved word is a member, so hover shows
+  // the field — not the `Name(...)` intrinsic page the lexer kind would
+  // otherwise produce.
+  input->append(MakeLspFrame(kKeywordMemberHoverModuleFrame));
+  std::string const moduleHover =
+      WaitForOutputContaining(output, "\"id\":\"hkm\"");
+  Expect(moduleHover.find("\"id\":\"hkm\"") != std::string::npos,
+         "keyword-member hover request must receive a response");
+  Expect(moduleHover.find("as string name") != std::string::npos,
+         "hovering a reserved-word member shows its declaration line");
+  Expect(moduleHover.find("Member of `t` (`Mytype`).") != std::string::npos,
+         "the keyword member names the base variable and its type");
+  Expect(moduleHover.find("FreeBASIC intrinsic") == std::string::npos,
+         "a reserved-word member must not show the intrinsic page");
+  Expect(moduleHover.find("www.freebasic.net") == std::string::npos,
+         "a reserved-word member must not show the keyword wiki link");
+
+  // Hovering the member's own declaration behaves like an identifier field.
+  input->append(MakeLspFrame(kKeywordMemberHoverDeclFrame));
+  std::string const declHover =
+      WaitForOutputContaining(output, "\"id\":\"hkd\"");
+  Expect(declHover.find("as string name") != std::string::npos,
+         "hovering the declaration shows the same field info");
+  Expect(declHover.find("Field of type `Mytype`.") != std::string::npos,
+         "the reserved-word declaration is a field of its type");
+  Expect(declHover.find("FreeBASIC intrinsic") == std::string::npos,
+         "the declaration must not show the intrinsic page");
+
+  // Inside a sub body, `v.name` still names the member — never the enclosing
+  // procedure's signature.
+  input->append(MakeLspFrame(kKeywordMemberHoverSubFrame));
+  std::string const subHover =
+      WaitForOutputContaining(output, "\"id\":\"hks\"");
+  Expect(subHover.find("as string name") != std::string::npos,
+         "the in-sub keyword member shows its declaration line");
+  Expect(subHover.find("Member of `v` (`Mytype`).") != std::string::npos,
+         "the in-sub keyword member names the base variable and its type");
+  Expect(subHover.find("sub s(") == std::string::npos,
+         "the keyword member must not fall back to the enclosing sub");
 
   session.stop();
 }
@@ -2892,6 +2985,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestHoverShowsMemberAccess);
   RUN_TEST(TestKeywordHoverInsideProcedureShowsWikiLink);
   RUN_TEST(TestMemberHoverResolvesCrossFileTypeOutsideClosure);
+  RUN_TEST(TestMemberHoverKeywordNamedMember);
   RUN_TEST(TestMemberHoverFallsBackToOwningVariable);
   RUN_TEST(TestFoldingRangesReturned);
   RUN_TEST(TestDefinitionResolvesToDeclaration);

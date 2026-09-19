@@ -128,11 +128,16 @@ Symbol const *findParent(Symbol const &cur, Symbol const *node) {
   return nullptr;
 }
 
-// Identifier token at `off`, or nullptr. A cursor between two characters is
-// considered inside a token that spans it.
+// Name token (identifier, or a reserved word used as a name) at `off`, or
+// nullptr. A cursor between two characters is considered inside a token that
+// spans it. Reserved words are name-like because FreeBASIC lets most of them
+// become member names (`as string name`) and, by extension, other declared
+// names; scope markers carry no key, so keyword usage resolution only ever
+// matches a real keyword-named declaration (FreeBASIC.md §2, fbc-verified).
 Token const *tokenAt(std::vector<Token> const &tokens, std::uint32_t off) {
   for (auto const &t : tokens) {
-    if (t.kind == TokenKind::Identifier && t.beg <= off && off <= t.end) {
+    if ((t.kind == TokenKind::Identifier || t.kind == TokenKind::Keyword) &&
+        t.beg <= off && off <= t.end) {
       return &t;
     }
   }
@@ -640,12 +645,15 @@ Symbol const *typeRootIn(std::vector<Symbol> const &roots,
   return nullptr;
 }
 
-// Identifier token at `off` and its index in `tokens`, or (nullptr, 0).
+// Name token at `off` (identifier or keyword used as a name) and its index in
+// `tokens`, or (nullptr, 0). Reserved words can be member names, so the
+// member-access harness must find them (FreeBASIC.md §2).
 std::pair<Token const *, size_t> tokenAndIndex(std::vector<Token> const &tokens,
                                                std::uint32_t off) {
   for (size_t i = 0; i < tokens.size(); ++i) {
     Token const &t = tokens[i];
-    if (t.kind == TokenKind::Identifier && t.beg <= off && off <= t.end) {
+    if ((t.kind == TokenKind::Identifier || t.kind == TokenKind::Keyword) &&
+        t.beg <= off && off <= t.end) {
       return {&t, i};
     }
   }
@@ -732,10 +740,11 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
     return out;
   }
 
-  // Collect the member chain, right to left. Each segment is an identifier
-  // token; the token between segments is the `.`/`->` operator. The chain
-  // either bottoms out at a plain variable identifier (`w.v1`) or at a
-  // leading `.` whose base is the enclosing `with` target (implicit).
+  // Collect the member chain, right to left. Each segment is a name token
+  // (identifier, or a reserved word used as a member name); the token between
+  // segments is the `.`/`->` operator. The chain either bottoms out at a plain
+  // variable identifier (`w.v1`) or at a leading `.` whose base is the
+  // enclosing `with` target (implicit).
   struct Seg {
     std::string name; // lowercased lookup key
     size_t tokIdx = 0;
@@ -762,6 +771,18 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
       i = i - 2; // `a.b.c`: keep walking
       continue;
     }
+    if (lhs.kind == TokenKind::Keyword && i >= 3 &&
+        tokens[i - 3].kind == TokenKind::Symbol &&
+        (tokens[i - 3].text() == "." || tokens[i - 3].text() == "->")) {
+      // Reserved words can name members, but only mid-chain (`v.name.x`:
+      // the keyword follows `.`/`->`). A keyword not preceded by an operator
+      // ends the chain — `if .walls(i).sectorID` must stop at `if` and leave
+      // the base to the `with` target. Keyword-named *variables* don't exist
+      // (fbc rejects `dim name`), so a leftmost keyword segment is never a
+      // chain root to resolve.
+      i = i - 2;
+      continue;
+    }
     if (lhs.kind == TokenKind::Symbol &&
         (lhs.text() == ")" || lhs.text() == "]")) {
       // Indexed/called member: `.arr(i).field`. Hop over the call to the
@@ -780,6 +801,15 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
         }
       }
       if (j > 0 && tokens[j - 1].kind == TokenKind::Identifier) {
+        i = j - 1;
+        continue;
+      }
+      if (j > 1 && tokens[j - 1].kind == TokenKind::Keyword &&
+          tokens[j - 2].kind == TokenKind::Symbol &&
+          (tokens[j - 2].text() == "." || tokens[j - 2].text() == "->")) {
+        // The call receiver can be a reserved-word member (`v.name(i).x`),
+        // but only when it directly follows an operator; a keyword receiver
+        // elsewhere (an intrinsic call like `name(i)`) never opens a chain.
         i = j - 1;
         continue;
       }

@@ -372,14 +372,31 @@ private:
         // to register `wall`. The member's signature still covers the full
         // line so the declared type survives for hover/resolve.
         advance();
-        if (cur_.kind == TokenKind::Identifier ||
-            (cur_.kind == TokenKind::Keyword &&
-             isBuiltinType(toLowerChars(cur_.text())))) {
+        // The type is one name token; a keyword is consumed as part of the
+        // type only while a member name still follows, so `as integer name`
+        // keeps `name` as the member while `as name n` (`name` is a keyword
+        // *type* name) and `as integer ptr p` keep `n`/`p`. Reserved words
+        // are valid field names (fbc-verified): `as string name`.
+        if (cur_.kind == TokenKind::Identifier) {
           advance();
+        } else if (cur_.kind == TokenKind::Keyword) {
+          Token const nxt = lex_.peek(0);
+          bool const memberFollows = nxt.kind == TokenKind::Identifier ||
+                                     (nxt.kind == TokenKind::Keyword &&
+                                      toLowerChars(nxt.text()) != "as");
+          if (isBuiltinType(toLowerChars(cur_.text())) || memberFollows) {
+            advance();
+          }
         }
         continue;
       }
-      if (captureMember && k == TokenKind::Identifier) {
+      if (captureMember &&
+          (k == TokenKind::Identifier ||
+           (k == TokenKind::Keyword && toLowerChars(cur_.text()) != "as" &&
+            toLowerChars(cur_.text()) != "ptr"))) {
+        // Reserved-word member names (`as string name`) are captured like
+        // identifiers. `ptr`/`const` are always type modifiers, never field
+        // names (fbc rejects `as integer ptr` with a bare `ptr` member).
         Symbol m;
         m.kind = mk;
         m.name = std::string(cur_.text());

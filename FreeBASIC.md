@@ -32,6 +32,14 @@ Documentation: https://www.freebasic.net/wiki/ProPgIdentifierLookup
 - `.` is **never** part of an identifier (member access / ellipsis operator);
   periods inside names are allowed only in `qb`/`fblite` `(wiki)`. `@` is the
   address-of operator, not a suffix.
+- **Reserved words are valid member names** (and valid type names):
+  `type Mytype / as string name / end type` compiles clean under
+  `fbc 1.10.2 -w all`, as do `len`, `mid`, `dim`, `tuple`, `erase` as member
+  names and `type name` used as a type. `ptr`/`const` are the exceptions —
+  fbc rejects them as member names (`error`: "expected member name"). Keyword
+  *variable* names stay illegal (`dim name` → fbc error); only the member-name
+  slot (and the type-name slot) opens the keyword set. The lexer therefore
+  must treat a reserved word as a name in those positions.
 - Max identifier name of a namespace/type can cross modules; normal names are
   module-local unless declared `shared`/`common` (see §8).
 
