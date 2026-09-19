@@ -13,7 +13,7 @@ remaining work.
 |-----------|--------|
 | M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
 | M2 — Lexer + parser language layer, dialects, fbc corpus | done |
-| M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done (2026-09: hover resolves member access `.`/`->` through the base variable's declared type — cross-file, `with`-implicit, and indexed/chained — instead of falling back to the enclosing routine; a follow-up bugfix serves documents opened from a sibling project *outside* the workspace root via an on-demand include closure) |
+| M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done (2026-09: hover resolves member access `.`/`->` through the base variable's declared type — cross-file, `with`-implicit, and indexed/chained — instead of falling back to the enclosing routine; a follow-up bugfix serves documents opened from a sibling project *outside* the workspace root via an on-demand include closure; a second bugfix adds a soft fallback: when the declared type is unknown or the member missing, `.walls` inside `with map` still reads "Member of `map`." instead of a colliding identifier or the sub signature) |
 | M4 — persistent workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an **in-memory-only** index — no on-disk cache) |
 | M5 — workspace spine: occurrence projection + include graph | done |
 | M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |

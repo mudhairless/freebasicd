@@ -133,6 +133,11 @@ struct MemberAccess {
                              // access whose owner is a plain type
   std::string ownerTypeName; // display name of the type that owns `member`
   bool direct = false; // `member` hangs directly off `baseName`'s declared type
+  // The cursor is on a `.`/`->` member access whose chain root variable
+  // resolved, even when the declared type — and so the member itself — could
+  // not be pinned down (unknown/unindexed type). Lets the hover name the
+  // owning variable instead of falling through to a colliding identifier.
+  bool memberAccess = false;
 };
 
 // Resolves `expr.member` at `off`, where `off` may sit anywhere on the member
@@ -140,8 +145,9 @@ struct MemberAccess {
 // `.member`), `var.member`, chained `a.b.c`, and indexed member access
 // (`.arr(i).field` — the declared element type drives the next lookup).
 // `index == nullptr` restricts base-variable resolution to the requesting doc
-// (the with-scope scan is always in-file). Returns an empty MemberAccess when
-// `off` is not a member access or any link of the chain fails to resolve.
+// (the with-scope scan is always in-file). `member` is null when the chain's
+// declared type or a link cannot be resolved, but `memberAccess` (and the
+// resolved `baseName`) still report the access for a soft-fallback hover.
 MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
                                  std::string const &normalizedPath,
                                  std::uint32_t off,

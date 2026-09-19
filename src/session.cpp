@@ -976,6 +976,24 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
     return rsp;
   }
 
+  // The cursor is on a `expr.member` / `with`-implicit member access whose
+  // chain root variable resolved, but the declared type — and so the member
+  // itself — could not be pinned down (type unknown, unindexed, or the member
+  // is missing). Name the owning variable anyway; falling through here would
+  // point at a colliding identifier or the enclosing routine, which is worse
+  // than the honest "Member of `x`." when no type info exists.
+  if (access.memberAccess) {
+    std::string markdown = "Member of `" + access.baseName + "`.";
+    if (!access.ownerTypeName.empty()) {
+      markdown = "Member of `" + access.baseName + "` (`" +
+                 access.ownerTypeName + "`).";
+    }
+    rsp.result.contents.second.emplace(
+        MarkupContent{std::string("markdown"), std::move(markdown)});
+    setRange(tokRange);
+    return rsp;
+  }
+
   // Hover on a variable *usage* shows the declaration it resolves to: a use
   // must show the declaring Dim/Const/Param, not the enclosing symbol.
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);

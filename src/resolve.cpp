@@ -816,6 +816,8 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
     if (base.decl == nullptr) {
       return out;
     }
+    out.baseName = std::string(base.decl->name);
+    out.memberAccess = true;
     std::string const tn = declaredTypeName(*base.decl);
     if (tn.empty()) {
       return out;
@@ -824,13 +826,14 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
     if (typeDecl.decl == nullptr) {
       return out;
     }
-    out.baseName = std::string(base.decl->name);
   } else {
     Seg const &root = segs.front();
     CrossDecl const base = resolveVar(tokens[root.tokIdx].beg);
     if (base.decl == nullptr) {
       return out;
     }
+    out.baseName = std::string(base.decl->name);
+    out.memberAccess = true;
     std::string const tn = declaredTypeName(*base.decl);
     if (tn.empty()) {
       return out;
@@ -839,7 +842,6 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
     if (typeDecl.decl == nullptr) {
       return out;
     }
-    out.baseName = std::string(base.decl->name);
     first = 1;
   }
   if (first >= segs.size()) {
@@ -862,11 +864,11 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
       return out;
     }
   }
+  out.ownerTypeName = std::string(typeDecl.decl->name);
   out.member = findMember(*typeDecl.decl, segs.back().name);
   if (out.member == nullptr) {
     return out;
   }
-  out.ownerTypeName = std::string(typeDecl.decl->name);
   out.direct = (first + 1 == segs.size());
   return out;
 }

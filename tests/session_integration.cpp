@@ -401,6 +401,43 @@ char const *kCrossTypeMemberFrame =
     R"FB({"jsonrpc":"2.0","id":"hxm","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/hovx.bas"},"position":{"line":3,"character":26}}})FB";
 
+// Unknown declared type: `map` is `as Shape`, but no `Shape` type exists
+// anywhere (not in this file, not the workspace). Hovering `.walls` inside the
+// `with` block must still say "Member of `map`." and must not fall back to the
+// colliding local `walls` or to the enclosing sub's signature.
+char const kDidOpenHovUnknownTypeFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/hovunk.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"sub run(map as Shape, secIndex as integer)\n)FB"
+    R"FB(    dim as integer walls\n)FB"
+    R"FB(    with map\n)FB"
+    R"FB(        dim as integer a = .walls(secIndex)\n)FB"
+    R"FB(    end with\n)FB"
+    R"FB(end sub\n"}}})FB";
+
+// Hover the `walls` member of `.walls(secIndex)` (line 3, char 28).
+char const *kHoverUnknownTypeMemberFrame =
+    R"FB({"jsonrpc":"2.0","id":"hxu","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovunk.bas"},"position":{"line":3,"character":28}}})FB";
+
+// Known type, missing member: `Map` exists with only a `walls` field, so
+// `m2.missing` cannot resolve to a field — the hover must still name the
+// owning variable and its (known) type.
+char const kDidOpenHovMissingMemberFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/hovmiss.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"type Map\n)FB"
+    R"FB(    as integer walls(10)\n)FB"
+    R"FB(end type\n)FB"
+    R"FB(sub run(m2 as Map)\n)FB"
+    R"FB(    dim as integer f = m2.missing\n)FB"
+    R"FB(end sub\n"}}})FB";
+
+// Hover the `missing` member of `m2.missing` (line 4, char 26).
+char const *kHoverMissingMemberFrame =
+    R"FB({"jsonrpc":"2.0","id":"hxq","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/hovmiss.bas"},"position":{"line":4,"character":26}}})FB";
+
 // Intrinsic catalog document: expression-prefix positions (`s = le`, `s = pr`),
 // a statement-position prefix (`pr`), an intrinsic call for signature help, and
 // a `$`-suffixed hover target.
@@ -902,6 +939,51 @@ void TestMemberHoverResolvesCrossFileTypeOutsideClosure() {
          "the member must not fall back to the colliding local variable");
   Expect(hover.find("sub run(") == std::string::npos,
          "the member must not fall back to the enclosing sub signature");
+
+  session.stop();
+}
+
+void TestMemberHoverFallsBackToOwningVariable() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  // When the declared type of the chain root is unknown anywhere, the hover can
+  // still say the access is a member of the owning variable — never a colliding
+  // local or the enclosing routine.
+  input->append(MakeLspFrame(kDidOpenHovUnknownTypeFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kHoverUnknownTypeMemberFrame));
+  std::string const hover = WaitForOutputContaining(output, "\"id\":\"hxu\"");
+  Expect(hover.find("\"id\":\"hxu\"") != std::string::npos,
+         "member hover request must receive a response");
+  Expect(hover.find("Member of `map`.") != std::string::npos,
+         "an unknown-type with-implicit member names the with-target");
+  Expect(hover.find("Local variable") == std::string::npos,
+         "the unknown-type member must not fall back to the colliding local");
+  Expect(hover.find("sub run(") == std::string::npos,
+         "the unknown-type member must not fall back to the sub signature");
+
+  // A known type with a missing field still names the owning variable and the
+  // type, instead of guessing wrong.
+  input->append(MakeLspFrame(kDidOpenHovMissingMemberFrame));
+  Expect(WaitForPublishedUri(output, 2).empty() == false,
+         "second didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kHoverMissingMemberFrame));
+  std::string const hover2 = WaitForOutputContaining(output, "\"id\":\"hxq\"");
+  Expect(hover2.find("Member of `m2` (`Map`).") != std::string::npos,
+         "a missing member still names the owning variable and its known type");
+  Expect(TailAfter(hover2, "\"id\":\"hxq\"").find("Local variable") ==
+             std::string::npos,
+         "the missing member must not fall back to a variable");
 
   session.stop();
 }
@@ -2810,6 +2892,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestHoverShowsMemberAccess);
   RUN_TEST(TestKeywordHoverInsideProcedureShowsWikiLink);
   RUN_TEST(TestMemberHoverResolvesCrossFileTypeOutsideClosure);
+  RUN_TEST(TestMemberHoverFallsBackToOwningVariable);
   RUN_TEST(TestFoldingRangesReturned);
   RUN_TEST(TestDefinitionResolvesToDeclaration);
   RUN_TEST(TestReferencesListAllSites);
