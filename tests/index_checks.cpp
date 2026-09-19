@@ -494,6 +494,163 @@ int main() {
           "a scan must resolve the include through the workspace child dir");
       scan.close();
     }
+
+    // The project-dir include step (3) serves `#include` targets of a document
+    // opened from a sibling project outside the workspace root through that
+    // project's fbc-style `-i inc` layout; in-root documents never search it.
+    {
+      fs::path const prjRoot = sandbox / "prjws"; // the client's workspace
+      fs::create_directories(prjRoot);
+      fs::path const proj = sandbox / "proj"; // sibling project, out of root
+      fs::create_directories(proj / "src");
+      fs::create_directories(proj / "inc" / "extra");
+      writeFile(prjRoot / "main.bas", "dim wsVal as integer\n");
+      writeFile(proj / "src" / "main.bas", "#include \"world.bi\"\n");
+      writeFile(proj / "inc" / "world.bi", "type wall\nend type\n");
+      writeFile(proj / "inc" / "extra" / "more.bi", "dim moreVal as integer\n");
+
+      std::string const wsMainNorm = normalizePath(prjRoot / "main.bas");
+      std::string const projMainNorm = normalizePath(proj / "src" / "main.bas");
+
+      // Own dir misses, so the nearest ancestor with an `inc` child (the
+      // project dir) answers for the out-of-root doc.
+      std::optional<std::string> resolved =
+          resolveIncludeTarget("world.bi", projMainNorm, prjRoot, fs::path{});
+      CHECK_MSG(resolved &&
+                    *resolved == normalizePath(proj / "inc" / "world.bi"),
+                "an out-of-root doc must reach its project's inc dir");
+
+      // An immediate subdirectory of the project dir answers sub-folder
+      // includes (`#include "extra/more.bi"` -> `<proj>/inc/extra/more.bi`).
+      resolved = resolveIncludeTarget("extra/more.bi", projMainNorm, prjRoot,
+                                      fs::path{});
+      CHECK_MSG(resolved && *resolved == normalizePath(proj / "inc" / "extra" /
+                                                       "more.bi"),
+                "an immediate project subdir must answer sub-folder includes");
+
+      // The including file's own directory still wins over the project dir.
+      writeFile(proj / "src" / "world.bi", "dim ownVal as integer\n");
+      resolved =
+          resolveIncludeTarget("world.bi", projMainNorm, prjRoot, fs::path{});
+      CHECK_MSG(resolved &&
+                    *resolved == normalizePath(proj / "src" / "world.bi"),
+                "the file's own directory must still win");
+
+      // In-root documents never consult a project dir: the sibling project's
+      // header is unreachable and the include stays unresolved.
+      resolved =
+          resolveIncludeTarget("world.bi", wsMainNorm, prjRoot, fs::path{});
+      CHECK_MSG(!resolved.has_value(),
+                "an in-root doc must not search a sibling project's inc dir");
+    }
+
+    // ensureClosure builds the transitive #include closure of an out-of-root
+    // document on demand (resolution-only): fileAt/transitiveIncludes answer
+    // from it, but snapshot()/byKey() stay strictly workspace-scoped; closed
+    // files are reused while their disk state is unchanged; an out-of-root
+    // upsert (buffer edit) invalidates its closure entry.
+    {
+      fs::path const clRoot = sandbox / "clws";
+      fs::create_directories(clRoot);
+      writeFile(clRoot / "main.bas", "dim wsOnly as integer\n");
+      fs::path const cproj = sandbox / "cproj";
+      fs::create_directories(cproj / "src");
+      fs::create_directories(cproj / "inc");
+      writeFile(cproj / "src" / "main.bas",
+                "#include once \"world.bi\"\nsub runPhysics()\nend sub\n");
+      writeFile(cproj / "inc" / "world.bi",
+                "#include \"util.bi\"\ntype wall\n    as integer v1, v2\n"
+                "end type\n");
+      writeFile(cproj / "inc" / "util.bi", "dim shared utilVal as integer\n");
+
+      WorkspaceIndex cl(clRoot);
+      cl.open();
+      cl.scan(false);
+
+      std::string const clMainNorm = normalizePath(cproj / "src" / "main.bas");
+      std::string const worldNorm = normalizePath(cproj / "inc" / "world.bi");
+      std::string const utilNorm = normalizePath(cproj / "inc" / "util.bi");
+
+      // Out-of-root docs are never scanned into the workspace index.
+      CHECK(cl.fileAt(clMainNorm) == nullptr);
+      CHECK(cl.size() == 1);
+      CHECK(cl.byKey("runphysics").empty());
+
+      int resolverCalls = 0;
+      // Disk-backed resolver mirroring the session's ensureRequestClosure
+      // path: content-addressed parse, fromDisk=true for closed files.
+      auto diskResolver = [&](std::string const &p) {
+        ++resolverCalls;
+        std::ifstream in(p, std::ios::binary);
+        if (!in) {
+          return std::shared_ptr<IndexedFile const>();
+        }
+        std::string const text{std::istreambuf_iterator<char>(in),
+                               std::istreambuf_iterator<char>()};
+        std::uint64_t m = 0;
+        std::uint64_t s = 0;
+        statFile(p, &m, &s);
+        AnalyzedDoc doc = analyze(text);
+        return std::make_shared<IndexedFile const>(
+            indexedFileFromAnalysis(p, m, s, doc, clRoot, /*fromDisk=*/true));
+      };
+
+      cl.ensureClosure(clMainNorm, diskResolver);
+      CHECK_MSG(resolverCalls == 3,
+                "one walk resolves the start + world.bi + util.bi");
+
+      // Resolution answers now come from the closure store.
+      CHECK(cl.fileAt(clMainNorm) != nullptr);
+      std::shared_ptr<IndexedFile const> const worldFile = cl.fileAt(worldNorm);
+      CHECK(worldFile != nullptr);
+      bool sawWall = false;
+      for (Symbol const &root : worldFile->roots) {
+        sawWall = sawWall || root.key == "wall";
+      }
+      CHECK_MSG(sawWall, "the closure entry carries world.bi's type");
+      std::vector<std::string> const incs = cl.transitiveIncludes(clMainNorm);
+      CHECK(incs.size() == 2 && incs[0] == worldNorm && incs[1] == utilNorm);
+
+      // ... while the workspace-scoped views stay clean.
+      CHECK(cl.byKey("wall").empty());
+      CHECK(cl.byKey("runphysics").empty());
+      CHECK(cl.size() == 1);
+      std::vector<std::shared_ptr<IndexedFile const>> const snap =
+          cl.snapshot();
+      CHECK(snap.size() == 1 &&
+            snap[0]->path == normalizePath(clRoot / "main.bas"));
+
+      // Idempotent second walk: the requesting file is re-resolved (it is a
+      // live buffer), the closed files reuse their cached entries.
+      cl.ensureClosure(clMainNorm, diskResolver);
+      CHECK_MSG(resolverCalls == 4,
+                "a repeat walk re-resolves only the requesting file");
+
+      // A changed closure file invalidates its cached entry and is
+      // re-resolved; unchanged siblings are still reused.
+      writeFile(cproj / "inc" / "world.bi",
+                "#include \"util.bi\"\ntype wall\n    as integer v9\n"
+                "end type\n");
+      cl.ensureClosure(clMainNorm, diskResolver);
+      CHECK_MSG(resolverCalls == 6,
+                "a changed closure file is re-resolved, siblings reused");
+
+      // An out-of-root upsert (an open-buffer edit) invalidates the path's
+      // closure entry so the next request re-reads the live buffer.
+      AnalyzedDoc const bufDoc =
+          analyze("type wall\n    as integer vNew\nend type\n");
+      cl.upsert(indexedFileFromAnalysis(worldNorm, 123, 999, bufDoc, clRoot,
+                                        /*fromDisk=*/false));
+      CHECK(cl.fileAt(worldNorm) == nullptr);
+      cl.ensureClosure(clMainNorm, diskResolver);
+      CHECK(cl.fileAt(worldNorm) != nullptr);
+
+      // remove() likewise cleans the closure store.
+      cl.remove(worldNorm);
+      CHECK(cl.fileAt(worldNorm) == nullptr);
+
+      cl.close();
+    }
   }
 
   fs::remove_all(sandbox);

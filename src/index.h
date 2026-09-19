@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -59,6 +60,14 @@ struct KeyedDecl {
   Symbol const *decl;
 };
 
+// Builds the resolution entry for a normalized path on demand: reads the live
+// open buffer when the client has one, else the file on disk, and parses it.
+// Returns nullptr when the path cannot be served (deleted / unreadable). Used
+// only by WorkspaceIndex::ensureClosure for documents outside the workspace
+// root, whose closure a workspace scan never reaches.
+using FileResolver =
+    std::function<std::shared_ptr<IndexedFile const>(std::string const &)>;
+
 // Per-workspace symbol index, purely in memory: no symbols or index state are
 // ever written to disk.
 //
@@ -106,15 +115,33 @@ public:
 
   // Transitively included normalized paths of `normalizedPath` (itself
   // excluded), textual include pre-order, each file once even through a
-  // diamond; cycles (a.bi <-> b.bi) terminate.
+  // diamond; cycles (a.bi <-> b.bi) terminate. Answers from the workspace
+  // scan/open-buffer entries first, and additionally from the on-demand
+  // closure store (see ensureClosure) when the requesting document lives
+  // outside the workspace root.
   std::vector<std::string>
   transitiveIncludes(std::string const &normalizedPath) const;
 
   // The indexed entry for a normalized path, or nullptr when the index has
-  // no entry (never indexed / not scanned yet). Includes open-buffer
-  // entries. The returned shared_ptr pins the immutable snapshot.
+  // no entry (never indexed / not scanned yet). Includes open-buffer entries
+  // and on-demand closure entries (see ensureClosure). The returned
+  // shared_ptr pins the immutable snapshot.
   std::shared_ptr<IndexedFile const>
   fileAt(std::string const &normalizedPath) const;
+
+  // Resolve the transitive include closure of `normalizedPath` (a requesting
+  // open document) on demand: every reachable file — the requesting file plus
+  // each resolved include, transitively — is fetched through `resolver` and
+  // recorded in the resolution maps only (`fileAt`/`transitiveIncludes`),
+  // never in `snapshot()`/`byKey()` so workspace/symbol stays strictly
+  // workspace-scoped. In-root files the index owns are left untouched. The
+  // requesting file itself is always re-resolved (it is a live buffer);
+  // closed files reuse the stored entry while their (mtime, size) is current
+  // and an open-buffer closure file is always re-resolved. Safe to call from
+  // the handler pool; concurrent walks for the same document share one
+  // expansion.
+  void ensureClosure(std::string const &normalizedPath,
+                     FileResolver const &resolver);
 
   std::filesystem::path root() const;
 
@@ -138,6 +165,23 @@ private:
       byKey_; // key -> module-scope decls
   std::map<std::string, std::vector<IncludeEdge>>
       outInc_; // path -> include edges
+
+  // Resolution-only closures for documents outside the workspace root (see
+  // ensureClosure): the entry plus the disk state it was built from. Never
+  // consulted by snapshot()/byKey()/scan — workspace/symbol stays strictly
+  // workspace-scoped — but fileAt()/transitiveIncludes() answer from here.
+  // Guarded by mu_ like the maps above.
+  struct ClosureEntry {
+    std::shared_ptr<IndexedFile const> entry;
+    std::uint64_t mtime = 0;
+    std::uint64_t size = 0;
+  };
+  std::map<std::string, ClosureEntry> closureFiles_;
+
+  // Serializes on-demand closure walks so concurrent handler threads share
+  // one expansion (and the resolver, which does file I/O, never runs inside
+  // mu_).
+  mutable std::mutex closureMu_;
 
   std::atomic<bool> running_{false};
   std::thread scanner_;
@@ -176,10 +220,16 @@ std::filesystem::path defaultSystemIncludeDir();
 // order (its `-i` dirs join via an M11 settings option later):
 //   1. relative to the including file's own directory;
 //   2. relative to the workspace root;
-//   3. relative to each immediate subdirectory of the workspace root
+//   3. relative to the including file's own FreeBASIC project directory — the
+//      nearest ancestor with an `inc`/`include` child of the source tree —
+//      and each immediate subdirectory of it, but only when the including
+//      file lies outside the workspace root: an editor may open a document
+//      from a sibling project, whose headers (fbc's `-i inc` layout) the
+//      workspace-root search can never see;
+//   4. relative to each immediate subdirectory of the workspace root
 //      (projects keep shared headers in `inc` / `include` / `src` etc., so
 //      `#include "folder/file.bi"` matches under such a child);
-//   4. relative to the FreeBASIC installation's system header folder, resolved
+//   5. relative to the FreeBASIC installation's system header folder, resolved
 //      from `fbc` on PATH (`systemIncludeDir`; pass an empty path to skip the
 //      system search).
 // Both `/` and `\` separators are accepted. Returns the normalized absolute

@@ -948,7 +948,10 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
   // Member access (`.` / `->`): hover shows the field declaration, not the
   // enclosing procedure. `expr.member` resolves through the base variable's
   // declared type (across the include closure) and each intermediate member's
-  // own declared type for chained access (`.sectors(i).floorHeight`).
+  // own declared type for chained access (`.sectors(i).floorHeight`). The
+  // closure may live in a sibling project outside the workspace root (the
+  // requesting document's own project), so warm it on demand first.
+  ensureRequestClosure(normPath);
   fblang::MemberAccess const access =
       fblang::resolveMemberAccess(doc, normPath, offset, index_.get());
   if (access.member != nullptr) {
@@ -1542,6 +1545,10 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
         doc.parse, fblang::innermostScope(doc.parse, offset));
     std::string const normPath = fblang::normalizePath(
         req.params.textDocument.uri.GetAbsolutePath().path());
+    // The requesting document may open from a sibling project outside the
+    // workspace root; stay on the live-buffer include closure (see
+    // ensureRequestClosure) so its module-level names complete too.
+    ensureRequestClosure(normPath);
     for (std::string const &closurePath :
          index_->transitiveIncludes(normPath)) {
       std::shared_ptr<fblang::IndexedFile const> const closure =
@@ -2025,6 +2032,31 @@ fblang::AnalysisCache::Stats FreeBasicServer::analysisStats() const {
   return analysisCache_.stats();
 }
 
+void FreeBasicServer::ensureRequestClosure(std::string const &normPath) {
+  if (!index_) {
+    return;
+  }
+  // On-demand closure for a document outside the workspace root: the resolver
+  // serves each closure file from the live open buffer when the client has
+  // one, else from disk, both through the content-addressed analysis cache
+  // (repeat requests reuse the single analysis per (path, content)).
+  index_->ensureClosure(normPath, [this](std::string const &p) {
+    std::shared_ptr<fblang::DocumentContent const> const dc =
+        contentForPathAnalysis(p);
+    if (!dc) {
+      return std::shared_ptr<fblang::IndexedFile const>();
+    }
+    std::uint64_t mtime = 0;
+    std::uint64_t size = 0;
+    fblang::statFile(p, &mtime, &size);
+    bool const fromBuffer =
+        workingFiles_.GetFileByFilename(AbsolutePath(p)) != nullptr;
+    return std::make_shared<fblang::IndexedFile const>(
+        fblang::indexedFileFromAnalysis(p, mtime, size, dc->analysis,
+                                        index_->root(), !fromBuffer));
+  });
+}
+
 std::shared_ptr<fblang::AnalysisCache::Entry const>
 FreeBasicServer::cachedRequestAnalysis(lsDocumentUri const &uri) {
   std::shared_ptr<WorkingFile> const file =
@@ -2041,7 +2073,11 @@ FreeBasicServer::cachedRequestAnalysis(lsDocumentUri const &uri) {
 fblang::CrossDecl
 FreeBasicServer::resolveAtOrAcross(fblang::AnalyzedDoc const &doc,
                                    std::string const &normalizedPath,
-                                   std::uint32_t off) const {
+                                   std::uint32_t off) {
+  // A requesting document opened from outside the workspace root has no scan
+  // entry; build its include closure on demand so cross-file resolution serves
+  // it (see ensureClosure).
+  ensureRequestClosure(normalizedPath);
   if (index_) {
     return fblang::resolveAcross(doc, normalizedPath, off, *index_);
   }

@@ -169,5 +169,12 @@ private:
   // `file == nullptr` in both cases; the caller keeps `doc` alive.
   fblang::CrossDecl resolveAtOrAcross(fblang::AnalyzedDoc const &doc,
                                       std::string const &normalizedPath,
-                                      std::uint32_t off) const;
+                                      std::uint32_t off);
+
+  // A document opened from outside the workspace root (an editor working on a
+  // sibling project beside the client root) has no workspace-scan entry: build
+  // its #include closure on demand so cross-file resolution serves it too.
+  // Resolution-only — the entries never surface through workspace/symbol (see
+  // WorkspaceIndex::ensureClosure).
+  void ensureRequestClosure(std::string const &normalizedPath);
 };

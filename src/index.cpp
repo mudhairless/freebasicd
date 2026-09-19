@@ -194,6 +194,50 @@ std::filesystem::path defaultSystemIncludeDir() {
   return cached;
 }
 
+// True when `normalizedPath` is `normalizedRoot` itself or lies under it. A
+// mirror of WorkspaceIndex::isInsideRoot for the free include-search helpers.
+bool pathAtOrUnder(std::string const &normalizedPath,
+                   std::string const &normalizedRoot) {
+  if (normalizedPath.size() < normalizedRoot.size()) {
+    return false;
+  }
+  if (normalizedPath.compare(0, normalizedRoot.size(), normalizedRoot) != 0) {
+    return false;
+  }
+  if (normalizedPath.size() == normalizedRoot.size()) {
+    return true;
+  }
+  char const next = normalizedPath[normalizedRoot.size()];
+  return next == '/' || next == '\\';
+}
+
+// The FreeBASIC project directory of an including file: the nearest ancestor
+// directory (the file excluded) that has an `inc` or `include` subdirectory —
+// fbc's canonical `-i inc` layout, where shared headers live in a sibling of
+// the source tree. Used as an additional include-search anchor for documents
+// opened from a sibling project outside the workspace root. Returns an empty
+// path when no ancestor matches.
+std::filesystem::path projectIncludeDirOf(std::filesystem::path const &file) {
+  std::filesystem::path dir = file.parent_path();
+  for (;;) {
+    if (dir.empty()) {
+      break;
+    }
+    for (char const *sub : {"inc", "include"}) {
+      std::error_code ec;
+      if (std::filesystem::is_directory(dir / sub, ec)) {
+        return dir;
+      }
+    }
+    std::filesystem::path const parent = dir.parent_path();
+    if (parent == dir) {
+      break;
+    }
+    dir = parent;
+  }
+  return {};
+}
+
 std::optional<std::string>
 resolveIncludeTarget(std::string_view literal,
                      std::filesystem::path const &includingFile,
@@ -217,7 +261,43 @@ resolveIncludeTarget(std::string_view literal,
     return normalizePath(candidate);
   }
 
-  // 3. Every immediate subdirectory of the workspace root. FreeBASIC
+  // 3. The including file's own FreeBASIC project directory (a directory
+  //    with an `inc`/`include` child of the source tree - fbc's `-i inc`
+  //    layout) and its immediate subdirectories. Only consulted when the
+  //    document lies outside the workspace root: an editor may open a file
+  //    from a sibling project whose headers the workspace-root search can
+  //    never reach (e.g. the project compiles from its own folder, not the
+  //    client's). In-root documents keep the workspace-root precedence
+  //    below unchanged.
+  if (!pathAtOrUnder(normalizePath(includingFile),
+                     normalizePath(workspaceRoot))) {
+    std::filesystem::path const projDir = projectIncludeDirOf(includingFile);
+    if (!projDir.empty()) {
+      candidate = projDir / lit;
+      if (std::filesystem::is_regular_file(candidate, ec)) {
+        return normalizePath(candidate);
+      }
+      std::error_code rerr;
+      std::filesystem::directory_iterator const end;
+      for (std::filesystem::directory_iterator it(projDir, rerr); it != end;
+           it.increment(rerr)) {
+        if (rerr) {
+          break;
+        }
+        std::error_code sterr;
+        std::filesystem::file_status const st = it->status(sterr);
+        if (sterr || !std::filesystem::is_directory(st)) {
+          continue;
+        }
+        candidate = it->path() / lit;
+        if (std::filesystem::is_regular_file(candidate, ec)) {
+          return normalizePath(candidate);
+        }
+      }
+    }
+  }
+
+  // 4. Every immediate subdirectory of the workspace root. FreeBASIC
   //    projects keep shared headers in an `inc` / `include` / `src` (etc.)
   //    child of the root, so `#include "folder/file.bi"` matches under such
   //    a child without knowing which one holds the headers.
@@ -241,7 +321,7 @@ resolveIncludeTarget(std::string_view literal,
     }
   }
 
-  // 4. The FreeBASIC installation's own header folder (resolved from `fbc`
+  // 5. The FreeBASIC installation's own header folder (resolved from `fbc`
   //    on PATH). Additional dirs (fbc `-i`) join via an M11 settings option.
   if (!systemIncludeDir.empty()) {
     candidate = systemIncludeDir / lit;
@@ -489,8 +569,12 @@ void WorkspaceIndex::upsert(IndexedFile entry) {
   entry.path = normalizePath(entry.path);
   // The index is strictly workspace-scoped: never index files outside the
   // root, e.g. an open-buffer edit to a system header or a file in a
-  // sibling directory.
+  // sibling directory. Such an edit still invalidates any on-demand closure
+  // cache for the path, so the next request re-reads the live buffer (see
+  // ensureClosure).
   if (!isInsideRoot(entry.path)) {
+    std::lock_guard<std::mutex> const lk(mu_);
+    closureFiles_.erase(entry.path);
     return;
   }
   // Capture the key before the move: C++17 sequences the right operand of
@@ -515,11 +599,11 @@ void WorkspaceIndex::remove(std::string const &path) {
   {
     std::lock_guard<std::mutex> const lk(mu_);
     auto it = files_.find(norm);
-    if (it == files_.end()) {
-      return;
+    if (it != files_.end()) {
+      subtractFromProjections(it->second);
+      files_.erase(it);
     }
-    subtractFromProjections(it->second);
-    files_.erase(it);
+    closureFiles_.erase(norm);
   }
 }
 
@@ -555,11 +639,16 @@ std::vector<KeyedDecl> WorkspaceIndex::byKey(std::string const &key) const {
 std::shared_ptr<IndexedFile const>
 WorkspaceIndex::fileAt(std::string const &normalizedPath) const {
   std::lock_guard<std::mutex> const lk(mu_);
-  auto it = files_.find(normalizePath(normalizedPath));
-  if (it == files_.end()) {
-    return nullptr;
+  std::string const norm = normalizePath(normalizedPath);
+  auto it = files_.find(norm);
+  if (it != files_.end()) {
+    return it->second;
   }
-  return it->second;
+  auto cit = closureFiles_.find(norm);
+  if (cit != closureFiles_.end()) {
+    return cit->second.entry;
+  }
+  return nullptr;
 }
 
 std::vector<std::string>
@@ -570,11 +659,20 @@ WorkspaceIndex::transitiveIncludes(std::string const &normalizedPath) const {
   visited.insert(normalizedPath);
   std::function<void(std::string const &)> visit =
       [&](std::string const &node) {
+        std::vector<IncludeEdge> const *edges = nullptr;
         auto it = outInc_.find(node);
-        if (it == outInc_.end()) {
+        if (it != outInc_.end()) {
+          edges = &it->second;
+        } else {
+          auto cit = closureFiles_.find(node);
+          if (cit != closureFiles_.end()) {
+            edges = &cit->second.entry->includes;
+          }
+        }
+        if (edges == nullptr) {
           return;
         }
-        for (IncludeEdge const &e : it->second) {
+        for (IncludeEdge const &e : *edges) {
           if (e.target.empty()) {
             continue;
           }
@@ -586,6 +684,86 @@ WorkspaceIndex::transitiveIncludes(std::string const &normalizedPath) const {
       };
   visit(normalizedPath);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// On-demand closure (resolution-only, for documents outside the workspace
+// root - see ensureClosure)
+// ---------------------------------------------------------------------------
+
+void WorkspaceIndex::ensureClosure(std::string const &normalizedPath,
+                                   FileResolver const &resolver) {
+  std::string const start = normalizePath(normalizedPath);
+  // Serialize the whole walk: the resolver may stat/read/parse (it never
+  // calls back into the index), so it must not run under mu_, and concurrent
+  // handlers for the same document share a single expansion.
+  std::lock_guard<std::mutex> const walkLock(closureMu_);
+  std::set<std::string> expanded;
+  std::vector<std::string> front{start};
+  while (!front.empty()) {
+    std::vector<std::string> next;
+    for (std::string const &p : front) {
+      if (!expanded.insert(p).second) {
+        continue;
+      }
+      std::shared_ptr<IndexedFile const> entry;
+      {
+        std::lock_guard<std::mutex> const lk(mu_);
+        auto it = files_.find(p);
+        if (it != files_.end()) {
+          // The workspace scan or open-buffer upsert already owns this file;
+          // its include edges stay current through the normal update path.
+          entry = it->second;
+        }
+      }
+      if (!entry) {
+        bool useCached = false;
+        {
+          std::lock_guard<std::mutex> const lk(mu_);
+          auto it = closureFiles_.find(p);
+          if (it != closureFiles_.end()) {
+            // The requesting file is a live buffer: re-resolve it every time
+            // so unsaved include edits are honored. A cached open-buffer
+            // entry (fromDisk=false) is likewise always re-resolved; a
+            // closed file is reused while its disk state is unchanged.
+            if (p != start && it->second.entry->fromDisk) {
+              std::uint64_t m = 0;
+              std::uint64_t s = 0;
+              statFile(p, &m, &s);
+              useCached = it->second.mtime == m && it->second.size == s;
+            }
+            if (useCached) {
+              entry = it->second.entry;
+            }
+          }
+        }
+        if (!entry) {
+          std::shared_ptr<IndexedFile const> const built = resolver(p);
+          std::lock_guard<std::mutex> const lk(mu_);
+          if (built != nullptr) {
+            closureFiles_[p] = ClosureEntry{built, built->mtime, built->size};
+            entry = built;
+          } else {
+            // The path cannot be served (deleted / unreadable): remember it
+            // with no includes so it is never re-probed this session.
+            fblang::IndexedFile plain;
+            plain.path = p;
+            plain.fromDisk = true;
+            auto const empty =
+                std::make_shared<fblang::IndexedFile const>(std::move(plain));
+            closureFiles_[p] = ClosureEntry{empty, 0, 0};
+            entry = empty;
+          }
+        }
+      }
+      for (IncludeEdge const &e : entry->includes) {
+        if (!e.target.empty()) {
+          next.push_back(e.target);
+        }
+      }
+    }
+    front.swap(next);
+  }
 }
 
 // ---------------------------------------------------------------------------

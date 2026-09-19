@@ -1465,6 +1465,108 @@ void TestOutsideFileNotIndexed() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+// The reported Kate regression: a document opened from a sibling project
+// OUTSIDE the workspace root (the client root is this project, the file lives
+// beside it, headers in the sibling's `inc` dir). Hovering a member access
+// must resolve through the requesting file's on-demand #include closure — not
+// fall back to the enclosing sub — while workspace/symbol stays strictly
+// workspace-scoped (the out-of-root sub must not surface).
+void TestHoverWorksForDocOutsideWorkspaceRoot() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::path const wsDir = sandbox / "ws";
+  std::filesystem::create_directories(wsDir / ".git"); // project marker
+  std::filesystem::path const projDir = sandbox / "proj";
+  std::filesystem::create_directories(projDir / "src");
+  std::filesystem::create_directories(projDir / "inc");
+  {
+    std::ofstream out(projDir / "inc" / "world.bi");
+    out << "type Wall\n"
+           "    as integer v1, v2\n"
+           "end type\n"
+           "type Map\n"
+           "    as Wall walls(10)\n"
+           "end type\n";
+  }
+  char const *kEngineText = "#include once \"world.bi\"\n"
+                            "\n"
+                            "sub runPhysics(map as Map, secIndex as integer)\n"
+                            "    with map\n"
+                            "        dim as Wall w = .walls(secIndex)\n"
+                            "    end with\n"
+                            "end sub\n";
+  {
+    std::ofstream out2(projDir / "src" / "engine.bas");
+    out2 << kEngineText;
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const rootUri = "file://" + wsDir.string();
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  // Open the out-of-root engine.bas and hover `.walls` (line 4, char 26).
+  std::string const engineUri =
+      "file://" + (projDir / "src" / "engine.bas").string();
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      engineUri + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString(kEngineText) + "\"}}}";
+  input->append(MakeLspFrame(openFrame.c_str()));
+
+  std::string const hoverFrame =
+      R"({"jsonrpc":"2.0","id":"hxw","method":"textDocument/hover","params":)"
+      R"({"textDocument":{"uri":")" +
+      engineUri + R"("},"position":{"line":4,"character":26}}})";
+  input->append(MakeLspFrame(hoverFrame.c_str()));
+  std::string const hover = WaitForOutputContaining(output, "\"id\":\"hxw\"");
+  Expect(hover.find("\"id\":\"hxw\"") != std::string::npos,
+         "the out-of-root hover request must receive a response");
+  Expect(hover.find("as Wall walls(10)") != std::string::npos,
+         "an out-of-root member hover resolves the field declaration");
+  Expect(hover.find("Member of `map` (`Map`).") != std::string::npos,
+         "the with-implicit member names the variable and its type");
+  Expect(hover.find("sub runPhysics(") == std::string::npos,
+         "member hover must never fall back to the enclosing sub");
+
+  // The out-of-root sub must stay out of workspace/symbol.
+  bool sawOutside = false;
+  auto querySymbol = [&](int n) {
+    std::string const id = "\"id\":\"ext" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"ext)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":"runPhysics"}})";
+    input->append(MakeLspFrame(request.c_str()));
+    return WaitForOutputContaining(output, id, 50);
+  };
+  for (int n = 0; n < 40 && !sawOutside; ++n) {
+    sawOutside =
+        querySymbol(n).find("\"name\":\"runPhysics\"") != std::string::npos;
+  }
+  Expect(!sawOutside,
+         "workspace/symbol must not surface symbols from outside the root");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
 // A client root that is itself a single project (has a .git marker) is used
 // as-is; a *broad* root (e.g. an editor reporting the home directory, which
 // hosts several sibling projects) is narrowed to the opened document's project
@@ -2572,6 +2674,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestSignatureHelpResolvesIntrinsic);
   RUN_TEST(TestWorkspaceSymbolIndexesWorkspace);
   RUN_TEST(TestOutsideFileNotIndexed);
+  RUN_TEST(TestHoverWorksForDocOutsideWorkspaceRoot);
   RUN_TEST(TestBroadRootNarrowsToOpenedProject);
   RUN_TEST(TestBroadRootNarrowsToAnyVcsProject);
   RUN_TEST(TestDidChangePushesDiagnostics);

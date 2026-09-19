@@ -13,11 +13,11 @@ remaining work.
 |-----------|--------|
 | M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
 | M2 — Lexer + parser language layer, dialects, fbc corpus | done |
-| M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done (2026-09: hover resolves member access `.`/`->` through the base variable's declared type — cross-file, `with`-implicit, and indexed/chained — instead of falling back to the enclosing routine) |
+| M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done (2026-09: hover resolves member access `.`/`->` through the base variable's declared type — cross-file, `with`-implicit, and indexed/chained — instead of falling back to the enclosing routine; a follow-up bugfix serves documents opened from a sibling project *outside* the workspace root via an on-demand include closure) |
 | M4 — persistent workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an **in-memory-only** index — no on-disk cache) |
 | M5 — workspace spine: occurrence projection + include graph | done |
 | M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
-| M6 — include resolution + watched files + missing-include diagnostics | done (2026-09: missing-include diagnostics, debounced watched-files rescan, `#pragma once` metadata) |
+| M6 — include resolution + watched files + missing-include diagnostics | done (2026-09: missing-include diagnostics, debounced watched-files rescan, `#pragma once` metadata; the include search gained the project-dir (`-i inc`) step and the index an on-demand, resolution-only closure for out-of-root documents) |
 | M7 — cross-file definition / references / highlight / completion | done (2026-09: `resolveAcross` tiers, `Shared` storage gate, four cross-file handlers, two-file tests) |
 | M8 — `prepareRename` + `rename` (workspace) | done |
 | M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
@@ -57,11 +57,20 @@ stable shape:
 - `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index, purely
   in memory (nothing is ever written to disk), background scan + debounced
   watched-files rescan threads, immutable `IndexedFile` entries + snapshot
-  reads. Helpers: `normalizePath`, `statFile`, `resolveIncludeTarget`.
+  reads. Helpers: `normalizePath`, `statFile`, `resolveIncludeTarget` (its
+  search ends with the including file's project dir — the nearest ancestor
+  with an `inc`/`include` child — for documents outside the workspace root).
+  `ensureClosure` + the `FileResolver` alias build the transitive `#include`
+  closure of an out-of-root requesting document on demand into a
+  resolution-only store consulted by `fileAt`/`transitiveIncludes` but never
+  by `snapshot`/`byKey` (workspace/symbol stays strictly workspace-scoped).
 - `src/utf16.{h,cpp}` — byte ↔ UTF-16 position conversion (session boundary).
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
   `WorkingFiles` + `WorkspaceIndex`, serves a content-addressed
   `AnalysisCache` (replacing per-request reparse), pushes diagnostics.
+  `ensureRequestClosure` wraps the index walk with a resolver over the live
+  open buffer (else disk) and runs before cross-file resolution, member hover,
+  and completion.
 - `src/main.cpp` — stdio entry; `LanguageSession` + exit condition.
 
 Implemented LSP methods: `initialize`/`shutdown`/`exit`, `didOpen`/`didChange`/
