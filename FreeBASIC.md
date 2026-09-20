@@ -175,6 +175,35 @@ innermost scope → enclosing scopes → current namespace/type, then members �
 base types along the `Extends` chain → module (shared/common-shared only in
 procedures).
 
+### Enums (`Enum ... End Enum`)
+
+Documentation: https://www.freebasic.net/wiki/KeyPgEnum
+
+An enum declares a type *name* and a set of constant *members* (module
+scope). Being constants, members resolve like module-level `Const` — visible
+at module level, inside procedures, inside `SCOPE` blocks, and (from a
+header) in every includer. Probe-verified with fbc 1.10.2:
+
+- Plain enum members are ordinary module-scope constants: bare `member`
+  compiles at module level (`plain1.bas`), inside procedures (`plain2.bas`),
+  inside `SCOPE` blocks (`sc1.bas`), and from included headers
+  (`cross.bas`).
+- `Enum <name> Explicit` gates each member behind qualified `Name.member`
+  access: bare `member` compiles nowhere (`explicit2.bas`; `cross2.bas`
+  shows the gate holds for header enums too), while qualified access
+  compiles for both forms (`explicit1.bas`, `qual1.bas`).
+- The enum *name* is a module-level type; qualified `Name.member` is the
+  only reference valid for explicit enums and optional for plain ones.
+- An enum name may itself be a reserved word — `enum color` compiles even
+  though `color` is the graphics intrinsic, and `color.green` is a normal
+  qualified access (`qual1.bas`).
+- `Explicit` is reserved globally: `dim explicit` → `error 4`, and a bare
+  `print explicit` → `error 3` (`resv1.bas`, `resv2.bas`).
+- Module declaration order applies to members: a bare usage *before* the
+  `Enum` block is `error 42` (`order1.bas`), and a module `Dim green`
+  shadowing an enum member `green` wins regardless of which block came
+  first (`order2.bas`, `order3.bas` both print 2).
+
 ## 9. Module model
 
 - A program is one or more `.bas` files; the first file is the main module
@@ -303,3 +332,14 @@ to "the language is what the lexer does":
 11. **Vim block-comment `/'...'/` nesting is approximated** (vim region
     semantics); the generated TextMate grammar nests via `begin/end` pairs.
     Grammar-side limitation only.
+12. **Module-level declaration ordering is unmodeled — enum members resolve
+    order-insensitively.** fbc injects enum member constants at the `Enum`
+    block's position in the module: a bare usage *before* the block is
+    `error 42` (§8 Enums, `order1.bas`), and a colliding module `Dim`
+    shadows the member from the `Dim` onward (`order2.bas`, `order3.bas`,
+    both print 2). This implementation resolves enum members as
+    order-insensitive module candidates everywhere, and module roots
+    (Dims/Consts/procedures) always beat a same-named plain-enum member, so
+    the shadowing outcome matches fbc when the `Dim` follows the member,
+    while pre-`Enum` bare usages resolve here as a convenience instead of
+    erroring (declared decision: no source-order gating at module level).

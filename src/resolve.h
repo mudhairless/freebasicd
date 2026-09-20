@@ -133,6 +133,9 @@ struct MemberAccess {
                              // access whose owner is a plain type
   std::string ownerTypeName; // display name of the type that owns `member`
   bool direct = false; // `member` hangs directly off `baseName`'s declared type
+  // The member's owner is an Enum root (`EnumName.member`). Display reads
+  // "Enum member of `X`." instead of "Member of `X` (`X`)."
+  bool enumMember = false;
   // The cursor is on a `.`/`->` member access whose chain root variable
   // resolved, even when the declared type — and so the member itself — could
   // not be pinned down (unknown/unindexed type). Lets the hover name the

@@ -826,6 +826,208 @@ static void TestMemberAccessResolution() {
             "findMember matches by key only");
 }
 
+// Enum conformance (FreeBASIC.md §8, KeyPgEnum, fbc 1.10.2 probe-verified): a
+// plain `Enum name ... End Enum` publishes its members as module-scope
+// constants — bare `member` resolves at module level, inside procedures, and
+// across the include closure — while `Enum <name> explicit` gates a member
+// behind qualified `Name.member` access (valid for both forms). Enum names
+// may be reserved words (`enum color` is fine — `color` is the graphics
+// intrinsic), so `color.green` must resolve through the keyword chain.
+static void TestEnumConformance() {
+  std::string const src = "enum my_enum explicit\n"
+                          "    value_1 = 1\n"
+                          "    value_2 = 2\n"
+                          "end enum\n"
+                          "\n"
+                          "enum color\n"
+                          "    red = 1\n"
+                          "    green\n"
+                          "    blue\n"
+                          "end enum\n"
+                          "\n"
+                          "dim z = green\n"
+                          "dim q = blue\n"
+                          "dim x = my_enum.value_1\n"
+                          "dim y = color.green\n"
+                          "dim n = my_enum.nope\n"
+                          "sub s()\n"
+                          "    dim a = green\n"
+                          "    dim b = color.red\n"
+                          "    dim c = value_1\n"
+                          "end sub\n";
+  AnalyzedDoc const doc = analyze(src);
+  auto off = [&](std::string const &needle) {
+    return static_cast<std::uint32_t>(src.find(needle));
+  };
+
+  // Plain enum: bare members are module-scope constants — the declaration,
+  // module-level usages, and in-sub usages all share one symbol, and the
+  // member token of a qualified `color.green` resolves to it as well.
+  Symbol const *const greenDecl = resolveAt(doc, off("    green") + 4);
+  CHECK_MSG(greenDecl != nullptr && greenDecl->name == "green" &&
+                greenDecl->kind == SymbolKind::Const &&
+                parentOf(doc.parse, greenDecl)->kind == SymbolKind::Enum,
+            "the `green` member declaration resolves under its enum root");
+  Symbol const *const blueDecl = resolveAt(doc, off("    blue") + 4);
+  CHECK_MSG(blueDecl != nullptr && blueDecl->name == "blue",
+            "the `blue` member declaration resolves independently");
+  CHECK_MSG(resolveAt(doc, off("dim z = green") + 8) == greenDecl,
+            "bare module-level usage resolves to the member");
+  CHECK_MSG(resolveAt(doc, off("dim q = blue") + 8) == blueDecl,
+            "a second member resolves independently");
+  CHECK_MSG(resolveAt(doc, off("dim a = green") + 8) == greenDecl,
+            "bare usage inside a sub resolves (members are never gated)");
+  CHECK_MSG(resolveAt(doc, off("color.green") + 6) == greenDecl,
+            "the qualified member token still resolves as the member");
+
+  // Explicit enum: bare members resolve nowhere, from a usage anywhere.
+  Symbol const *const v1Decl = resolveAt(doc, off("    value_1") + 4);
+  CHECK_MSG(v1Decl != nullptr && v1Decl->name == "value_1",
+            "the `value_1` member declaration resolves");
+  CHECK_MSG(resolveAt(doc, off("dim c = value_1") + 8) == nullptr,
+            "bare usage of an explicit enum's member resolves nowhere");
+  CHECK_MSG(resolveAt(doc, off("my_enum.value_1") + 8) == nullptr,
+            "a qualified member token does not resolve *bare* (it is a member"
+            " access, resolved below)");
+
+  // Qualified member access resolves for explicit and plain enums alike.
+  {
+    MemberAccess const x =
+        resolveMemberAccess(doc, "x.bas", off("my_enum.value_1") + 8, nullptr);
+    CHECK_MSG(x.member != nullptr && x.member->key == "value_1" &&
+                  x.ownerTypeName == "my_enum" && x.baseName == "my_enum" &&
+                  x.enumMember && x.direct,
+              "`my_enum.value_1` resolves to the explicit enum member");
+  }
+  {
+    MemberAccess const y =
+        resolveMemberAccess(doc, "x.bas", off("color.green") + 6, nullptr);
+    CHECK_MSG(y.member != nullptr && y.member->key == "green" &&
+                  y.ownerTypeName == "color" && y.baseName == "color" &&
+                  y.enumMember && y.direct,
+              "`color.green` resolves through the reserved-word enum name");
+  }
+  {
+    MemberAccess const r =
+        resolveMemberAccess(doc, "x.bas", off("color.red") + 6, nullptr);
+    CHECK_MSG(r.member != nullptr && r.member->key == "red" &&
+                  r.ownerTypeName == "color" && r.direct,
+              "qualified access inside a sub resolves too");
+  }
+  {
+    MemberAccess const no =
+        resolveMemberAccess(doc, "x.bas", off("my_enum.nope") + 8, nullptr);
+    CHECK_MSG(no.member == nullptr && no.memberAccess &&
+                  no.baseName == "my_enum" && no.enumMember,
+              "a missing member still reports the access for a soft hover");
+  }
+
+  // Occurrence projection: every bare-resolvable usage (module, sub, and the
+  // `color.green` member token) attaches to the member decl; the gated
+  // explicit member keeps none.
+  CHECK_MSG(greenDecl->occurrences.size() == 3,
+            "green: module, in-sub, and qualified-member-token usages");
+  if (greenDecl->occurrences.size() == 3) {
+    bool sawModuleUse = false, sawSubUse = false, sawQualified = false;
+    for (Occurrence const &o : greenDecl->occurrences) {
+      sawModuleUse = sawModuleUse || o.range.beg == off("dim z = green") + 8;
+      sawSubUse = sawSubUse || o.range.beg == off("dim a = green") + 8;
+      sawQualified = sawQualified || o.range.beg == off("color.green") + 6;
+    }
+    CHECK_MSG(sawModuleUse && sawSubUse && sawQualified,
+              "the occurrence set covers all three usage shapes");
+  }
+  CHECK_MSG(v1Decl->occurrences.empty(),
+            "explicit gating means no bare usage can attach to `value_1`");
+
+  // visibleSymbols: plain members are module-scope names (offered even inside
+  // a sub); explicit members are not part of the module name space.
+  {
+    std::vector<Symbol const *> const mod = visibleSymbols(doc, off("dim z"));
+    bool sawGreen = false, sawV1 = false;
+    for (Symbol const *v : mod) {
+      sawGreen = sawGreen || v == greenDecl;
+      sawV1 = sawV1 || v == v1Decl;
+    }
+    CHECK_MSG(sawGreen && !sawV1,
+              "completion shows plain members, not explicit ones");
+    std::vector<Symbol const *> const sub = visibleSymbols(doc, off("dim b"));
+    bool sawInSub = false;
+    for (Symbol const *v : sub) {
+      sawInSub = sawInSub || v == greenDecl;
+    }
+    CHECK_MSG(sawInSub, "in-sub completion still shows plain members");
+  }
+
+  // Cross-file: a plain enum in a header exposes its members to the includer
+  // (module level and inside a sub); a `explicit` enum's member stays gated;
+  // qualified `keyset.key_b` resolves through the header's enum root.
+  {
+    std::string const libContent = "#pragma once\n"
+                                   "enum keyset\n"
+                                   "    key_a = 1\n"
+                                   "    key_b = 2\n"
+                                   "end enum\n"
+                                   "enum hidden explicit\n"
+                                   "    secret = 1\n"
+                                   "end enum\n";
+    std::string const mainContent = "#include \"lib.bi\"\n"
+                                    "dim k = key_b\n"
+                                    "dim w = keyset.key_b\n"
+                                    "sub use()\n"
+                                    "    dim m = key_a\n"
+                                    "    dim h = secret\n"
+                                    "end sub\n";
+    std::filesystem::path const sandbox = MakeTmpDir();
+    std::filesystem::path const ws = sandbox / "ws";
+    std::filesystem::create_directories(ws);
+    WriteFile(ws / "lib.bi", libContent);
+    WriteFile(ws / "main.bas", mainContent);
+    std::string const mainNorm = normalizePath(ws / "main.bas");
+    ContentProvider const content = [](std::string const &p) {
+      std::ifstream in(std::filesystem::path(p), std::ios::binary);
+      if (!in) {
+        return std::shared_ptr<DocumentContent const>();
+      }
+      return MakeContentUnit(std::string(std::istreambuf_iterator<char>(in),
+                                         std::istreambuf_iterator<char>()));
+    };
+    WorkspaceIndex index(ws);
+    index.open();
+    index.scan(false);
+    try {
+      AnalyzedDoc const d = analyze(mainContent);
+      std::uint32_t const keyBOff =
+          static_cast<std::uint32_t>(mainContent.find("key_b"));
+      CrossDecl const kb = resolveAcross(d, mainNorm, keyBOff, index);
+      CHECK_MSG(kb.decl != nullptr && kb.decl->key == "key_b" &&
+                    kb.file != nullptr,
+                "bare `key_b` resolves into the header's enum");
+      std::uint32_t const keyAOff =
+          static_cast<std::uint32_t>(mainContent.find("key_a"));
+      CrossDecl const ka = resolveAcross(d, mainNorm, keyAOff, index);
+      CHECK_MSG(ka.decl != nullptr && ka.decl->key == "key_a",
+                "in-sub bare `key_a` resolves into the header's enum too");
+      std::uint32_t const secretOff =
+          static_cast<std::uint32_t>(mainContent.find("secret"));
+      CrossDecl const sec = resolveAcross(d, mainNorm, secretOff, index);
+      CHECK_MSG(sec.decl == nullptr,
+                "an explicit enum's member stays gated across files");
+      std::uint32_t const qOff =
+          static_cast<std::uint32_t>(mainContent.find("keyset.key_b") + 7);
+      MemberAccess const q = resolveMemberAccess(d, mainNorm, qOff, &index);
+      CHECK_MSG(q.member != nullptr && q.member->key == "key_b" &&
+                    q.ownerTypeName == "keyset" && q.enumMember,
+                "qualified `keyset.key_b` resolves through the header enum");
+    } catch (...) {
+      CHECK_MSG(false, "cross-file enum resolution must not throw");
+    }
+    index.close();
+    std::error_code ec;
+    std::filesystem::remove_all(sandbox, ec);
+  }
+}
+
 int main() {
   TestScopingResolvesCorrectly();
   TestUnknownAndNonIdentifiersResolveNull();
@@ -837,6 +1039,7 @@ int main() {
   TestStorageGate();
   TestBlockScopesShadowAndDie();
   TestForCounterIsLoopLocal();
+  TestEnumConformance();
   TestMemberAccessResolution();
   TestStorageGateInControlBlocks();
   TestOccurrencesAcrossSingleFile();

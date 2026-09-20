@@ -234,6 +234,14 @@ private:
   }
 
   uint32_t currentLineEnd() {
+    // If the lexer already sits on the line's newline (the opener's name is
+    // the last token on its line, e.g. `enum color`), the peek-based scan
+    // below would skip past it into the next line and swallow the first body
+    // line into the signature (`enum color` + `red = 1`). The current
+    // position *is* the line end then.
+    if (cur_.kind == TokenKind::Newline || cur_.kind == TokenKind::Eof) {
+      return cur_.beg;
+    }
     for (int i = 0; i < MAX_LINE_PEEK; ++i) {
       Token const t = lex_.peek(i);
       if (t.kind == TokenKind::Newline) {
@@ -627,6 +635,15 @@ private:
       s.key = toLowerChars(s.name);
       s.selection.beg = cur_.beg;
       s.selection.end = cur_.end;
+      advance();
+    }
+    // `Enum <name> explicit`: the optional `Explicit` keyword gates the members
+    // behind qualified `Name.member` access (FreeBASIC.md §8, fbc-verified).
+    // Consume it on the header line so skipStatement below does not register it
+    // as a spurious member.
+    if (k == SymbolKind::Enum && cur_.kind == TokenKind::Keyword &&
+        toLowerChars(cur_.text()) == "explicit") {
+      s.explicitEnum = true;
       advance();
     }
     s.signature = headerText(openTok);

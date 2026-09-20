@@ -87,6 +87,12 @@ struct Symbol {
   // existing declaration (undeclared is error 42), so only the `as` form
   // declares. Distinguishes the iterator from a plain Dim in the loop body.
   bool loopVar = false;
+
+  // True on an Enum root declared `enum <name> explicit` (FreeBASIC.md §8,
+  // KeyPgEnum): its members are reachable only through qualified access
+  // (`Name.member`), never as bare module names. A plain `enum <name>`
+  // publishes each member as a module-scope constant.
+  bool explicitEnum = false;
 };
 
 enum class Severity { Error = 1, Warning = 2, Information = 3, Hint = 4 };

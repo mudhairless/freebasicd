@@ -583,6 +583,45 @@ int main() {
     CHECK(keywordDocsUrl("counter").empty());
   }
 
+  // `Enum <name> explicit` (KeyPgEnum): the optional `explicit` keyword is
+  // consumed on the declaration header, so it is *not* captured as a spurious
+  // member; the Enum root gets the flag, and the header signature stays a
+  // single line. A plain `enum` leaves the flag unset. `explicit` itself is
+  // reserved globally (fbc errors 4/3, probe-verified) and its docs page is
+  // the enum's.
+  {
+    ParseResult r = parseDocument("enum my_enum explicit\n"
+                                  "    value_1 = 1\n"
+                                  "    value_2 = 2\n"
+                                  "end enum\n"
+                                  "\n"
+                                  "enum color\n"
+                                  "    red = 1\n"
+                                  "    green\n"
+                                  "end enum\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *me = find(r.roots, "my_enum", SymbolKind::Enum);
+    CHECK(me != nullptr);
+    CHECK(me->explicitEnum);
+    CHECK(me->signature == "enum my_enum explicit");
+    CHECK(me->children.size() == 2);
+    CHECK(me->children[0].name == "value_1");
+    CHECK(me->children[0].kind == SymbolKind::Const);
+    bool sawExplicit = false;
+    for (const Symbol &c : me->children) {
+      sawExplicit = sawExplicit || c.name == "explicit";
+    }
+    CHECK(!sawExplicit);
+    const Symbol *color = find(r.roots, "color", SymbolKind::Enum);
+    CHECK(color != nullptr);
+    CHECK(!color->explicitEnum);
+    CHECK(color->signature == "enum color"); // header not padded with members
+    CHECK(color->children.size() == 2);
+    CHECK(isReservedWord("explicit"));
+    CHECK(keywordDocsUrl("explicit") ==
+          "https://www.freebasic.net/wiki/KeyPgEnum");
+  }
+
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");
     return 0;

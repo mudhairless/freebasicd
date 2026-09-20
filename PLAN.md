@@ -13,7 +13,7 @@ remaining work.
 |-----------|--------|
 | M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
 | M2 — Lexer + parser language layer, dialects, fbc corpus | done |
-| M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done (2026-09: hover resolves member access `.`/`->` through the base variable's declared type — cross-file, `with`-implicit, and indexed/chained — instead of falling back to the enclosing routine; a follow-up bugfix serves documents opened from a sibling project *outside* the workspace root via an on-demand include closure; a second bugfix adds a soft fallback: when the declared type is unknown or the member missing, `.walls` inside `with map` still reads "Member of `map`." instead of a colliding identifier or the sub signature) |
+| M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done (2026-09: hover resolves member access `.`/`->` through the base variable's declared type — cross-file, `with`-implicit, and indexed/chained — instead of falling back to the enclosing routine; a follow-up bugfix serves documents opened from a sibling project *outside* the workspace root via an on-demand include closure; a second bugfix adds a soft fallback: when the declared type is unknown or the member missing, `.walls` inside `with map` still reads "Member of `map`." instead of a colliding identifier or the sub signature; a final conformance pass makes enum members resolve and hover — qualified `Name.member` for explicit and plain enums, bare `member` for plain ones only, reserved-word enum names like `enum color` working, all cross-file) |
 | M4 — persistent workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an **in-memory-only** index — no on-disk cache) |
 | M5 — workspace spine: occurrence projection + include graph | done |
 | M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
@@ -53,7 +53,10 @@ stable shape:
 - `src/resolve.{h,cpp}` — same-file resolution: `resolveAt`, `occurrencesOf`,
   `visibleSymbols`, `innermostScope`, `parentOf`, and the cross-file member
   chain: `declaredTypeName`, `findMember`, `findTypeDecl`,
-  `resolveMemberAccess` (`.`/`->`, `with`-implicit, indexed/chained).
+  `resolveMemberAccess` (`.`/`->`, `with`-implicit, indexed/chained). Enum
+  members of plain enums join the module name space via
+  `moduleLevelCandidates` (explicit-enum members stay gated behind
+  `Name.member`, §8 Enums).
 - `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index, purely
   in memory (nothing is ever written to disk), background scan + debounced
   watched-files rescan threads, immutable `IndexedFile` entries + snapshot
@@ -372,7 +375,11 @@ the design; sub-tasks land in order.
 > viewport-scoped set); and the grammar emitter is a shared
 > `tools/grammar_emitter` module consumed by both the `gen_grammar` tool and
 > `grammar_checks`, so the freshness gate byte-diffs by construction rather than
-> regenerating into a temp dir.
+> regenerating into a temp dir. Follow-up: the enum conformance pass surfaced
+> that enum *members* are module-scope constants (semantic-token
+> `enumMember`, §8 Enums), the `explicit` keyword entered the catalog (grammar
+> regen), and the editor grammars are now emitted as `editors/freebasic.vim`
+> (the stale `editors/basic.vim` rename-orphan from `7be2612` was deleted).
 
 Independent UX wins; LspCpp typed types confirmed present (`td_semanticTokens_full`,
 `td_inlayHint`). Together these deliver the full editor-highlighting story:

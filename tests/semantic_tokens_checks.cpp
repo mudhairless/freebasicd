@@ -140,8 +140,11 @@ int main() {
   }
 
   // Enum members are Const children of the Enum root: the declaration tokens
-  // classify as enumMember (parentOf-based); a module-level usage resolves to
-  // nothing (enum members are not module roots) and falls back to variable.
+  // classify as enumMember (parentOf-based); a bare module-level usage of a
+  // *plain* enum's member resolves to the member (module-scope constant,
+  // FreeBASIC.md §8 + KeyPgEnum, fbc-verified) and classifies as enumMember,
+  // while the same usage of an `Explicit` enum's member resolves nowhere and
+  // falls back to variable.
   {
     std::string const esrc = "enum hue\n"
                              "    red\n"
@@ -168,7 +171,24 @@ int main() {
     SemanticTokenEntry const cDecl = at(4, 4);
     CHECK(cDecl.type == 6 && cDecl.modifiers == 1); // dim decl
     SemanticTokenEntry const redUsage = at(5, 4);
-    CHECK(redUsage.type == 6 && redUsage.modifiers == 0); // plain variable
+    CHECK(redUsage.type == 13 && redUsage.modifiers == 0); // enumMember usage
+  }
+
+  // `Explicit` enums gate their members behind `Name.member`, so a bare
+  // member usage resolves to nothing and classifies as a plain variable.
+  {
+    std::string const esrc = "enum hue explicit\n"
+                             "    red\n"
+                             "end enum\n"
+                             "dim c as integer\n"
+                             "c = red\n";
+    AnalyzedDoc const edoc = analyze(esrc);
+    std::vector<SemanticTokenEntry> const e = semanticTokens(edoc, esrc);
+    for (auto const &x : e) {
+      if (x.line == 4 && x.startChar == 4) {
+        CHECK(x.type == 6 && x.modifiers == 0); // unresolved, plain variable
+      }
+    }
   }
 
   if (failures == 0) {

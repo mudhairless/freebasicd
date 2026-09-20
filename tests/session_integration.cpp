@@ -296,6 +296,42 @@ char const *kMemberHoverLocalFrame =
     R"FB({"jsonrpc":"2.0","id":"hml","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/hovmem.bas"},"position":{"line":18,"character":29}}})FB";
 
+// Enum conformance hover: an `Explicit` enum's branded value
+// (`MyEnum.value_1`), a plain enum's qualified member with a *reserved-word*
+// enum name (`color.green` — `color` is the graphics intrinsic), and a bare
+// plain-enum member usage (`z = green`) must all resolve to the member
+// declaration — the empty/orphan hover regression.
+char const kDidOpenEnumHoverFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/enumhov.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"enum MyEnum explicit\n)FB"
+    R"FB(    value_1 = 1\n)FB"
+    R"FB(    value_2 = 2\n)FB"
+    R"FB(end enum\n)FB"
+    R"FB(enum color\n)FB"
+    R"FB(    red = 1\n)FB"
+    R"FB(    green = 2\n)FB"
+    R"FB(end enum\n)FB"
+    R"FB(dim x = MyEnum.value_1\n)FB"
+    R"FB(dim y = color.green\n)FB"
+    R"FB(dim z = green\n"}}})FB";
+
+// Hover the explicit enum's branded member (line 8, char 15 = `value_1`).
+char const *kEnumHoverBrandedFrame =
+    R"FB({"jsonrpc":"2.0","id":"he1","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/enumhov.bas"},"position":{"line":8,"character":15}}})FB";
+
+// Hover the reserved-word enum name's branded member (line 9, char 14 =
+// `green` of `color.green`).
+char const *kEnumHoverKeywordNameFrame =
+    R"FB({"jsonrpc":"2.0","id":"he2","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/enumhov.bas"},"position":{"line":9,"character":14}}})FB";
+
+// Hover a bare plain-enum member usage (line 10, char 8 = `green`).
+char const *kEnumHoverBareFrame =
+    R"FB({"jsonrpc":"2.0","id":"he3","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/enumhov.bas"},"position":{"line":10,"character":8}}})FB";
+
 char const *kFoldingRangeFrame =
     R"FB({"jsonrpc":"2.0","id":"fold","method":"textDocument/foldingRange","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"}}})FB";
@@ -891,6 +927,55 @@ void TestHoverShowsMemberAccess() {
          "member hover shows the whole field list of the declaration line");
   Expect(localHover.find("Member of `w` (`Wall`).") != std::string::npos,
          "a variable member names the base variable and its type");
+
+  session.stop();
+}
+
+// Enum members resolve on hover: an `Explicit` enum's branded value
+// (`MyEnum.value_1`), a plain enum's qualified member with a reserved-word
+// enum name (`color.green`), and a bare plain-enum member usage (`z = green`)
+// all land on the member declaration and label it as an enum member.
+void TestHoverShowsEnumMembers() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenEnumHoverFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  auto hover = [&](char const *frame, char const *id, char const *signature) {
+    input->append(MakeLspFrame(frame));
+    std::string const h = WaitForOutputContaining(output, id);
+    Expect(h.find(id) != std::string::npos,
+           "the enum hover request must receive a response");
+    Expect(h.find(signature) != std::string::npos,
+           "the enum hover must show the member's declaration line");
+    return h;
+  };
+
+  // Explicit enum, branded member: `MyEnum.value_1`.
+  std::string const branded =
+      hover(kEnumHoverBrandedFrame, "\"id\":\"he1\"", "value_1 = 1");
+  Expect(branded.find("Enum member of `MyEnum`.") != std::string::npos,
+         "an explicit enum's branded member names its enum");
+
+  // Plain enum whose name is a reserved word: `color.green` still resolves.
+  std::string const kwNamed =
+      hover(kEnumHoverKeywordNameFrame, "\"id\":\"he2\"", "green = 2");
+  Expect(kwNamed.find("Enum member of `color`.") != std::string::npos,
+         "a reserved-word enum name still names the member's enum");
+
+  // Bare usage of a plain enum's member resolves to the member declaration.
+  std::string const bare =
+      hover(kEnumHoverBareFrame, "\"id\":\"he3\"", "green = 2");
+  Expect(bare.find("Enum member of `color`.") != std::string::npos,
+         "a bare plain-enum member usage names the member's enum");
 
   session.stop();
 }
@@ -2983,6 +3068,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestHoverShowsSignatureAndDoc);
   RUN_TEST(TestHoverResolvesUsageToDeclaration);
   RUN_TEST(TestHoverShowsMemberAccess);
+  RUN_TEST(TestHoverShowsEnumMembers);
   RUN_TEST(TestKeywordHoverInsideProcedureShowsWikiLink);
   RUN_TEST(TestMemberHoverResolvesCrossFileTypeOutsideClosure);
   RUN_TEST(TestMemberHoverKeywordNamedMember);

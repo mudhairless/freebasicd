@@ -13,7 +13,7 @@ against the committed files, so a stale grammar fails CI.
 ## Files
 
 - `freebasic.tmLanguage.json` — TextMate grammar (`source.freebasic`).
-- `basic.vim` — vim/Neovim syntax (`b:current_syntax = "freebasic"`).
+- `freebasic.vim` — vim/Neovim syntax (`b:current_syntax = "freebasic"`).
 
 ## Install
 
@@ -26,9 +26,9 @@ directory and register it for the `bas`/`bi` file types.
 
 ```
 mkdir -p ~/.vim/syntax ~/.vim/ftdetect
-cp editors/basic.vim ~/.vim/syntax/basic.vim
-printf 'au BufRead,BufNewFile *.bas,*.bi set filetype=basic\n' \
-  > ~/.vim/ftdetect/basic.vim
+cp editors/freebasic.vim ~/.vim/syntax/freebasic.vim
+printf 'au BufRead,BufNewFile *.bas,*.bi set filetype=freebasic\n' \
+  > ~/.vim/ftdetect/freebasic.vim
 ```
 
 ### Neovim

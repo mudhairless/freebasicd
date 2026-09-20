@@ -962,10 +962,14 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
       markdown = "`" + access.member->name + "`";
     }
     if (access.direct && !access.baseName.empty()) {
-      markdown += "\n\nMember of `" + access.baseName + "` (`" +
-                  access.ownerTypeName + "`).";
+      markdown += access.enumMember
+                      ? "\n\nEnum member of `" + access.baseName + "`."
+                      : "\n\nMember of `" + access.baseName + "` (`" +
+                            access.ownerTypeName + "`).";
     } else {
-      markdown += "\n\nMember of `" + access.ownerTypeName + "`.";
+      markdown += access.enumMember
+                      ? "\n\nEnum member of `" + access.ownerTypeName + "`."
+                      : "\n\nMember of `" + access.ownerTypeName + "`.";
     }
     if (!access.member->doc.empty()) {
       markdown += "\n\n---\n" + access.member->doc;

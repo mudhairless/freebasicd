@@ -146,6 +146,33 @@ Token const *tokenAt(std::vector<Token> const &tokens, std::uint32_t off) {
 
 SourceRange rangeOf(Token const &t) { return {t.beg, t.end}; }
 
+// Module-level name candidates of `roots`, in a fixed order: every root
+// (declaration order), then the members of each *non-explicit* Enum. A plain
+// `enum color ... end enum` publishes its members as module-scope constants
+// (FreeBASIC.md §8, KeyPgEnum, fbc-verified: bare `green` resolves at module
+// level, in procedures, and across the include closure); `enum <name>
+// explicit` restricts its members to qualified `Name.member` access, so they
+// are not candidates. Members trail all roots so a same-keyed module Dim
+// (`dim green` after the enum member `green`) wins — fbc accepts that dim and
+// the later declaration shadows the member.
+std::vector<Symbol const *>
+moduleLevelCandidates(std::vector<Symbol> const &roots) {
+  std::vector<Symbol const *> out;
+  out.reserve(roots.size() + 8);
+  for (Symbol const &r : roots) {
+    out.push_back(&r);
+  }
+  for (Symbol const &r : roots) {
+    if (r.kind != SymbolKind::Enum || r.explicitEnum) {
+      continue;
+    }
+    for (Symbol const &m : r.children) {
+      out.push_back(&m);
+    }
+  }
+  return out;
+}
+
 // The declaration a usage at `off` resolves to, over a pre-lexed stream. This
 // is the single resolution walk shared by analyze's occurrence sweep and the
 // on-demand resolution API (which used to re-lex per call).
@@ -164,23 +191,30 @@ Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
   std::string const key = toLowerChars(tok->text());
   Symbol const *const siteScope = innermostScope(parse, off);
   bool const storageGated = insideProcedureBody(parse, siteScope);
-  for (Symbol const *cur = siteScope;;
-       cur = cur != nullptr ? parentOf(parse, cur) : nullptr) {
-    std::vector<Symbol> const &cands =
-        cur != nullptr ? cur->children : parse.roots;
-    for (auto const &c : cands) {
-      if (c.key.empty() || c.key != key) {
-        continue;
-      }
-      bool const gated = cur == nullptr && storageGated &&
-                         c.kind == SymbolKind::Dim && !c.shared;
-      if (!gated) {
+  for (Symbol const *cur = siteScope;;) {
+    if (cur != nullptr) {
+      for (auto const &c : cur->children) {
+        if (c.key.empty() || c.key != key) {
+          continue;
+        }
         return &c;
       }
-    }
-    if (cur == nullptr) {
+    } else {
+      // Module level: the roots plus the members of non-explicit enums
+      // (module-scope constants, FreeBASIC.md §8).
+      for (Symbol const *c : moduleLevelCandidates(parse.roots)) {
+        if (c->key.empty() || c->key != key) {
+          continue;
+        }
+        bool const gated =
+            storageGated && c->kind == SymbolKind::Dim && !c->shared;
+        if (!gated) {
+          return c;
+        }
+      }
       return nullptr;
     }
+    cur = parentOf(parse, cur);
   }
 }
 
@@ -429,16 +463,18 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
   // Tier 2: module scope of each closure file, textual include pre-order,
   // first key match. The closure is treated as one textual module (FreeBASIC
   // .md §9): the same storage gate applies to its roots as to the requesting
-  // file's own module level.
+  // file's own module level, and non-explicit enum members resolve like module
+  // constants regardless of the gate (probe-verified: bare `green` from a
+  // `.bi` enum resolves in the includer).
   for (std::string const &closurePath :
        index.transitiveIncludes(normalizedPath)) {
     std::shared_ptr<IndexedFile const> const file = index.fileAt(closurePath);
     if (!file) {
       continue;
     }
-    for (Symbol const &root : file->roots) {
-      if (root.key == key && !gated(root)) {
-        return CrossDecl{file, &root};
+    for (Symbol const *c : moduleLevelCandidates(file->roots)) {
+      if (c->key == key && !gated(*c)) {
+        return CrossDecl{file, c};
       }
     }
   }
@@ -543,26 +579,32 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
   std::vector<Symbol const *> out;
   Symbol const *const siteScope = innermostScope(parse, off);
   bool const storageGated = insideProcedureBody(parse, siteScope);
-  for (Symbol const *cur = siteScope;;
-       cur = cur != nullptr ? parentOf(parse, cur) : nullptr) {
-    std::vector<Symbol> const &cands =
-        cur != nullptr ? cur->children : parse.roots;
-    for (auto const &c : cands) {
-      if (c.key.empty()) {
-        continue;
+  for (Symbol const *cur = siteScope;;) {
+    if (cur != nullptr) {
+      for (auto const &c : cur->children) {
+        if (c.key.empty()) {
+          continue;
+        }
+        out.push_back(&c);
       }
-      // §12.2 gate: from inside a procedure body, module-level Dim-kind names
-      // require the Shared modifier; at module level (control blocks
-      // included) everything shows.
-      if (cur == nullptr && storageGated && c.kind == SymbolKind::Dim &&
-          !c.shared) {
-        continue;
+    } else {
+      for (Symbol const *c : moduleLevelCandidates(parse.roots)) {
+        if (c->key.empty()) {
+          continue;
+        }
+        // §12.2 gate: from inside a procedure body, module-level Dim-kind
+        // names require the Shared modifier; at module level (control blocks
+        // included) everything shows.
+        if (storageGated && c->kind == SymbolKind::Dim && !c->shared) {
+          continue;
+        }
+        out.push_back(c);
       }
-      out.push_back(&c);
     }
     if (cur == nullptr) {
       break;
     }
+    cur = parentOf(parse, cur);
   }
   return out;
 }
@@ -751,6 +793,7 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
   };
   std::vector<Seg> segs;
   bool implicit = false;
+  size_t keywordTokIdx = std::string::npos;
   size_t i = hover.second;
   for (;;) {
     segs.push_back({toLowerChars(tokens[i].text()), i});
@@ -776,10 +819,10 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
         (tokens[i - 3].text() == "." || tokens[i - 3].text() == "->")) {
       // Reserved words can name members, but only mid-chain (`v.name.x`:
       // the keyword follows `.`/`->`). A keyword not preceded by an operator
-      // ends the chain — `if .walls(i).sectorID` must stop at `if` and leave
-      // the base to the `with` target. Keyword-named *variables* don't exist
-      // (fbc rejects `dim name`), so a leftmost keyword segment is never a
-      // chain root to resolve.
+      // ends the chain here — `if .walls(i).sectorID` must stop at `if` and
+      // leave the base to the `with` target — but the segment that bottomed
+      // it out is still pushed, so the base handling below can try it as an
+      // enum name root (`enum color` may be named by a reserved word).
       i = i - 2;
       continue;
     }
@@ -816,6 +859,14 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
       implicit = true;
       break;
     }
+    if (lhs.kind == TokenKind::Keyword) {
+      // `= color . green`: the chain bottomed out on a keyword. A keyword is
+      // never a plain variable (fbc rejects `dim name`), but an *enum name*
+      // may be one (fbc-verified: `enum color` compiles even though `color`
+      // is the graphics intrinsic). Record the keyword so the base handling
+      // below can try it as an enum name root before the `with` target.
+      keywordTokIdx = i - 2;
+    }
     implicit = true; // `.member` after `=`, `(`, a keyword, ...
     break;
   }
@@ -838,23 +889,42 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
   CrossDecl typeDecl;
   size_t first = 0;
   if (implicit) {
-    Token const *const target = withTargetOf(doc.parse, tokens, off);
-    if (target == nullptr) {
-      return out;
+    // The chain bottomed out on a keyword (`= color . green`). A keyword is
+    // never a plain variable (fbc rejects `dim name`), but an *enum name* may
+    // be one — `enum color` compiles and `color.green` qualifies normally,
+    // even though `color` is the graphics intrinsic (fbc-verified). Splice the
+    // keyword back in as the leftmost segment when it resolves to an Enum
+    // root; otherwise fall back to the enclosing `with` target, as before.
+    if (keywordTokIdx != std::string::npos) {
+      CrossDecl const kw = resolveVar(tokens[keywordTokIdx].beg);
+      if (kw.decl != nullptr && kw.decl->kind == SymbolKind::Enum) {
+        segs.insert(segs.begin(), {toLowerChars(kw.decl->name), keywordTokIdx});
+        out.baseName = std::string(kw.decl->name);
+        out.memberAccess = true;
+        typeDecl = kw;
+        out.enumMember = true;
+        first = 1;
+      }
     }
-    CrossDecl const base = resolveVar(target->beg);
-    if (base.decl == nullptr) {
-      return out;
-    }
-    out.baseName = std::string(base.decl->name);
-    out.memberAccess = true;
-    std::string const tn = declaredTypeName(*base.decl);
-    if (tn.empty()) {
-      return out;
-    }
-    typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
-    if (typeDecl.decl == nullptr) {
-      return out;
+    if (first == 0) {
+      Token const *const target = withTargetOf(doc.parse, tokens, off);
+      if (target == nullptr) {
+        return out;
+      }
+      CrossDecl const base = resolveVar(target->beg);
+      if (base.decl == nullptr) {
+        return out;
+      }
+      out.baseName = std::string(base.decl->name);
+      out.memberAccess = true;
+      std::string const tn = declaredTypeName(*base.decl);
+      if (tn.empty()) {
+        return out;
+      }
+      typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+      if (typeDecl.decl == nullptr) {
+        return out;
+      }
     }
   } else {
     Seg const &root = segs.front();
@@ -864,15 +934,25 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
     }
     out.baseName = std::string(base.decl->name);
     out.memberAccess = true;
-    std::string const tn = declaredTypeName(*base.decl);
-    if (tn.empty()) {
-      return out;
+    if (base.decl->kind == SymbolKind::Enum) {
+      // `EnumName.member`: the enum itself is the owner type and its Const
+      // children are the members. Valid for plain and `Explicit` enums alike
+      // (KeyPgEnum, FreeBASIC.md §8) — `Explicit` only restricts the bare
+      // `member` form, never qualified `Name.member` access.
+      typeDecl = base;
+      out.enumMember = true;
+      first = 1;
+    } else {
+      std::string const tn = declaredTypeName(*base.decl);
+      if (tn.empty()) {
+        return out;
+      }
+      typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+      if (typeDecl.decl == nullptr) {
+        return out;
+      }
+      first = 1;
     }
-    typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
-    if (typeDecl.decl == nullptr) {
-      return out;
-    }
-    first = 1;
   }
   if (first >= segs.size()) {
     return out;
