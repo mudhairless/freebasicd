@@ -1973,6 +1973,344 @@ void TestHoverWorksForDocOutsideWorkspaceRoot() {
   std::error_code ec;
   std::filesystem::remove_all(sandbox, ec);
 }
+// The source-layout counterpart of the VCS broad-root narrowing: the broad
+// client root carries no version-control marker anywhere, so the opened
+// document's project is recognized by its `src` child instead of a .git
+// directory. The index root becomes the project dir (`inner`, from the
+// `/tmp/test/inner/src/file.bas` example), so a sibling dir of `src` inside
+// the project is indexed too, while an unrelated sibling tree under the broad
+// root never is.
+void TestSourceLayoutRootNarrowsToOpenedProject() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::path const broad = sandbox / "broad";
+  std::filesystem::path const proj = broad / "inner";
+  std::filesystem::path const sibling = broad / "sibling";
+  std::filesystem::create_directories(proj / "src");
+  std::filesystem::create_directories(proj / "data");
+  std::filesystem::create_directories(sibling);
+  {
+    std::ofstream out(proj / "src" / "app.bas");
+    out << "sub wsOnly()\nend sub\n";
+    std::ofstream out2(proj / "data" / "helper.bi");
+    out2 << "sub helperOnly()\nend sub\n";
+    std::ofstream out3(sibling / "other.bas");
+    out3 << "sub siblingOnly()\nend sub\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const appUri = "file://" + (proj / "src" / "app.bas").string();
+  std::string const broadRootUri = "file://" + broad.string();
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      broadRootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      appUri + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString("sub wsOnly()\nend sub\n") + "\"}}}";
+  input->append(MakeLspFrame(openFrame.c_str()));
+
+  auto querySymbol = [&](int n, std::string const &name) {
+    std::string const id = "\"id\":\"layout" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"layout)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+    input->append(MakeLspFrame(request.c_str()));
+    return WaitForOutputContaining(output, id, 50);
+  };
+
+  // The opened document's project is indexed...
+  bool foundWs = false;
+  for (int n = 0; n < 60 && !foundWs; ++n) {
+    foundWs = querySymbol(n, "wsOnly").find("\"name\":\"wsOnly\"") !=
+              std::string::npos;
+  }
+  Expect(foundWs, "the opened document's project must be indexed");
+
+  // ...with the project dir (`inner`), not the `src` child, as root: a sibling
+  // dir inside the project is indexed too.
+  bool foundHelper = false;
+  for (int n = 0; n < 40 && !foundHelper; ++n) {
+    foundHelper =
+        querySymbol(100 + n, "helperOnly").find("\"name\":\"helperOnly\"") !=
+        std::string::npos;
+  }
+  Expect(foundHelper,
+         "the layout root must be the project dir, not its src child");
+
+  // ...and the sibling tree under the broad root must never be.
+  bool sawSibling = false;
+  for (int n = 0; n < 40 && !sawSibling; ++n) {
+    sawSibling =
+        querySymbol(200 + n, "siblingOnly").find("\"name\":\"siblingOnly\"") !=
+        std::string::npos;
+  }
+  Expect(!sawSibling,
+         "a sibling project under a broad root must not be indexed");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
+// The source-layout detection must recognize every catalogued directory name,
+// source *and* include, full and abbreviated — not just `src`: each project
+// below the broad root is laid out with a different translated name, opening a
+// document in it must narrow the index scope to that project, and the marker-
+// less sibling tree must stay out.
+void TestSourceLayoutRootRecognizesCatalogNames() {
+  struct LayoutCase {
+    char const *dir;
+    char const *symbol;
+  };
+  static constexpr LayoutCase const cases[] = {
+      {"src", "fromSrc"},         {"source", "fromSource"},
+      {"fuente", "fromFuente"},   {"zdr", "fromZdr"},
+      {"ein", "fromEin"},         {"inc", "fromInc"},
+      {"include", "fromInclude"}, {"incl", "fromIncl"},
+      {"inkl", "fromInkl"},       {"sumber", "fromSumber"},
+  };
+
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::path const broad = sandbox / "broad";
+  std::filesystem::path const sibling = broad / "sibling";
+  std::filesystem::create_directories(sibling);
+  {
+    std::ofstream out2(sibling / "other.bas");
+    out2 << "sub siblingOnly()\nend sub\n";
+  }
+  std::vector<std::string> appUris;
+  for (std::size_t i = 0; i < std::size(cases); ++i) {
+    std::filesystem::path const proj = broad / ("proj" + std::to_string(i));
+    std::filesystem::create_directories(proj / cases[i].dir);
+    std::ofstream out(proj / cases[i].dir / "app.bas");
+    out << "sub " << cases[i].symbol << "()\nend sub\n";
+    appUris.push_back("file://" + (proj / cases[i].dir / "app.bas").string());
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const broadRootUri = "file://" + broad.string();
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      broadRootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  auto querySymbol = [&](int n, std::string const &name) {
+    std::string const id = "\"id\":\"cat" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"cat)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+    input->append(MakeLspFrame(request.c_str()));
+    return WaitForOutputContaining(output, id, 50);
+  };
+
+  int idx = 0;
+  bool sawSibling = false;
+  for (std::size_t i = 0; i < std::size(cases); ++i) {
+    std::string const openFrame =
+        R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+        R"({"uri":")" +
+        appUris[i] + R"(","languageId":"basic","version":1,"text":")" +
+        ToJsonString(std::string("sub ") + cases[i].symbol + "()\nend sub\n") +
+        "\"}}}";
+    input->append(MakeLspFrame(openFrame.c_str()));
+
+    bool found = false;
+    for (int n = 0; n < 60 && !found; ++n) {
+      found = querySymbol(idx++, cases[i].symbol)
+                  .find(std::string("\"name\":\"") + cases[i].symbol + "\"") !=
+              std::string::npos;
+    }
+    Expect(found, (std::string("project laid out as `") + cases[i].dir +
+                   "` must narrow the index scope")
+                      .c_str());
+    for (int n = 0; !sawSibling && n < 25; ++n) {
+      sawSibling =
+          querySymbol(idx++, "siblingOnly").find("\"name\":\"siblingOnly\"") !=
+          std::string::npos;
+    }
+  }
+  Expect(!sawSibling,
+         "a sibling project under a broad root must not be indexed");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
+// Single-file mode (no client root): the source/include layout walk still
+// names the project. Opening `/tmp/test/inner/src/file.bas` roots at
+// `/tmp/test/inner`, so a sibling dir of `src` inside the project is indexed
+// and a tree beside it is not. Without any layout marker the workspace stays
+// the opened file's own directory (pre-existing behavior).
+void TestSourceLayoutRootSingleFileMode() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::path const proj = sandbox / "lone" / "inner";
+  std::filesystem::create_directories(proj / "src");
+  std::filesystem::create_directories(proj / "data");
+  std::filesystem::create_directories(sandbox / "lone" / "step");
+  std::filesystem::create_directories(sandbox / "plain");
+  std::filesystem::create_directories(sandbox / "park");
+  {
+    std::ofstream out(proj / "src" / "app.bas");
+    out << "sub wsOnly()\nend sub\n";
+    std::ofstream out2(proj / "data" / "mod.bas");
+    out2 << "sub dataOnly()\nend sub\n";
+    std::ofstream out3(sandbox / "lone" / "step" / "x.bas");
+    out3 << "sub stepOnly()\nend sub\n";
+    std::ofstream out4(sandbox / "plain" / "file.bas");
+    out4 << "sub fileOnly()\nend sub\n";
+    std::ofstream out5(sandbox / "plain" / "near.bas");
+    out5 << "sub nearOnly()\nend sub\n";
+    std::ofstream out6(sandbox / "park" / "y.bas");
+    out6 << "sub parkOnly()\nend sub\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  // No rootUri: single-file mode.
+  input->append(MakeLspFrame(kInitializeFrame));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  std::string const appUri = "file://" + (proj / "src" / "app.bas").string();
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      appUri + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString("sub wsOnly()\nend sub\n") + "\"}}}";
+  input->append(MakeLspFrame(openFrame.c_str()));
+
+  auto querySymbol = [&](int n, std::string const &name) {
+    std::string const id = "\"id\":\"single" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"single)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+    input->append(MakeLspFrame(request.c_str()));
+    return WaitForOutputContaining(output, id, 50);
+  };
+
+  bool foundWs = false;
+  for (int n = 0; n < 60 && !foundWs; ++n) {
+    foundWs = querySymbol(n, "wsOnly").find("\"name\":\"wsOnly\"") !=
+              std::string::npos;
+  }
+  Expect(foundWs, "the opened document's project must be indexed");
+
+  bool foundData = false;
+  for (int n = 0; n < 40 && !foundData; ++n) {
+    foundData =
+        querySymbol(100 + n, "dataOnly").find("\"name\":\"dataOnly\"") !=
+        std::string::npos;
+  }
+  Expect(foundData,
+         "single-file mode must root at the source-layout project dir");
+
+  bool sawStep = false;
+  for (int n = 0; n < 40 && !sawStep; ++n) {
+    sawStep = querySymbol(200 + n, "stepOnly").find("\"name\":\"stepOnly\"") !=
+              std::string::npos;
+  }
+  Expect(!sawStep, "a tree beside the layout project must not be indexed");
+
+  session.stop();
+
+  // Without any layout marker the workspace is the file's own directory.
+  lsp::NullLog log2;
+  lsp::LanguageSession session2(log2);
+  auto input2 = std::make_shared<FeedableIStream>();
+  auto output2 = std::make_shared<StringOStream>();
+  FreeBasicServer server2(session2);
+  server2.registerHandlers();
+  session2.start(input2, output2);
+
+  input2->append(MakeLspFrame(kInitializeFrame));
+  Expect(WaitForOutputContaining(output2, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  std::string const plainUri =
+      "file://" + (sandbox / "plain" / "file.bas").string();
+  std::string const openPlain =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      plainUri + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString("sub fileOnly()\nend sub\n") + "\"}}}";
+  input2->append(MakeLspFrame(openPlain.c_str()));
+
+  auto queryPlain = [&](int n, std::string const &name) {
+    std::string const id = "\"id\":\"plain" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"plain)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+    input2->append(MakeLspFrame(request.c_str()));
+    return WaitForOutputContaining(output2, id, 50);
+  };
+
+  bool foundNear = false;
+  for (int n = 0; n < 60 && !foundNear; ++n) {
+    foundNear = queryPlain(n, "nearOnly").find("\"name\":\"nearOnly\"") !=
+                std::string::npos;
+  }
+  Expect(foundNear, "the file's own directory stays the single-file workspace");
+
+  bool sawPark = false;
+  for (int n = 0; n < 40 && !sawPark; ++n) {
+    sawPark = queryPlain(100 + n, "parkOnly").find("\"name\":\"parkOnly\"") !=
+              std::string::npos;
+  }
+  Expect(!sawPark,
+         "the single-file workspace must not widen beyond the file's dir");
+
+  session2.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
 // A client root that is itself a single project (has a .git marker) is used
 // as-is; a *broad* root (e.g. an editor reporting the home directory, which
 // hosts several sibling projects) is narrowed to the opened document's project
@@ -3088,6 +3426,9 @@ int main(int argc, char **argv) {
   RUN_TEST(TestHoverWorksForDocOutsideWorkspaceRoot);
   RUN_TEST(TestBroadRootNarrowsToOpenedProject);
   RUN_TEST(TestBroadRootNarrowsToAnyVcsProject);
+  RUN_TEST(TestSourceLayoutRootNarrowsToOpenedProject);
+  RUN_TEST(TestSourceLayoutRootRecognizesCatalogNames);
+  RUN_TEST(TestSourceLayoutRootSingleFileMode);
   RUN_TEST(TestDidChangePushesDiagnostics);
   RUN_TEST(TestDidCloseEvictsAndPublishes);
   RUN_TEST(TestShutdownReturnsNullResult);

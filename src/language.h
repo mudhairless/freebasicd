@@ -48,6 +48,14 @@ std::string_view preprocessorWord(std::string_view line);
 // Type-suffix characters attached to identifiers/numbers.
 bool isSuffixChar(char c);
 
+// True when `lowerName` (already ASCII-folded lowercase, e.g. via
+// toLowerChars) is a catalogued project source/include directory name. The
+// catalog pairs full names (source, include) with the common abbreviations
+// (src, inc) across ~30 languages; workspace-root detection treats a directory
+// holding a child by any of these names as a project root.
+bool isSourceDirName(std::string_view lowerName);
+bool isIncludeDirName(std::string_view lowerName);
+
 // Machine-form operator table mirroring Lexer::lexSymbol() (src/lexer.cpp).
 // The semantic-token classifier and the grammar generator consume it;
 // lexer_checks asserts each entry lexes as TokenKind::Symbol so the two

@@ -54,6 +54,19 @@ class FreeBasicServer {
 public:
   explicit FreeBasicServer(lsp::LanguageSession &session);
 
+  // Why an index root was chosen, so stderr can say whether the server took
+  // the client's root as-is or found a project root itself (and from which
+  // signal) instead of the one it was passed.
+  struct IndexRootChoice {
+    std::filesystem::path root;
+    enum class Reason {
+      ClientRoot,   // the client-provided root, used as-is
+      VcsMarker,    // nearest version-control-marked ancestor within/at it
+      SourceLayout, // no VCS marker; ancestor holding a source/include child
+      SingleFile,   // no client root; the opened file's own directory
+    } reason = Reason::ClientRoot;
+  };
+
   void registerHandlers();
   void setExitHandler(std::function<void()> exitHandler);
 
@@ -101,8 +114,7 @@ private:
   std::uint64_t nextResultId_ = 1;
 
   void ensureWorkspaceIndex(std::filesystem::path const &root);
-  std::optional<std::filesystem::path>
-  chooseIndexRoot(std::filesystem::path const &openedFile);
+  IndexRootChoice chooseIndexRoot(std::filesystem::path const &openedFile);
 
   void onInitialized(Notify_InitializedNotification::notify const &notify);
   void

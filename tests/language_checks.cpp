@@ -171,11 +171,51 @@ static void testStatementPosition() {
   CHECK(!at("print x "));        // after a keyword argument head
 }
 
+static void testFolderNameCatalog() {
+  // The project-layout folder-name catalog: source/include directory names per
+  // language (full + common abbreviation). isSourceDirName/isIncludeDirName
+  // match the ASCII-folded lowercase child-directory name the session probes.
+  // English defaults + the abbreviations every project actually uses.
+  CHECK(isSourceDirName("src"));
+  CHECK(isSourceDirName("source"));
+  CHECK(isIncludeDirName("inc"));
+  CHECK(isIncludeDirName("include"));
+  // Abbreviated non-English names.
+  CHECK(isSourceDirName("fnt")); // Spanish/Esperanto fuente/fonto
+  CHECK(isSourceDirName("srg")); // Italian sorgente
+  CHECK(isSourceDirName("zdr")); // Czech/Slovak zdroj
+  CHECK(isSourceDirName("for")); // Hungarian forrás
+  CHECK(isIncludeDirName("incl"));
+  CHECK(isIncludeDirName("inkl"));
+  CHECK(isIncludeDirName("sis"));
+  CHECK(isIncludeDirName("ein")); // German einschließen/Einbindung
+  // Full non-English names (byte-exact, UTF-8 where applicable).
+  CHECK(isSourceDirName("fuente"));
+  CHECK(isSourceDirName("sumber"));
+  CHECK(isIncludeDirName("inclusión"));
+  CHECK(!isIncludeDirName("sumber")); // a source name, not an include name
+  // Case-insensitive via the ASCII fold callers apply with toLowerChars.
+  CHECK(isSourceDirName(fblang::toLowerChars("SRC")));
+  CHECK(isSourceDirName(fblang::toLowerChars("Source")));
+  CHECK(isIncludeDirName(fblang::toLowerChars("INCLUDE")));
+  CHECK(isIncludeDirName(fblang::toLowerChars("Incl")));
+  // Anything else is not a layout marker.
+  CHECK(!isSourceDirName("app"));
+  CHECK(!isSourceDirName("build"));
+  CHECK(!isSourceDirName("src2"));
+  CHECK(!isSourceDirName("data"));
+  CHECK(!isIncludeDirName("inc2"));
+  CHECK(!isIncludeDirName("lib"));
+  CHECK(!isSourceDirName(""));
+  CHECK(!isIncludeDirName(""));
+}
+
 int main() {
   testLookup();
   testCatalogShape();
   testParamLabels();
   testStatementPosition();
+  testFolderNameCatalog();
 
   if (failures == 0) {
     std::printf("language_checks: all passed\n");

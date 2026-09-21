@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -125,6 +126,63 @@ nearestProjectRoot(std::filesystem::path start,
         !isWithinNormalized(fblang::normalizePath(parent), normLimit)) {
       return std::nullopt; // filesystem root, or the search would leave the
                            // client root
+    }
+    start = parent;
+  }
+}
+
+std::filesystem::path homeDirectory() {
+  char const *home = std::getenv("HOME");
+  if (home != nullptr && *home != '\0') {
+    return home;
+  }
+  home = std::getenv("USERPROFILE");
+  if (home != nullptr && *home != '\0') {
+    return home;
+  }
+  return {};
+}
+
+// True when one of `dir`'s immediate children is a directory whose name is in
+// the translated source/include layout catalog (language.cpp) — the marker
+// that `dir` is a project root laid out as <root>/<src-or-inc>/... . Files
+// named src/inc are not markers; only directories count.
+bool hasSourceLayoutChild(std::filesystem::path const &dir) {
+  std::error_code ec;
+  std::filesystem::directory_iterator it(dir, ec);
+  std::filesystem::directory_iterator const end;
+  for (; !ec && it != end; it.increment(ec)) {
+    std::filesystem::path const child = it->path();
+    if (!std::filesystem::is_directory(child, ec)) {
+      continue;
+    }
+    std::string const name = fblang::toLowerChars(child.filename().string());
+    if (fblang::isSourceDirName(name) || fblang::isIncludeDirName(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The deepest ancestor of `start` owning a source/include layout child, or
+// nothing once the walk reaches the drive root or the home folder. The layout
+// rule is the fallback when no version-control marker exists anywhere on the
+// walk: `.../inner/src/file.bas` roots at `.../inner` (the first parent with a
+// `src` child). The home folder ends the walk without checking it, so a
+// personal `~/src` never swallows every project under the home directory.
+std::optional<std::filesystem::path>
+findSourceLayoutRoot(std::filesystem::path start) {
+  std::filesystem::path const home = homeDirectory();
+  for (;;) {
+    std::filesystem::path const parent = start.parent_path();
+    if (parent == start) {
+      return std::nullopt; // drive root: nothing above
+    }
+    if (!home.empty() && start == home) {
+      return std::nullopt; // home folder: fail path
+    }
+    if (hasSourceLayoutChild(start)) {
+      return start;
     }
     start = parent;
   }
@@ -531,25 +589,62 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
   index_->scan(true);
 }
 
-std::optional<std::filesystem::path>
+// stderr note when the server set a root it *found* rather than the one the
+// client passed (or, with no client root, the file's own directory): say how
+// the root was identified so the choice reads as a decision. Silent when the
+// chosen root is the client's as-is, which ensureWorkspaceIndex already logs.
+void logDetectedRoot(FreeBasicServer::IndexRootChoice const &choice,
+                     std::filesystem::path const &clientRoot) {
+  char const *how =
+      choice.reason == FreeBasicServer::IndexRootChoice::Reason::VcsMarker
+          ? "version-control marker"
+          : "source/include directory";
+  std::string const normRoot = fblang::normalizePath(choice.root);
+  if (clientRoot.empty()) {
+    (void)std::fprintf(
+        stderr,
+        "[freebasiclsp] workspace root %s (detected via %s; no client root)\n",
+        normRoot.c_str(), how);
+    return;
+  }
+  (void)std::fprintf(
+      stderr,
+      "[freebasiclsp] workspace root %s (detected via %s; client root %s)\n",
+      normRoot.c_str(), how, fblang::normalizePath(clientRoot).c_str());
+}
+
+FreeBasicServer::IndexRootChoice
 FreeBasicServer::chooseIndexRoot(std::filesystem::path const &openedFile) {
   if (!sessionRoot_.empty()) {
     // A client root that is itself a project root is used as-is.
     if (isProjectRoot(sessionRoot_)) {
-      return sessionRoot_;
+      return {sessionRoot_, IndexRootChoice::Reason::ClientRoot};
     }
     // A broad client root (no version-control marker of its own, e.g. an
     // editor that reports the home directory as the workspace) is narrowed
     // to the opened document's project, so sibling FreeBASIC projects under
-    // it are never swept into the index.
+    // it are never swept into the index: first by the nearest version-control
+    // marker, then — when none exists between the file and the client root —
+    // by walking up to the drive root / home folder for a parent holding a
+    // source/include directory (the project's own layout names it).
     if (std::optional<std::filesystem::path> const project =
             nearestProjectRoot(openedFile, sessionRoot_)) {
-      return project;
+      return {*project, IndexRootChoice::Reason::VcsMarker};
     }
-    return sessionRoot_;
+    if (std::optional<std::filesystem::path> const project =
+            findSourceLayoutRoot(openedFile.parent_path())) {
+      return {*project, IndexRootChoice::Reason::SourceLayout};
+    }
+    return {sessionRoot_, IndexRootChoice::Reason::ClientRoot};
   }
-  // No client root: single-file mode, the workspace is the file's directory.
-  return openedFile.parent_path();
+  // No client root: single-file mode. A source/include directory in an
+  // ancestor names the project root; otherwise the workspace is the file's
+  // directory.
+  if (std::optional<std::filesystem::path> const project =
+          findSourceLayoutRoot(openedFile.parent_path())) {
+    return {*project, IndexRootChoice::Reason::SourceLayout};
+  }
+  return {openedFile.parent_path(), IndexRootChoice::Reason::SingleFile};
 }
 
 void FreeBasicServer::registerHandlers() {
@@ -743,8 +838,9 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
     } else {
       (void)std::fprintf(
           stderr,
-          "[freebasiclsp] workspace root %s has no version-control "
-          "marker; index scope deferred to the first opened document\n",
+          "[freebasiclsp] workspace root %s has no version-control marker; "
+          "index scope deferred to the first opened document (detection: "
+          "version-control marker, else source/include directory)\n",
           rootPath.c_str());
     }
   }
@@ -810,18 +906,25 @@ void FreeBasicServer::onWatchedFiles(
 void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify &notify) {
   std::filesystem::path const openedFile =
       notify.params.textDocument.uri.GetAbsolutePath().path();
-  if (std::optional<std::filesystem::path> const root =
-          chooseIndexRoot(openedFile)) {
-    // A broad client root (no VCS marker) is re-evaluated on every open so
-    // switching to a sibling project re-roots the index to that project.
-    bool const deferredBroadRoot =
-        !sessionRoot_.empty() && !isProjectRoot(sessionRoot_);
-    bool const alreadyRooted =
-        index_ &&
-        fblang::normalizePath(index_->root()) == fblang::normalizePath(*root);
-    if (!index_ || (deferredBroadRoot && !alreadyRooted)) {
-      ensureWorkspaceIndex(*root);
+  IndexRootChoice const choice = chooseIndexRoot(openedFile);
+  // A broad client root (no VCS marker) is re-evaluated on every open so
+  // switching to a sibling project re-roots the index to that project.
+  bool const deferredBroadRoot =
+      !sessionRoot_.empty() && !isProjectRoot(sessionRoot_);
+  bool const alreadyRooted = index_ && fblang::normalizePath(index_->root()) ==
+                                           fblang::normalizePath(choice.root);
+  if (!index_ || (deferredBroadRoot && !alreadyRooted)) {
+    // A root the server found itself (version-control marker or source/include
+    // layout), other than the client's own, gets an explanatory stderr note.
+    bool const notThePassedRoot =
+        sessionRoot_.empty() || fblang::normalizePath(choice.root) !=
+                                    fblang::normalizePath(sessionRoot_);
+    if ((choice.reason == IndexRootChoice::Reason::VcsMarker ||
+         choice.reason == IndexRootChoice::Reason::SourceLayout) &&
+        notThePassedRoot) {
+      logDetectedRoot(choice, sessionRoot_);
     }
+    ensureWorkspaceIndex(choice.root);
   }
   std::shared_ptr<WorkingFile> const file =
       workingFiles_.OnOpen(notify.params.textDocument);

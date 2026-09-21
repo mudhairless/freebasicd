@@ -15,6 +15,192 @@
 
 namespace fblang {
 
+// clang-format off
+// BEGIN GENERATED project-layout folder names (static catalog; provenance: a
+// machine-translated list of common source/include directory names per
+// language, full names first, abbreviation in backticks).
+//
+//   English: source source / `src`   include include / `inc`
+//   French: source source / `src`   include inclure / inclusion / `incl`
+//   Spanish: source fuente / `fnt`   include incluir / inclusión / `incl`
+//   Portuguese: source fonte / `fon`   include incluir / inclusão / `incl`
+//   Italian: source sorgente / `srg`   include includere / inclusione / `incl`
+//   German: source Quelle / `ql`   include einschließen / Einbindung / `ein`
+//   Dutch: source bron / `brn`   include opnemen / insluiting / `opn`
+//   Swedish: source källa / `kll`   include inkludera / inkludering / `inkl`
+//   Danish: source kilde / `kld`   include inkludere / inkludering / `inkl`
+//   Norwegian: source kilde / `kld`   include inkludere / inkludering / `inkl`
+//   Finnish: source lähde / `lhd`   include sisällyttää / sisällytys / `sis`
+//   Icelandic: source heimild / `hm`   include innihalda / innfelling / `inn`
+//   Polish: source źródło / `zrd`   include zawierać / włączenie / `wł`
+//   Czech: source zdroj / `zdr`   include zahrnout / zahrnutí / `zahr`
+//   Slovak: source zdroj / `zdr`   include zahrnúť / zahrnutie / `zahr`
+//   Slovenian: source vir / `vir`   include vključiti / vključitev / `vklj`
+//   Croatian: source izvor / `izv`   include uključiti / uključivanje / `uklj`
+//   Romanian: source sursă / `srs`   include include / includere / `incl`
+//   Hungarian: source forrás / `for`   include tartalmazni / belefoglalás / `tart`
+//   Estonian: source allikas / `all`   include sisaldama / sisestamine / `sis`
+//   Latvian: source avots / `avt`   include iekļaut / iekļaušana / `iek`
+//   Lithuanian: source šaltinis / `šlt`   include įtraukti / įtraukimas / `įtr`
+//   Turkish: source kaynak / `kyn`   include dahil etmek / dahil etme / `dhl`
+//   Vietnamese: source nguồn / `ng`   include bao gồm / `bg`
+//   Indonesian: source sumber / `sbr`   include menyertakan / termasuk / `srt`
+//   Malay: source sumber / `sbr`   include sertakan / termasuk / `srt`
+//   Filipino: source pinagmulan / `pgn`   include isama / pagsasama / `is`
+//   Swahili: source chanzo / `chz`   include kujumuisha / `kuj`
+//   Afrikaans: source bron / `brn`   include insluit / `ins`
+//   Esperanto: source fonto / `fnt`   include inkluzivi / `inkl`
+//
+// 48 source + 68 include names, folded lowercase;
+// ASCII case-insensitive via toLowerChars; non-ASCII names byte-exact.
+
+constexpr std::string_view kSourceDirNames[] = {
+    "source",  // source
+    "src",  // src
+    "fuente",  // fuente
+    "fnt",  // fnt
+    "fonte",  // fonte
+    "fon",  // fon
+    "sorgente",  // sorgente
+    "srg",  // srg
+    "quelle",  // quelle
+    "ql",  // ql
+    "bron",  // bron
+    "brn",  // brn
+    "k\xC3\xA4lla",  // källa
+    "kll",  // kll
+    "kilde",  // kilde
+    "kld",  // kld
+    "l\xC3\xA4hde",  // lähde
+    "lhd",  // lhd
+    "heimild",  // heimild
+    "hm",  // hm
+    "\xC5\xBAr\xC3\xB3d\xC5\x82o",  // źródło
+    "zrd",  // zrd
+    "zdroj",  // zdroj
+    "zdr",  // zdr
+    "vir",  // vir
+    "izvor",  // izvor
+    "izv",  // izv
+    "surs\xC4\x83",  // sursă
+    "srs",  // srs
+    "forr\xC3\xA1s",  // forrás
+    "for",  // for
+    "allikas",  // allikas
+    "all",  // all
+    "avots",  // avots
+    "avt",  // avt
+    "\xC5\xA1altinis",  // šaltinis
+    "\xC5\xA1lt",  // šlt
+    "kaynak",  // kaynak
+    "kyn",  // kyn
+    "ngu\xE1\xBB\x93n",  // nguồn
+    "ng",  // ng
+    "sumber",  // sumber
+    "sbr",  // sbr
+    "pinagmulan",  // pinagmulan
+    "pgn",  // pgn
+    "chanzo",  // chanzo
+    "chz",  // chz
+    "fonto",  // fonto
+};
+
+constexpr std::string_view kIncludeDirNames[] = {
+    "include",  // include
+    "inc",  // inc
+    "inclure",  // inclure
+    "inclusion",  // inclusion
+    "incl",  // incl
+    "incluir",  // incluir
+    "inclusi\xC3\xB3n",  // inclusión
+    "inclus\xC3\xA3o",  // inclusão
+    "includere",  // includere
+    "inclusione",  // inclusione
+    "einschlie\xC3\x9Fen",  // einschließen
+    "einbindung",  // einbindung
+    "ein",  // ein
+    "opnemen",  // opnemen
+    "insluiting",  // insluiting
+    "opn",  // opn
+    "inkludera",  // inkludera
+    "inkludering",  // inkludering
+    "inkl",  // inkl
+    "inkludere",  // inkludere
+    "sis\xC3\xA4llytt\xC3\xA4\xC3\xA4",  // sisällyttää
+    "sis\xC3\xA4llytys",  // sisällytys
+    "sis",  // sis
+    "innihalda",  // innihalda
+    "innfelling",  // innfelling
+    "inn",  // inn
+    "zawiera\xC4\x87",  // zawierać
+    "w\xC5\x82\xC4\x85czenie",  // włączenie
+    "w\xC5\x82",  // wł
+    "zahrnout",  // zahrnout
+    "zahrnut\xC3\xAD",  // zahrnutí
+    "zahr",  // zahr
+    "zahrn\xC3\xBA\xC5\xA5",  // zahrnúť
+    "zahrnutie",  // zahrnutie
+    "vklju\xC4\x8Diti",  // vključiti
+    "vklju\xC4\x8Ditev",  // vključitev
+    "vklj",  // vklj
+    "uklju\xC4\x8Diti",  // uključiti
+    "uklju\xC4\x8Divanje",  // uključivanje
+    "uklj",  // uklj
+    "tartalmazni",  // tartalmazni
+    "belefoglal\xC3\xA1s",  // belefoglalás
+    "tart",  // tart
+    "sisaldama",  // sisaldama
+    "sisestamine",  // sisestamine
+    "iek\xC4\xBCaut",  // iekļaut
+    "iek\xC4\xBCau\xC5\xA1ana",  // iekļaušana
+    "iek",  // iek
+    "\xC4\xAFtraukti",  // įtraukti
+    "\xC4\xAFtraukimas",  // įtraukimas
+    "\xC4\xAFtr",  // įtr
+    "dahil etmek",  // dahil etmek
+    "dahil etme",  // dahil etme
+    "dhl",  // dhl
+    "bao g\xE1\xBB\x93m",  // bao gồm
+    "bg",  // bg
+    "menyertakan",  // menyertakan
+    "termasuk",  // termasuk
+    "srt",  // srt
+    "sertakan",  // sertakan
+    "isama",  // isama
+    "pagsasama",  // pagsasama
+    "is",  // is
+    "kujumuisha",  // kujumuisha
+    "kuj",  // kuj
+    "insluit",  // insluit
+    "ins",  // ins
+    "inkluzivi",  // inkluzivi
+};
+
+// END GENERATED project-layout folder names
+// clang-format on
+
+// A directory holding a child named by any of the catalogued source/include
+// names is a project root for workspace-root detection. Callers fold the child
+// name with toLowerChars first (ASCII case-insensitive); the generated table is
+// already lowercase, non-ASCII entries byte-exact.
+bool isSourceDirName(std::string_view lowerName) {
+  for (std::string_view name : kSourceDirNames) {
+    if (name == lowerName) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isIncludeDirName(std::string_view lowerName) {
+  for (std::string_view name : kIncludeDirNames) {
+    if (name == lowerName) {
+      return true;
+    }
+  }
+  return false;
+}
+
 namespace {
 
 constexpr char const *kReserved[] = {

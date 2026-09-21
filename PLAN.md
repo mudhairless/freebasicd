@@ -14,7 +14,7 @@ remaining work.
 | M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
 | M2 — Lexer + parser language layer, dialects, fbc corpus | done |
 | M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done (2026-09: hover resolves member access `.`/`->` through the base variable's declared type — cross-file, `with`-implicit, and indexed/chained — instead of falling back to the enclosing routine; a follow-up bugfix serves documents opened from a sibling project *outside* the workspace root via an on-demand include closure; a second bugfix adds a soft fallback: when the declared type is unknown or the member missing, `.walls` inside `with map` still reads "Member of `map`." instead of a colliding identifier or the sub signature; a final conformance pass makes enum members resolve and hover — qualified `Name.member` for explicit and plain enums, bare `member` for plain ones only, reserved-word enum names like `enum color` working, all cross-file) |
-| M4 — persistent workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an **in-memory-only** index — no on-disk cache) |
+| M4 — persistent workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an **in-memory-only** index — no on-disk cache; workspace-root fallback detection: when the client root (or single-file mode) has no version-control marker, the root is narrowed from the opened document by walking up to the drive root / `$HOME` for a parent holding a catalogued `source`/`include` directory — e.g. `/tmp/test/inner/src/file.bas` roots at `/tmp/test/inner`; the detected root (and its signal: VCS marker vs source/include directory) is logged to stderr) |
 | M5 — workspace spine: occurrence projection + include graph | done |
 | M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
 | M6 — include resolution + watched files + missing-include diagnostics | done (2026-09: missing-include diagnostics, debounced watched-files rescan, `#pragma once` metadata; the include search gained the project-dir (`-i inc`) step and the index an on-demand, resolution-only closure for out-of-root documents) |
@@ -44,7 +44,10 @@ stable shape:
 - `src/language.{h,cpp}` — reserved-word catalog, block-closer facts, wiki doc
   URLs, dialect detection helpers, `isSuffixChar`, and the 247-row `Intrinsic`
   catalog (`intrinsicFor`, `intrinsics`, `intrinsicDocsUrl`,
-  `signatureParamLabels`, `statementPosition`).
+  `signatureParamLabels`, `statementPosition`); the project-layout folder-name
+  catalog (`isSourceDirName`/`isIncludeDirName` — a static 48+68 table of
+  source/include directory names across ~30 languages, matched ASCII-
+  case-insensitively) that names project roots for workspace detection.
 - `src/analysis_cache.{h,cpp}` — `AnalysisCache`: content-addressed
   `ParseResult` + token vector per path (FNV-1a content hash as the identity),
   open-buffer entries exempt from FIFO eviction, `removePath` on close.
@@ -71,6 +74,12 @@ stable shape:
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
   `WorkingFiles` + `WorkspaceIndex`, serves a content-addressed
   `AnalysisCache` (replacing per-request reparse), pushes diagnostics.
+  Index-root selection (`chooseIndexRoot`) uses the client root as-is when it
+  is a VCS project root; a *broad* client root is narrowed to the opened
+  document's project — nearest VCS marker first, else the source/include
+  layout walk (`findSourceLayoutRoot`, up to the drive root / `$HOME`) — and
+  single-file mode roots at the layout project or the file's directory; a
+  detected root that replaces the client's is logged to stderr with the signal.
   `ensureRequestClosure` wraps the index walk with a resolver over the live
   open buffer (else disk) and runs before cross-file resolution, member hover,
   and completion.
