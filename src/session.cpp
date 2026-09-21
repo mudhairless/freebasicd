@@ -1621,6 +1621,41 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
 
   fblang::AnalyzedDoc const &doc = cached->analysis;
 
+  std::string const normPath = fblang::normalizePath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  // The requesting document may open from a sibling project outside the
+  // workspace root; warm its live-buffer include closure so member access can
+  // find the owner type across files (mirrors onHover).
+  ensureRequestClosure(normPath);
+
+  // Context-aware member completion: a `.`/`->` chain (including the
+  // `with`-implicit leading dot and qualified `EnumName.member`) completes
+  // only the base object's accessible members — never FreeBASIC keywords,
+  // globals, or intrinsics (FreeBASIC.md §4). Non-public members are gated:
+  // they appear only inside a member procedure of the owner type.
+  fblang::MemberCompletion const mc =
+      fblang::resolveMemberCompletion(doc, normPath, offset, index_.get());
+  if (mc.memberAccess) {
+    for (fblang::Symbol const *m : mc.members) {
+      if (!hasPrefix(fblang::toLowerChars(m->name), prefix)) {
+        continue;
+      }
+      lsCompletionItem item;
+      item.label = m->name;
+      item.kind.emplace(completionKindFor(m->kind));
+      if (!m->signature.empty()) {
+        item.detail.emplace(m->signature);
+      }
+      if (!m->doc.empty()) {
+        item.documentation.emplace();
+        item.documentation->second.emplace(
+            MarkupContent{std::string("markdown"), std::string(m->doc)});
+      }
+      rsp.result.items.push_back(std::move(item));
+    }
+    return rsp;
+  }
+
   for (std::string_view const w : fblang::reservedWords()) {
     if (fblang::intrinsicFor(w) != nullptr) {
       // The catalog owns this name: one richer item (signature + wiki page)
@@ -1692,12 +1727,9 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
   if (index_) {
     bool const storageGated = fblang::insideProcedureBody(
         doc.parse, fblang::innermostScope(doc.parse, offset));
-    std::string const normPath = fblang::normalizePath(
-        req.params.textDocument.uri.GetAbsolutePath().path());
     // The requesting document may open from a sibling project outside the
     // workspace root; stay on the live-buffer include closure (see
-    // ensureRequestClosure) so its module-level names complete too.
-    ensureRequestClosure(normPath);
+    // ensureRequestClosure above) so its module-level names complete too.
     for (std::string const &closurePath :
          index_->transitiveIncludes(normPath)) {
       std::shared_ptr<fblang::IndexedFile const> const closure =

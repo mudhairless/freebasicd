@@ -54,6 +54,14 @@ enum class SymbolKind {
   Variable
 };
 
+// Member visibility as gated by an access section inside a TYPE body
+// (`Private:`, `Public:`, `Protected:` — FreeBASIC.md §4, KeyPgVisPrivate/
+// KeyPgVisPublic/KeyPgVisProtected). Members default to Public; a section
+// gates every member declaration after it until the next section. Only TYPE
+// members ever carry a non-default value — Union bodies reject access
+// sections (fbc: syntax error) and enum members are always Public.
+enum class Access { Public, Private, Protected };
+
 // Per-document symbol. Ranges are byte offsets into the source buffer.
 struct Symbol {
   std::string name; // display name (original case + suffix char)
@@ -93,6 +101,13 @@ struct Symbol {
   // (`Name.member`), never as bare module names. A plain `enum <name>`
   // publishes each member as a module-scope constant.
   bool explicitEnum = false;
+
+  // Member visibility (Access enum above). Stamped by the parser when a
+  // TYPE-body member is captured: the container's current access section.
+  // Non-public members are offered by completion only from inside a member
+  // procedure of the same type, and `resolveMemberAccess` still resolves them
+  // (hover/references do not gate) — fbc reports error 202 on outside access.
+  Access access = Access::Public;
 };
 
 enum class Severity { Error = 1, Warning = 2, Information = 3, Hint = 4 };

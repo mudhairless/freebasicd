@@ -622,6 +622,109 @@ int main() {
           "https://www.freebasic.net/wiki/KeyPgEnum");
   }
 
+  // TYPE access sections (FreeBASIC.md §4, KeyPgVisPrivate/Public/Protected):
+  // `Private:`/`Public:`/`Protected:` inside a TYPE body gate every member
+  // declared after them until the next section; members default to Public.
+  // Union bodies reject the section syntax (fbc: syntax error) and enum
+  // members stay Public.
+  {
+    ParseResult r = parseDocument("type position\n"
+                                  "    x as integer\n"
+                                  "    private:\n"
+                                  "    secret as integer\n"
+                                  "    declare sub touch()\n"
+                                  "    protected:\n"
+                                  "    guard as integer\n"
+                                  "    public:\n"
+                                  "    y as integer\n"
+                                  "end type\n"
+                                  "\n"
+                                  "type box\n"
+                                  "    private: a as integer\n"
+                                  "end type\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *pos = find(r.roots, "position", SymbolKind::Type);
+    CHECK(pos != nullptr);
+    // x, secret, touch (declared Sub), guard, y.
+    CHECK(pos->children.size() == 5);
+    struct {
+      const char *key;
+      Access access;
+    } const expected[] = {
+        {"x", Access::Public},      {"secret", Access::Private},
+        {"touch", Access::Private}, {"guard", Access::Protected},
+        {"y", Access::Public},
+    };
+    for (auto const &e : expected) {
+      const Symbol *m = find(pos->children, e.key, SymbolKind::Variable);
+      if (m == nullptr) {
+        m = find(pos->children, e.key, SymbolKind::Sub);
+      }
+      CHECK(m != nullptr);
+      CHECK(m->access == e.access);
+    }
+    // The section gate is carried by the container, so a `private:` on the
+    // same line as the first member applies to it too.
+    const Symbol *box = find(r.roots, "box", SymbolKind::Type);
+    CHECK(box != nullptr);
+    const Symbol *a = find(box->children, "a", SymbolKind::Variable);
+    CHECK(a != nullptr && a->access == Access::Private);
+  }
+  {
+    // Members default to Public; `protected` is a real reserved keyword but an
+    // ordinary member name still lexes and captures as a field.
+    ParseResult r = parseDocument("type t\n"
+                                  "    as integer protected\n"
+                                  "end type\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *t = find(r.roots, "t", SymbolKind::Type);
+    CHECK(t != nullptr);
+    const Symbol *p = find(t->children, "protected", SymbolKind::Variable);
+    CHECK(p != nullptr && p->access == Access::Public);
+    CHECK(isReservedWord("protected"));
+    CHECK(keywordDocsUrl("protected") ==
+          "https://www.freebasic.net/wiki/KeyPgProtected");
+  }
+  {
+    // Outside a TYPE body the section colon declares nothing (fbc accepts the
+    // line only inside a type): no member is registered, and nothing crashes.
+    ParseResult r = parseDocument("private:\n"
+                                  "dim x as integer\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(r.roots.size() == 1);
+  }
+  {
+    // A Union body rejects access sections, so `private:` there is just an
+    // empty statement and the following member stays Public.
+    ParseResult r = parseDocument("union u\n"
+                                  "    private:\n"
+                                  "    a as integer\n"
+                                  "end union\n");
+    const Symbol *u = find(r.roots, "u", SymbolKind::Union);
+    CHECK(u != nullptr);
+    CHECK(u->children.size() == 1);
+    CHECK(u->children[0].name == "a");
+    CHECK(u->children[0].access == Access::Public);
+  }
+  {
+    // A block the user is still typing in (no closer yet) still gets a range
+    // covering the rest of the source, so containment lookups work while
+    // editing. Regression: until this fix, an unclosed block kept
+    // range.end == 0 and deepestNesting/innermostScope rejected every offset
+    // inside it — hovering, completion, or definition inside a half-typed
+    // procedure found nothing.
+    std::string const src = "sub s()\n"
+                            "    dim q\n"
+                            "    print q\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.diagnostics.size() == 1); // the unterminated-block error stays
+    const Symbol *s = find(r.roots, "s", SymbolKind::Sub);
+    CHECK(s != nullptr);
+    CHECK(s->range.end == src.size());
+    const Symbol *q = find(s->children, "q", SymbolKind::Dim);
+    CHECK(q != nullptr);
+  }
+
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");
     return 0;

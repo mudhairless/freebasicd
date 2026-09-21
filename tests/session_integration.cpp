@@ -367,6 +367,50 @@ char const *kCompletionFrame =
     R"FB({"jsonrpc":"2.0","id":"comp","method":"textDocument/completion","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":8}}})FB";
 
+// Member completion context (PLAN.md M19): `p.` must complete only the UDT's
+// accessible members — never keywords, globals, or intrinsics. The example
+// type has a private member, so a module-level `p.` offers just x/y; inside
+// the type's own member procedure the private member is offered too
+// (FreeBASIC.md §4, fbc's error-202 gate). The variable name is `p`, distinct
+// from the type `Position`: FreeBASIC keys identifiers case-insensitively, so
+// `dim position as Position` would collide the variable with its own type
+// (fbc separates the namespaces; today's resolver does not — see §12).
+char const kDidOpenMemberCompletionModuleFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/memcomp.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"type Position\n)FB"
+    R"FB(    x as integer\n)FB"
+    R"FB(    y as integer\n)FB"
+    R"FB(    private:\n)FB"
+    R"FB(    hidden as integer\n)FB"
+    R"FB(end type\n)FB"
+    R"FB(dim p as Position\n)FB"
+    R"FB(p.\n"}}})FB";
+
+// Cursor at the end of line 7 (`p.`), right after the dot.
+char const *kMemberCompletionModuleFrame =
+    R"FB({"jsonrpc":"2.0","id":"mc1","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/memcomp.bas"},"position":{"line":7,"character":2}}})FB";
+
+char const kDidOpenMemberCompletionProcFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file:///tmp/memcomp2.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"type Position\n)FB"
+    R"FB(    x as integer\n)FB"
+    R"FB(    y as integer\n)FB"
+    R"FB(    private:\n)FB"
+    R"FB(    hidden as integer\n)FB"
+    R"FB(end type\n)FB"
+    R"FB(sub Position.set()\n)FB"
+    R"FB(    dim obj as Position\n)FB"
+    R"FB(    obj.\n"}}})FB";
+
+// Cursor at the end of line 8 (`    obj.`), right after the dot inside the
+// member procedure implementation.
+char const *kMemberCompletionProcFrame =
+    R"FB({"jsonrpc":"2.0","id":"mc2","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file:///tmp/memcomp2.bas"},"position":{"line":8,"character":8}}})FB";
+
 char const *kSignatureHelpFrame =
     R"FB({"jsonrpc":"2.0","id":"sig","method":"textDocument/signatureHelp","params":)FB"
     R"FB({"textDocument":{"uri":"file:///tmp/calls.bas"},"position":{"line":5,"character":11}}})FB";
@@ -1323,6 +1367,53 @@ void TestCompletionOffersKeywordsAndSymbols() {
   Expect(response.find("https://www.freebasic.net/wiki/KeyPgIf") !=
              std::string::npos,
          "keyword documentation must link to the FreeBASIC wiki");
+
+  session.stop();
+}
+
+void TestCompletionFiltersMembersByAccessContext() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  // Module level: `p.` offers only the public members.
+  input->append(MakeLspFrame(kDidOpenMemberCompletionModuleFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kMemberCompletionModuleFrame));
+  std::string const moduleResponse =
+      WaitForOutputContaining(output, "\"id\":\"mc1\"");
+
+  Expect(moduleResponse.find("\"label\":\"x\"") != std::string::npos &&
+             moduleResponse.find("\"label\":\"y\"") != std::string::npos,
+         "`p.` must offer the public members x and y");
+  Expect(moduleResponse.find("\"label\":\"hidden\"") == std::string::npos,
+         "the private member must not complete at module level");
+  Expect(moduleResponse.find("\"label\":\"dim\"") == std::string::npos,
+         "member access must not fall back to keywords");
+  Expect(moduleResponse.find("\"label\":\"pow\"") == std::string::npos,
+         "member access must not offer intrinsic catalog entries");
+
+  // Inside `sub Position.set()`: the same type's private member completes.
+  input->append(MakeLspFrame(kDidOpenMemberCompletionProcFrame));
+  Expect(WaitForPublishedUri(output, 2).empty() == false,
+         "second didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kMemberCompletionProcFrame));
+  std::string const procResponse =
+      WaitForOutputContaining(output, "\"id\":\"mc2\"");
+
+  Expect(
+      procResponse.find("\"label\":\"hidden\"") != std::string::npos,
+      "the private member must complete inside the owner's member procedure");
+  Expect(procResponse.find("\"label\":\"x\"") != std::string::npos,
+         "public members still complete inside the member procedure");
 
   session.stop();
 }
@@ -3416,6 +3507,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestReferencesListAllSites);
   RUN_TEST(TestHighlightCoversAllSites);
   RUN_TEST(TestCompletionOffersKeywordsAndSymbols);
+  RUN_TEST(TestCompletionFiltersMembersByAccessContext);
   RUN_TEST(TestHoverLinksKeywordDocs);
   RUN_TEST(TestSignatureHelpShowsParamsAndActiveIndex);
   RUN_TEST(TestCompletionOffersIntrinsicCatalogItems);

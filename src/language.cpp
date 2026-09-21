@@ -438,6 +438,7 @@ constexpr char const *kReserved[] = {
     "private",
     "procptr",
     "property",
+    "protected",
     "pset",
     "ptr",
     "public",

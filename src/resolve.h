@@ -156,6 +156,35 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
                                  std::uint32_t off,
                                  WorkspaceIndex const *index);
 
+// Result of the member-completion scan at `off` — the same `.`/`->` chain
+// shape as resolveMemberAccess, with the cursor either on a partially typed
+// member name or right after the chain's final operator (`position.`), plus
+// the `with`-implicit leading dot and qualified `EnumName.member` access.
+struct MemberCompletion {
+  // The Type/Union root owning `members` (or an Enum root for qualified
+  // `EnumName.` access); empty when the chain base did not resolve.
+  CrossDecl owner;
+  // Every accessible member of the owner, access-filtered (FreeBASIC.md §4):
+  // Public members always; Private/Protected only when `off` sits inside a
+  // member procedure implementation of the owner type (fbc error 202 on any
+  // outside path). Enumerators are always listed.
+  std::vector<Symbol const *> members;
+  std::string baseName;      // root variable (`with` target or lhs identifier),
+                             // for display; empty for a plain-type owner
+  std::string ownerTypeName; // display name of the type that owns the members
+  bool enumMember = false;   // qualified `EnumName.` access (no access gate)
+  // The chain base resolved, even when the declared type — and so `members` —
+  // could not be pinned down (unknown/unindexed owner). Mirrors
+  // MemberAccess::memberAccess: a `.`/`->` chain must never fall back to
+  // keyword/global/intrinsic completion.
+  bool memberAccess = false;
+};
+
+MemberCompletion resolveMemberCompletion(AnalyzedDoc const &doc,
+                                         std::string const &normalizedPath,
+                                         std::uint32_t off,
+                                         WorkspaceIndex const *index);
+
 // --- Cross-file rename support (M8) ---
 
 // A single rename site: the file and byte range to replace.

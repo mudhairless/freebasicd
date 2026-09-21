@@ -30,6 +30,7 @@ remaining work.
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
 | M18 — public release: README / editor setup, CI (moved from M11) | next |
+| M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
 
 ## 2. What exists (condensed)
 
@@ -52,11 +53,15 @@ stable shape:
   `ParseResult` + token vector per path (FNV-1a content hash as the identity),
   open-buffer entries exempt from FIFO eviction, `removePath` on close.
 - `src/symbols.h` — shared model: `Symbol`, `SymbolKind`, `Diagnostic`,
-  `ParseResult`, `SourceRange` (byte offsets), `toLowerChars`.
+  `ParseResult`, `SourceRange` (byte offsets), `toLowerChars`, and the
+  `Access` visibility gate (`Public`/`Private`/`Protected`, stamped by the
+  parser from a TYPE body's access sections).
 - `src/resolve.{h,cpp}` — same-file resolution: `resolveAt`, `occurrencesOf`,
   `visibleSymbols`, `innermostScope`, `parentOf`, and the cross-file member
   chain: `declaredTypeName`, `findMember`, `findTypeDecl`,
-  `resolveMemberAccess` (`.`/`->`, `with`-implicit, indexed/chained). Enum
+  `resolveMemberAccess` (`.`/`->`, `with`-implicit, indexed/chained) and its
+  completion twin `resolveMemberCompletion` (same chain walk, returns the
+  owner type's members filtered by the `Access` gate + owner-context). Enum
   members of plain enums join the module name space via
   `moduleLevelCandidates` (explicit-enum members stay gated behind
   `Name.member`, §8 Enums).
@@ -90,7 +95,8 @@ Implemented LSP methods: `initialize`/`shutdown`/`exit`, `didOpen`/`didChange`/
 member access + intrinsic signatures + keyword wiki links), `foldingRange`,
 `definition`,
 `references`, `documentHighlight`, `completion` (keywords + `END`-block
-snippets + in-scope symbols + intrinsic catalog), `signatureHelp` (user
+snippets + in-scope symbols + intrinsic catalog + context-aware UDT member
+filtering after `.`/`->`), `signatureHelp` (user
 declarations and built-in functions), `workspace/symbol`, `prepareRename`,
 `rename` (resolution-based workspace edits).
 
@@ -584,6 +590,48 @@ implementation.
 - Files: `README.md`, `docs/editors/`, `.github/`.
 - Acceptance: README + wiring docs accurate end-to-end on all three editors;
   CI green on Linux/macOS/Windows once the repo is pushed and enabled.
+
+### M19 — Context-aware member completion (UDT members only)
+
+> Status: landed 2026-09, `ctest` 12/12 green, `clang-format` clean. Both
+> halves shipped. The parser now recognizes TYPE-body access sections
+> (`Private:`/`Public:`/`Protected:`, fbc: `:`-syntax only, only inside a
+> `Type`; `Protected` ≡ `Private` until `Extends` lands) and stamps each member
+> with an `Access` in `Symbol::access`; the `protected` reserved word joined
+> the keyword catalog (with docs) and the TextMate/vim grammars were
+> regenerated. Completion is context-aware: after a `.`/`->` the server
+> resolves the chain with the *shared* hover walk (virtual member under the
+> cursor, `with`-implicit leading dot, intermediate members walked through
+> their declared types, cross-file via the request closure) and returns the
+> owner type's members — never FreeBASIC keywords, globals, or intrinsics —
+> filtered by the access gate: Public always, Private/Protected only inside
+> the owner type's own member procedures. `EnumName.` completes all members
+> ungated. Deviation from the sketch: hard type-qualified static-member
+> completion (`T.counter`) is out of scope, and `dim T.m` — a fixed-sized type
+> field whose name collides with the type — is captured as a plain member
+> (fbc 1.10.2 accepts it as an inline field; noted in FreeBASIC.md §12).
+
+- Parser stamps `Symbol::access` from a TYPE container's current section;
+  `Private:`/`Public:`/`Protected:` at statement start are consumed as an
+  empty statement everywhere (no phantom member in Unions or module-level),
+  and only wire the gate inside `TYPE`.
+- `resolveMemberCompletion` reuses the member-chain machinery
+  (`collectMemberChain`/`chainOwner`/`walkIntermediateMembers` split out of
+  `resolveMemberAccess` so hover's soft fallback is byte-for-byte preserved);
+  the session branch runs before the keyword/symbol/intrinsic path and drops
+  items only via the access gate.
+- Unclosed blocks (a procedure still being typed) are closed at EOF in the
+  parser, giving their symbols a range covering the rest of the source —
+  regression: previously `range.end` stayed 0 until the closer, so
+  containment inside a half-typed `sub` found no scope and completion/hover
+  found nothing.
+- Files: `src/symbols.h`, `src/parser.cpp`, `src/resolve.{h,cpp}`,
+  `src/session.cpp`, `src/language.cpp`, `editors/` (grammars), tests
+  (`parser_checks`, `resolve_checks`, `session_integration`).
+- Acceptance: `p.` at module level completes x/y only (private excluded, no
+  `dim` keyword, no intrinsics); inside `sub Position.set()` the private
+  member appears; `->`/`with`/chained/`EnumName.` shapes complete; hover's
+  fallback test suite stays green.
 
 ## 6. Not doing (soon)
 

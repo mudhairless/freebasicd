@@ -1028,6 +1028,197 @@ static void TestEnumConformance() {
   }
 }
 
+// Member completion (M-proposal): a `.`/`->` chain under the cursor completes
+// only the base object's accessible members — never keywords/globals. The
+// completion scan shares the hover chain machinery: virtual mode for the bare
+// operator (`p.`), name mode for a partially typed member (`p.x`), plus the
+// `with`-implicit leading dot, `->`, chained, and qualified-enum shapes. The
+// access filter (FreeBASIC.md §4) shows Private/Protected members only inside
+// the owner type's own member procedures.
+static void TestMemberCompletionContexts() {
+  // Public-only at module level; the private member appears only inside a
+  // member-procedure implementation of the same type.
+  {
+    std::string const src = "type position\n"
+                            "    x as integer\n"
+                            "    y as integer\n"
+                            "    private:\n"
+                            "    secret as integer\n"
+                            "end type\n"
+                            "dim as position p\n"
+                            "p.\n"
+                            "p.x\n"
+                            "sub position.set()\n"
+                            "    dim q as position\n"
+                            "    q.\n"
+                            "end sub\n";
+    AnalyzedDoc const doc = analyze(src);
+    auto offOf = [&](std::string const &needle, size_t pastLen) {
+      return static_cast<std::uint32_t>(src.find(needle) + pastLen);
+    };
+
+    // `p.` at module level: virtual member (cursor right after the dot); only
+    // public members complete.
+    MemberCompletion const atModule =
+        resolveMemberCompletion(doc, "x.bas", offOf("p.\n", 2), nullptr);
+    CHECK_MSG(atModule.memberAccess && atModule.baseName == "p" &&
+                  atModule.ownerTypeName == "position",
+              "the member chain reports the base variable and owner");
+    CHECK_MSG(atModule.members.size() == 2,
+              "public members only outside a private context");
+    CHECK_MSG(atModule.members[0]->key == "x" &&
+                  atModule.members[1]->key == "y",
+              "completion order follows declaration order");
+
+    // `q.` inside `sub position.set()`: the enclosing member procedure opens
+    // the private gate.
+    MemberCompletion const inMember =
+        resolveMemberCompletion(doc, "x.bas", offOf("q.\n", 2), nullptr);
+    CHECK_MSG(inMember.memberAccess && inMember.members.size() == 3 &&
+                  inMember.members[2]->key == "secret",
+              "private members complete inside the owner's member procedure");
+
+    // Partially typed member (`p.x`): the cursor sits on the `x` name token,
+    // the member set is the same (the session filters by prefix).
+    MemberCompletion const onName =
+        resolveMemberCompletion(doc, "x.bas", offOf("p.x", 3), nullptr);
+    CHECK_MSG(onName.memberAccess && onName.members.size() == 2 &&
+                  onName.members[0]->key == "x",
+              "a partially typed member stays within its owner's members");
+  }
+
+  // A member-procedure block that is still open at EOF (`end sub` not typed
+  // yet) resolves its locals and opens the private gate exactly like a closed
+  // one. The parser now closes leftover blocks at EOF instead of leaving
+  // range.end == 0 — regression: containment inside an in-progress sub found
+  // no scope, so `q.` completed nothing while typing.
+  {
+    std::string const src = "type position\n"
+                            "    x as integer\n"
+                            "    y as integer\n"
+                            "    private:\n"
+                            "    secret as integer\n"
+                            "end type\n"
+                            "sub position.set()\n"
+                            "    dim q as position\n"
+                            "    q.\n";
+    AnalyzedDoc const doc = analyze(src);
+    std::uint32_t const off = static_cast<std::uint32_t>(src.find("q.\n") + 2);
+    MemberCompletion const mc =
+        resolveMemberCompletion(doc, "x.bas", off, nullptr);
+    CHECK_MSG(mc.memberAccess && mc.members.size() == 3 &&
+                  mc.members[2]->key == "secret",
+              "an unclosed member procedure still opens the private gate");
+  }
+
+  // `->` on a pointer base, `with`-implicit leading dot, and a chained
+  // access resolving through an intermediate member's declared type.
+  {
+    std::string const src = "type position\n"
+                            "    x as integer\n"
+                            "    y as integer\n"
+                            "end type\n"
+                            "type inner\n"
+                            "    z as integer\n"
+                            "end type\n"
+                            "type outer\n"
+                            "    as inner inr\n"
+                            "    x as integer\n"
+                            "end type\n"
+                            "sub s(p as position ptr, o as outer)\n"
+                            "    with p\n"
+                            "        .\n"
+                            "    end with\n"
+                            "    p->\n"
+                            "    o.inr.\n"
+                            "end sub\n";
+    AnalyzedDoc const doc = analyze(src);
+    auto offOf = [&](std::string const &needle, size_t pastLen) {
+      return static_cast<std::uint32_t>(src.find(needle) + pastLen);
+    };
+
+    std::uint32_t const ptrOff =
+        static_cast<std::uint32_t>(src.find("p->\n") + 3);
+    MemberCompletion const ptrBase =
+        resolveMemberCompletion(doc, "x.bas", ptrOff, nullptr);
+    CHECK_MSG(ptrBase.memberAccess && ptrBase.members.size() == 2 &&
+                  ptrBase.members[0]->key == "x",
+              "`p->` completes the pointed-to type's members");
+
+    std::uint32_t const withOff =
+        static_cast<std::uint32_t>(src.find("        .\n") + 9);
+    MemberCompletion const withBase =
+        resolveMemberCompletion(doc, "x.bas", withOff, nullptr);
+    CHECK_MSG(withBase.memberAccess && withBase.baseName == "p" &&
+                  withBase.members.size() == 2,
+              "a leading dot completes the `with` target's members");
+
+    std::uint32_t const chainOff =
+        static_cast<std::uint32_t>(src.find("o.inr.\n") + 6);
+    MemberCompletion const chained =
+        resolveMemberCompletion(doc, "x.bas", chainOff, nullptr);
+    CHECK_MSG(chained.memberAccess && chained.ownerTypeName == "inner" &&
+                  chained.members.size() == 1 && chained.members[0]->key == "z",
+              "`o.inr.` walks through `inr`'s declared type to `inner`");
+  }
+
+  // Qualified enum access: `keys.` completes the enumerators.
+  {
+    std::string const src = "enum keys\n"
+                            "    key_esc = 1\n"
+                            "    key_space = 2\n"
+                            "end enum\n"
+                            "dim k = keys.\n";
+    AnalyzedDoc const doc = analyze(src);
+    std::uint32_t const off = static_cast<std::uint32_t>(src.find("keys.") + 5);
+    MemberCompletion const mc =
+        resolveMemberCompletion(doc, "x.bas", off, nullptr);
+    CHECK_MSG(mc.memberAccess && mc.enumMember && mc.members.size() == 2 &&
+                  mc.members[0]->key == "key_esc" &&
+                  mc.members[1]->key == "key_space",
+              "`keys.` completes the enumerators of the enum root");
+  }
+
+  // Soft fallbacks mirror hover: a base that does not resolve is not a member
+  // access (`memberAccess == false` → the session keeps keywords); a base
+  // with no declared type still is one, but has no members to offer.
+  {
+    std::string const src = "sub s(mystery as somethingelse)\n"
+                            "    mystery.\n"
+                            "    dim w\n"
+                            "    w.\n"
+                            "end sub\n";
+    AnalyzedDoc const doc = analyze(src);
+    auto offOf = [&](std::string const &needle, size_t pastLen) {
+      return static_cast<std::uint32_t>(src.find(needle) + pastLen);
+    };
+
+    MemberCompletion const typed =
+        resolveMemberCompletion(doc, "x.bas", offOf("mystery.", 8), nullptr);
+    CHECK_MSG(typed.memberAccess && typed.members.empty(),
+              "an unindexed owner type is still a member access");
+
+    MemberCompletion const untypedDoc =
+        resolveMemberCompletion(doc, "x.bas", offOf("w.", 2), nullptr);
+    CHECK_MSG(untypedDoc.memberAccess && untypedDoc.members.empty(),
+              "a base without a declared type offers no members");
+  }
+
+  // Not a member access at all: `mystery.` with `mystery` undefined keeps
+  // `memberAccess == false`, so the session falls back to its ordinary
+  // completion path.
+  {
+    std::string const src = "mystery.\n";
+    AnalyzedDoc const doc = analyze(src);
+    std::uint32_t const off =
+        static_cast<std::uint32_t>(src.find("mystery.") + 8);
+    MemberCompletion const mc =
+        resolveMemberCompletion(doc, "x.bas", off, nullptr);
+    CHECK_MSG(!mc.memberAccess && mc.members.empty(),
+              "an unresolvable base is not a member access");
+  }
+}
+
 int main() {
   TestScopingResolvesCorrectly();
   TestUnknownAndNonIdentifiersResolveNull();
@@ -1041,6 +1232,7 @@ int main() {
   TestForCounterIsLoopLocal();
   TestEnumConformance();
   TestMemberAccessResolution();
+  TestMemberCompletionContexts();
   TestStorageGateInControlBlocks();
   TestOccurrencesAcrossSingleFile();
   TestOccurrencesAcrossCrossFile();

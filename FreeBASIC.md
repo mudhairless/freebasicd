@@ -343,3 +343,23 @@ to "the language is what the lexer does":
     the shadowing outcome matches fbc when the `Dim` follows the member,
     while pre-`Enum` bare usages resolve here as a convenience instead of
     erroring (declared decision: no source-order gating at module level).
+13. **`dim T.m` static-member syntax captures a phantom variable.** In `fb`,
+    `dim map.m as integer` is `error 147` (fbc 1.10.2: "Default types or
+    suffixes are only valid in -lang deprecated or fblite or qb, found
+    '.'"). The dim handler registers the name token before the dot (`map`)
+    with the full `.m` text surviving in its signature, so the fixed-array
+    spelling can never legally appear under `-lang fb` — the phantom module
+    var is harmless, but recorded so docs never claim the syntax is
+    supported. (The qb/fblite reading of `.` as a type suffix is the same
+    hazard as divergence #1; only `fb` is implemented.)
+14. **Type and variable names share one key, so a same-named `dim` loses to
+    its type in member completion.** FreeBASIC keys identifiers
+    case-insensitively but keeps type and variable names in separate
+    namespaces: fbc 1.10.2 compiles `dim position as Position` (probe) and a
+    later `position.x` uses the *variable*. This implementation's
+    module-scope resolution returns the first same-key root, so the earlier
+    `Type` root wins and an M19 `position.` completion resolves as if the
+    type were the base (empty member set). The M19 fixtures sidestep the
+    collision with a distinct variable name (`dim p as Position`), and
+    static-member completion (`T.counter`) is out of scope entirely — type
+    names never complete their members today.

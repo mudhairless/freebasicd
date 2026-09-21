@@ -766,6 +766,312 @@ CrossDecl findTypeDecl(AnalyzedDoc const &doc,
   return {};
 }
 
+namespace {
+
+// Hop over a balanced `(...)` / `[...]` group whose closing token sits at
+// `closeTokIdx`, landing on the identifier (or operator-preceded reserved
+// word) that names the receiver (`arr` in `.arr(i).field`). Returns the
+// receiver token index, or npos when none exists — an intrinsic call like
+// `upper(s).x` never opens a chain and bottoms out implicit.
+size_t hopReceiver(std::vector<Token> const &tokens, size_t closeTokIdx) {
+  int depth = 1;
+  size_t j = closeTokIdx;
+  while (j > 0 && depth > 0) {
+    --j;
+    TokenKind const jk = tokens[j].kind;
+    if (jk == TokenKind::Symbol &&
+        (tokens[j].text() == ")" || tokens[j].text() == "]")) {
+      ++depth;
+    } else if (jk == TokenKind::Symbol &&
+               (tokens[j].text() == "(" || tokens[j].text() == "[")) {
+      --depth;
+    }
+  }
+  if (j > 0 && tokens[j - 1].kind == TokenKind::Identifier) {
+    return j - 1;
+  }
+  if (j > 1 && tokens[j - 1].kind == TokenKind::Keyword &&
+      tokens[j - 2].kind == TokenKind::Symbol &&
+      (tokens[j - 2].text() == "." || tokens[j - 2].text() == "->")) {
+    return j - 1;
+  }
+  return std::string::npos;
+}
+
+// One link of a `.`/`->` member chain.
+struct ChainSeg {
+  std::string name; // lowercased lookup key; empty for the virtual completing
+                    // member (the cursor is right after an operator)
+  size_t tokIdx = 0;
+};
+
+// The shared leftward chain walk: pushes the segment for the name token at
+// `memberTokIdx`, then keeps walking as long as segments alternate name,
+// operator, name. A reserved word can name a member, but only mid-chain
+// (`v.name.x`); a bottoming keyword is recorded in `keywordTokIdx` so the
+// caller can try it as an enum-name root (`enum color` — `color` is the
+// graphics intrinsic). A `)`/`]` receiver hops to the identifier that opens
+// the call/array. `implicit` marks a chain whose base is not a plain variable:
+// a leading dot (base = `with` target), or a bottom after `=` / `(` / a
+// keyword / a parenthesized call with no name receiver.
+void collectChainWalk(std::vector<Token> const &tokens, size_t memberTokIdx,
+                      std::vector<ChainSeg> *segs, bool *implicit,
+                      size_t *keywordTokIdx) {
+  size_t i = memberTokIdx;
+  for (;;) {
+    segs->push_back({toLowerChars(tokens[i].text()), i});
+    if (i == 0) {
+      break; // leftmost segment is a variable
+    }
+    Token const &beforeOp = tokens[i - 1];
+    if (beforeOp.kind != TokenKind::Symbol ||
+        (beforeOp.text() != "." && beforeOp.text() != "->")) {
+      break; // this segment is a plain variable; chain ends
+    }
+    if (i < 2) {
+      *implicit = true; // leading `.member`
+      break;
+    }
+    Token const &lhs = tokens[i - 2];
+    if (lhs.kind == TokenKind::Identifier) {
+      i = i - 2; // `a.b.c`: keep walking
+      continue;
+    }
+    if (lhs.kind == TokenKind::Keyword && i >= 3 &&
+        tokens[i - 3].kind == TokenKind::Symbol &&
+        (tokens[i - 3].text() == "." || tokens[i - 3].text() == "->")) {
+      // Reserved words can name members, but only mid-chain (`v.name.x`).
+      i = i - 2;
+      continue;
+    }
+    if (lhs.kind == TokenKind::Symbol &&
+        (lhs.text() == ")" || lhs.text() == "]")) {
+      // Indexed/called member: `.arr(i).field`. Hop over the call to the
+      // identifier that opens it.
+      size_t const r = hopReceiver(tokens, i - 2);
+      if (r != std::string::npos) {
+        i = r;
+        continue;
+      }
+      *implicit = true;
+      break;
+    }
+    if (lhs.kind == TokenKind::Keyword) {
+      // `= color . green`: the chain bottomed out on a keyword. A keyword is
+      // never a plain variable (fbc rejects `dim name`), but an *enum name*
+      // may be one (fbc-verified: `enum color` compiles even though `color`
+      // is the graphics intrinsic). Record the keyword so the base handling
+      // below can try it as an enum name root before the `with` target.
+      *keywordTokIdx = i - 2;
+    }
+    *implicit = true; // `.member` after `=`, `(`, a keyword, ...
+    break;
+  }
+}
+
+// Collect the member chain ending at `memberTokIdx`, root-first on return.
+// Hover mode (`virtualMember == false`): `memberTokIdx` is a member name token
+// preceded by the `.`/`->` operator. Completion mode (`true`): `memberTokIdx`
+// is the operator token itself — the member being typed has no token, so the
+// collection pushes a virtual empty-key segment first and anchors the walk at
+// the operator's left-hand side (a name, a reserved-word member, a `)`-opened
+// call, or nothing at all for a leading dot).
+void collectMemberChain(std::vector<Token> const &tokens, size_t memberTokIdx,
+                        bool virtualMember, std::vector<ChainSeg> *segs,
+                        bool *implicit, size_t *keywordTokIdx) {
+  if (!virtualMember) {
+    collectChainWalk(tokens, memberTokIdx, segs, implicit, keywordTokIdx);
+    std::reverse(segs->begin(), segs->end());
+    return;
+  }
+  segs->push_back({std::string(), memberTokIdx}); // the completing member
+  if (memberTokIdx == 0) {
+    *implicit = true; // `.<cursor>` at line start: base is the `with` target
+  } else {
+    Token const &lhs = tokens[memberTokIdx - 1];
+    size_t receiver = std::string::npos;
+    if (lhs.kind == TokenKind::Identifier) {
+      receiver = memberTokIdx - 1;
+    } else if (lhs.kind == TokenKind::Keyword && memberTokIdx >= 2 &&
+               tokens[memberTokIdx - 2].kind == TokenKind::Symbol &&
+               (tokens[memberTokIdx - 2].text() == "." ||
+                tokens[memberTokIdx - 2].text() == "->")) {
+      // Reserved-word member receiver (`v.name.`).
+      receiver = memberTokIdx - 1;
+    } else if (lhs.kind == TokenKind::Symbol &&
+               (lhs.text() == ")" || lhs.text() == "]")) {
+      receiver = hopReceiver(tokens, memberTokIdx - 1);
+    } else if (lhs.kind == TokenKind::Keyword) {
+      // `= color . <cursor>`: the operator's lhs is a keyword. A keyword is
+      // never a plain variable, but *enum names* may be reserved words, so
+      // hand it to the base handling as a potential enum-name root.
+      *keywordTokIdx = memberTokIdx - 1;
+    }
+    if (receiver != std::string::npos) {
+      collectChainWalk(tokens, receiver, segs, implicit, keywordTokIdx);
+    } else {
+      *implicit = true;
+    }
+  }
+  std::reverse(segs->begin(), segs->end());
+}
+
+enum class ChainBase { None, NoOwner, Resolved };
+
+// Resolves the chain base (`segs`) into the Type/Union/Enum "owner"
+// declaration whose members a hover (or member completion) should report.
+// Mirrors the historic `resolveMemberAccess` base block so hover's soft
+// fallback is preserved exactly:
+//   - None: no variable or `with` target anchors the chain (not a member
+//     access at all).
+//   - NoOwner: the base variable resolved, but its declared type is unknown —
+//     the access is still a member access (the caller sets `memberAccess`).
+//   - Resolved: `owner` holds the owning Type/Union (or the Enum root for
+//     qualified `EnumName.member` chains) and `first` is the index of the
+//     first segment whose member type still needs a walk. `baseName` and
+//     `enumMember` are filled for display.
+ChainBase chainOwner(AnalyzedDoc const &doc, std::string const &normalizedPath,
+                     WorkspaceIndex const *index, std::uint32_t off,
+                     std::vector<Token> const &tokens,
+                     std::vector<ChainSeg> *segs, bool implicit,
+                     size_t keywordTokIdx, CrossDecl *owner, size_t *first,
+                     std::string *baseName, bool *enumMember) {
+  auto const resolveVar = [&](std::uint32_t voff) -> CrossDecl {
+    if (index != nullptr) {
+      return resolveAcross(doc, normalizedPath, voff, *index);
+    }
+    if (Symbol const *const d = resolveAt(doc, voff)) {
+      return CrossDecl{nullptr, d};
+    }
+    return {};
+  };
+
+  if (implicit) {
+    if (keywordTokIdx != std::string::npos) {
+      CrossDecl const kw = resolveVar(tokens[keywordTokIdx].beg);
+      if (kw.decl != nullptr && kw.decl->kind == SymbolKind::Enum) {
+        // Splice the keyword back in as the leftmost segment; the enum's own
+        // members follow the dot.
+        segs->insert(segs->begin(),
+                     {toLowerChars(kw.decl->name), keywordTokIdx});
+        *baseName = std::string(kw.decl->name);
+        *enumMember = true;
+        *owner = kw;
+        *first = 1;
+        return ChainBase::Resolved;
+      }
+    }
+    Token const *const target = withTargetOf(doc.parse, tokens, off);
+    if (target == nullptr) {
+      return ChainBase::None;
+    }
+    CrossDecl const base = resolveVar(target->beg);
+    if (base.decl == nullptr) {
+      return ChainBase::None;
+    }
+    *baseName = std::string(base.decl->name);
+    std::string const tn = declaredTypeName(*base.decl);
+    if (tn.empty()) {
+      return ChainBase::NoOwner;
+    }
+    *owner = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+    if (owner->decl == nullptr) {
+      return ChainBase::NoOwner;
+    }
+    // The `with` target is not a chain segment: its member chain starts at
+    // segment 0 (`.sectors(i).floorHeight` → segs[0] == sectors).
+    *first = 0;
+    return ChainBase::Resolved;
+  }
+
+  ChainSeg const &root = segs->front();
+  CrossDecl const base = resolveVar(tokens[root.tokIdx].beg);
+  if (base.decl == nullptr) {
+    return ChainBase::None;
+  }
+  *baseName = std::string(base.decl->name);
+  if (base.decl->kind == SymbolKind::Enum) {
+    // `EnumName.member`: the enum itself is the owner type and its Const
+    // children are the members. Valid for plain and `Explicit` enums alike
+    // (KeyPgEnum, FreeBASIC.md §8).
+    *owner = base;
+    *enumMember = true;
+    *first = 1;
+    return ChainBase::Resolved;
+  }
+  std::string const tn = declaredTypeName(*base.decl);
+  if (tn.empty()) {
+    return ChainBase::NoOwner;
+  }
+  *owner = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+  if (owner->decl == nullptr) {
+    return ChainBase::NoOwner;
+  }
+  *first = 1;
+  return ChainBase::Resolved;
+}
+
+// Walks intermediate chain segments [first, segs.size()) so a chained access
+// (`w.wallColor.a`) resolves through each declared type. Stops one short of
+// the rightmost segment in hover mode (the hovered member is the target); in
+// completion mode the rightmost segment is the virtual member, so the walk
+// covers every real segment. Returns false when any link's declared type is
+// unknown — the caller soft-falls back with `memberAccess` set.
+bool walkIntermediateMembers(AnalyzedDoc const &doc,
+                             std::string const &normalizedPath,
+                             WorkspaceIndex const *index,
+                             std::vector<ChainSeg> const &segs, size_t first,
+                             CrossDecl *typeDecl) {
+  for (size_t k = first; k + 1 < segs.size(); ++k) {
+    Symbol const *const m = findMember(*typeDecl->decl, segs[k].name);
+    if (m == nullptr) {
+      return false;
+    }
+    std::string const tn = declaredTypeName(*m);
+    if (tn.empty()) {
+      return false;
+    }
+    *typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+    if (typeDecl->decl == nullptr) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Whether `off` sits inside a member procedure implementation of the type
+// whose key is `ownerKey` — a file root registered as `sub Type.name(...)`
+// (root key = the type name, `<type>.` in its header signature). fbc
+// (FreeBASIC.md §4, KeyPgVisPrivate/Protected): only from inside the type's
+// own member procedures are private/protected members reachable; every
+// outside path (`.`/`->`/`with` at module level or in a foreign procedure) is
+// error 202. The parser models no inheritance, so `Extends`-derived access is
+// deliberately not granted (FreeBASIC.md §12).
+bool completionInsideOwnerType(ParseResult const &parse, std::uint32_t off,
+                               std::string const &ownerKey) {
+  Symbol const *const site = innermostScope(parse, off);
+  for (Symbol const *cur = site; cur != nullptr; cur = parentOf(parse, cur)) {
+    switch (cur->kind) {
+    case SymbolKind::Sub:
+    case SymbolKind::Function:
+    case SymbolKind::Property:
+    case SymbolKind::Constructor:
+    case SymbolKind::Destructor:
+    case SymbolKind::Operator:
+      if (cur->key != ownerKey) {
+        return false;
+      }
+      return toLowerChars(std::string(cur->signature)).find(ownerKey + ".") !=
+             std::string::npos;
+    default:
+      break;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
 MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
                                  std::string const &normalizedPath,
                                  std::uint32_t off,
@@ -782,197 +1088,32 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
     return out;
   }
 
-  // Collect the member chain, right to left. Each segment is a name token
-  // (identifier, or a reserved word used as a member name); the token between
-  // segments is the `.`/`->` operator. The chain either bottoms out at a plain
-  // variable identifier (`w.v1`) or at a leading `.` whose base is the
-  // enclosing `with` target (implicit).
-  struct Seg {
-    std::string name; // lowercased lookup key
-    size_t tokIdx = 0;
-  };
-  std::vector<Seg> segs;
+  std::vector<ChainSeg> segs;
   bool implicit = false;
   size_t keywordTokIdx = std::string::npos;
-  size_t i = hover.second;
-  for (;;) {
-    segs.push_back({toLowerChars(tokens[i].text()), i});
-    if (i == 0) {
-      break; // leftmost segment is a variable
-    }
-    Token const &beforeOp = tokens[i - 1];
-    if (beforeOp.kind != TokenKind::Symbol ||
-        (beforeOp.text() != "." && beforeOp.text() != "->")) {
-      break; // this segment is a plain variable; chain ends
-    }
-    if (i < 2) {
-      implicit = true; // leading `.member`
-      break;
-    }
-    Token const &lhs = tokens[i - 2];
-    if (lhs.kind == TokenKind::Identifier) {
-      i = i - 2; // `a.b.c`: keep walking
-      continue;
-    }
-    if (lhs.kind == TokenKind::Keyword && i >= 3 &&
-        tokens[i - 3].kind == TokenKind::Symbol &&
-        (tokens[i - 3].text() == "." || tokens[i - 3].text() == "->")) {
-      // Reserved words can name members, but only mid-chain (`v.name.x`:
-      // the keyword follows `.`/`->`). A keyword not preceded by an operator
-      // ends the chain here — `if .walls(i).sectorID` must stop at `if` and
-      // leave the base to the `with` target — but the segment that bottomed
-      // it out is still pushed, so the base handling below can try it as an
-      // enum name root (`enum color` may be named by a reserved word).
-      i = i - 2;
-      continue;
-    }
-    if (lhs.kind == TokenKind::Symbol &&
-        (lhs.text() == ")" || lhs.text() == "]")) {
-      // Indexed/called member: `.arr(i).field`. Hop over the call to the
-      // identifier that opens it.
-      int depth = 1;
-      size_t j = i - 2;
-      while (j > 0 && depth > 0) {
-        --j;
-        TokenKind const jk = tokens[j].kind;
-        if (jk == TokenKind::Symbol &&
-            (tokens[j].text() == ")" || tokens[j].text() == "]")) {
-          ++depth;
-        } else if (jk == TokenKind::Symbol &&
-                   (tokens[j].text() == "(" || tokens[j].text() == "[")) {
-          --depth;
-        }
-      }
-      if (j > 0 && tokens[j - 1].kind == TokenKind::Identifier) {
-        i = j - 1;
-        continue;
-      }
-      if (j > 1 && tokens[j - 1].kind == TokenKind::Keyword &&
-          tokens[j - 2].kind == TokenKind::Symbol &&
-          (tokens[j - 2].text() == "." || tokens[j - 2].text() == "->")) {
-        // The call receiver can be a reserved-word member (`v.name(i).x`),
-        // but only when it directly follows an operator; a keyword receiver
-        // elsewhere (an intrinsic call like `name(i)`) never opens a chain.
-        i = j - 1;
-        continue;
-      }
-      implicit = true;
-      break;
-    }
-    if (lhs.kind == TokenKind::Keyword) {
-      // `= color . green`: the chain bottomed out on a keyword. A keyword is
-      // never a plain variable (fbc rejects `dim name`), but an *enum name*
-      // may be one (fbc-verified: `enum color` compiles even though `color`
-      // is the graphics intrinsic). Record the keyword so the base handling
-      // below can try it as an enum name root before the `with` target.
-      keywordTokIdx = i - 2;
-    }
-    implicit = true; // `.member` after `=`, `(`, a keyword, ...
-    break;
-  }
-  std::reverse(segs.begin(), segs.end());
+  collectMemberChain(tokens, hover.second, /*virtualMember=*/false, &segs,
+                     &implicit, &keywordTokIdx);
   if (segs.empty()) {
     return out;
   }
 
-  // The chain root: either the with-target variable or the first identifier.
-  auto const resolveVar = [&](std::uint32_t voff) -> CrossDecl {
-    if (index != nullptr) {
-      return resolveAcross(doc, normalizedPath, voff, *index);
-    }
-    if (Symbol const *const d = resolveAt(doc, voff)) {
-      return CrossDecl{nullptr, d};
-    }
-    return {};
-  };
-
   CrossDecl typeDecl;
   size_t first = 0;
-  if (implicit) {
-    // The chain bottomed out on a keyword (`= color . green`). A keyword is
-    // never a plain variable (fbc rejects `dim name`), but an *enum name* may
-    // be one — `enum color` compiles and `color.green` qualifies normally,
-    // even though `color` is the graphics intrinsic (fbc-verified). Splice the
-    // keyword back in as the leftmost segment when it resolves to an Enum
-    // root; otherwise fall back to the enclosing `with` target, as before.
-    if (keywordTokIdx != std::string::npos) {
-      CrossDecl const kw = resolveVar(tokens[keywordTokIdx].beg);
-      if (kw.decl != nullptr && kw.decl->kind == SymbolKind::Enum) {
-        segs.insert(segs.begin(), {toLowerChars(kw.decl->name), keywordTokIdx});
-        out.baseName = std::string(kw.decl->name);
-        out.memberAccess = true;
-        typeDecl = kw;
-        out.enumMember = true;
-        first = 1;
-      }
-    }
-    if (first == 0) {
-      Token const *const target = withTargetOf(doc.parse, tokens, off);
-      if (target == nullptr) {
-        return out;
-      }
-      CrossDecl const base = resolveVar(target->beg);
-      if (base.decl == nullptr) {
-        return out;
-      }
-      out.baseName = std::string(base.decl->name);
-      out.memberAccess = true;
-      std::string const tn = declaredTypeName(*base.decl);
-      if (tn.empty()) {
-        return out;
-      }
-      typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
-      if (typeDecl.decl == nullptr) {
-        return out;
-      }
-    }
-  } else {
-    Seg const &root = segs.front();
-    CrossDecl const base = resolveVar(tokens[root.tokIdx].beg);
-    if (base.decl == nullptr) {
-      return out;
-    }
-    out.baseName = std::string(base.decl->name);
-    out.memberAccess = true;
-    if (base.decl->kind == SymbolKind::Enum) {
-      // `EnumName.member`: the enum itself is the owner type and its Const
-      // children are the members. Valid for plain and `Explicit` enums alike
-      // (KeyPgEnum, FreeBASIC.md §8) — `Explicit` only restricts the bare
-      // `member` form, never qualified `Name.member` access.
-      typeDecl = base;
-      out.enumMember = true;
-      first = 1;
-    } else {
-      std::string const tn = declaredTypeName(*base.decl);
-      if (tn.empty()) {
-        return out;
-      }
-      typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
-      if (typeDecl.decl == nullptr) {
-        return out;
-      }
-      first = 1;
-    }
-  }
-  if (first >= segs.size()) {
+  switch (chainOwner(doc, normalizedPath, index, off, tokens, &segs, implicit,
+                     keywordTokIdx, &typeDecl, &first, &out.baseName,
+                     &out.enumMember)) {
+  case ChainBase::None:
     return out;
+  case ChainBase::NoOwner:
+    out.memberAccess = true;
+    return out;
+  case ChainBase::Resolved:
+    out.memberAccess = true;
+    break;
   }
-
-  // Walk intermediate members so a chained access (`w.wallColor.a`) resolves
-  // through each declared type; the hovered member is the last segment.
-  for (size_t k = first; k + 1 < segs.size(); ++k) {
-    Symbol const *const m = findMember(*typeDecl.decl, segs[k].name);
-    if (m == nullptr) {
-      return out;
-    }
-    std::string const tn = declaredTypeName(*m);
-    if (tn.empty()) {
-      return out;
-    }
-    typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
-    if (typeDecl.decl == nullptr) {
-      return out;
-    }
+  if (!walkIntermediateMembers(doc, normalizedPath, index, segs, first,
+                               &typeDecl)) {
+    return out;
   }
   out.ownerTypeName = std::string(typeDecl.decl->name);
   out.member = findMember(*typeDecl.decl, segs.back().name);
@@ -981,6 +1122,105 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
   }
   out.direct = (first + 1 == segs.size());
   return out;
+}
+
+MemberCompletion resolveMemberCompletion(AnalyzedDoc const &doc,
+                                         std::string const &normalizedPath,
+                                         std::uint32_t off,
+                                         WorkspaceIndex const *index) {
+  MemberCompletion mc;
+  std::vector<Token> const &tokens = doc.tokens;
+
+  auto const hover = tokenAndIndex(tokens, off);
+  bool virtualMember = false;
+  size_t memberTokIdx = 0;
+  if (hover.first != nullptr) {
+    if (hover.second == 0) {
+      return mc;
+    }
+    Token const &op = tokens[hover.second - 1];
+    if (op.kind != TokenKind::Symbol ||
+        (op.text() != "." && op.text() != "->")) {
+      return mc; // not a member access: the ordinary completion path
+    }
+    memberTokIdx = hover.second;
+  } else {
+    // Cursor not on a name token: the operator itself may be the last token
+    // typed (`position.`, `map->`). Find it; only then is this a member
+    // access. The token ending at/before `off` is the last one before the
+    // cursor (no name token straddles it, or tokenAndIndex would have hit).
+    // Newlines / EOF / comments in between are whitespace, not program
+    // tokens, so a trailing line break or comment never masks an operator.
+    virtualMember = true;
+    memberTokIdx = std::string::npos;
+    for (size_t ti = tokens.size(); ti > 0; --ti) {
+      Token const &t = tokens[ti - 1];
+      if (t.end > off) {
+        continue; // token starts after the cursor
+      }
+      if (t.kind == TokenKind::Newline || t.kind == TokenKind::Eof ||
+          t.kind == TokenKind::Comment || t.kind == TokenKind::DocComment) {
+        continue; // not a program token
+      }
+      if (t.kind == TokenKind::Symbol &&
+          (t.text() == "." || t.text() == "->")) {
+        memberTokIdx = ti - 1;
+      }
+      break;
+    }
+    if (memberTokIdx == std::string::npos) {
+      return mc;
+    }
+  }
+
+  std::vector<ChainSeg> segs;
+  bool implicit = false;
+  size_t keywordTokIdx = std::string::npos;
+  collectMemberChain(tokens, memberTokIdx, virtualMember, &segs, &implicit,
+                     &keywordTokIdx);
+  if (segs.empty()) {
+    return mc;
+  }
+
+  CrossDecl typeDecl;
+  size_t first = 0;
+  switch (chainOwner(doc, normalizedPath, index, off, tokens, &segs, implicit,
+                     keywordTokIdx, &typeDecl, &first, &mc.baseName,
+                     &mc.enumMember)) {
+  case ChainBase::None:
+    return mc;
+  case ChainBase::NoOwner:
+    mc.memberAccess = true;
+    return mc;
+  case ChainBase::Resolved:
+    mc.memberAccess = true;
+    break;
+  }
+  if (!walkIntermediateMembers(doc, normalizedPath, index, segs, first,
+                               &typeDecl)) {
+    return mc;
+  }
+  mc.owner = typeDecl;
+  mc.ownerTypeName = std::string(typeDecl.decl->name);
+
+  // Access filter (FreeBASIC.md §4, fbc 1.10.2): public members always;
+  // private/protected additionally inside the owner type's own member
+  // procedures. The owner of a qualified enum chain is an Enum root whose
+  // Const children are always public, so only Type members ever get gated.
+  bool const insideOwner =
+      (typeDecl.decl->kind == SymbolKind::Type ||
+       typeDecl.decl->kind == SymbolKind::Union) &&
+      completionInsideOwnerType(doc.parse, off, typeDecl.decl->key);
+  for (Symbol const &m : typeDecl.decl->children) {
+    if (m.key.empty()) {
+      continue; // scope/unused markers never complete as members
+    }
+    if (m.access != Access::Public && !insideOwner) {
+      continue;
+    }
+    mc.members.push_back(&m);
+  }
+  return mc;
 }
 
 } // namespace fblang

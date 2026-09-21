@@ -50,6 +50,12 @@ struct Block {
 struct Container {
   Symbol *sym;                          // null for module scope
   std::unordered_set<std::string> keys; // dedupe for names at this level
+  // Current access section inside a TYPE body (`Private:`/`Public:`/
+  // `Protected:`, FreeBASIC.md §4): gates every member captured into this
+  // container until the next section keyword. Defaults Public; only a TYPE
+  // container ever changes it (Union bodies reject sections, and everything
+  // else — module scope, procedures, enums — stays Public).
+  Access access = Access::Public;
   explicit Container(Symbol *s) : sym(s) {}
 };
 
@@ -112,6 +118,14 @@ public:
     for (auto it = blocks_.rbegin(); it != blocks_.rend(); ++it) {
       addDiagnostic(it->begOpen, it->endOpen, Severity::Error,
                     "unterminated-block", "Expected '" + displayFor(*it) + "'");
+    }
+    // Close the leftover blocks at EOF (innermost first) so their symbols get
+    // sane ranges extending to the end of the source. Without this, a block
+    // the user is still typing in keeps range.end == 0 and containment checks
+    // (deepestNesting/innermostScope) reject every offset inside it, so hover,
+    // completion, and definition find nothing while the block is unclosed.
+    while (!blocks_.empty()) {
+      closeBlock(cur_.end);
     }
     return std::move(out_);
   }
@@ -293,6 +307,10 @@ private:
   }
 
   Symbol *addSymbol(Symbol &&s) {
+    // Type-member visibility: capture the current access section of the
+    // enclosing container. Module scope and non-type containers keep the
+    // default Public, so this is a no-op outside a TYPE body.
+    s.access = containers_.empty() ? Access::Public : containers_.back().access;
     bool const dedupe =
         s.kind == SymbolKind::Dim || s.kind == SymbolKind::Const ||
         s.kind == SymbolKind::Variable || s.kind == SymbolKind::Label ||
@@ -446,6 +464,28 @@ private:
     }
 
     std::string const w = toLowerChars(cur_.text());
+
+    // Access section: `Private:`, `Public:`, `Protected:`. Inside a TYPE body
+    // it gates every member declaration after it until the next section
+    // (FreeBASIC.md §4, KeyPgVisPrivate/Public/Protected; fbc 1.10.2:
+    // section-colon syntax only, and only inside a Type — a Union rejects it
+    // with a syntax error — and only in `-lang fb`). The section declares
+    // nothing; stamps are applied by addSymbol from the container gate.
+    // Elsewhere (module level, a Union body) the colon still makes the line an
+    // empty statement, so consume the pair regardless of the enclosing block —
+    // the keyword must never be captured as a phantom member.
+    if ((w == "private" || w == "public" || w == "protected") &&
+        lex_.peek(0).kind == TokenKind::Symbol && lex_.peek(0).text() == ":") {
+      if (!blocks_.empty() && blocks_.back().kind == BlockKind::Type) {
+        containers_.back().access = w == "private"     ? Access::Private
+                                    : w == "protected" ? Access::Protected
+                                                       : Access::Public;
+      }
+      resetDoc();
+      advance(); // the section keyword
+      advance(); // the ':'
+      return;
+    }
 
     if (w == "private" || w == "public" || w == "export" || w == "static") {
       Token const nxt = lex_.peek(0);
