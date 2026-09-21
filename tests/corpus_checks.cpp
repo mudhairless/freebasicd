@@ -111,7 +111,11 @@ int main(int argc, char **argv) {
     std::printf("fbc NOT found; compiling agreement checks will be skipped\n");
   }
 
+  // Scratch dir for the fbc-compile half of the harness. Clear a stale copy
+  // from an interrupted earlier run first so the fixture never leaks into this
+  // one; it is removed again on every exit path below.
   fs::path work = fs::path("corpus_work");
+  fs::remove_all(work);
   fs::create_directories(work);
 
   std::vector<fs::path> files;
@@ -193,6 +197,8 @@ int main(int argc, char **argv) {
   }
 
   std::printf("%zu files checked, %zu failures\n", files.size(), failures);
+  std::error_code ec;
+  fs::remove_all(work, ec);
   if (failures > 0) {
     return 1;
   }
