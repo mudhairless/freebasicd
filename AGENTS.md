@@ -29,6 +29,12 @@ repository (default branch `main`).
   build with `LSPCPP_BUILD_WEBSOCKETS=OFF`, `LSPCPP_BUILD_EXAMPLES=OFF`,
   `LSPCPP_BUILD_TESTS=OFF`.
 - LspCpp handles all protocol JSON via its bundled RapidJSON. 
+- **tomlplusplus** (github.com/marzer/tomlplusplus) is vendored as a **git
+  submodule** at `third_party/tomlplusplus`, pinned to `30172438` (v3.4.0).
+  Header-only — an INTERFACE target (`tomlplusplus::tomlplusplus`) whose only
+  cost is the include dir. It parses the server's `freebasiclsp.toml` config
+  file (`src/settings.{h,cpp}`, M11). Restore with
+  `git submodule update --init`.
 - Requires CMake 3.16+ and C++17.
 
 ## FreeBASIC facts (encode these in the lexer/parser)
@@ -73,18 +79,38 @@ must stay there. Encoding directives that the lexer/parser must honor:
   thread. Requests can run concurrently with each other; keep `max_workers=2`.
   Guard shared language state with a mutex; take the lock only to snapshot a
   parse, build responses lock-free.
-- **Index**: the per-workspace `WorkspaceIndex` is **in-memory only** — nothing
-  is ever written to disk. A background scan parses the workspace (plus a
-  debounced rescan on watched-file events); open-buffer entries are marked
+- **Index**: each `WorkspaceIndex` is **in-memory only** — nothing is ever
+  written to disk. A background scan parses the workspace (plus a debounced
+  rescan on watched-file events); open-buffer entries are marked
   `fromDisk=false` so scan's mtime/size cache-hit can never accept a live
-  buffer's parse.
+  buffer's parse. Since M11 the server owns **one index per workspace root**:
+  `indexes_` (a map keyed by normalized root) under a single `indexesMutex_`
+  holds the registered client folders that are themselves workspace roots,
+  detected roots, and single-file roots. Session handlers snapshot a
+  `shared_ptr<WorkspaceIndex>` (via `indexFor` for a path, `allIndexes()` for
+  workspace/symbol) and hold it while raw result pointers (member-access
+  walks) are in use. Watched-file events route per path to the owning root's
+  index and are deduped by owner root; folder add/remove re-key the map.
+- **Workspace roots (M11)**: root selection is `chooseIndexRoot`'s priority
+  0–5 — the deepest registered marker-root containing the file; a client root
+  that is itself a workspace root as-is; else the nearest VCS marker, then the
+  nearest `freebasiclsp.toml` (config-file marker), then the source/include
+  layout walk (`findSourceLayoutRoot`, up to the drive root / `$HOME`); and
+  single-file mode when no client root exists. A file outside every index root
+  is served **resolution-only** through the session-root index's on-demand
+  closure — never its own index (it would leak into workspace/symbol) and
+  never the single-file branch while a client root exists. A detected root
+  that replaces the client's is logged to stderr with the signal.
+  `src/settings.{h,cpp}` parses `freebasiclsp.toml` (`hasConfigFile` is the
+  marker; `Settings` keys with fixed defaults); `workspace/didChangeConfiguration`
+  and the `includePaths` include-search wiring are still open (PLAN §4.2).
 - Capabilities advertise only implemented features; `positionEncoding: "utf-16"`.
 
 ## Verification
 
 - Unit drivers in `tests/` via ctest: `lexer_checks`, `parser_checks`,
-  `utf16_checks`, and a `session_integration` test driving `LanguageSession`
-  with in-memory streams (LspCpp `tests/test_helpers.h`).
+  `utf16_checks`, `settings_checks`, and a `session_integration` test driving
+  `LanguageSession` with in-memory streams (LspCpp `tests/test_helpers.h`).
 - The system `fbc` compiler (1.10.2) is available for ground-truthing ambiguous
   FreeBASIC constructs.
 
@@ -113,7 +139,7 @@ change looks tricky (copy-paste code, heavy templates, new headers):
 ```
 cmake -S . -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_COMPILER=clang++
 clang-tidy -p build-tidy --quiet src/lexer.cpp src/language.cpp src/parser.cpp \
-    src/resolve.cpp src/index.cpp src/session.cpp src/utf16.cpp src/main.cpp
+    src/resolve.cpp src/index.cpp src/settings.cpp src/session.cpp src/utf16.cpp src/main.cpp
 ```
 
 Gotchas learned the hard way (2026-09):

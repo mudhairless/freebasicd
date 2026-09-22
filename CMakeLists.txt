@@ -18,6 +18,12 @@ set(LSPCPP_STANDALONE_ASIO ON CACHE BOOL "" FORCE)
 
 add_subdirectory(third_party/LspCpp)
 
+# tomlplusplus (github.com/marzer/tomlplusplus) is vendored as a git submodule
+# pinned to v3.4.0 (30172438...). Header-only; an INTERFACE target whose only
+# cost is the include dir. It parses the server's freebasiclsp.toml config
+# (M11).
+add_subdirectory(third_party/tomlplusplus)
+
 # M2 language layer: lexer + parser + language data. LSP-agnostic, byte
 # offsets; the session converts to/from LSP positions at the boundary. The
 # workspace index (M4) is in-memory only.
@@ -30,8 +36,10 @@ add_library(freebasiclsp_lang STATIC
     src/parser.cpp
     src/resolve.cpp
     src/semantic_tokens.cpp
+    src/settings.cpp
 )
 target_include_directories(freebasiclsp_lang PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(freebasiclsp_lang PUBLIC tomlplusplus::tomlplusplus)
 
 add_library(freebasiclsp_core STATIC
     src/session.cpp
@@ -150,6 +158,14 @@ add_executable(index_checks
 target_include_directories(index_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(index_checks PRIVATE freebasiclsp_lang)
 add_test(NAME index_checks COMMAND index_checks)
+
+# M11: freebasiclsp.toml parsing + config-file root marker (tomlplusplus).
+add_executable(settings_checks
+    tests/settings_checks.cpp
+)
+target_include_directories(settings_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(settings_checks PRIVATE freebasiclsp_lang)
+add_test(NAME settings_checks COMMAND settings_checks)
 
 add_executable(session_integration
     tests/session_integration.cpp

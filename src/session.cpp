@@ -131,6 +131,55 @@ nearestProjectRoot(std::filesystem::path start,
   }
 }
 
+// Nearest ancestor of `start` (inclusive) at or below `limit` holding a
+// freebasiclsp.toml — the config-file root marker. Mirrors
+// nearestProjectRoot: never widens past `limit`.
+std::optional<std::filesystem::path>
+nearestConfigRoot(std::filesystem::path start,
+                  std::filesystem::path const &limit) {
+  std::string const normLimit = fblang::normalizePath(limit);
+  for (;;) {
+    if (fblang::hasConfigFile(start)) {
+      return start;
+    }
+    if (start == limit) {
+      return std::nullopt; // reached the client root without any config marker
+    }
+    std::filesystem::path const parent = start.parent_path();
+    if (parent == start ||
+        !isWithinNormalized(fblang::normalizePath(parent), normLimit)) {
+      return std::nullopt; // filesystem root, or the search would leave the
+                           // client root
+    }
+    start = parent;
+  }
+}
+
+// Unbounded upward walk for single-file mode: the nearest ancestor of `start`
+// satisfying `pred`, stopping before the home folder and the drive root. A
+// `.git` or `~/freebasiclsp.toml` at the personal directory must never capture
+// every lone file, mirroring the source-layout walk's home guard
+// (findSourceLayoutRoot).
+std::filesystem::path homeDirectory(); // defined below
+template <typename Pred>
+std::optional<std::filesystem::path>
+nearestMarkerAboveHome(std::filesystem::path start, Pred const &pred) {
+  std::filesystem::path const home = homeDirectory();
+  for (;;) {
+    if (!home.empty() && start == home) {
+      return std::nullopt; // home folder: fail path
+    }
+    std::filesystem::path const parent = start.parent_path();
+    if (parent == start) {
+      return std::nullopt; // drive root: nothing above
+    }
+    if (pred(start)) {
+      return start;
+    }
+    start = parent;
+  }
+}
+
 std::filesystem::path homeDirectory() {
   char const *home = std::getenv("HOME");
   if (home != nullptr && *home != '\0') {
@@ -578,15 +627,14 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
   std::string const normRoot = fblang::normalizePath(root);
   (void)std::fprintf(stderr, "[freebasiclsp] workspace root: %s\n",
                      normRoot.c_str());
-  if (index_ && fblang::normalizePath(index_->root()) == normRoot) {
+  std::lock_guard<std::mutex> const lock(indexesMutex_);
+  if (indexes_.find(normRoot) != indexes_.end()) {
     return;
   }
-  if (index_) {
-    index_->close();
-  }
-  index_ = std::make_unique<fblang::WorkspaceIndex>(root);
-  index_->open();
-  index_->scan(true);
+  auto index = std::make_shared<fblang::WorkspaceIndex>(root);
+  index->open();
+  index->scan(true);
+  indexes_[normRoot] = std::move(index);
 }
 
 // stderr note when the server set a root it *found* rather than the one the
@@ -595,51 +643,120 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
 // chosen root is the client's as-is, which ensureWorkspaceIndex already logs.
 void logDetectedRoot(FreeBasicServer::IndexRootChoice const &choice,
                      std::filesystem::path const &clientRoot) {
-  char const *how =
-      choice.reason == FreeBasicServer::IndexRootChoice::Reason::VcsMarker
-          ? "version-control marker"
-          : "source/include directory";
+  std::string how;
+  switch (choice.reason) {
+  case FreeBasicServer::IndexRootChoice::Reason::VcsMarker:
+    how = "version-control marker";
+    break;
+  case FreeBasicServer::IndexRootChoice::Reason::ConfigFile:
+    how = "config file " + std::string(fblang::kConfigFileName);
+    break;
+  case FreeBasicServer::IndexRootChoice::Reason::SourceLayout:
+    how = "source/include directory";
+    break;
+  default:
+    return; // ClientRoot / RegisteredRoot / SingleFile: not a found root
+  }
   std::string const normRoot = fblang::normalizePath(choice.root);
   if (clientRoot.empty()) {
     (void)std::fprintf(
         stderr,
         "[freebasiclsp] workspace root %s (detected via %s; no client root)\n",
-        normRoot.c_str(), how);
+        normRoot.c_str(), how.c_str());
     return;
   }
   (void)std::fprintf(
       stderr,
       "[freebasiclsp] workspace root %s (detected via %s; client root %s)\n",
-      normRoot.c_str(), how, fblang::normalizePath(clientRoot).c_str());
+      normRoot.c_str(), how.c_str(), fblang::normalizePath(clientRoot).c_str());
 }
 
 FreeBasicServer::IndexRootChoice
 FreeBasicServer::chooseIndexRoot(std::filesystem::path const &openedFile) {
-  if (!sessionRoot_.empty()) {
-    // A client root that is itself a project root is used as-is.
-    if (isProjectRoot(sessionRoot_)) {
-      return {sessionRoot_, IndexRootChoice::Reason::ClientRoot};
+  std::string const normFile = fblang::normalizePath(openedFile);
+
+  // Priority 0: the deepest registered workspace-folder root that contains
+  // the file (multi-folder isolation). A file under a registered marker root
+  // is served by exactly that root's index, never a sibling folder's.
+  if (std::optional<std::filesystem::path> const registered =
+          registeredFolderRootContaining(normFile)) {
+    return {*registered, IndexRootChoice::Reason::RegisteredRoot};
+  }
+
+  // The applicable client root for this file: the deepest registered folder
+  // containing it, else the session root when it contains the file, else none
+  // (a file outside every registered folder is served single-document style —
+  // multi-folder clients must never bleed one folder's scope into another).
+  std::optional<std::filesystem::path> clientRoot;
+  std::filesystem::path sessionRoot;
+  {
+    std::lock_guard<std::mutex> const lock(indexesMutex_);
+    sessionRoot = sessionRoot_;
+    for (std::filesystem::path const &folder : workspaceFolders_) {
+      std::string const norm = fblang::normalizePath(folder);
+      if (isWithinNormalized(normFile, norm)) {
+        if (!clientRoot ||
+            norm.size() > fblang::normalizePath(*clientRoot).size()) {
+          clientRoot = folder;
+        }
+      }
     }
-    // A broad client root (no version-control marker of its own, e.g. an
-    // editor that reports the home directory as the workspace) is narrowed
-    // to the opened document's project, so sibling FreeBASIC projects under
-    // it are never swept into the index: first by the nearest version-control
-    // marker, then — when none exists between the file and the client root —
-    // by walking up to the drive root / home folder for a parent holding a
-    // source/include directory (the project's own layout names it).
+    if (!clientRoot && !sessionRoot_.empty() &&
+        isWithinNormalized(normFile, fblang::normalizePath(sessionRoot_))) {
+      clientRoot = sessionRoot_;
+    }
+  }
+
+  if (clientRoot) {
+    // Priority 1: a client root that is itself a workspace root (a
+    // version-control marker or a config file) is used as-is.
+    if (isProjectRoot(*clientRoot) || fblang::hasConfigFile(*clientRoot)) {
+      return {*clientRoot, IndexRootChoice::Reason::ClientRoot};
+    }
+    // A broad client root (no marker of its own, e.g. an editor reporting the
+    // home directory as the workspace) is narrowed to the opened document's
+    // project, so sibling FreeBASIC projects under it are never swept into
+    // the index: first by the nearest version-control marker, then by the
+    // nearest config file, then — when none exists between the file and the
+    // client root — by walking up to the drive root / home folder for a
+    // parent holding a source/include directory (the project's own layout
+    // names it).
     if (std::optional<std::filesystem::path> const project =
-            nearestProjectRoot(openedFile, sessionRoot_)) {
+            nearestProjectRoot(openedFile, *clientRoot)) {
       return {*project, IndexRootChoice::Reason::VcsMarker};
+    }
+    if (std::optional<std::filesystem::path> const config =
+            nearestConfigRoot(openedFile, *clientRoot)) {
+      return {*config, IndexRootChoice::Reason::ConfigFile};
     }
     if (std::optional<std::filesystem::path> const project =
             findSourceLayoutRoot(openedFile.parent_path())) {
       return {*project, IndexRootChoice::Reason::SourceLayout};
     }
-    return {sessionRoot_, IndexRootChoice::Reason::ClientRoot};
+    return {*clientRoot, IndexRootChoice::Reason::ClientRoot};
   }
-  // No client root: single-file mode. A source/include directory in an
-  // ancestor names the project root; otherwise the workspace is the file's
-  // directory.
+  // No applicable client root for this file — it lives outside every
+  // registered folder and the session root — but a client root exists. Serve
+  // the document single-document style through the primary/session index's
+  // on-demand closure (never an index of its own, or its symbols would surface
+  // in workspace/symbol). True single-file mode (no client root at all) falls
+  // through to the marker/config/layout walk below.
+  if (!sessionRoot.empty()) {
+    return {sessionRoot, IndexRootChoice::Reason::ClientRoot};
+  }
+  // No client root: single-file mode. The project is named by the nearest
+  // version-control marker, then by the nearest config file, then by a
+  // source/include directory in an ancestor; otherwise the workspace is the
+  // file's directory.
+  if (std::optional<std::filesystem::path> const project =
+          nearestMarkerAboveHome(openedFile.parent_path(), isProjectRoot)) {
+    return {*project, IndexRootChoice::Reason::VcsMarker};
+  }
+  if (std::optional<std::filesystem::path> const config =
+          nearestMarkerAboveHome(openedFile.parent_path(),
+                                 fblang::hasConfigFile)) {
+    return {*config, IndexRootChoice::Reason::ConfigFile};
+  }
   if (std::optional<std::filesystem::path> const project =
           findSourceLayoutRoot(openedFile.parent_path())) {
     return {*project, IndexRootChoice::Reason::SourceLayout};
@@ -663,6 +780,10 @@ void FreeBasicServer::registerHandlers() {
   session_.on(
       [this](Notify_WorkspaceDidChangeWatchedFiles::notify const &notify) {
         onWatchedFiles(notify);
+      });
+  session_.on(
+      [this](Notify_WorkspaceDidChangeWorkspaceFolders::notify const &notify) {
+        onWorkspaceFoldersChanged(notify);
       });
   session_.on([this](Notify_TextDocumentDidOpen::notify &notify) {
     onDidOpen(notify);
@@ -795,10 +916,17 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   rsp.result.capabilities.inlayHintProvider.emplace();
   rsp.result.capabilities.inlayHintProvider->second.emplace();
 
-  // Watched-file negotiation: a client with
-  // workspace.didChangeWatchedFiles.dynamicRegistration gets the watcher
-  // via client/registerCapability on `initialized`; everyone else is served
-  // the static watchers right here.
+  // Workspace-level capabilities: folder support + change notifications are
+  // advertised unconditionally, so a multi-folder client gets one index per
+  // registered workspace root; the static watched-file watchers follow when
+  // the client did not opt into dynamic registration (the dynamic path
+  // registers the same watcher on `initialized`).
+  rsp.result.capabilities.workspace.emplace();
+  rsp.result.capabilities.workspace->workspaceFolders.supported.emplace(true);
+  rsp.result.capabilities.workspace->workspaceFolders.changeNotifications
+      .emplace();
+  rsp.result.capabilities.workspace->workspaceFolders.changeNotifications
+      ->second.emplace(true);
   watchedFilesDynamic_ =
       req.params.capabilities.workspace &&
       req.params.capabilities.workspace->didChangeWatchedFiles &&
@@ -811,36 +939,65 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
     watcher.globPattern = "**/*.{bas,bi}";
     watcher.kind.emplace(WATCH_KIND_CREATE | WATCH_KIND_CHANGE |
                          WATCH_KIND_DELETE);
-    rsp.result.capabilities.workspace.emplace();
     rsp.result.capabilities.workspace->didChangeWatchedFiles.emplace();
     rsp.result.capabilities.workspace->didChangeWatchedFiles->watchers
         .push_back(std::move(watcher));
   }
 
-  // Workspace root: rootUri wins over workspaceFolders; fall back to the
-  // first opened file when neither is present (single-file mode).
+  // Workspace folders: every registered folder is recorded; folders that are
+  // themselves workspace roots (a version-control marker or a
+  // freebasiclsp.toml) get their own index right away, so files opened under
+  // them are served without waiting for a didOpen. Broad folders defer to
+  // per-document detection (chooseIndexRoot). workspaceFolderRoots_ feeds the
+  // priority-0 containment lookup above.
+  if (req.params.workspaceFolders) {
+    for (WorkspaceFolder const &folder : *req.params.workspaceFolders) {
+      std::filesystem::path const folderPath =
+          folder.uri.GetAbsolutePath().path();
+      bool marker = false;
+      {
+        std::lock_guard<std::mutex> const lock(indexesMutex_);
+        workspaceFolders_.push_back(folderPath);
+        if (isProjectRoot(folderPath) || fblang::hasConfigFile(folderPath)) {
+          marker =
+              workspaceFolderRoots_.insert(fblang::normalizePath(folderPath))
+                  .second;
+        }
+      }
+      if (marker) {
+        ensureWorkspaceIndex(folderPath);
+      }
+    }
+  }
+
+  // Workspace root: rootUri wins over the first workspace folder; fall back
+  // to the first opened file when neither is present (single-file mode).
   std::string rootPath;
   if (req.params.rootUri) {
     rootPath = req.params.rootUri->GetAbsolutePath().path();
   }
-  if (rootPath.empty() && req.params.workspaceFolders &&
-      !req.params.workspaceFolders->empty()) {
-    rootPath = (*req.params.workspaceFolders)[0].uri.GetAbsolutePath().path();
+  if (rootPath.empty() && !workspaceFolders_.empty()) {
+    rootPath = workspaceFolders_[0].string();
   }
   if (!rootPath.empty()) {
-    sessionRoot_ = rootPath;
-    // Create the index now only when the client root is itself a project
-    // root. A broad root (e.g. the home directory, which hosts several
-    // sibling projects) is narrowed to the opened document's project on the
-    // first didOpen so unrelated trees are never scanned or cached.
-    if (isProjectRoot(rootPath)) {
+    {
+      std::lock_guard<std::mutex> const lock(indexesMutex_);
+      sessionRoot_ = rootPath;
+    }
+    // Create the index now only when the client root is itself a workspace
+    // root (a version-control marker or config file). A broad root (e.g. the
+    // home directory, which hosts several sibling projects) is narrowed to
+    // the opened document's project on the first didOpen so unrelated trees
+    // are never scanned or cached.
+    if (isProjectRoot(rootPath) || fblang::hasConfigFile(rootPath)) {
       ensureWorkspaceIndex(rootPath);
     } else {
       (void)std::fprintf(
           stderr,
-          "[freebasiclsp] workspace root %s has no version-control marker; "
-          "index scope deferred to the first opened document (detection: "
-          "version-control marker, else source/include directory)\n",
+          "[freebasiclsp] workspace root %s has no version-control marker or "
+          "config file; index scope deferred to the first opened document "
+          "(detection: version-control marker, config file, else "
+          "source/include directory)\n",
           rootPath.c_str());
     }
   }
@@ -853,9 +1010,7 @@ FreeBasicServer::onShutdown(td_shutdown::request const &req) {
   td_shutdown::response rsp;
   rsp.id = req.id;
 
-  if (index_) {
-    index_->close();
-  }
+  closeAllIndexes();
 
   lsp::Any result;
   result.SetJsonString("null", lsp::Any::kNullType);
@@ -892,39 +1047,219 @@ void FreeBasicServer::onInitialized(
 
 void FreeBasicServer::onWatchedFiles(
     Notify_WorkspaceDidChangeWatchedFiles::notify const &notify) {
-  // The registered glob (**/*.{bas,bi}) already scopes the events; re-statting
-  // the whole root converges any external .bi edit. The debounce and its
-  // async scan live in the index, so the notification FIFO thread returns at
-  // once regardless of workspace size. Event details are intentionally
-  // ignored: a full-root scan is authoritative and cheap for FB-sized files.
-  (void)notify;
-  if (index_) {
-    index_->watchedFilesChanged();
+  // The registered glob (**/*.{bas,bi}) already scopes the events; each
+  // affected path is routed to the index whose workspace root contains it and
+  // that workspace's debounced rescan converges any external edit. The
+  // debounce and its async scan live in the index, so the notification FIFO
+  // thread returns at once regardless of workspace size. Event kinds beyond
+  // the path are intentionally ignored: a full-root scan is authoritative and
+  // cheap for FB-sized files. A change outside every indexed root (a sibling
+  // project that was never opened) touches no index.
+  std::set<std::string> touched;
+  for (lsFileEvent const &event : notify.params.changes) {
+    std::string const norm =
+        fblang::normalizePath(event.uri.GetAbsolutePath().path());
+    std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(norm);
+    if (!index) {
+      continue;
+    }
+    std::string const owner = fblang::normalizePath(index->root());
+    if (touched.insert(owner).second) {
+      index->watchedFilesChanged();
+    }
+  }
+}
+
+// The read-path queries (indexFor/allIndexes) and the folder-table mutations
+// all hold indexesMutex_; handlers snapshot a shared_ptr and never touch the
+// table again, so these stay lock-safe against the sweep and folder churn.
+
+std::shared_ptr<fblang::WorkspaceIndex>
+FreeBasicServer::indexFor(std::string const &normalizedPath) const {
+  std::lock_guard<std::mutex> const lock(indexesMutex_);
+  std::shared_ptr<fblang::WorkspaceIndex> best;
+  std::size_t bestLen = 0;
+  for (auto const &[root, index] : indexes_) {
+    if (isWithinNormalized(normalizedPath, root) && root.size() >= bestLen) {
+      best = index;
+      bestLen = root.size();
+    }
+  }
+  if (best) {
+    return best;
+  }
+  // Outside every index root (a document opened from a sibling project beside
+  // the workspace): it gets no index of its own — workspace/symbol stays
+  // strictly workspace-scoped — but the session-root index hosts its on-demand
+  // closure so cross-file resolution still serves it (single-index behavior,
+  // preserved across the M11 split). Null in true single-file mode before any
+  // didOpen, or under a deferred broad root that never had an index created.
+  if (sessionRoot_.empty()) {
+    return nullptr;
+  }
+  auto const it = indexes_.find(fblang::normalizePath(sessionRoot_));
+  return it == indexes_.end() ? nullptr : it->second;
+}
+
+std::vector<std::shared_ptr<fblang::WorkspaceIndex>>
+FreeBasicServer::allIndexes() const {
+  std::lock_guard<std::mutex> const lock(indexesMutex_);
+  std::vector<std::shared_ptr<fblang::WorkspaceIndex>> out;
+  out.reserve(indexes_.size());
+  for (auto const &[root, index] : indexes_) {
+    (void)root;
+    out.push_back(index);
+  }
+  return out;
+}
+
+void FreeBasicServer::closeAllIndexes() {
+  std::lock_guard<std::mutex> const lock(indexesMutex_);
+  for (auto &[root, index] : indexes_) {
+    (void)root;
+    index->close();
+  }
+  indexes_.clear();
+}
+
+void FreeBasicServer::dropDetectedIndexesExcept(
+    std::string const &keepNormRoot) {
+  std::lock_guard<std::mutex> const lock(indexesMutex_);
+  for (auto it = indexes_.begin(); it != indexes_.end();) {
+    if (it->first == keepNormRoot ||
+        workspaceFolderRoots_.find(it->first) != workspaceFolderRoots_.end()) {
+      ++it;
+    } else {
+      it->second->close();
+      it = indexes_.erase(it);
+    }
+  }
+}
+
+std::optional<std::filesystem::path>
+FreeBasicServer::registeredFolderRootContaining(
+    std::string const &normalizedPath) const {
+  std::lock_guard<std::mutex> const lock(indexesMutex_);
+  std::string best;
+  for (std::string const &root : workspaceFolderRoots_) {
+    if (isWithinNormalized(normalizedPath, root) && root.size() > best.size()) {
+      best = root;
+    }
+  }
+  if (best.empty()) {
+    return std::nullopt;
+  }
+  return std::filesystem::path(best);
+}
+
+void FreeBasicServer::onWorkspaceFoldersChanged(
+    Notify_WorkspaceDidChangeWorkspaceFolders::notify const &notify) {
+  // Added folders join the registration order; marker folders (version-control
+  // marker or config file) get a live index immediately, so workspace/symbol
+  // serves them without waiting for a didOpen. Removed folders leave the fold
+  // table; an index created for a removed root closes unless another
+  // registered folder or the session root still needs it. Detected indexes
+  // for nested projects inside a removed folder are left alone — they belong
+  // to the (still open) projects themselves and are never swept in
+  // multi-folder mode.
+  for (WorkspaceFolder const &folder : notify.params.event.added) {
+    std::filesystem::path const folderPath =
+        folder.uri.GetAbsolutePath().path();
+    bool marker = false;
+    {
+      std::lock_guard<std::mutex> const lock(indexesMutex_);
+      workspaceFolders_.push_back(folderPath);
+      if (isProjectRoot(folderPath) || fblang::hasConfigFile(folderPath)) {
+        marker = workspaceFolderRoots_.insert(fblang::normalizePath(folderPath))
+                     .second;
+      }
+    }
+    if (marker) {
+      ensureWorkspaceIndex(folderPath);
+    }
+  }
+  for (WorkspaceFolder const &folder : notify.params.event.removed) {
+    std::string const norm =
+        fblang::normalizePath(folder.uri.GetAbsolutePath().path());
+    std::string sessionNorm;
+    bool stillNeeded = false;
+    {
+      std::lock_guard<std::mutex> const lock(indexesMutex_);
+      sessionNorm = sessionRoot_.empty() ? std::string()
+                                         : fblang::normalizePath(sessionRoot_);
+      workspaceFolders_.erase(
+          std::remove_if(workspaceFolders_.begin(), workspaceFolders_.end(),
+                         [&](std::filesystem::path const &p) {
+                           return fblang::normalizePath(p) == norm;
+                         }),
+          workspaceFolders_.end());
+      workspaceFolderRoots_.erase(norm);
+      // The removed folder's root index is only freed when nothing left in
+      // the session needs it: the session root (a rootUri client), another
+      // registered folder, or a surviving registered marker root.
+      stillNeeded =
+          norm == sessionNorm ||
+          std::any_of(workspaceFolders_.begin(), workspaceFolders_.end(),
+                      [&](std::filesystem::path const &p) {
+                        return fblang::normalizePath(p) == norm;
+                      }) ||
+          workspaceFolderRoots_.count(norm) != 0;
+    }
+    if (!stillNeeded) {
+      std::lock_guard<std::mutex> const lock(indexesMutex_);
+      if (auto const it = indexes_.find(norm); it != indexes_.end()) {
+        it->second->close();
+        indexes_.erase(it);
+      }
+    }
   }
 }
 
 void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify &notify) {
   std::filesystem::path const openedFile =
       notify.params.textDocument.uri.GetAbsolutePath().path();
+  std::string const normFile = fblang::normalizePath(openedFile);
   IndexRootChoice const choice = chooseIndexRoot(openedFile);
-  // A broad client root (no VCS marker) is re-evaluated on every open so
-  // switching to a sibling project re-roots the index to that project.
-  bool const deferredBroadRoot =
-      !sessionRoot_.empty() && !isProjectRoot(sessionRoot_);
-  bool const alreadyRooted = index_ && fblang::normalizePath(index_->root()) ==
-                                           fblang::normalizePath(choice.root);
-  if (!index_ || (deferredBroadRoot && !alreadyRooted)) {
-    // A root the server found itself (version-control marker or source/include
-    // layout), other than the client's own, gets an explanatory stderr note.
+  std::string const normChoice = fblang::normalizePath(choice.root);
+  std::shared_ptr<fblang::WorkspaceIndex> const serving = indexFor(normFile);
+  // A broad client root (no root marker of its own) is re-evaluated on every
+  // open so switching to a sibling project re-roots the index to that
+  // project: stale non-registered detected indexes are dropped then, while
+  // registered workspace-folder roots are never swept. Single-file and
+  // multi-folder sessions never sweep — their roots are final per open.
+  bool deferredBroadRoot = false;
+  std::filesystem::path sessionRoot;
+  {
+    std::lock_guard<std::mutex> const lock(indexesMutex_);
+    sessionRoot = sessionRoot_;
+    deferredBroadRoot = !sessionRoot.empty() && !isProjectRoot(sessionRoot) &&
+                        !fblang::hasConfigFile(sessionRoot);
+  }
+  bool const alreadyRooted =
+      serving && fblang::normalizePath(serving->root()) == normChoice;
+  // A choice root that does not even contain the opened file is the
+  // outside-the-workspace fallback (a sibling-project document): it must never
+  // create or re-root an index — the document is served through the hosting
+  // index's on-demand closure alone, and workspace/symbol stays clean.
+  bool const choiceContainsFile = isWithinNormalized(normFile, normChoice);
+  if (!serving || (deferredBroadRoot && !alreadyRooted)) {
+    // A root the server found itself (version-control marker, config file, or
+    // source/include layout), other than the client's own, gets an
+    // explanatory stderr note.
     bool const notThePassedRoot =
-        sessionRoot_.empty() || fblang::normalizePath(choice.root) !=
-                                    fblang::normalizePath(sessionRoot_);
+        sessionRoot.empty() || normChoice != fblang::normalizePath(sessionRoot);
     if ((choice.reason == IndexRootChoice::Reason::VcsMarker ||
+         choice.reason == IndexRootChoice::Reason::ConfigFile ||
          choice.reason == IndexRootChoice::Reason::SourceLayout) &&
         notThePassedRoot) {
-      logDetectedRoot(choice, sessionRoot_);
+      logDetectedRoot(choice, sessionRoot);
     }
-    ensureWorkspaceIndex(choice.root);
+    if (choiceContainsFile) {
+      if (deferredBroadRoot) {
+        dropDetectedIndexesExcept(normChoice);
+      }
+      ensureWorkspaceIndex(choice.root);
+    }
   }
   std::shared_ptr<WorkingFile> const file =
       workingFiles_.OnOpen(notify.params.textDocument);
@@ -979,7 +1314,8 @@ void FreeBasicServer::reparseAndPublish(
   fblang::AnalyzedDoc const &doc = cached->analysis;
   std::vector<lsDiagnostic> diags = convertDiagnostics(content, doc.parse);
 
-  if (index_) {
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  if (index) {
     std::string const ext =
         fblang::toLowerChars(std::filesystem::path(path).extension().string());
     if (ext == ".bas" || ext == ".bi") {
@@ -993,9 +1329,9 @@ void FreeBasicServer::reparseAndPublish(
       // include-not-found. The entry's roots copy the cached analysis
       // (which stays pinned for the request path).
       fblang::IndexedFile entry = fblang::indexedFileFromAnalysis(
-          normPath, mtime, size, doc, index_->root(), false);
+          normPath, mtime, size, doc, index->root(), false);
       appendIncludeDiagnostics(content, entry, &diags);
-      index_->upsert(std::move(entry));
+      index->upsert(std::move(entry));
     }
   }
 
@@ -1053,10 +1389,13 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
   // declared type (across the include closure) and each intermediate member's
   // own declared type for chained access (`.sectors(i).floorHeight`). The
   // closure may live in a sibling project outside the workspace root (the
-  // requesting document's own project), so warm it on demand first.
+  // requesting document's own project), so warm it on demand first. The walk
+  // returns pointers into the workspace snapshot; hold the snapshot for the
+  // whole handler so a concurrent re-root cannot free them.
   ensureRequestClosure(normPath);
-  fblang::MemberAccess const access =
-      fblang::resolveMemberAccess(doc, normPath, offset, index_.get());
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  fblang::MemberAccess const access = fblang::resolveMemberAccess(
+      doc, normPath, offset, index ? index.get() : nullptr);
   if (access.member != nullptr) {
     std::string markdown;
     if (!access.member->signature.empty()) {
@@ -1367,10 +1706,13 @@ FreeBasicServer::onReferences(td_references::request const &req) {
     }
   };
 
+  // The cross-file re-resolutions below only work while the index that owns
+  // `target` (via `target.file`) stays alive; pin the serving snapshot for the
+  // whole walk so a concurrent folder change cannot free it.
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
   collect(doc, normPath);
-  if (index_) {
-    for (std::string const &closurePath :
-         index_->transitiveIncludes(normPath)) {
+  if (index) {
+    for (std::string const &closurePath : index->transitiveIncludes(normPath)) {
       std::shared_ptr<fblang::DocumentContent const> const remote =
           contentForPathAnalysis(closurePath);
       if (!remote) {
@@ -1520,17 +1862,24 @@ td_rename::response FreeBasicServer::onRename(td_rename::request const &req) {
   }
   std::string const newKey = fblang::toLowerChars(req.params.newName);
 
+  // The collision guard and the rename-site sweep below both walk the index
+  // that serves the requesting document; pin its snapshot for the whole
+  // handler so a concurrent re-root cannot free it out from under the walk
+  // (occurrencesAcross returns byte ranges, but the guard compares against
+  // `target`'s live module-scope roots).
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+
   // Collision guard: renaming into a key that an unrelated module-scope
   // declaration of the requesting file or its include closure already owns
   // would fold two declarations into one textual module. The renamed symbol
   // itself (same key, or the same declaration under the new key) is exempt.
-  if (index_ && newKey != target.decl->key) {
+  if (index && newKey != target.decl->key) {
     std::vector<std::string> guardPaths = {normPath};
-    for (std::string const &p : index_->transitiveIncludes(normPath)) {
+    for (std::string const &p : index->transitiveIncludes(normPath)) {
       guardPaths.push_back(p);
     }
     for (std::string const &p : guardPaths) {
-      std::shared_ptr<fblang::IndexedFile const> const f = index_->fileAt(p);
+      std::shared_ptr<fblang::IndexedFile const> const f = index->fileAt(p);
       if (!f) {
         continue;
       }
@@ -1560,7 +1909,7 @@ td_rename::response FreeBasicServer::onRename(td_rename::request const &req) {
   // into the exact content the shared content seam serves, so the same
   // provider converts them to UTF-16 below.
   std::vector<fblang::OccurrenceSite> const sites = fblang::occurrencesAcross(
-      doc, normPath, offset, index_.get(), [this](std::string const &p) {
+      doc, normPath, offset, index.get(), [this](std::string const &p) {
         return contentForPathAnalysis(std::filesystem::path(p));
       });
   if (sites.empty()) {
@@ -1625,16 +1974,19 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
       req.params.textDocument.uri.GetAbsolutePath().path());
   // The requesting document may open from a sibling project outside the
   // workspace root; warm its live-buffer include closure so member access can
-  // find the owner type across files (mirrors onHover).
+  // find the owner type across files (mirrors onHover). The member-completion
+  // walk and the closure-roots pass below return pointers into the snapshot;
+  // pin it for the whole handler (mirrors onHover).
   ensureRequestClosure(normPath);
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
 
   // Context-aware member completion: a `.`/`->` chain (including the
   // `with`-implicit leading dot and qualified `EnumName.member`) completes
   // only the base object's accessible members — never FreeBASIC keywords,
   // globals, or intrinsics (FreeBASIC.md §4). Non-public members are gated:
   // they appear only inside a member procedure of the owner type.
-  fblang::MemberCompletion const mc =
-      fblang::resolveMemberCompletion(doc, normPath, offset, index_.get());
+  fblang::MemberCompletion const mc = fblang::resolveMemberCompletion(
+      doc, normPath, offset, index ? index.get() : nullptr);
   if (mc.memberAccess) {
     for (fblang::Symbol const *m : mc.members) {
       if (!hasPrefix(fblang::toLowerChars(m->name), prefix)) {
@@ -1724,16 +2076,15 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
   // entry in `seen` won). The storage gate applies to the closure the same
   // way it does in-file: from inside a procedure body, plain module-level Dim
   // roots of included headers are not visible.
-  if (index_) {
+  if (index) {
     bool const storageGated = fblang::insideProcedureBody(
         doc.parse, fblang::innermostScope(doc.parse, offset));
     // The requesting document may open from a sibling project outside the
     // workspace root; stay on the live-buffer include closure (see
     // ensureRequestClosure above) so its module-level names complete too.
-    for (std::string const &closurePath :
-         index_->transitiveIncludes(normPath)) {
+    for (std::string const &closurePath : index->transitiveIncludes(normPath)) {
       std::shared_ptr<fblang::IndexedFile const> const closure =
-          index_->fileAt(closurePath);
+          index->fileAt(closurePath);
       if (!closure) {
         continue;
       }
@@ -1962,7 +2313,14 @@ FreeBasicServer::onSignatureHelp(td_signatureHelp::request const &req) {
 wp_symbol::response
 FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
   wp_symbol::response rsp;
-  if (!index_) {
+  // Multi-workspace aggregation (M11): every live index contributes, one
+  // sorted hit list for the whole session. Overlapping roots (a registered
+  // folder inside a broad session root) can scan the same file twice, so
+  // files are deduped by path. The aggregated vector pins every snapshot for
+  // the whole reply build.
+  std::vector<std::shared_ptr<fblang::WorkspaceIndex>> const indexes =
+      allIndexes();
+  if (indexes.empty()) {
     return rsp;
   }
 
@@ -1997,15 +2355,21 @@ FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
         }
       };
 
-  for (auto const &file : index_->snapshot()) {
-    std::vector<Match> matches;
-    for (auto const &root : file->roots) {
-      collect(root, {}, matches);
+  std::set<std::string> seenFiles;
+  for (auto const &idx : indexes) {
+    for (auto const &file : idx->snapshot()) {
+      if (!seenFiles.insert(file->path).second) {
+        continue;
+      }
+      std::vector<Match> matches;
+      for (auto const &root : file->roots) {
+        collect(root, {}, matches);
+      }
+      if (matches.empty()) {
+        continue;
+      }
+      hits.push_back(FileMatches{file.get(), std::move(matches)});
     }
-    if (matches.empty()) {
-      continue;
-    }
-    hits.push_back(FileMatches{file.get(), std::move(matches)});
   }
 
   for (auto &hit : hits) {
@@ -2214,14 +2578,23 @@ fblang::AnalysisCache::Stats FreeBasicServer::analysisStats() const {
 }
 
 void FreeBasicServer::ensureRequestClosure(std::string const &normPath) {
-  if (!index_) {
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  ensureRequestClosure(normPath, index);
+}
+
+void FreeBasicServer::ensureRequestClosure(
+    std::string const &normPath,
+    std::shared_ptr<fblang::WorkspaceIndex> const &index) {
+  if (!index) {
     return;
   }
   // On-demand closure for a document outside the workspace root: the resolver
   // serves each closure file from the live open buffer when the client has
   // one, else from disk, both through the content-addressed analysis cache
-  // (repeat requests reuse the single analysis per (path, content)).
-  index_->ensureClosure(normPath, [this](std::string const &p) {
+  // (repeat requests reuse the single analysis per (path, content)). The
+  // snapshot is captured into the callback so the walk stays pinned even if
+  // the serving index is re-rooted mid-ensure.
+  index->ensureClosure(normPath, [this, index](std::string const &p) {
     std::shared_ptr<fblang::DocumentContent const> const dc =
         contentForPathAnalysis(p);
     if (!dc) {
@@ -2234,7 +2607,7 @@ void FreeBasicServer::ensureRequestClosure(std::string const &normPath) {
         workingFiles_.GetFileByFilename(AbsolutePath(p)) != nullptr;
     return std::make_shared<fblang::IndexedFile const>(
         fblang::indexedFileFromAnalysis(p, mtime, size, dc->analysis,
-                                        index_->root(), !fromBuffer));
+                                        index->root(), !fromBuffer));
   });
 }
 
@@ -2257,10 +2630,13 @@ FreeBasicServer::resolveAtOrAcross(fblang::AnalyzedDoc const &doc,
                                    std::uint32_t off) {
   // A requesting document opened from outside the workspace root has no scan
   // entry; build its include closure on demand so cross-file resolution serves
-  // it (see ensureClosure).
-  ensureRequestClosure(normalizedPath);
-  if (index_) {
-    return fblang::resolveAcross(doc, normalizedPath, off, *index_);
+  // it (see ensureClosure). The local snapshot pins the serving index for the
+  // resolution walk; the returned CrossDecl pins it beyond (resolve.h).
+  std::shared_ptr<fblang::WorkspaceIndex> const index =
+      indexFor(normalizedPath);
+  ensureRequestClosure(normalizedPath, index);
+  if (index) {
+    return fblang::resolveAcross(doc, normalizedPath, off, *index);
   }
   if (fblang::Symbol const *const local = fblang::resolveAt(doc, off)) {
     return fblang::CrossDecl{nullptr, local};

@@ -2733,6 +2733,524 @@ void TestWatchedFilesRescanConverges() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+// --- M11: per-workspace indexes ---
+
+// A freebasiclsp.toml marks its directory as a workspace root (priority-3
+// detection). Under a *broad* client root the nearest config file between the
+// opened document and the client root names the project; in single-file mode
+// the nearest config file above the document does. Sibling trees stay outside
+// the index either way.
+void TestConfigFileRootDetection() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  // Phase 1: a broad client root; the opened document's project carries the
+  // config file.
+  std::filesystem::path const broad = sandbox / "broad";
+  std::filesystem::path const proj = broad / "proj";
+  std::filesystem::path const sibling = broad / "sibling";
+  std::filesystem::create_directories(proj / "src");
+  std::filesystem::create_directories(proj / "data");
+  std::filesystem::create_directories(sibling);
+  {
+    std::ofstream out(proj / "freebasiclsp.toml");
+    out << "[server]\n";
+    std::ofstream out2(proj / "src" / "app.bas");
+    out2 << "sub cfgProjOnly()\nend sub\n";
+    std::ofstream out3(proj / "data" / "mod.bi");
+    out3 << "sub cfgDataOnly()\nend sub\n";
+    std::ofstream out4(sibling / "other.bas");
+    out4 << "sub cfgSiblingOnly()\nend sub\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const appUri = "file://" + (proj / "src" / "app.bas").string();
+  std::string const broadRootUri = "file://" + broad.string();
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      broadRootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      appUri + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString("sub cfgProjOnly()\nend sub\n") + "\"}}}";
+  input->append(MakeLspFrame(openFrame.c_str()));
+
+  auto querySymbol = [&](int n, std::string const &name) {
+    std::string const id = "\"id\":\"cfg" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"cfg)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+    input->append(MakeLspFrame(request.c_str()));
+    return WaitForOutputContaining(output, id, 50);
+  };
+
+  bool foundProj = false;
+  for (int n = 0; n < 60 && !foundProj; ++n) {
+    foundProj =
+        querySymbol(n, "cfgProjOnly").find("\"name\":\"cfgProjOnly\"") !=
+        std::string::npos;
+  }
+  Expect(foundProj, "the config-carrying project must be indexed");
+
+  bool foundData = false;
+  for (int n = 0; n < 40 && !foundData; ++n) {
+    foundData =
+        querySymbol(100 + n, "cfgDataOnly").find("\"name\":\"cfgDataOnly\"") !=
+        std::string::npos;
+  }
+  Expect(foundData,
+         "the config root must be the project dir, so a sibling dir of `src` "
+         "inside it is indexed too");
+
+  bool sawSibling = false;
+  for (int n = 0; n < 40 && !sawSibling; ++n) {
+    sawSibling = querySymbol(200 + n, "cfgSiblingOnly")
+                     .find("\"name\":\"cfgSiblingOnly\"") != std::string::npos;
+  }
+  Expect(!sawSibling,
+         "a sibling tree under the broad root must not be indexed");
+
+  session.stop();
+
+  // Phase 2: single-file mode (no client root): the nearest config file above
+  // the document names the project.
+  std::filesystem::path const lone = sandbox / "lone";
+  std::filesystem::path const lp = lone / "proj";
+  std::filesystem::create_directories(lp / "src");
+  std::filesystem::create_directories(lp / "data");
+  std::filesystem::create_directories(lone / "step");
+  {
+    std::ofstream out(lp / "freebasiclsp.toml");
+    out << "[server]\n";
+    std::ofstream out2(lp / "src" / "app.bas");
+    out2 << "sub cfgSfProjOnly()\nend sub\n";
+    std::ofstream out3(lp / "data" / "mod.bas");
+    out3 << "sub cfgSfDataOnly()\nend sub\n";
+    std::ofstream out4(lone / "step" / "x.bas");
+    out4 << "sub cfgSfStepOnly()\nend sub\n";
+  }
+
+  lsp::NullLog log2;
+  lsp::LanguageSession session2(log2);
+  auto input2 = std::make_shared<FeedableIStream>();
+  auto output2 = std::make_shared<StringOStream>();
+  FreeBasicServer server2(session2);
+  server2.registerHandlers();
+  session2.start(input2, output2);
+
+  input2->append(MakeLspFrame(kInitializeFrame));
+  Expect(WaitForOutputContaining(output2, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  std::string const sfUri = "file://" + (lp / "src" / "app.bas").string();
+  std::string const openSf =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      sfUri + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString("sub cfgSfProjOnly()\nend sub\n") + "\"}}}";
+  input2->append(MakeLspFrame(openSf.c_str()));
+
+  auto querySf = [&](int n, std::string const &name) {
+    std::string const id = "\"id\":\"cfs" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"cfs)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+    input2->append(MakeLspFrame(request.c_str()));
+    return WaitForOutputContaining(output2, id, 50);
+  };
+
+  bool foundSfProj = false;
+  for (int n = 0; n < 60 && !foundSfProj; ++n) {
+    foundSfProj =
+        querySf(n, "cfgSfProjOnly").find("\"name\":\"cfgSfProjOnly\"") !=
+        std::string::npos;
+  }
+  Expect(foundSfProj,
+         "single-file mode must root at the config-carrying project");
+
+  bool foundSfData = false;
+  for (int n = 0; n < 40 && !foundSfData; ++n) {
+    foundSfData =
+        querySf(100 + n, "cfgSfDataOnly").find("\"name\":\"cfgSfDataOnly\"") !=
+        std::string::npos;
+  }
+  Expect(foundSfData, "single-file mode must index the config project dir");
+
+  bool sawStep = false;
+  for (int n = 0; n < 40 && !sawStep; ++n) {
+    sawStep =
+        querySf(200 + n, "cfgSfStepOnly").find("\"name\":\"cfgSfStepOnly\"") !=
+        std::string::npos;
+  }
+  Expect(!sawStep, "a tree beside the config project must not be indexed");
+
+  session2.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
+// A client root that bears a freebasiclsp.toml (rootUri or a registered
+// workspace folder) is *itself* a workspace root: it is used as-is and indexed
+// eagerly at initialize, so workspace/symbol serves its symbols before any
+// document is opened. A config-carrying registered folder joins the priority-0
+// registered-root set the same way.
+void TestConfigMarkerRootUsedAsIsEagerIndex() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  // Phase 1: rootUri points at a config-carrying directory.
+  std::filesystem::path const proj = sandbox / "proj";
+  std::filesystem::create_directories(proj / "sub");
+  std::filesystem::create_directories(sandbox / "elsewhere");
+  {
+    std::ofstream out(proj / "freebasiclsp.toml");
+    out << "[server]\n";
+    std::ofstream out2(proj / "sub" / "app.bas");
+    out2 << "sub eagerOnly()\nend sub\n";
+    std::ofstream out3(sandbox / "elsewhere" / "x.bas");
+    out3 << "sub elsewhereOnly()\nend sub\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const rootUri = "file://" + proj.string();
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  auto querySymbol = [&](int n, std::string const &name) {
+    std::string const id = "\"id\":\"cmk" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"cmk)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+    input->append(MakeLspFrame(request.c_str()));
+    return WaitForOutputContaining(output, id, 50);
+  };
+
+  // Eager: no didOpen has been sent; the initialize-period scan must have
+  // indexed the config-carrying root already.
+  bool foundEager = false;
+  for (int n = 0; n < 60 && !foundEager; ++n) {
+    foundEager = querySymbol(n, "eagerOnly").find("\"name\":\"eagerOnly\"") !=
+                 std::string::npos;
+  }
+  Expect(foundEager,
+         "a config-carrying client root must be indexed at initialize");
+
+  bool sawElsewhere = false;
+  for (int n = 0; n < 40 && !sawElsewhere; ++n) {
+    sawElsewhere = querySymbol(100 + n, "elsewhereOnly")
+                       .find("\"name\":\"elsewhereOnly\"") != std::string::npos;
+  }
+  Expect(!sawElsewhere,
+         "the as-is root must never reach beyond the config directory");
+
+  session.stop();
+
+  // Phase 2: a registered workspace folder with a config file is indexed
+  // eagerly too, from the initialize reply's folder list alone.
+  std::filesystem::path const fa = sandbox / "fa";
+  std::filesystem::create_directories(fa);
+  {
+    std::ofstream out(fa / "freebasiclsp.toml");
+    out << "[server]\n";
+    std::ofstream out2(fa / "a.bas");
+    out2 << "sub folderCfgOnly()\nend sub\n";
+  }
+
+  lsp::NullLog log2;
+  lsp::LanguageSession session2(log2);
+  auto input2 = std::make_shared<FeedableIStream>();
+  auto output2 = std::make_shared<StringOStream>();
+  FreeBasicServer server2(session2);
+  server2.registerHandlers();
+  session2.start(input2, output2);
+
+  std::string const faUri = "file://" + fa.string();
+  std::string const init2 =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"workspaceFolders":[)"
+      R"({"uri":")" +
+      faUri + R"(","name":"fa"}]}})";
+  input2->append(MakeLspFrame(init2.c_str()));
+  Expect(WaitForOutputContaining(output2, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  auto queryFolder = [&](int n, std::string const &name) {
+    std::string const id = "\"id\":\"cmf" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"cmf)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+    input2->append(MakeLspFrame(request.c_str()));
+    return WaitForOutputContaining(output2, id, 50);
+  };
+
+  bool foundFolder = false;
+  for (int n = 0; n < 60 && !foundFolder; ++n) {
+    foundFolder =
+        queryFolder(n, "folderCfgOnly").find("\"name\":\"folderCfgOnly\"") !=
+        std::string::npos;
+  }
+  Expect(foundFolder,
+         "a config-carrying workspace folder must be indexed at initialize");
+
+  session2.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
+// One index per registered workspace folder. workspace/symbol aggregates every
+// live index, but a document opened in one folder is served strictly by its
+// own folder's index: sibling-folder module roots must never leak into its
+// completion closure.
+void TestMultiWorkspaceFoldersStayIsolated() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::path const fa = sandbox / "fa";
+  std::filesystem::path const fb = sandbox / "fb";
+  std::filesystem::create_directories(fa);
+  std::filesystem::create_directories(fb);
+  {
+    std::ofstream out(fa / "freebasiclsp.toml");
+    out << "[server]\n";
+    std::ofstream out2(fa / "a.bas");
+    out2 << "sub alphaOnly()\nend sub\n";
+    std::ofstream out3(fb / "freebasiclsp.toml");
+    out3 << "[server]\n";
+    std::ofstream out4(fb / "b.bas");
+    out4 << "sub betaOnly()\nend sub\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const faUri = "file://" + fa.string();
+  std::string const fbUri = "file://" + fb.string();
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"workspaceFolders":[)"
+      R"({"uri":")" +
+      faUri + R"(","name":"fa"},{"uri":")" + fbUri + R"(","name":"fb"}]}})";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  auto querySymbol = [&](int n, std::string const &name) {
+    std::string const id = "\"id\":\"mul" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"mul)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+    input->append(MakeLspFrame(request.c_str()));
+    return WaitForOutputContaining(output, id, 50);
+  };
+
+  // Aggregation: both folder roots are eager (config markers) and both must
+  // contribute to workspace/symbol with no didOpen at all.
+  bool foundAlpha = false;
+  for (int n = 0; n < 60 && !foundAlpha; ++n) {
+    foundAlpha = querySymbol(n, "alphaOnly").find("\"name\":\"alphaOnly\"") !=
+                 std::string::npos;
+  }
+  Expect(foundAlpha, "workspace/symbol must aggregate folder A's symbols");
+  bool foundBeta = false;
+  for (int n = 0; n < 60 && !foundBeta; ++n) {
+    foundBeta =
+        querySymbol(100 + n, "betaOnly").find("\"name\":\"betaOnly\"") !=
+        std::string::npos;
+  }
+  Expect(foundBeta, "workspace/symbol must aggregate folder B's symbols");
+
+  // Isolation: opening B's document and completing at module level must offer
+  // B's own module root but never A's (B is served by B's index alone).
+  std::string const bUri = "file://" + (fb / "b.bas").string();
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      bUri + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString("sub betaOnly()\nend sub\n") + "\"}}}";
+  input->append(MakeLspFrame(openFrame.c_str()));
+
+  std::string completion;
+  for (int n = 0; n < 40; ++n) {
+    std::string const id = "\"id\":\"mulc" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"mulc)" + std::to_string(n) +
+        R"(","method":"textDocument/completion","params":{"textDocument":{"uri":")" +
+        bUri + R"("},"position":{"line":2,"character":0}}})";
+    input->append(MakeLspFrame(request.c_str()));
+    std::string const snapshot = WaitForOutputContaining(output, id, 50);
+    if (snapshot.find("\"label\":\"betaOnly\"") != std::string::npos) {
+      // Clip to this reply: `alphaOnly` must be judged against B's own
+      // completion only.
+      completion = snapshot.substr(snapshot.rfind(id));
+      break;
+    }
+    completion = snapshot;
+  }
+  Expect(completion.find("\"label\":\"betaOnly\"") != std::string::npos,
+         "completion in folder B must offer B's own module root");
+  Expect(completion.find("\"label\":\"alphaOnly\"") == std::string::npos,
+         "completion in folder B must never offer folder A's module root");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
+// workspace/didChangeWorkspaceFolders adds and removes indexes live: an added
+// config-carrying folder is indexed immediately; removing it closes its index
+// and its symbols leave workspace/symbol — unless the session root or another
+// registered folder still needs it, in which case it survives. The initialize
+// reply advertises folder support and change notifications.
+void TestWorkspaceFoldersChangedAddRemove() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::path const fa = sandbox / "fa";
+  std::filesystem::path const fb = sandbox / "fb";
+  std::filesystem::create_directories(fa);
+  std::filesystem::create_directories(fb);
+  {
+    std::ofstream out(fa / "freebasiclsp.toml");
+    out << "[server]\n";
+    std::ofstream out2(fa / "a.bas");
+    out2 << "sub addOnly()\nend sub\n";
+    std::ofstream out3(fb / "freebasiclsp.toml");
+    out3 << "[server]\n";
+    std::ofstream out4(fb / "b.bas");
+    out4 << "sub addedOnly()\nend sub\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const faUri = "file://" + fa.string();
+  std::string const fbUri = "file://" + fb.string();
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"workspaceFolders":[)"
+      R"({"uri":")" +
+      faUri + R"(","name":"fa"}]}})";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  std::string const init = WaitForOutputContaining(output, "\"id\":\"init\"");
+  Expect(init.find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+  Expect(init.find("\"workspaceFolders\":{\"supported\":true,"
+                   "\"changeNotifications\":true}") != std::string::npos,
+         "initialize must advertise folder support and change notifications");
+
+  auto querySymbol = [&](int n, std::string const &name) {
+    std::string const id = "\"id\":\"chg" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"chg)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":")" + name + "\"}}";
+    input->append(MakeLspFrame(request.c_str()));
+    const std::string snapshot = WaitForOutputContaining(output, id, 50);
+    // Tail from this reply's id, so a stale mention in an earlier reply (this
+    // session queries the same names again) never trips an assertion.
+    return snapshot.substr(snapshot.rfind(id));
+  };
+
+  bool foundAdd = false;
+  for (int n = 0; n < 60 && !foundAdd; ++n) {
+    foundAdd = querySymbol(n, "addOnly").find("\"name\":\"addOnly\"") !=
+               std::string::npos;
+  }
+  Expect(foundAdd, "the registered folder must be indexed at initialize");
+
+  // Add fb at runtime: its symbols must appear without any didOpen.
+  std::string const addFrame =
+      R"({"jsonrpc":"2.0","method":"workspace/didChangeWorkspaceFolders","params":{"event":{"added":[)"
+      R"({"uri":")" +
+      fbUri + R"(","name":"fb"}],"removed":[]}}})";
+  input->append(MakeLspFrame(addFrame.c_str()));
+
+  bool foundAdded = false;
+  for (int n = 0; n < 60 && !foundAdded; ++n) {
+    foundAdded =
+        querySymbol(100 + n, "addedOnly").find("\"name\":\"addedOnly\"") !=
+        std::string::npos;
+  }
+  Expect(foundAdded, "an added config-carrying folder must be indexed at once");
+
+  // Remove fb: its index closes and its symbols leave workspace/symbol, while
+  // fa keeps serving.
+  std::string const removeFrame =
+      R"({"jsonrpc":"2.0","method":"workspace/didChangeWorkspaceFolders","params":{"event":{"added":[],)"
+      R"("removed":[{"uri":")" +
+      fbUri + R"(","name":"fb"}]}}})";
+  input->append(MakeLspFrame(removeFrame.c_str()));
+  // The removal runs on the notification FIFO thread; let it land before the
+  // negative poll so a straggling pre-removal reply cannot trip the assertion.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  bool sawGone = false;
+  for (int n = 0; n < 40 && !sawGone; ++n) {
+    sawGone =
+        querySymbol(200 + n, "addedOnly").find("\"name\":\"addedOnly\"") !=
+        std::string::npos;
+  }
+  Expect(!sawGone, "removing a folder must drop its symbols from "
+                   "workspace/symbol");
+
+  bool stillAdd = false;
+  for (int n = 0; n < 20 && !stillAdd; ++n) {
+    stillAdd = querySymbol(300 + n, "addOnly").find("\"name\":\"addOnly\"") !=
+               std::string::npos;
+  }
+  Expect(stillAdd, "an unaffected registered folder must keep serving");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
 void TestCrossFileDefinitionReferencesHighlight() {
   TwoFileFixture const fix;
 
@@ -3528,6 +4046,10 @@ int main(int argc, char **argv) {
   RUN_TEST(TestInitializedRegistersWatchedFilesDynamically);
   RUN_TEST(TestMissingIncludePublishesDiagnostic);
   RUN_TEST(TestWatchedFilesRescanConverges);
+  RUN_TEST(TestConfigFileRootDetection);
+  RUN_TEST(TestConfigMarkerRootUsedAsIsEagerIndex);
+  RUN_TEST(TestMultiWorkspaceFoldersStayIsolated);
+  RUN_TEST(TestWorkspaceFoldersChangedAddRemove);
   RUN_TEST(TestExitNotifiesSession);
   RUN_TEST(TestEndToEndLifecycle);
   RUN_TEST(TestCrossFileDefinitionReferencesHighlight);

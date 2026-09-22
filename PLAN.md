@@ -2,12 +2,13 @@
 
 ## 1. State summary
 
-Repository `main`, clean working tree, `ctest` 12/12 green. LspCpp (vendored,
-pinned `19150d12`) supplies framing/JSON-RPC/typed 3.17 messages; the language
-layer is LSP-agnostic and byte-offset based. Full language reference (keyword
-catalog, block closers verified against fbc 1.10.2, dialect and scope rules)
-lives in `FreeBASIC.md`; this plan covers roadmap, architecture, and the
-remaining work.
+Repository `main`, clean working tree, `ctest` 13/13 green. LspCpp (vendored,
+pinned `19150d12`) supplies framing/JSON-RPC/typed 3.17 messages and
+tomlplusplus (vendored, pinned `30172438` v3.4.0) parses the server's config
+file; the language layer is LSP-agnostic and byte-offset based. Full language
+reference (keyword catalog, block closers verified against fbc 1.10.2, dialect
+and scope rules) lives in `FreeBASIC.md`; this plan covers roadmap,
+architecture, and the remaining work.
 
 | Milestone | Status |
 |-----------|--------|
@@ -22,7 +23,7 @@ remaining work.
 | M8 — `prepareRename` + `rename` (workspace) | done |
 | M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
 | M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
-| M11 — configuration + workspace folders | next |
+| M11 — configuration + workspace folders | done (2026-09: `freebasiclsp.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; client-driven `didChangeConfiguration` deferred) |
 | M12 — code actions: quick fixes for missing includes + block closers | next |
 | M13 — editor extras: selectionRange, callHierarchy, codeLens | next |
 | M14 — pull diagnostics (backlog) | next |
@@ -76,15 +77,30 @@ stable shape:
   resolution-only store consulted by `fileAt`/`transitiveIncludes` but never
   by `snapshot`/`byKey` (workspace/symbol stays strictly workspace-scoped).
 - `src/utf16.{h,cpp}` — byte ↔ UTF-16 position conversion (session boundary).
+- `src/settings.{h,cpp}` — server configuration from a `freebasiclsp.toml` at a
+  workspace root: `Settings{ includePaths, diagnosticsOn, semanticTokensOn,
+  inlayHintsOn }` with fixed defaults, unknown keys ignored, malformed values
+  never degrading a session. `hasConfigFile` marks a directory a workspace
+  root (joins the VCS marker and source/include-layout signals); parsed with
+  the vendored tomlplusplus. Consulted by `chooseIndexRoot` when narrowing a
+  broad root or in single-file mode.
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
-  `WorkingFiles` + `WorkspaceIndex`, serves a content-addressed
-  `AnalysisCache` (replacing per-request reparse), pushes diagnostics.
-  Index-root selection (`chooseIndexRoot`) uses the client root as-is when it
-  is a VCS project root; a *broad* client root is narrowed to the opened
-  document's project — nearest VCS marker first, else the source/include
-  layout walk (`findSourceLayoutRoot`, up to the drive root / `$HOME`) — and
-  single-file mode roots at the layout project or the file's directory; a
-  detected root that replaces the client's is logged to stderr with the signal.
+  `WorkingFiles` + the per-workspace `WorkspaceIndex` map (`indexes_`, keyed
+  by normalized root under `indexesMutex_`; registered client folders with a
+  root marker, detected roots, and single-file roots each index independently),
+  serves a content-addressed `AnalysisCache` (replacing per-request reparse),
+  pushes diagnostics.
+  Index-root selection (`chooseIndexRoot`, priority 0–5) uses a registered
+  marker-root containing the file first; a client root that is itself a
+  workspace root is used as-is; a *broad* client root is narrowed to the
+  opened document's project — nearest VCS marker, then nearest config file,
+  then the source/include layout walk (`findSourceLayoutRoot`, up to the drive
+  root / `$HOME`) — and single-file mode roots at marker/config/layout or the
+  file's directory; a detected root that replaces the client's is logged to
+  stderr with the signal. Watched-file events route to the owning root's index
+  (`indexFor`); `workspace/symbol` aggregates the live indexes. A file outside
+  every index root is served resolution-only through the session-root index's
+  on-demand closure — never its own index or the single-file branch.
   `ensureRequestClosure` wraps the index walk with a resolver over the live
   open buffer (else disk) and runs before cross-file resolution, member hover,
   and completion.
@@ -97,8 +113,12 @@ member access + intrinsic signatures + keyword wiki links), `foldingRange`,
 `references`, `documentHighlight`, `completion` (keywords + `END`-block
 snippets + in-scope symbols + intrinsic catalog + context-aware UDT member
 filtering after `.`/`->`), `signatureHelp` (user
-declarations and built-in functions), `workspace/symbol`, `prepareRename`,
-`rename` (resolution-based workspace edits).
+declarations and built-in functions), `workspace/symbol` (aggregated across
+per-root indexes), `prepareRename`,
+`rename` (resolution-based workspace edits),
+`workspace/didChangeWatchedFiles` (per-index routing),
+`workspace/didChangeWorkspaceFolders` (per-root index add/remove), and the
+`workspaceFolders` capability (`supported` + `changeNotifications`).
 
 ## 3. FreeBASIC semantics that gate the remaining work
 
@@ -128,14 +148,17 @@ plan engineers around:
    *guard states* are not evaluated — `#include once` / `#pragma once` / `#ifndef`
    are processed as recorded metadata, not macros (FreeBASIC.md §12.6) — and
    `#inclib` is not treated as a source include.
-2. `initialized` + dynamic capability registration landed (M5.5): a dynamic
-   client is registered for `workspace/didChangeWatchedFiles` on `initialized`
-   via `client/registerCapability`; a static client is served watchers in the
-   `initialize` reply. The watcher handler and the debounced rescan landed in
-   M6 (they fan into `WorkspaceIndex::watchedFilesChanged`); only
-   `workspace/didChangeWorkspaceFolders` remains unhandled (single-root
-   assumption, M11).
-3. No README, editor-setup docs, CI matrix, or `didChangeConfiguration`.
+2. Watched files and workspace folders are handled end-to-end (M5.5/M6/M11):
+   a dynamic client is registered for `workspace/didChangeWatchedFiles` on
+   `initialized` via `client/registerCapability`, a static one is served the
+   watchers in the `initialize` reply, events fan into the owning root's
+   `WorkspaceIndex::watchedFilesChanged`, and folder add/remove re-key the
+   per-root indexes. The remaining configuration half is
+   `workspace/didChangeConfiguration`: `Settings` parse from
+   `freebasiclsp.toml` (config-file markers already drive root detection), but
+   the client-driven notification and the include-search seam consuming
+   `Settings.includePaths` (`-i` dirs, §M6) are unlanded.
+3. No README, editor-setup docs, or CI matrix.
 4. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
    `callHierarchy`, `codeLens` (M13), and pull diagnostics (M14). None is
    required by the target editors; each ships as its own milestone.
@@ -469,6 +492,31 @@ parser sees.
 
 ### M11 — Configuration + workspace folders
 
+> Status: landed 2026-09, `ctest` 13/13 green, `clang-format` clean. The config
+> half split in two: `freebasiclsp.toml` **parsing + root detection** shipped
+> (`src/settings.{h,cpp}`, `Settings{ includePaths, diagnosticsOn,
+> semanticTokensOn, inlayHintsOn }`, tomlplusplus vendored and pinned to
+> `30172438` v3.4.0); the client-driven `workspace/didChangeConfiguration`
+> notification and the include-search seam consuming `Settings.includePaths`
+> are deferred (tracked §4.2). The workspace-folders half shipped whole: the
+> single session index became `indexes_` — **one in-memory `WorkspaceIndex`
+> per workspace root**, keyed by normalized path under `indexesMutex_` — plus
+> the `workspaceFolders` capability (`{"supported":true,
+> "changeNotifications":true}`, byte-verified by the integration test), a
+> `workspace/didChangeWorkspaceFolders` handler that adds/removes per-root
+> indexes, **per-index watched-file routing** (`indexFor` on the event path,
+> deduped by owner root), and **workspace/symbol aggregation** across live
+> indexes (`allIndexes()`, deduped by file). Root selection is the 0–5
+> `chooseIndexRoot` priority in §2. Files opened outside every index root are
+> served **resolution-only** through the session-root index's on-demand
+> closure — never their own index (would leak into workspace/symbol) and never
+> the single-file branch while a client root exists. Deviations from the
+> sketch: `didChangeConfiguration` deferred as above (so the `includePaths`
+> rescan wiring and per-folder *server-side* settings ride that later wave);
+> `workspaceFolderRoots_` holds the registered folders that are themselves
+> workspace roots, and a folder removal closes its root's index only while
+> nothing else needs it.
+
 > Re-scoped (2026-09): the release-facing deliverables (README, editor setup,
 > CI) moved out to M18. M11 is now the server-configuration and multi-root
 > milestone; the public-release polish ships last, after the feature work.
@@ -479,15 +527,20 @@ parser sees.
   `includePaths` on rescan, wiring the per-workspace include-search seam §M6
   already reserves. Config-driven watcher changes ride M5.5's
   `client/registerCapability` path (unregister old globs, register new).
+  *Config-file parsing and root markers landed (2026-09); the notification
+  handler and the include seam are still open (§4.2).*
 - **Workspace folders** — `workspace/didChangeWorkspaceFolders`: added folders
   get their own `WorkspaceIndex` (keyed by normalized root), removed ones
-  close/scan-drop; single-root behavior stays the default. Server-side
-  settings apply per active folder.
-- Files: `src/settings.{h,cpp}`, `session.{h,cpp}`, `index.{h,cpp}`, tests.
+  close/scan-drop; single-root behavior stays the default. *Landed (2026-09).*
+- Files: `src/settings.{h,cpp}`, `session.{h,cpp}`, `index.{h,cpp}`, tests
+  (`settings_checks`, `session_integration`).
 - Acceptance: a `didChangeConfiguration` with a new include path makes a
   previously-missing `#include` resolve on rescan; adding a folder to the
   workspace makes its symbols answer `workspace/symbol` and removing one drops
-  them; single-root sessions behave exactly as before; `ctest` green.
+  them; single-root sessions behave exactly as before; `ctest` green. (The
+  config half of the acceptance waits on the deferred handler; the folder half
+  is covered by `TestMultiWorkspaceFoldersStayIsolated` +
+  `TestWorkspaceFoldersChangedAddRemove`.)
 
 ### M12 — Code actions
 

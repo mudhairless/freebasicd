@@ -32,6 +32,7 @@
 // include it or the wp_symbol request type instantiates with an incomplete
 // params type and the runtime parser can never build `workspace/symbol`.
 #include "LibLsp/lsp/extention/jdtls/WorkspaceSymbolParams.h"
+#include "LibLsp/lsp/workspace/didChangeWorkspaceFolders.h"
 #include "LibLsp/lsp/workspace/did_change_watched_files.h"
 #include "LibLsp/lsp/workspace/symbol.h"
 
@@ -39,13 +40,16 @@
 #include "index.h"
 #include "resolve.h"
 #include "semantic_tokens_lsp.h"
+#include "settings.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -60,10 +64,13 @@ public:
   struct IndexRootChoice {
     std::filesystem::path root;
     enum class Reason {
-      ClientRoot,   // the client-provided root, used as-is
-      VcsMarker,    // nearest version-control-marked ancestor within/at it
-      SourceLayout, // no VCS marker; ancestor holding a source/include child
-      SingleFile,   // no client root; the opened file's own directory
+      ClientRoot,     // the client-provided root, used as-is
+      RegisteredRoot, // a registered workspace-folder root containing the file
+      VcsMarker,      // nearest version-control-marked ancestor within/at it
+      ConfigFile,     // nearest ancestor holding a freebasiclsp.toml
+      SourceLayout,   // no VCS/config marker; ancestor holding a source/include
+                      // child
+      SingleFile,     // no client root; the opened file's own directory
     } reason = Reason::ClientRoot;
   };
 
@@ -87,9 +94,23 @@ private:
   // the initialize reply.
   bool watchedFilesDynamic_ = false;
 
-  // In-memory per-workspace symbol index (M4); null until a workspace root
-  // is known (initialize or first opened file). Never persisted to disk.
-  std::unique_ptr<fblang::WorkspaceIndex> index_;
+  // In-memory per-workspace symbol indexes (M11): one index per workspace
+  // root, keyed by normalized root. Registered client workspace folders that
+  // bear a root marker (a version-control marker or freebasiclsp.toml) are
+  // indexed at initialize and tracked in workspaceFolderRoots_; broad folders
+  // defer to per-document detection; single-file mode roots at the opened
+  // file's project or its own directory. Handlers snapshot a shared_ptr under
+  // indexesMutex_ and run their queries against it, so a concurrent folder
+  // add/remove or re-root sweep never invalidates an in-flight request.
+  // Nothing is ever persisted to disk.
+  mutable std::mutex indexesMutex_;
+  std::map<std::string, std::shared_ptr<fblang::WorkspaceIndex>> indexes_;
+  // Registered client workspace folders, in registration order.
+  std::vector<std::filesystem::path> workspaceFolders_;
+  // Normalized roots of the registered folders that are themselves workspace
+  // roots (version-control marker or config file): the priority-0 candidate
+  // set for a file opened inside them (multi-folder isolation).
+  std::set<std::string> workspaceFolderRoots_;
 
   // Content-addressed analysis memo (M10). Every request-path handler reads
   // the open buffer through this, and the cross-file providers
@@ -98,9 +119,11 @@ private:
   // version and repeat requests never re-parse.
   fblang::AnalysisCache analysisCache_;
 
-  // Client-provided workspace root (`rootUri` / `workspaceFolders`), kept so a
-  // later didOpen can narrow it to the opened document's project (see
-  // onDidOpen); empty when the client sent none.
+  // Client-provided workspace root (`rootUri`, or the first workspace folder
+  // when no rootUri is sent), kept so a later didOpen can narrow a broad root
+  // to the opened document's project (see chooseIndexRoot / onDidOpen); empty
+  // when the client sent none. Additional workspace folders are tracked in
+  // workspaceFolders_ / workspaceFolderRoots_ above.
   std::filesystem::path sessionRoot_;
 
   // Semantic-tokens delta cache (M9). Only `full` results are stored: a
@@ -116,9 +139,32 @@ private:
   void ensureWorkspaceIndex(std::filesystem::path const &root);
   IndexRootChoice chooseIndexRoot(std::filesystem::path const &openedFile);
 
+  // The index serving `normalizedPath`: the deepest index whose root contains
+  // it, falling back to the session-root index for documents opened outside
+  // every index root (their on-demand closure is hosted there, resolution-only
+  // — never surfaced by workspace/symbol). Null only in single-file mode
+  // before a didOpen, or under a deferred broad root no index was ever created
+  // for. Handlers snapshot the returned shared_ptr and hold it while their raw
+  // result pointers (member access walks) are in use.
+  std::shared_ptr<fblang::WorkspaceIndex>
+  indexFor(std::string const &normalizedPath) const;
+  // Snapshot of every live index, for workspace/symbol aggregation.
+  std::vector<std::shared_ptr<fblang::WorkspaceIndex>> allIndexes() const;
+  void closeAllIndexes();
+  // Close every index except `keepNormRoot` and the registered marker roots:
+  // re-rooting under a broad client root leaves only the focused project's
+  // index alive (single-file and multi-folder sessions never call this).
+  void dropDetectedIndexesExcept(std::string const &keepNormRoot);
+  // The deepest registered marker-root containing `normalizedPath` (priority
+  // 0 of chooseIndexRoot), or nullopt.
+  std::optional<std::filesystem::path>
+  registeredFolderRootContaining(std::string const &normalizedPath) const;
+
   void onInitialized(Notify_InitializedNotification::notify const &notify);
   void
   onWatchedFiles(Notify_WorkspaceDidChangeWatchedFiles::notify const &notify);
+  void onWorkspaceFoldersChanged(
+      Notify_WorkspaceDidChangeWorkspaceFolders::notify const &notify);
 
   td_shutdown::response onShutdown(td_shutdown::request const &req);
   void onDidOpen(Notify_TextDocumentDidOpen::notify &notify);
@@ -187,6 +233,10 @@ private:
   // sibling project beside the client root) has no workspace-scan entry: build
   // its #include closure on demand so cross-file resolution serves it too.
   // Resolution-only — the entries never surface through workspace/symbol (see
-  // WorkspaceIndex::ensureClosure).
+  // WorkspaceIndex::ensureClosure). The index-holding overload pins the
+  // snapshot for the whole walk.
   void ensureRequestClosure(std::string const &normalizedPath);
+  void
+  ensureRequestClosure(std::string const &normalizedPath,
+                       std::shared_ptr<fblang::WorkspaceIndex> const &index);
 };
