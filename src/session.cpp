@@ -1,5 +1,6 @@
 #include "session.h"
 
+#include "i18n.h"
 #include "index.h"
 #include "inlay_hints.h"
 #include "language.h"
@@ -339,7 +340,7 @@ void appendIncludeDiagnostics(std::string_view content,
     diag.code.emplace(std::make_pair<optional<std::string>, optional<int>>(
         std::string("include-not-found"), {}));
     diag.source.emplace("freebasiclsp");
-    diag.message = "include file not found: \"" + e.literal + "\"";
+    diag.message = fblang::trf("include file not found: \"%s\"", e.literal);
     out->push_back(std::move(diag));
   }
 }
@@ -630,10 +631,10 @@ fblang::Settings settingsForDirLogged(std::filesystem::path const &dir) {
   fblang::Settings const s = fblang::settingsForDir(dir, &ok);
   if (!ok) {
     (void)std::fprintf(
-        stderr,
-        "[freebasiclsp] %s/freebasiclsp.toml is not valid TOML; keeping "
-        "defaults\n",
-        fblang::normalizePath(dir).c_str());
+        stderr, "[freebasiclsp] %s\n",
+        fblang::trf("%s/freebasiclsp.toml is not valid TOML; keeping defaults",
+                    fblang::normalizePath(dir))
+            .c_str());
   }
   return s;
 }
@@ -643,8 +644,8 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
     return;
   }
   std::string const normRoot = fblang::normalizePath(root);
-  (void)std::fprintf(stderr, "[freebasiclsp] workspace root: %s\n",
-                     normRoot.c_str());
+  (void)std::fprintf(stderr, "[freebasiclsp] %s\n",
+                     fblang::trf("workspace root: %s", normRoot).c_str());
   std::lock_guard<std::mutex> const lock(indexesMutex_);
   if (indexes_.find(normRoot) != indexes_.end()) {
     return;
@@ -665,13 +666,13 @@ void logDetectedRoot(FreeBasicServer::IndexRootChoice const &choice,
   std::string how;
   switch (choice.reason) {
   case FreeBasicServer::IndexRootChoice::Reason::VcsMarker:
-    how = "version-control marker";
+    how = fblang::tr("version-control marker");
     break;
   case FreeBasicServer::IndexRootChoice::Reason::ConfigFile:
-    how = "config file " + std::string(fblang::kConfigFileName);
+    how = fblang::trf("config file %s", fblang::kConfigFileName);
     break;
   case FreeBasicServer::IndexRootChoice::Reason::SourceLayout:
-    how = "source/include directory";
+    how = fblang::tr("source/include directory");
     break;
   default:
     return; // ClientRoot / RegisteredRoot / SingleFile: not a found root
@@ -679,15 +680,17 @@ void logDetectedRoot(FreeBasicServer::IndexRootChoice const &choice,
   std::string const normRoot = fblang::normalizePath(choice.root);
   if (clientRoot.empty()) {
     (void)std::fprintf(
-        stderr,
-        "[freebasiclsp] workspace root %s (detected via %s; no client root)\n",
-        normRoot.c_str(), how.c_str());
+        stderr, "[freebasiclsp] %s\n",
+        fblang::trf("workspace root %s (detected via %s; no client root)",
+                    normRoot, how)
+            .c_str());
     return;
   }
   (void)std::fprintf(
-      stderr,
-      "[freebasiclsp] workspace root %s (detected via %s; client root %s)\n",
-      normRoot.c_str(), how.c_str(), fblang::normalizePath(clientRoot).c_str());
+      stderr, "[freebasiclsp] %s\n",
+      fblang::trf("workspace root %s (detected via %s; client root %s)",
+                  normRoot, how, fblang::normalizePath(clientRoot))
+          .c_str());
 }
 
 FreeBasicServer::IndexRootChoice
@@ -868,6 +871,13 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   td_initialize::response rsp;
   rsp.id = req.id;
 
+  // The client's UI locale (LSP 3.16+, `ClientCapabilities.general.locale`)
+  // selects the message catalog when the OS can install the tag; otherwise the
+  // environment locale from initI18n() keeps serving.
+  if (req.params.locale) {
+    fblang::setClientLocale(*req.params.locale);
+  }
+
   lsTextDocumentSyncOptions &sync =
       rsp.result.capabilities.textDocumentSync.emplace().second.emplace();
   sync.openClose = true;
@@ -1016,12 +1026,13 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
       ensureWorkspaceIndex(rootPath);
     } else {
       (void)std::fprintf(
-          stderr,
-          "[freebasiclsp] workspace root %s has no version-control marker or "
-          "config file; index scope deferred to the first opened document "
-          "(detection: version-control marker, config file, else "
-          "source/include directory)\n",
-          rootPath.c_str());
+          stderr, "[freebasiclsp] %s\n",
+          fblang::trf("workspace root %s has no version-control marker or "
+                      "config file; index scope deferred to the first opened "
+                      "document (detection: version-control marker, config "
+                      "file, else source/include directory)",
+                      rootPath)
+              .c_str());
     }
   }
 

@@ -24,11 +24,23 @@ add_subdirectory(third_party/LspCpp)
 # (M11).
 add_subdirectory(third_party/tomlplusplus)
 
+# Localization (M20): system GNU gettext. FindGettext locates the *tools*
+# (xgettext/msgfmt/msgmerge) that extract and compile catalogs; cmake/
+# FindIntl.cmake locates the *runtime* (libintl) and defines Intl::Intl —
+# glibc provides gettext in libc, macOS/Windows link a separate library.
+set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
+find_package(Gettext)
+find_package(Intl REQUIRED)
+# CMake's bundled FindGettext locates msgmerge/msgfmt only; the pot
+# extraction tool needs its own discovery here.
+find_program(GETTEXT_XGETTEXT_EXECUTABLE xgettext)
+
 # M2 language layer: lexer + parser + language data. LSP-agnostic, byte
 # offsets; the session converts to/from LSP positions at the boundary. The
 # workspace index (M4) is in-memory only.
 add_library(freebasiclsp_lang STATIC
     src/analysis_cache.cpp
+    src/i18n.cpp
     src/index.cpp
     src/inlay_hints.cpp
     src/language.cpp
@@ -39,7 +51,14 @@ add_library(freebasiclsp_lang STATIC
     src/settings.cpp
 )
 target_include_directories(freebasiclsp_lang PUBLIC ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(freebasiclsp_lang PUBLIC tomlplusplus::tomlplusplus)
+target_link_libraries(freebasiclsp_lang PUBLIC tomlplusplus::tomlplusplus Intl::Intl)
+# Catalog locations the runtime probes (see src/i18n.cpp): the build tree for
+# dev builds, the install prefix for installed binaries. Both are compile-time
+# so initI18n() needs no arguments.
+target_compile_definitions(freebasiclsp_lang PUBLIC
+    FBLANG_LOCALEDIR_BUILD="${CMAKE_BINARY_DIR}/share/locale"
+    FBLANG_LOCALEDIR_INSTALL="${CMAKE_INSTALL_PREFIX}/share/locale"
+)
 
 add_library(freebasiclsp_core STATIC
     src/session.cpp
@@ -51,6 +70,102 @@ add_executable(freebasiclsp
     src/main.cpp
 )
 target_link_libraries(freebasiclsp PRIVATE freebasiclsp_core lspcpp)
+
+# --- gettext catalogs (M20) -------------------------------------------------
+# Committed sources: po/freebasiclsp.pot is the extracted message template;
+# po/<lang>.po are the hand-maintained translations (English msgids, msgstr
+# left to translators). The default build compiles every po to a .mo under
+# ${FBLANG_LOCALE_OUT}/<lang>/LC_MESSAGES (the tree the dev build's runtime
+# probes); `cmake --build . --target po-template` re-extracts the pot from the
+# sources and `--target update-po` refreshes the po files against it. None of
+# the regeneration targets run by default, so a fresh checkout's committed
+# files stay untouched.
+#
+# The initial language set is exactly the human languages whose source/include
+# folder names the workspace-detection catalog (src/language.cpp) recognizes —
+# English is the msgid language and needs no po.
+set(FBLANG_PO_DIR ${CMAKE_SOURCE_DIR}/po)
+set(FBLANG_DOMAIN freebasiclsp)
+set(FBLANG_LOCALE_OUT ${CMAKE_BINARY_DIR}/share/locale)
+set(FBLANG_LANGUAGES
+    af cs da de eo es et fi fr hr hu id is it lt lv ms nl no pl pt ro sk sl
+    sv sw tl tr vi)
+
+if(GETTEXT_FOUND)
+    # Extraction: `cmake --build <dir> --target po-template`. Needs xgettext in
+    # addition to msgfmt/msgmerge (FindGettext supplies the latter two).
+    if(GETTEXT_XGETTEXT_EXECUTABLE)
+        file(GLOB FBLANG_XGETTEXT_SOURCES RELATIVE ${CMAKE_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/src/*.cpp
+            ${CMAKE_SOURCE_DIR}/src/*.h
+            ${CMAKE_SOURCE_DIR}/tools/*.cpp)
+        add_custom_target(po-template
+            COMMAND ${GETTEXT_XGETTEXT_EXECUTABLE}
+                --from-code=UTF-8
+                --keyword=tr
+                --keyword=trf:1
+                --flag=trf:1:c-format
+                --add-comments=TRANSLATORS:
+                --package-name=${PROJECT_NAME}
+                -o po/${FBLANG_DOMAIN}.pot
+                ${FBLANG_XGETTEXT_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Regenerating po/freebasiclsp.pot from src/")
+    else()
+        message(STATUS "xgettext not found; the po-template target is "
+                       "unavailable (committed po/freebasiclsp.pot stays as-is)")
+    endif()
+
+    # Compilation: every committed po -> .mo, part of the default build so a
+    # dev binary finds its catalogs next to itself. msgfmt --check turns a
+    # malformed translation (or a format-string/placeholder drift against the
+    # pot) into a build error instead of a silent fallback.
+    set(FBLANG_MO_FILES "")
+    foreach(lang IN LISTS FBLANG_LANGUAGES)
+        set(_po ${FBLANG_PO_DIR}/${lang}.po)
+        if(NOT EXISTS ${_po})
+            message(WARNING "Missing translation file ${_po}; skipping")
+            continue()
+        endif()
+        set(_mo ${FBLANG_LOCALE_OUT}/${lang}/LC_MESSAGES/${FBLANG_DOMAIN}.mo)
+        add_custom_command(
+            OUTPUT ${_mo}
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    ${FBLANG_LOCALE_OUT}/${lang}/LC_MESSAGES
+            COMMAND ${GETTEXT_MSGFMT_EXECUTABLE} --check -o ${_mo} ${_po}
+            DEPENDS ${_po}
+            COMMENT "Compiling po/${lang}.po -> ${lang} message catalog")
+        list(APPEND FBLANG_MO_FILES ${_mo})
+    endforeach()
+    add_custom_target(translations ALL DEPENDS ${FBLANG_MO_FILES})
+
+    # Refresh: `cmake --build <dir> --target update-po` merges the freshly
+    # extracted pot into every po (new msgids appear untranslated, obsolete
+    # ones are dropped).
+    if(GETTEXT_XGETTEXT_EXECUTABLE)
+        set(_msgmerge_cmds "")
+        foreach(lang IN LISTS FBLANG_LANGUAGES)
+            if(EXISTS ${FBLANG_PO_DIR}/${lang}.po)
+                list(APPEND _msgmerge_cmds
+                    COMMAND ${GETTEXT_MSGMERGE_EXECUTABLE} --update --backup=none
+                            ${FBLANG_PO_DIR}/${lang}.po
+                            ${FBLANG_PO_DIR}/${FBLANG_DOMAIN}.pot)
+            endif()
+        endforeach()
+        add_custom_target(update-po
+            ${_msgmerge_cmds}
+            DEPENDS po-template
+            COMMENT "Merging po/freebasiclsp.pot into po/*.po")
+    endif()
+
+    include(GNUInstallDirs)
+    install(DIRECTORY ${FBLANG_LOCALE_OUT}/ DESTINATION
+            ${CMAKE_INSTALL_DATADIR}/locale)
+else()
+    message(STATUS "gettext tools not found; skipping catalog generation "
+                   "(po/*.po will not compile). Install gettext to translate "
+                   "log and diagnostic messages.")
+endif()
 
 enable_testing()
 
@@ -176,3 +291,44 @@ target_include_directories(session_integration PRIVATE
 )
 target_link_libraries(session_integration PRIVATE freebasiclsp_core lspcpp)
 add_test(NAME session_integration COMMAND session_integration)
+
+# M20 i18n checks: gettext wiring (a CMake-built de catalog round-trips
+# through tr()/trf()), the "FreeBASIC is never translated" invariants, and a
+# freshness gate tying every translatable literal to the committed pot. The
+# runtime round-trip needs msgfmt at configure time; without it the functional
+# part skips (return code 77) while the structural part still runs.
+add_executable(i18n_checks
+    tests/i18n_checks.cpp
+)
+target_include_directories(i18n_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(i18n_checks PRIVATE
+    SRC_DIR="${CMAKE_SOURCE_DIR}/src"
+    FBLANG_POT="${CMAKE_SOURCE_DIR}/po/freebasiclsp.pot")
+target_link_libraries(i18n_checks PRIVATE freebasiclsp_lang)
+if(GETTEXT_FOUND)
+    # A tiny dedicated catalog exercises the whole runtime path with no
+    # installed locale: bind domain fblang-test, LANGUAGE=de, expect msgstr.
+    set(_i18n_test_locale ${CMAKE_BINARY_DIR}/i18n-test)
+    set(_i18n_test_po ${_i18n_test_locale}/fblang-test.po)
+    set(_i18n_test_mo ${_i18n_test_locale}/de/LC_MESSAGES/fblang-test.mo)
+    file(WRITE ${_i18n_test_po}
+        "msgid \"\"\n"
+        "msgstr \"\"\n"
+        "\"Content-Type: text/plain; charset=UTF-8\\n\"\n"
+        "\"Language: de\\n\"\n"
+        "\n"
+        "msgid \"hello %s\"\n"
+        "msgstr \"Grüße aus dem Test: %s\"\n")
+    add_custom_command(
+        OUTPUT ${_i18n_test_mo}
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                ${_i18n_test_locale}/de/LC_MESSAGES
+        COMMAND ${GETTEXT_MSGFMT_EXECUTABLE} -o ${_i18n_test_mo}
+                ${_i18n_test_po}
+        DEPENDS ${_i18n_test_po})
+    add_custom_target(i18n-test-catalog ALL DEPENDS ${_i18n_test_mo})
+    target_compile_definitions(i18n_checks PRIVATE
+        FBLANG_TEST_LOCALE_DIR="${_i18n_test_locale}")
+endif()
+add_test(NAME i18n_checks COMMAND i18n_checks)
+set_tests_properties(i18n_checks PROPERTIES SKIP_RETURN_CODE 77)

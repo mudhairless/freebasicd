@@ -2,10 +2,13 @@
 
 ## 1. State summary
 
-Repository `main`, clean working tree, `ctest` 13/13 green. LspCpp (vendored,
-pinned `19150d12`) supplies framing/JSON-RPC/typed 3.17 messages and
+Repository `main`, clean working tree, `ctest` 14/14 green. LspCpp (vendored,
+pinned `19150d12`) supplies framing/JSON-RPC/typed 3.17 messages,
 tomlplusplus (vendored, pinned `30172438` v3.4.0) parses the server's config
-file; the language layer is LSP-agnostic and byte-offset based. Full language
+file, and GNU gettext (system libintl, never vendored; `cmake/FindIntl.cmake`
++ `FindGettext`) localizes log and diagnostic messages from committed
+`po/*.po` catalogs; the language layer is LSP-agnostic and byte-offset based.
+Full language
 reference (keyword catalog, block closers verified against fbc 1.10.2, dialect
 and scope rules) lives in `FreeBASIC.md`; this plan covers roadmap,
 architecture, and the remaining work.
@@ -32,6 +35,7 @@ architecture, and the remaining work.
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
 | M18 — public release: README / editor setup, CI (moved from M11) | next |
 | M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
+| M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasiclsp`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasiclsp.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
 
 ## 2. What exists (condensed)
 
@@ -80,6 +84,16 @@ stable shape:
   resolution-only store consulted by `fileAt`/`transitiveIncludes` but never
   by `snapshot`/`byKey` (workspace/symbol stays strictly workspace-scoped).
 - `src/utf16.{h,cpp}` — byte ↔ UTF-16 position conversion (session boundary).
+- `src/i18n.{h,cpp}` — GNU gettext wrapper: `tr(msgid)` (plain lookup),
+  `trf(msgid, a0..a2)` (translates the template, inserts `%s` arguments —
+  keywords, identifiers, file names, the proper noun `FreeBASIC` — verbatim so
+  they never enter a translatable literal), `initI18n()` (domain
+  `freebasiclsp`, UTF-8 output, environment message locale), and
+  `setClientLocale(IETF tag)` wired to `InitializeParams.locale` (best-effort;
+  only tags the OS can install switch the catalog). Translational invariants
+  ("never translate FreeBASIC or keywords") are enforced as code by
+  `tests/i18n_checks`; catalogs build from committed `po/*.po` via the
+  `translations` target.
 - `src/settings.{h,cpp}` — server configuration from a `freebasiclsp.toml` at a
   workspace root: `Settings{ includePaths, diagnosticsOn, semanticTokensOn,
   inlayHintsOn }` with fixed defaults, unknown keys ignored, malformed values
@@ -720,6 +734,74 @@ implementation.
   `dim` keyword, no intrinsics); inside `sub Position.set()` the private
   member appears; `->`/`with`/chained/`EnumName.` shapes complete; hover's
   fallback test suite stays green.
+
+### M20 — Gettext localization of log + diagnostic messages
+
+> Status: landed 2026-09, `ctest` 14/14 green, `clang-format` clean. System
+> GNU gettext only (never vendored): `cmake/FindIntl.cmake` probes whether the
+> C library provides gettext in libc and otherwise links libintl, defining
+> `Intl::Intl` on plain CMake ≥ 3.16; `find_package(Gettext)` supplies the
+> msgfmt/msgmerge tools and a local `find_program` adds xgettext (the bundled
+> FindGettext locates only the first two). `src/i18n.{h,cpp}` wraps the
+> runtime (`tr`, `trf` with up to three verbatim `%s` insertions,
+> `initI18n`, `setClientLocale` from `InitializeParams.locale`); the
+> `translations` target compiles every committed po to
+> `<build>/share/locale/<lang>/LC_MESSAGES/freebasiclsp.mo` (installed to the
+> prefix too), so a dev binary picks up its catalogs. The two
+> never-translate invariants — the proper noun `FreeBASIC` and uppercase
+> keyword spellings must never appear in a translatable literal — are
+> enforced as code, and every literal must exist in the committed pot
+> (freshness). Deviations: English is the msgid language so there is no
+> en.po; the initial 29 po files are msginit-generated with empty msgstrs for
+> translators to fill; under a C-ish default message locale glibc ignores
+> `LANGUAGE`, so the functional round-trip part skips (77) while the
+> structural checks still run.
+
+- Runtime wiring: `src/i18n.{h,cpp}` — `initI18n()` binds domain
+  `freebasiclsp` to the build-tree / install-prefix catalog (env override
+  `FBLANG_LOCALEDIR`), forces UTF-8 via `bind_textdomain_codeset`, and
+  activates the environment's *message* locale only (numeric/parsing facets
+  stay at "C" so LSP output never depends on the UI locale);
+  `setClientLocale(locale)` maps IETF `-` to the C library's `_` and
+  best-effort switches `LC_MESSAGES` (returns quietly when uninstalled or
+  malformed).
+- Message surgery: every addDiagnostic site in `src/parser.cpp` and the
+  stderr logs + missing-include diagnostic in `src/session.cpp` now go
+  through `tr`/`trf`; keyword text (`ELSE`, `END SUB`, `LOOP`, …) and the
+  word `FreeBASIC` only reach a user as dynamic `trf` arguments, so
+  translators never see them (byte-identical English output — the
+  session_integration substring assertions still pass unchanged).
+- Toolchain (CMake, `if(GETTEXT_FOUND)`): `po-template` (xgettext:
+  `--keyword=tr --keyword=trf:1 --flag=trf:1:c-format
+  --add-comments=TRANSLATORS:`, extracts from `src/*.{cpp,h}` +
+  `tools/*.cpp`) regenerates `po/freebasiclsp.pot`; `update-po` (msgmerge)
+  refreshes the po files; `translations ALL` (msgfmt `--check`, so a
+  placeholder drift against the pot becomes a build error) compiles every
+  committed po under `${FBLANG_LOCALE_OUT}/<lang>/LC_MESSAGES`. Only
+  `translations` runs in the default build — the committed pot/po sources
+  stay untouched by a routine build.
+- Language set: the human languages named in `src/language.cpp`'s
+  source/include directory catalog (`isSourceDirName`/`isIncludeDirName`, 30
+  entries) minus English = af cs da de eo es et fi fr hr hu id is it lt lv ms
+  nl no pl pt ro sk sl sv sw tl tr vi — 29 committed po files.
+- Tests: `tests/i18n_checks` — structural scan of src/ (adjacent-literal
+  concatenation, identifier-boundary tokenization) fails on any translatable
+  literal containing whole-word `FreeBASIC` or an uppercase keyword spelling
+  (lowercase prose homographs like "for"/"not" stay allowed); pot freshness
+  (every literal must be a msgid in the committed pot, including folded
+  xgettext-wrapped msgids); functional round-trip over a CMake-built
+  `fblang-test` de catalog (`LANGUAGE=de`, skip 77 when msgfmt was absent at
+  configure time or the default LC_MESSAGES is C-ish, since glibc ignores
+  LANGUAGE there).
+- Files: `src/i18n.{h,cpp}`, `src/parser.cpp`, `src/session.cpp`,
+  `src/main.cpp` (`initI18n()` at startup), `cmake/FindIntl.cmake`,
+  `CMakeLists.txt` (gettext section + `i18n_checks`/`i18n-test-catalog`
+  wiring), `po/freebasiclsp.pot` + 29 `po/<lang>.po`,
+  `tests/i18n_checks.cpp`.
+- Acceptance: `cmake --build` + `ctest` 14/14 green; `clang-format` clean;
+  `po-template` then `update-po` reproduce the committed pot with no msgid
+  drift; a `LANGUAGE=de` shell run of the built server logs translated
+  messages once a translator fills `po/de.po`.
 
 ## 6. Not doing (soon)
 

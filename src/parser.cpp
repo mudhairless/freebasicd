@@ -1,5 +1,6 @@
 #include "parser.h"
 
+#include "i18n.h"
 #include "language.h"
 #include "lexer.h"
 #include "symbols.h"
@@ -84,9 +85,9 @@ public:
         checkMetaLang();
         collectDoc();
         if (!cur_.text().empty() && cur_.text()[0] == '/') {
-          addDiagnostic(
-              cur_.beg, cur_.end, Severity::Information, "doc-slash",
-              "/// is not a FreeBASIC comment; use '' for doc comments");
+          addDiagnostic(cur_.beg, cur_.end, Severity::Information, "doc-slash",
+                        trf("/// is not a %s comment; use '' for doc comments",
+                            "FreeBASIC"));
         }
         advance();
         continue;
@@ -95,10 +96,14 @@ public:
         advance();
         continue;
       case TokenKind::Meta:
-        addDiagnostic(cur_.beg, cur_.end, Severity::Information,
-                      "meta-directive",
-                      "bare '$' is not a valid metacommand; FreeBASIC "
-                      "metacommands are written as comments ('$LANG: \"qb\"')");
+        addDiagnostic(
+            cur_.beg, cur_.end, Severity::Information, "meta-directive",
+            // TRANSLATORS: %s = the proper noun "FreeBASIC" (never
+            // translated); the second %s is an example directive kept
+            // verbatim.
+            trf("bare '$' is not a valid metacommand; %s metacommands are "
+                "written as comments, e.g. %s",
+                "FreeBASIC", "'$LANG: \"qb\"'"));
         advance();
         continue;
       case TokenKind::Symbol:
@@ -117,7 +122,8 @@ public:
     // Unterminated blocks, innermost first.
     for (auto it = blocks_.rbegin(); it != blocks_.rend(); ++it) {
       addDiagnostic(it->begOpen, it->endOpen, Severity::Error,
-                    "unterminated-block", "Expected '" + displayFor(*it) + "'");
+                    "unterminated-block",
+                    trf("Expected '%s'", displayFor(*it)));
     }
     // Close the leftover blocks at EOF (innermost first) so their symbols get
     // sane ranges extending to the end of the source. Without this, a block
@@ -143,7 +149,7 @@ private:
   void advance() {
     if (cur_.kind == TokenKind::String && !cur_.terminated) {
       addDiagnostic(cur_.beg, cur_.end, Severity::Warning,
-                    "unterminated-string", "unterminated string literal");
+                    "unterminated-string", tr("unterminated string literal"));
     }
     cur_ = lex_.next();
   }
@@ -162,8 +168,9 @@ private:
     if (m != LangMode::Fb && !langWarned_) {
       langWarned_ = true;
       addDiagnostic(beg, end, Severity::Information, "lang-mode",
-                    "dialect '" + std::string(langName(m)) +
-                        "' is not supported yet; parsing in 'fb' mode");
+                    trf("dialect '%s' is not supported yet; parsing in '%s' "
+                        "mode",
+                        langName(m), "fb"));
     }
   }
 
@@ -321,7 +328,7 @@ private:
       if (set.count(s.key) != 0) {
         addDiagnostic(s.selection.beg, s.selection.end, Severity::Warning,
                       "duplicate-definition",
-                      "duplicate definition: '" + s.name + "'");
+                      trf("duplicate definition: '%s'", s.name));
       }
       set.insert(s.key);
     }
@@ -377,7 +384,7 @@ private:
       }
       if (k == TokenKind::Symbol && cur_.text() == "_") {
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "bad-continuation",
-                      "expected end of line after '_'");
+                      tr("expected a newline after '_'"));
       }
       if (inRecord && k == TokenKind::Symbol && cur_.text() == "(") {
         ++parenDepth;
@@ -545,7 +552,7 @@ private:
     if (w == "else" || w == "elseif") {
       if (blocks_.empty() || blocks_.back().kind != BlockKind::If) {
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      "ELSE without IF");
+                      trf("%s without %s", uppercase(w), "IF"));
       }
       resetDoc();
       skipStatement();
@@ -554,7 +561,7 @@ private:
     if (w == "case") {
       if (blocks_.empty() || blocks_.back().kind != BlockKind::Select) {
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      "CASE without SELECT");
+                      trf("%s without %s", "CASE", "SELECT"));
       }
       resetDoc();
       skipStatement();
@@ -1050,7 +1057,7 @@ private:
     if (w == "for" || w == "while") {
       std::string const expected = w == "for" ? "NEXT" : "WEND";
       addDiagnostic(cur_.beg, cur_.end, Severity::Error, "invalid-end",
-                    "Expected '" + expected + "'");
+                    trf("Expected '%s'", expected));
       resetDoc();
       skipStatement();
       return;
@@ -1065,7 +1072,7 @@ private:
 
     if (blocks_.empty()) {
       addDiagnostic(endTok.beg, cur_.end, Severity::Error, "stray-closer",
-                    "END " + uppercase(w) + " without " + uppercase(w));
+                    trf("%s without %s", "END " + uppercase(w), uppercase(w)));
       resetDoc();
       skipStatement();
       return;
@@ -1081,7 +1088,7 @@ private:
     }
 
     addDiagnostic(endTok.beg, cur_.end, Severity::Error, "closer-mismatch",
-                  "Expected '" + displayFor(top) + "'");
+                  trf("Expected '%s'", displayFor(top)));
     resetDoc();
     skipStatement();
   }
@@ -1089,14 +1096,15 @@ private:
   void handlePlainCloser(const BlockCloser &c) {
     Token const closerTok = cur_;
     if (blocks_.empty()) {
-      const char *msg = "LOOP without DO";
+      std::string_view openerName = "DO";
       if (c.kind == BlockKind::For) {
-        msg = "NEXT without FOR";
+        openerName = "FOR";
       } else if (c.kind == BlockKind::While) {
-        msg = "WEND without WHILE";
+        openerName = "WHILE";
       }
       addDiagnostic(closerTok.beg, closerTok.end, Severity::Error,
-                    "stray-closer", msg);
+                    "stray-closer",
+                    trf("%s without %s", uppercase(c.closeWord), openerName));
       resetDoc();
       skipStatement();
       return;
@@ -1110,7 +1118,7 @@ private:
       return;
     }
     addDiagnostic(closerTok.beg, closerTok.end, Severity::Error,
-                  "closer-mismatch", "Expected '" + displayFor(top) + "'");
+                  "closer-mismatch", trf("Expected '%s'", displayFor(top)));
     resetDoc();
     skipStatement();
   }
@@ -1138,14 +1146,14 @@ private:
         closeBlock(cur_.end);
       } else {
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      "#ENDIF without #IF");
+                      trf("%s without %s", "#" + uppercase(w), "#IF"));
       }
     } else if (w == "endmacro") {
       if (!blocks_.empty() && blocks_.back().kind == BlockKind::PreprocMacro) {
         closeBlock(cur_.end);
       } else {
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      "#ENDMACRO without #MACRO");
+                      trf("%s without %s", "#" + uppercase(w), "#MACRO"));
       }
     } else if (w == "lang") {
       LangMode m;
