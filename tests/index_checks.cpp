@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // Workspace index checks: in-memory scan/upsert/remove, projections (byKey +
 // transitiveIncludes), open-buffer isolation, and workspace scoping. Uses temp
 // directories; never touches the real data dir or the workspace on disk.

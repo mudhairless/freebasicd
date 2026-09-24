@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // Content-addressed analysis cache checks (M10): hit/miss discipline,
 // freshness under content change, advisory-version semantics, borrow safety
 // of the token stream, FIFO eviction of closed-file entries, and didClose

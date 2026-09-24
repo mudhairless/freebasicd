@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // Intrinsic catalog checks. LSP-agnostic: the catalog is plain data behind
 // plain functions, so these exercise lookups, signatures, wiki URLs, and the
 // statement-position predicate directly.

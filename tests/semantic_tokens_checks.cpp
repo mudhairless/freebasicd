@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // Semantic-token classification checks for the M9 token-stream classifier.
 //
 // Exercises the legend spellings (must match LSP 3.17 exactly), the

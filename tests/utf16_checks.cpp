@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // UTF-16 position/range conversion checks. LSP boundary helper used by the
 // session to convert the language layer's byte offsets into client positions.
 

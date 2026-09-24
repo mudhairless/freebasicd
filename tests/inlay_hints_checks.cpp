@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // Inlay-hint checks for the M9 hint module.
 //
 // Byte-offset, LSP-agnostic: exercises expected-closer hints at block openers

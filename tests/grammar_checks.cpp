@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // M9 grammar freshness gate + catalog-completeness checks.
 //
 // Regenerates the editor grammars in memory through the same emitter the

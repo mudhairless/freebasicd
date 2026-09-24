@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // i18n checks: GNU gettext wiring for log + diagnostic messages, plus the
 // "FreeBASIC is never translated" invariants encoded as code.
 //

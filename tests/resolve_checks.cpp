@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // Identifier resolution checks: FreeBASIC scoping over a parsed document.
 // Byte-offset and LSP-agnostic.
 

@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // Writes the generated editor grammars (`editors/*`) from the catalog. The
 // emit logic lives in the shared `grammar_emitter` module so `grammar_checks`
 // byte-diffs exactly what this tool would write.

@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 #include "LibLsp/LspCpp.h"
 #include "src/session.h"
 #include "test_helpers.h"

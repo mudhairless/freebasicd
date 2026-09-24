@@ -1,3 +1,9 @@
+/*
+ * FreeBASIC Language Server
+ * Copyright (C) 2026 Ebben Feagan
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // Tokenizer checks for the FreeBASIC lexer. Byte-offset, LSP-agnostic.
 //
 // Token.data points into the source buffer that was lexed, so the sources are
