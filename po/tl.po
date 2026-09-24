@@ -1,12 +1,12 @@
-# Tagalog translations for freebasiclsp package.
-# Copyright (C) 2026 THE freebasiclsp'S COPYRIGHT HOLDER
-# This file is distributed under the same license as the freebasiclsp package.
+# Tagalog translations for FreeBASIC Language Server.
+# Copyright (C) 2026 Ebben Feagan
+# This file is distributed under the same license as the freebasiclsp package (GPL-3.0-or-later).
 # Automatically generated, 2026.
 #
 msgid ""
 msgstr ""
 "Project-Id-Version: freebasiclsp\n"
-"Report-Msgid-Bugs-To: \n"
+"Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
 "POT-Creation-Date: 2026-09-24 12:59-0500\n"
 "PO-Revision-Date: 2026-09-24 12:59-0500\n"
 "Last-Translator: Automatically generated\n"

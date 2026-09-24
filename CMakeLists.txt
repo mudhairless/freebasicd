@@ -103,6 +103,13 @@ if(GETTEXT_FOUND)
             ${CMAKE_SOURCE_DIR}/src/*.cpp
             ${CMAKE_SOURCE_DIR}/src/*.h
             ${CMAKE_SOURCE_DIR}/tools/*.cpp)
+        # The template header carries the project identity from LICENSE.md
+        # (title, copyright holder, license, maintainer contact). xgettext
+        # fills the copyright/bugs fields via the flags below; the remaining
+        # placeholder lines (title, FIRST AUTHOR, Last-Translator,
+        # Language-Team, charset, the header's `#, fuzzy` flag) are fixed by
+        # tools/fix_pot_header.cmake so regeneration reproduces the committed
+        # pot verbatim.
         add_custom_target(po-template
             COMMAND ${GETTEXT_XGETTEXT_EXECUTABLE}
                 --from-code=UTF-8
@@ -111,8 +118,12 @@ if(GETTEXT_FOUND)
                 --flag=trf:1:c-format
                 --add-comments=TRANSLATORS:
                 --package-name=${PROJECT_NAME}
+                "--copyright-holder=Ebben Feagan"
+                --msgid-bugs-address=ebben.feagan@gmail.com
                 -o po/${FBLANG_DOMAIN}.pot
                 ${FBLANG_XGETTEXT_SOURCES}
+            COMMAND ${CMAKE_COMMAND} -P
+                    ${CMAKE_SOURCE_DIR}/tools/fix_pot_header.cmake
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             COMMENT "Regenerating po/freebasiclsp.pot from src/")
     else()

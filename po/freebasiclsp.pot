@@ -1,23 +1,22 @@
-# SOME DESCRIPTIVE TITLE.
-# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
-# This file is distributed under the same license as the freebasiclsp package.
-# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+# FreeBASIC Language Server translations.
+# Copyright (C) 2026 Ebben Feagan
+# This file is distributed under the same license as the freebasiclsp package (GPL-3.0-or-later).
+# Ebben Feagan <ebben.feagan@gmail.com>, 2026.
 #
-#, fuzzy
 msgid ""
 msgstr ""
 "Project-Id-Version: freebasiclsp\n"
-"Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-24 13:14-0500\n"
-"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
-"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
-"Language-Team: LANGUAGE <LL@li.org>\n"
+"Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
+"POT-Creation-Date: 2026-09-24 13:29-0500\n"
+"PO-Revision-Date: 2026-09-24 13:29-0500\n"
+"Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
+"Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
 "MIME-Version: 1.0\n"
-"Content-Type: text/plain; charset=CHARSET\n"
+"Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: src/parser.cpp:89
+#: src/parser.cpp:95
 #, c-format
 msgid "/// is not a %s comment; use '' for doc comments"
 msgstr ""
@@ -25,82 +24,82 @@ msgstr ""
 #. TRANSLATORS: %s = the proper noun "FreeBASIC" (never
 #. translated); the second %s is an example directive kept
 #. verbatim.
-#: src/parser.cpp:104
+#: src/parser.cpp:110
 #, c-format
 msgid ""
 "bare '$' is not a valid metacommand; %s metacommands are written as "
 "comments, e.g. %s"
 msgstr ""
 
-#: src/parser.cpp:126 src/parser.cpp:1060 src/parser.cpp:1091
-#: src/parser.cpp:1121
+#: src/parser.cpp:132 src/parser.cpp:1066 src/parser.cpp:1097
+#: src/parser.cpp:1127
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
 
-#: src/parser.cpp:152
+#: src/parser.cpp:158
 msgid "unterminated string literal"
 msgstr ""
 
-#: src/parser.cpp:171
+#: src/parser.cpp:177
 #, c-format
 msgid "dialect '%s' is not supported yet; parsing in '%s' mode"
 msgstr ""
 
-#: src/parser.cpp:331
+#: src/parser.cpp:337
 #, c-format
 msgid "duplicate definition: '%s'"
 msgstr ""
 
-#: src/parser.cpp:387
+#: src/parser.cpp:393
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:555 src/parser.cpp:564 src/parser.cpp:1075
-#: src/parser.cpp:1107 src/parser.cpp:1149 src/parser.cpp:1156
+#: src/parser.cpp:561 src/parser.cpp:570 src/parser.cpp:1081
+#: src/parser.cpp:1113 src/parser.cpp:1155 src/parser.cpp:1162
 #, c-format
 msgid "%s without %s"
 msgstr ""
 
-#: src/session.cpp:343
+#: src/session.cpp:349
 #, c-format
 msgid "include file not found: \"%s\""
 msgstr ""
 
-#: src/session.cpp:635
+#: src/session.cpp:641
 #, c-format
 msgid "%s/freebasiclsp.toml is not valid TOML; keeping defaults"
 msgstr ""
 
-#: src/session.cpp:648
+#: src/session.cpp:654
 #, c-format
 msgid "workspace root: %s"
 msgstr ""
 
-#: src/session.cpp:669
+#: src/session.cpp:675
 msgid "version-control marker"
 msgstr ""
 
-#: src/session.cpp:672
+#: src/session.cpp:678
 #, c-format
 msgid "config file %s"
 msgstr ""
 
-#: src/session.cpp:675
+#: src/session.cpp:681
 msgid "source/include directory"
 msgstr ""
 
-#: src/session.cpp:684
+#: src/session.cpp:690
 #, c-format
 msgid "workspace root %s (detected via %s; no client root)"
 msgstr ""
 
-#: src/session.cpp:691
+#: src/session.cpp:697
 #, c-format
 msgid "workspace root %s (detected via %s; client root %s)"
 msgstr ""
 
-#: src/session.cpp:1030
+#: src/session.cpp:1036
 #, c-format
 msgid ""
 "workspace root %s has no version-control marker or config file; index scope "
