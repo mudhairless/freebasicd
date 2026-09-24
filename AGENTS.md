@@ -102,8 +102,16 @@ must stay there. Encoding directives that the lexer/parser must honor:
   never the single-file branch while a client root exists. A detected root
   that replaces the client's is logged to stderr with the signal.
   `src/settings.{h,cpp}` parses `freebasiclsp.toml` (`hasConfigFile` is the
-  marker; `Settings` keys with fixed defaults); `workspace/didChangeConfiguration`
-  and the `includePaths` include-search wiring are still open (PLAN §4.2).
+  marker; `Settings` keys with fixed defaults). Each index owns a `Settings`
+  snapshot adopted at construction (`ensureWorkspaceIndex` →
+  `index->applySettings(settingsForDirLogged(root))`); `workspace/
+  didChangeConfiguration` re-reads every root's file (the notification payload
+  is ignored — the file is the truth; idempotent), applies per-root changes
+  (`reindexIncludeEdges`, no re-parse), reconciles the root's open buffers
+  (diagnostics off ⇒ one empty publish then silence, on ⇒ re-publish; an
+  `includePaths` change re-resolves the buffers' include edges), and the
+  diagnostics / semantic-tokens / inlay-hints handlers gate on
+  `settingsForDocument` with empty-result semantics when a flag is off.
 - Capabilities advertise only implemented features; `positionEncoding: "utf-16"`.
 
 ## Verification

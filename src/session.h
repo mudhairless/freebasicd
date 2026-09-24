@@ -33,6 +33,7 @@
 // params type and the runtime parser can never build `workspace/symbol`.
 #include "LibLsp/lsp/extention/jdtls/WorkspaceSymbolParams.h"
 #include "LibLsp/lsp/workspace/didChangeWorkspaceFolders.h"
+#include "LibLsp/lsp/workspace/did_change_configuration.h"
 #include "LibLsp/lsp/workspace/did_change_watched_files.h"
 #include "LibLsp/lsp/workspace/symbol.h"
 
@@ -87,6 +88,12 @@ private:
   std::function<void()> exitHandler_;
 
   WorkingFiles workingFiles_;
+
+  // Normalized paths of the buffers currently open on the wire, tracked in
+  // onDidOpen/onDidClose (WorkingFiles offers no iteration API). Only touched
+  // on the LSP notification FIFO thread (didOpen/didClose/didChange-
+  // Configuration), which serializes them; request handlers never read it.
+  std::set<std::string> openFiles_;
 
   // Client negotiated `workspace/didChangeWatchedFiles` in initialize; a
   // dynamic client is registered via client/registerCapability on the
@@ -150,6 +157,10 @@ private:
   indexFor(std::string const &normalizedPath) const;
   // Snapshot of every live index, for workspace/symbol aggregation.
   std::vector<std::shared_ptr<fblang::WorkspaceIndex>> allIndexes() const;
+  // The settings governing `normalizedPath`: those of its owning index root,
+  // or the defaults when no index serves it (single-file mode before any
+  // didOpen). Used to gate diagnostics/semantic-tokens/inlay-hints.
+  fblang::Settings settingsForDocument(std::string const &normalizedPath) const;
   void closeAllIndexes();
   // Close every index except `keepNormRoot` and the registered marker roots:
   // re-rooting under a broad client root leaves only the focused project's
@@ -165,6 +176,12 @@ private:
   onWatchedFiles(Notify_WorkspaceDidChangeWatchedFiles::notify const &notify);
   void onWorkspaceFoldersChanged(
       Notify_WorkspaceDidChangeWorkspaceFolders::notify const &notify);
+  // Settings for every index root live in freebasiclsp.toml files, not in
+  // client configuration chunks: the didChangeConfiguration payload is ignored
+  // and the notification is only a signal to re-read each root's config file
+  // (idempotent — a no-op when nothing changed) and re-apply whatever did.
+  void onDidChangeConfiguration(
+      Notify_WorkspaceDidChangeConfiguration::notify const &notify);
 
   td_shutdown::response onShutdown(td_shutdown::request const &req);
   void onDidOpen(Notify_TextDocumentDidOpen::notify &notify);

@@ -18,15 +18,22 @@ inline constexpr char const *kConfigFileName = "freebasiclsp.toml";
 // type-mismatched table keeps the defaults, so a bad config file never
 // degrades a session below the defaults.
 struct Settings {
-  // `-i`-style include directories, resolved relative to the config file's
-  // directory, that join include resolution for files under the owning root.
-  // (Parsed and carried here; the include-search seam consumes them once
-  // didChangeConfiguration lands — PLAN M11.)
+  // `-i`-style include directories, relative to the config file's directory,
+  // that join include resolution as step ② for files under the owning root
+  // (resolved to absolute dirs by the owning WorkspaceIndex; each configured
+  // dir is consulted in config order before the workspace-root search).
   std::vector<std::string> includePaths;
 
   bool diagnosticsOn = true;
   bool semanticTokensOn = true;
   bool inlayHintsOn = true;
+
+  bool operator==(Settings const &other) const {
+    return includePaths == other.includePaths &&
+           diagnosticsOn == other.diagnosticsOn &&
+           semanticTokensOn == other.semanticTokensOn &&
+           inlayHintsOn == other.inlayHintsOn;
+  }
 };
 
 // True when `dir/freebasiclsp.toml` exists as a regular file — the marker that
@@ -35,11 +42,15 @@ bool hasConfigFile(std::filesystem::path const &dir);
 
 // Parse a freebasiclsp.toml document into Settings. Unknown keys are ignored;
 // a parse failure or a key of the wrong type keeps that key's default, so the
-// parser can never produce a Settings the server considers invalid.
-Settings parseSettings(std::string_view tomlText);
+// parser can never produce a Settings the server considers invalid. When `ok`
+// is non-null it is set to false only when the document is malformed TOML
+// (wrong-typed keys keep defaults and leave `*ok` true) — the caller uses it
+// to log an error instead of silently treating a broken config as defaults.
+Settings parseSettings(std::string_view tomlText, bool *ok = nullptr);
 
 // Settings for `dir`: parsed from `dir/freebasiclsp.toml` when it exists,
-// else the defaults.
-Settings settingsForDir(std::filesystem::path const &dir);
+// else the defaults. `ok` is forwarded to parseSettings (false only for
+// malformed TOML; a missing file or an empty/comment-only one is fine).
+Settings settingsForDir(std::filesystem::path const &dir, bool *ok = nullptr);
 
 } // namespace fblang

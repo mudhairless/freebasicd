@@ -13,7 +13,10 @@ bool hasConfigFile(std::filesystem::path const &dir) {
   return std::filesystem::is_regular_file(dir / kConfigFileName, ec);
 }
 
-Settings parseSettings(std::string_view tomlText) {
+Settings parseSettings(std::string_view tomlText, bool *ok) {
+  if (ok != nullptr) {
+    *ok = true;
+  }
   Settings s;
   toml::table root;
   try {
@@ -21,7 +24,10 @@ Settings parseSettings(std::string_view tomlText) {
     // for toml::table, and a parse error throws toml::parse_error.
     root = toml::parse(tomlText);
   } catch (...) {
-    return s; // malformed file: everything keeps its default
+    if (ok != nullptr) {
+      *ok = false; // malformed file: everything keeps its default
+    }
+    return s;
   }
 
   // includePaths: an array of strings, relative to the config file's dir.
@@ -44,16 +50,20 @@ Settings parseSettings(std::string_view tomlText) {
   return s;
 }
 
-Settings settingsForDir(std::filesystem::path const &dir) {
+Settings settingsForDir(std::filesystem::path const &dir, bool *ok) {
+  if (ok != nullptr) {
+    *ok = true;
+  }
   if (!hasConfigFile(dir)) {
     return Settings{};
   }
-  // Unreadable file → an empty read → parseSettings on "" keeps the defaults;
+  // Unreadable file → an empty read → parseSettings on "" keeps the defaults
+  // (and reports ok, since nothing is malformed — there is just no config);
   // no error plumbing needed here.
   std::ifstream in(dir / kConfigFileName);
   std::string const text{std::istreambuf_iterator<char>(in),
                          std::istreambuf_iterator<char>()};
-  return parseSettings(text);
+  return parseSettings(text, ok);
 }
 
 } // namespace fblang

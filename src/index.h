@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 
+#include "settings.h"
 #include "symbols.h"
 
 namespace fblang {
@@ -145,10 +146,36 @@ public:
 
   std::filesystem::path root() const;
 
+  // Adopt a (possibly changed) configuration for this root: store a copy of
+  // `s` (from `fblang::settingsForDir(root())`) and re-resolve every indexed
+  // entry's include edges against the new include dirs. Cached entries reuse
+  // their (mtime, size)-matching parse, so the include edges are re-resolved
+  // explicitly here instead of left to a plain rescan (which would keep the
+  // old edge targets forever). No file is re-read; the parse cache is
+  // untouched. Safe to call from the notification thread while `scanner_` may
+  // be running: it takes `mu_` and never starts a second scan.
+  void applySettings(Settings const &s);
+
+  // The settings snapshot currently governing this root (defaults until the
+  // session applies them).
+  Settings settings() const;
+
+  // The resolved absolute include dirs (config includePaths relative to the
+  // root), snapshot.
+  std::vector<std::filesystem::path> includeDirs() const;
+
 private:
   void rescanLoop();
   void addToProjections(std::shared_ptr<IndexedFile const> const &f);
   void subtractFromProjections(std::shared_ptr<IndexedFile const> const &f);
+
+  // Rebuild every indexed entry with its IncludeEdge targets re-resolved from
+  // the stored `literal` via resolveIncludeTarget, using `includeDirs_` as the
+  // config-dir step. Replaces each entry wholesale and recomputes its
+  // projections (`outInc_`, `byKey_` re-point at the new shared_ptr). No
+  // re-parse. Caller holds `mu_` (applySettings calls it directly, and never
+  // spawns a scan, so scan's single-scanner invariant is respected).
+  void reindexIncludeEdges();
 
   // True when `normalizedPath` lies at or under this workspace's root
   // (compared in the normalized form used by normalizePath). The index is
@@ -165,6 +192,13 @@ private:
       byKey_; // key -> module-scope decls
   std::map<std::string, std::vector<IncludeEdge>>
       outInc_; // path -> include edges
+
+  // The configuration governing this root (freebasiclsp.toml), applied by the
+  // session after construction and re-applied on didChangeConfiguration.
+  // Guarded by mu_ like the maps above. `includeDirs_` caches
+  // settings_.includePaths resolved to absolute paths against root_.
+  Settings settings_;
+  std::vector<std::filesystem::path> includeDirs_;
 
   // Resolution-only closures for documents outside the workspace root (see
   // ensureClosure): the entry plus the disk state it was built from. Never
@@ -217,19 +251,23 @@ findFbcExecutableDir(std::string const &pathEnv);
 std::filesystem::path defaultSystemIncludeDir();
 
 // Resolve `literal` as an include target, mirrors fbc's relative-path search
-// order (its `-i` dirs join via an M11 settings option later):
+// order:
 //   1. relative to the including file's own directory;
-//   2. relative to the workspace root;
-//   3. relative to the including file's own FreeBASIC project directory — the
+//   2. relative to each of the config-file include dirs in config order — the
+//      resolved absolute dirs from Settings.includePaths (`-i` dirs; see
+//      WorkspaceIndex::includeDirs), which land before the workspace-root
+//      search so a configured dir can shadow the root layout;
+//   3. relative to the workspace root;
+//   4. relative to the including file's own FreeBASIC project directory — the
 //      nearest ancestor with an `inc`/`include` child of the source tree —
 //      and each immediate subdirectory of it, but only when the including
 //      file lies outside the workspace root: an editor may open a document
 //      from a sibling project, whose headers (fbc's `-i inc` layout) the
 //      workspace-root search can never see;
-//   4. relative to each immediate subdirectory of the workspace root
+//   5. relative to each immediate subdirectory of the workspace root
 //      (projects keep shared headers in `inc` / `include` / `src` etc., so
 //      `#include "folder/file.bi"` matches under such a child);
-//   5. relative to the FreeBASIC installation's system header folder, resolved
+//   6. relative to the FreeBASIC installation's system header folder, resolved
 //      from `fbc` on PATH (`systemIncludeDir`; pass an empty path to skip the
 //      system search).
 // Both `/` and `\` separators are accepted. Returns the normalized absolute
@@ -238,19 +276,20 @@ std::filesystem::path defaultSystemIncludeDir();
 std::optional<std::string> resolveIncludeTarget(
     std::string_view literal, std::filesystem::path const &includingFile,
     std::filesystem::path const &workspaceRoot,
-    std::filesystem::path const &systemIncludeDir = defaultSystemIncludeDir());
+    std::filesystem::path const &systemIncludeDir = defaultSystemIncludeDir(),
+    std::vector<std::filesystem::path> const &includeDirs = {});
 
 // An IndexedFile built from one shared analysis. `doc`, `mtime`, and `size`
 // describe the file the buffer or scan produced; include targets are resolved
-// against `workspaceRoot` from the including file's directory. `doc`'s symbol
-// tree is copied into `roots` (the caller keeps `doc` alive). `fromDisk=false`
-// marks an open-buffer entry that must never satisfy scan's mtime/size
-// cache-hit.
-IndexedFile indexedFileFromAnalysis(std::string const &normalizedPath,
-                                    std::uint64_t mtime, std::uint64_t size,
-                                    AnalyzedDoc const &doc,
-                                    std::filesystem::path const &workspaceRoot,
-                                    bool fromDisk);
+// against `workspaceRoot` from the including file's directory, with the
+// root's config include dirs joining the search as step ② (see
+// resolveIncludeTarget). `doc`'s symbol tree is copied into `roots` (the
+// caller keeps `doc` alive). `fromDisk=false` marks an open-buffer entry that
+// must never satisfy scan's mtime/size cache-hit.
+IndexedFile indexedFileFromAnalysis(
+    std::string const &normalizedPath, std::uint64_t mtime, std::uint64_t size,
+    AnalyzedDoc const &doc, std::filesystem::path const &workspaceRoot,
+    bool fromDisk, std::vector<std::filesystem::path> const &includeDirs = {});
 
 // Normalization helpers, exposed for tests.
 std::string normalizePath(std::filesystem::path const &path);

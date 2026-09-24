@@ -42,6 +42,7 @@
 #include "LibLsp/lsp/textDocument/rename.h"
 #include "LibLsp/lsp/textDocument/signature_help.h"
 #include "LibLsp/lsp/working_files.h"
+#include "LibLsp/lsp/workspace/did_change_configuration.h"
 #include "LibLsp/lsp/workspace/did_change_watched_files.h"
 #include "LibLsp/lsp/workspace/symbol.h"
 
@@ -620,6 +621,23 @@ void FreeBasicServer::setExitHandler(std::function<void()> exitHandler) {
   exitHandler_ = std::move(exitHandler);
 }
 
+// fblang::settingsForDir with parse-failure logging: a missing or
+// comment-only freebasiclsp.toml is normal (defaults, nothing logged); a
+// present-but-malformed one also keeps the defaults but says so on stderr
+// instead of silently treating a broken config as defaults.
+fblang::Settings settingsForDirLogged(std::filesystem::path const &dir) {
+  bool ok = true;
+  fblang::Settings const s = fblang::settingsForDir(dir, &ok);
+  if (!ok) {
+    (void)std::fprintf(
+        stderr,
+        "[freebasiclsp] %s/freebasiclsp.toml is not valid TOML; keeping "
+        "defaults\n",
+        fblang::normalizePath(dir).c_str());
+  }
+  return s;
+}
+
 void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
   if (root.empty()) {
     return;
@@ -633,6 +651,7 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
   }
   auto index = std::make_shared<fblang::WorkspaceIndex>(root);
   index->open();
+  index->applySettings(settingsForDirLogged(root));
   index->scan(true);
   indexes_[normRoot] = std::move(index);
 }
@@ -784,6 +803,10 @@ void FreeBasicServer::registerHandlers() {
   session_.on(
       [this](Notify_WorkspaceDidChangeWorkspaceFolders::notify const &notify) {
         onWorkspaceFoldersChanged(notify);
+      });
+  session_.on(
+      [this](Notify_WorkspaceDidChangeConfiguration::notify const &notify) {
+        onDidChangeConfiguration(notify);
       });
   session_.on([this](Notify_TextDocumentDidOpen::notify &notify) {
     onDidOpen(notify);
@@ -1113,6 +1136,25 @@ FreeBasicServer::allIndexes() const {
   return out;
 }
 
+fblang::Settings
+FreeBasicServer::settingsForDocument(std::string const &normalizedPath) const {
+  std::lock_guard<std::mutex> const lock(indexesMutex_);
+  std::shared_ptr<fblang::WorkspaceIndex> best;
+  std::size_t bestLen = 0;
+  for (auto const &[root, index] : indexes_) {
+    if (isWithinNormalized(normalizedPath, root) && root.size() >= bestLen) {
+      best = index;
+      bestLen = root.size();
+    }
+  }
+  if (best) {
+    return best->settings();
+  }
+  // No owning index (single-file mode before any didOpen, or an
+  // outside-every-root document served resolution-only): the defaults.
+  return {};
+}
+
 void FreeBasicServer::closeAllIndexes() {
   std::lock_guard<std::mutex> const lock(indexesMutex_);
   for (auto &[root, index] : indexes_) {
@@ -1215,6 +1257,53 @@ void FreeBasicServer::onWorkspaceFoldersChanged(
   }
 }
 
+void FreeBasicServer::onDidChangeConfiguration(
+    Notify_WorkspaceDidChangeConfiguration::notify const &notify) {
+  // The payload is ignored: settings live in each root's freebasiclsp.toml,
+  // so the notification is only a signal to re-read them. The re-read is
+  // idempotent — no config change, no effect; an empty/comment-only file and
+  // a missing one both mean defaults, unchanged.
+  (void)notify;
+  for (std::shared_ptr<fblang::WorkspaceIndex> const &index : allIndexes()) {
+    fblang::Settings const fresh = settingsForDirLogged(index->root());
+    fblang::Settings const old = index->settings();
+    if (fresh == old) {
+      continue;
+    }
+    bool const includeChanged = fresh.includePaths != old.includePaths;
+    bool const flippedOff = old.diagnosticsOn && !fresh.diagnosticsOn;
+    bool const flippedOn = fresh.diagnosticsOn && !old.diagnosticsOn;
+    // Adopt the new settings for the whole root...
+    index->applySettings(fresh);
+    // ...and reconcile the root's open buffers with the gates. Private state
+    // diffs drive only the work that matters: turning diagnostics off
+    // publishes a single empty result per open buffer (publishDiagnostics has
+    // no tombstones; the empty publish is the clear), turning them on
+    // re-publishes what the buffers hold now, and an include-path change
+    // re-resolves the buffers' include edges so a newly reachable header
+    // resolves without an edit.
+    std::string const normRoot = fblang::normalizePath(index->root());
+    bool const rePublish = flippedOn || includeChanged;
+    for (std::string const &normFile : openFiles_) {
+      if (!isWithinNormalized(normFile, normRoot)) {
+        continue; // belongs to another root (or to no root's open set)
+      }
+      std::shared_ptr<WorkingFile> const file =
+          workingFiles_.GetFileByFilename(AbsolutePath(normFile));
+      if (!file) {
+        continue;
+      }
+      lsDocumentUri const uri = lsDocumentUri(AbsolutePath(normFile));
+      if (flippedOff) {
+        publishDiagnostics(uri, {});
+      }
+      if (rePublish) {
+        reparseAndPublish(file, uri);
+      }
+    }
+  }
+}
+
 void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify &notify) {
   std::filesystem::path const openedFile =
       notify.params.textDocument.uri.GetAbsolutePath().path();
@@ -1266,6 +1355,7 @@ void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify &notify) {
   if (!file) {
     return;
   }
+  openFiles_.insert(normFile);
   reparseAndPublish(file, notify.params.textDocument.uri);
 }
 
@@ -1294,11 +1384,13 @@ void FreeBasicServer::onDidClose(
   if (!workingFiles_.OnClose(notify.params.textDocument)) {
     return;
   }
+  std::string const normPath = fblang::normalizePath(
+      notify.params.textDocument.uri.GetAbsolutePath().path());
+  openFiles_.erase(normPath);
   // The buffer's cache entries are live-truth pinned to the buffer's bytes;
   // drop them so a later didOpen of the same file starts fresh (the disk is
   // master for closed files).
-  analysisCache_.removePath(fblang::normalizePath(
-      notify.params.textDocument.uri.GetAbsolutePath().path()));
+  analysisCache_.removePath(normPath);
   publishDiagnostics(notify.params.textDocument.uri, {});
 }
 
@@ -1329,13 +1421,16 @@ void FreeBasicServer::reparseAndPublish(
       // include-not-found. The entry's roots copy the cached analysis
       // (which stays pinned for the request path).
       fblang::IndexedFile entry = fblang::indexedFileFromAnalysis(
-          normPath, mtime, size, doc, index->root(), false);
+          normPath, mtime, size, doc, index->root(), false,
+          index->includeDirs());
       appendIncludeDiagnostics(content, entry, &diags);
       index->upsert(std::move(entry));
     }
   }
 
-  publishDiagnostics(uri, std::move(diags));
+  if (settingsForDocument(normPath).diagnosticsOn) {
+    publishDiagnostics(uri, std::move(diags));
+  }
 }
 
 td_symbol::response
@@ -2400,6 +2495,20 @@ td_semanticTokens_full::response FreeBasicServer::onSemanticTokensFull(
   td_semanticTokens_full::response rsp;
   rsp.id = req.id;
 
+  std::string const normPath = fblang::normalizePath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  if (!settingsForDocument(normPath).semanticTokensOn) {
+    // Feature gate (M11): the capability stays advertised, but a session that
+    // disabled semantic tokens gets a valid empty result with a fresh, cached
+    // baseline (a delta diffed against the empty set stays consistent), never
+    // an error or a null result.
+    SemanticTokens tokens;
+    tokens.data.clear();
+    tokens.resultId.emplace(storeDelta({}));
+    rsp.result.emplace(std::move(tokens));
+    return rsp;
+  }
+
   std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
       cachedRequestAnalysis(req.params.textDocument.uri);
   if (!cached) {
@@ -2421,6 +2530,18 @@ td_semanticTokens_full_delta::response FreeBasicServer::onSemanticTokensDelta(
     td_semanticTokens_full_delta::request const &req) {
   td_semanticTokens_full_delta::response rsp;
   rsp.id = req.id;
+
+  std::string const normPath = fblang::normalizePath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  if (!settingsForDocument(normPath).semanticTokensOn) {
+    // Feature gate (M11): a full-empty variant with a fresh resultId — never
+    // null, so a client holding a stale baseline keeps a consistent view.
+    SemanticTokensOrDelta out;
+    out.tokens.emplace();
+    out.resultId.emplace(storeDelta({}));
+    rsp.result.emplace(std::move(out));
+    return rsp;
+  }
 
   std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
       cachedRequestAnalysis(req.params.textDocument.uri);
@@ -2467,6 +2588,21 @@ td_semanticTokens_range::response FreeBasicServer::onSemanticTokensRange(
   td_semanticTokens_range::response rsp;
   rsp.id = req.id;
 
+  std::string const normPath = fblang::normalizePath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  if (!settingsForDocument(normPath).semanticTokensOn) {
+    // Feature gate (M11): an empty data set with a fresh, *uncached* resultId
+    // — a range result is never stored, exactly like the enabled path, so it
+    // can never be diffed against.
+    SemanticTokens tokens;
+    {
+      std::lock_guard<std::mutex> const lock(deltaMutex_);
+      tokens.resultId.emplace("st" + std::to_string(nextResultId_++));
+    }
+    rsp.result.emplace(std::move(tokens));
+    return rsp;
+  }
+
   std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
       cachedRequestAnalysis(req.params.textDocument.uri);
   if (!cached) {
@@ -2494,6 +2630,12 @@ td_inlayHint::response
 FreeBasicServer::onInlayHint(td_inlayHint::request const &req) {
   td_inlayHint::response rsp;
   rsp.id = req.id;
+
+  std::string const normPath = fblang::normalizePath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  if (!settingsForDocument(normPath).inlayHintsOn) {
+    return rsp; // feature gate (M11): advertised but off — empty result
+  }
 
   std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
       cachedRequestAnalysis(req.params.textDocument.uri);
@@ -2607,7 +2749,8 @@ void FreeBasicServer::ensureRequestClosure(
         workingFiles_.GetFileByFilename(AbsolutePath(p)) != nullptr;
     return std::make_shared<fblang::IndexedFile const>(
         fblang::indexedFileFromAnalysis(p, mtime, size, dc->analysis,
-                                        index->root(), !fromBuffer));
+                                        index->root(), !fromBuffer,
+                                        index->includeDirs()));
   });
 }
 

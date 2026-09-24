@@ -242,7 +242,8 @@ std::optional<std::string>
 resolveIncludeTarget(std::string_view literal,
                      std::filesystem::path const &includingFile,
                      std::filesystem::path const &workspaceRoot,
-                     std::filesystem::path const &systemIncludeDir) {
+                     std::filesystem::path const &systemIncludeDir,
+                     std::vector<std::filesystem::path> const &includeDirs) {
   std::string s(literal);
   std::replace(s.begin(), s.end(), '\\', '/');
   std::filesystem::path const lit(s);
@@ -255,13 +256,24 @@ resolveIncludeTarget(std::string_view literal,
     return normalizePath(candidate);
   }
 
-  // 2. Relative to the workspace root.
+  // 2. The config-file include dirs (`Settings.includePaths` resolved against
+  //    the config file's dir), consulted in config order. They slot in before
+  //    the workspace-root search so a configured dir shadows the root layout;
+  //    missing dirs simply never match (no validation on apply).
+  for (std::filesystem::path const &dir : includeDirs) {
+    candidate = dir / lit;
+    if (std::filesystem::is_regular_file(candidate, ec)) {
+      return normalizePath(candidate);
+    }
+  }
+
+  // 3. Relative to the workspace root.
   candidate = workspaceRoot / lit;
   if (std::filesystem::is_regular_file(candidate, ec)) {
     return normalizePath(candidate);
   }
 
-  // 3. The including file's own FreeBASIC project directory (a directory
+  // 4. The including file's own FreeBASIC project directory (a directory
   //    with an `inc`/`include` child of the source tree - fbc's `-i inc`
   //    layout) and its immediate subdirectories. Only consulted when the
   //    document lies outside the workspace root: an editor may open a file
@@ -297,7 +309,7 @@ resolveIncludeTarget(std::string_view literal,
     }
   }
 
-  // 4. Every immediate subdirectory of the workspace root. FreeBASIC
+  // 5. Every immediate subdirectory of the workspace root. FreeBASIC
   //    projects keep shared headers in an `inc` / `include` / `src` (etc.)
   //    child of the root, so `#include "folder/file.bi"` matches under such
   //    a child without knowing which one holds the headers.
@@ -321,8 +333,8 @@ resolveIncludeTarget(std::string_view literal,
     }
   }
 
-  // 5. The FreeBASIC installation's own header folder (resolved from `fbc`
-  //    on PATH). Additional dirs (fbc `-i`) join via an M11 settings option.
+  // 6. The FreeBASIC installation's own header folder (resolved from `fbc`
+  //    on PATH). The config-file dirs in step 2 are the fbc `-i` equivalent.
   if (!systemIncludeDir.empty()) {
     candidate = systemIncludeDir / lit;
     if (std::filesystem::is_regular_file(candidate, ec)) {
@@ -332,11 +344,10 @@ resolveIncludeTarget(std::string_view literal,
   return std::nullopt;
 }
 
-IndexedFile indexedFileFromAnalysis(std::string const &normalizedPath,
-                                    std::uint64_t mtime, std::uint64_t size,
-                                    AnalyzedDoc const &doc,
-                                    std::filesystem::path const &workspaceRoot,
-                                    bool fromDisk) {
+IndexedFile indexedFileFromAnalysis(
+    std::string const &normalizedPath, std::uint64_t mtime, std::uint64_t size,
+    AnalyzedDoc const &doc, std::filesystem::path const &workspaceRoot,
+    bool fromDisk, std::vector<std::filesystem::path> const &includeDirs) {
   IndexedFile f;
   f.path = normalizedPath;
   f.mtime = mtime;
@@ -351,7 +362,8 @@ IndexedFile indexedFileFromAnalysis(std::string const &normalizedPath,
     e.targetRange = inc.target;
     e.once = inc.once;
     if (std::optional<std::string> t =
-            resolveIncludeTarget(inc.literal, normalizedPath, workspaceRoot)) {
+            resolveIncludeTarget(inc.literal, normalizedPath, workspaceRoot,
+                                 defaultSystemIncludeDir(), includeDirs)) {
       e.target = std::move(*t);
     }
     f.includes.push_back(std::move(e));
@@ -457,6 +469,11 @@ void WorkspaceIndex::scan(bool async) {
 
   std::error_code ec;
   std::set<std::string> seen;
+  // Snapshot the current include dirs once for the whole run: entries parsed
+  // by this scan resolve their include edges against the settings in force
+  // when the scan started (a concurrent applySettings re-resolves them under
+  // mu_ anyway, so a mid-scan config change still converges).
+  std::vector<std::filesystem::path> const dirs = includeDirs();
   std::filesystem::recursive_directory_iterator it(
       root_, std::filesystem::directory_options::skip_permission_denied, ec);
   std::filesystem::recursive_directory_iterator const end;
@@ -514,7 +531,7 @@ void WorkspaceIndex::scan(bool async) {
       continue;
     }
     AnalyzedDoc const doc = analyze(content);
-    upsert(indexedFileFromAnalysis(norm, mtime, size, doc, root_, true));
+    upsert(indexedFileFromAnalysis(norm, mtime, size, doc, root_, true, dirs));
   }
 
   {
@@ -569,6 +586,52 @@ void WorkspaceIndex::rescanLoop() {
     lk.unlock();
     scan(true);
     lk.lock();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Configuration (M11): per-root Settings + the include-dirs seam
+// ---------------------------------------------------------------------------
+
+void WorkspaceIndex::applySettings(Settings const &s) {
+  std::lock_guard<std::mutex> const lk(mu_);
+  settings_ = s;
+  includeDirs_.clear();
+  for (std::string const &rel : s.includePaths) {
+    includeDirs_.push_back(std::filesystem::absolute(root_ / rel));
+  }
+  reindexIncludeEdges();
+}
+
+Settings WorkspaceIndex::settings() const {
+  std::lock_guard<std::mutex> const lk(mu_);
+  return settings_;
+}
+
+std::vector<std::filesystem::path> WorkspaceIndex::includeDirs() const {
+  std::lock_guard<std::mutex> const lk(mu_);
+  return includeDirs_;
+}
+
+void WorkspaceIndex::reindexIncludeEdges() {
+  // Caller holds mu_ (applySettings calls this directly, on the notification
+  // thread, so no second scan can ever be spawned while scanner_ runs). The
+  // parse cache is untouched: (mtime, size)-matching entries keep their parse,
+  // only the resolved targets of their stored include literals change.
+  for (auto it = files_.begin(); it != files_.end(); ++it) {
+    std::shared_ptr<IndexedFile const> const &oldEntry = it->second;
+    IndexedFile rebuilt = *oldEntry;
+    for (IncludeEdge &e : rebuilt.includes) {
+      e.target.clear();
+      if (std::optional<std::string> const t =
+              resolveIncludeTarget(e.literal, rebuilt.path, root_,
+                                   defaultSystemIncludeDir(), includeDirs_)) {
+        e.target = *t;
+      }
+    }
+    subtractFromProjections(oldEntry);
+    it->second = std::make_shared<IndexedFile const>(std::move(rebuilt));
+    addToProjections(it->second);
   }
 }
 
