@@ -890,13 +890,12 @@ void collectMemberChain(std::vector<Token> const &tokens, size_t memberTokIdx,
   } else {
     Token const &lhs = tokens[memberTokIdx - 1];
     size_t receiver = std::string::npos;
-    if (lhs.kind == TokenKind::Identifier) {
-      receiver = memberTokIdx - 1;
-    } else if (lhs.kind == TokenKind::Keyword && memberTokIdx >= 2 &&
-               tokens[memberTokIdx - 2].kind == TokenKind::Symbol &&
-               (tokens[memberTokIdx - 2].text() == "." ||
-                tokens[memberTokIdx - 2].text() == "->")) {
-      // Reserved-word member receiver (`v.name.`).
+    if (lhs.kind == TokenKind::Identifier ||
+        (lhs.kind == TokenKind::Keyword && memberTokIdx >= 2 &&
+         tokens[memberTokIdx - 2].kind == TokenKind::Symbol &&
+         (tokens[memberTokIdx - 2].text() == "." ||
+          tokens[memberTokIdx - 2].text() == "->"))) {
+      // Plain variable, or a reserved-word member receiver (`v.name.`).
       receiver = memberTokIdx - 1;
     } else if (lhs.kind == TokenKind::Symbol &&
                (lhs.text() == ")" || lhs.text() == "]")) {

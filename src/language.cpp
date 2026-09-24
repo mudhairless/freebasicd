@@ -75,7 +75,7 @@ constexpr std::string_view kSourceDirNames[] = {
     "lhd",  // lhd
     "heimild",  // heimild
     "hm",  // hm
-    "\xC5\xBAr\xC3\xB3d\xC5\x82o",  // źródło
+    "\xC5\xBAr\xC3\xB3\x64\xC5\x82o",  // źródło
     "zrd",  // zrd
     "zdroj",  // zdroj
     "zdr",  // zdr
@@ -90,7 +90,7 @@ constexpr std::string_view kSourceDirNames[] = {
     "all",  // all
     "avots",  // avots
     "avt",  // avt
-    "\xC5\xA1altinis",  // šaltinis
+    "\xC5\xA1\x61ltinis",  // šaltinis
     "\xC5\xA1lt",  // šlt
     "kaynak",  // kaynak
     "kyn",  // kyn
@@ -116,7 +116,7 @@ constexpr std::string_view kIncludeDirNames[] = {
     "inclus\xC3\xA3o",  // inclusão
     "includere",  // includere
     "inclusione",  // inclusione
-    "einschlie\xC3\x9Fen",  // einschließen
+    "einschlie\xC3\x9F\x65n",  // einschließen
     "einbindung",  // einbindung
     "ein",  // ein
     "opnemen",  // opnemen
@@ -133,7 +133,7 @@ constexpr std::string_view kIncludeDirNames[] = {
     "innfelling",  // innfelling
     "inn",  // inn
     "zawiera\xC4\x87",  // zawierać
-    "w\xC5\x82\xC4\x85czenie",  // włączenie
+    "w\xC5\x82\xC4\x85\x63zenie",  // włączenie
     "w\xC5\x82",  // wł
     "zahrnout",  // zahrnout
     "zahrnut\xC3\xAD",  // zahrnutí
@@ -151,8 +151,8 @@ constexpr std::string_view kIncludeDirNames[] = {
     "tart",  // tart
     "sisaldama",  // sisaldama
     "sisestamine",  // sisestamine
-    "iek\xC4\xBCaut",  // iekļaut
-    "iek\xC4\xBCau\xC5\xA1ana",  // iekļaušana
+    "iek\xC4\xBC\x61ut",  // iekļaut
+    "iek\xC4\xBC\x61u\xC5\xA1\x61na",  // iekļaušana
     "iek",  // iek
     "\xC4\xAFtraukti",  // įtraukti
     "\xC4\xAFtraukimas",  // įtraukimas
