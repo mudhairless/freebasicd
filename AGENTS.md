@@ -234,3 +234,4 @@ Gotchas learned the hard way (2026-09):
 - Before committing, quickly review `git status` / `git diff` so the commit
   contains exactly the milestone's changes, nothing stray.
 - The repo lives on `main`; push only when asked.
+- Don't add attribution trailers for incorrect models
