@@ -232,6 +232,17 @@ int main() {
     CHECK(r.diagnostics.empty());
   }
   {
+    // Case-insensitive blocks, as fbc parses them: an all-caps structure is
+    // clean and a closer matches its opener whatever the two spellings are.
+    ParseResult r = parseDocument("SUB foo()\n  PRINT 1\nEND SUB\n");
+    CHECK(r.diagnostics.empty());
+    ParseResult mixed = parseDocument("Sub foo()\n  print 1\nend sUb\n");
+    CHECK(mixed.diagnostics.empty());
+    ParseResult blocks = parseDocument(
+        "IF a THEN\n  PRINT 1\nEND IF\nFOR i = 1 TO 2\n  PRINT i\nNEXT\n");
+    CHECK(blocks.diagnostics.empty());
+  }
+  {
     ParseResult r = parseDocument("sub foo()\n");
     CHECK(diagnosticCount(r, "unterminated-block") == 1);
   }
@@ -690,6 +701,15 @@ int main() {
     CHECK(isReservedWord("protected"));
     CHECK(keywordDocsUrl("protected") ==
           "https://www.freebasic.net/wiki/KeyPgProtected");
+    // An uppercase member name is the same fact: keywords classify regardless
+    // of case, and a type's field slot still captures them.
+    ParseResult upper = parseDocument("type t2\n"
+                                      "    as integer PROTECTED\n"
+                                      "end type\n");
+    CHECK(upper.diagnostics.empty());
+    const Symbol *t2 = find(upper.roots, "t2", SymbolKind::Type);
+    CHECK(t2 != nullptr);
+    CHECK(find(t2->children, "protected", SymbolKind::Variable) != nullptr);
   }
   {
     // Outside a TYPE body the section colon declares nothing (fbc accepts the

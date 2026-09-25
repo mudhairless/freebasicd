@@ -1198,9 +1198,31 @@ static_assert(intrinsicsSorted(), "kIntrinsics must be sorted by key");
 } // namespace
 
 bool isReservedWord(std::string_view word) {
+  // fbc matches keywords case-insensitively — `SUB` is `sub`, `End If` is
+  // `end if` (verified: an all-caps block structure compiles clean under
+  // `fbc 1.10.2 -w all`) — so the lookup folds ASCII case on both sides
+  // instead of requiring a pre-lowercased word. The identifier charset is
+  // ASCII, so folding A-Z is exact, and it keeps the lexer allocation-free on
+  // its hot path (a lowered std::string per identifier token would not).
+  const auto fold = [](char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+  };
+  const auto less = [fold](std::string_view a, std::string_view b) {
+    return std::lexicographical_compare(
+        a.begin(), a.end(), b.begin(), b.end(),
+        [fold](char x, char y) { return fold(x) < fold(y); });
+  };
   // Reserve suffixes never apply to keywords; look the bare word up.
-  return std::binary_search(std::begin(kReserved), std::end(kReserved),
-                            std::string(word));
+  auto const *const it =
+      std::lower_bound(std::begin(kReserved), std::end(kReserved), word, less);
+  if (it == std::end(kReserved)) {
+    return false;
+  }
+  // lower_bound only guarantees the entry is not less than `word`, so the
+  // match must hold in both directions: a word that merely sorts before a
+  // longer keyword (`ifx` before `imp`) is an identifier, not a near miss.
+  std::string_view const found(*it);
+  return !less(found, word) && !less(word, found);
 }
 
 std::vector<std::string_view> reservedWords() {

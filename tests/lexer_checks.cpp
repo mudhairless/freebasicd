@@ -71,9 +71,26 @@ int main() {
   CHECK(isReservedWord("then"));
   CHECK(!isReservedWord("ifx"));
   CHECK(!isReservedWord("method"));
+  // Keywords are case-insensitive, as fbc matches them: `SUB` is `sub`. The
+  // token still carries the raw source slice, so callers compare lowercased.
+  CHECK(isReservedWord("IF"));
+  CHECK(isReservedWord("End"));
+  CHECK(isReservedWord("sUb"));
+  CHECK(!isReservedWord("IFX"));
   checkKinds("if then else end select case",
              {TokenKind::Keyword, TokenKind::Keyword, TokenKind::Keyword,
               TokenKind::Keyword, TokenKind::Keyword, TokenKind::Keyword});
+  checkKinds("IF THEN End Select CASE",
+             {TokenKind::Keyword, TokenKind::Keyword, TokenKind::Keyword,
+              TokenKind::Keyword, TokenKind::Keyword});
+  {
+    auto ts = tokensOf("End Sub");
+    CHECK(ts[0].kind == TokenKind::Keyword);
+    CHECK(ts[1].kind == TokenKind::Keyword);
+    // Raw text, not folded: only the classification is case-insensitive.
+    CHECK(std::string(ts[0].text()) == "End");
+    CHECK(std::string(ts[1].text()) == "Sub");
+  }
   // Keywords do not swallow suffix chars; longer words are plain identifiers.
   checkKinds("ifx % then",
              {TokenKind::Identifier, TokenKind::Symbol, TokenKind::Keyword});

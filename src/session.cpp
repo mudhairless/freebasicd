@@ -559,7 +559,7 @@ bool isValidIdentifier(std::string_view name) {
       return false;
     }
   }
-  return !fblang::isReservedWord(fblang::toLowerChars(name.substr(0, baseLen)));
+  return !fblang::isReservedWord(name.substr(0, baseLen));
 }
 
 // Identifier being typed at `off` (bytes), or "" when the cursor is not on an

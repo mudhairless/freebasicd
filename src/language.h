@@ -16,9 +16,9 @@
 
 namespace fblang {
 
-// True if `word` (lowercase, no suffix) is a reserved FreeBASIC keyword. The
-// set was verified against fbc 1.10.2: each entry fails `dim <word> as
-// integer`.
+// True if `word` (no suffix) is a reserved FreeBASIC keyword, matched
+// case-insensitively as fbc matches them. The set was verified against
+// fbc 1.10.2: each entry fails `dim <word> as integer`.
 bool isReservedWord(std::string_view word);
 
 // The full reserved-word catalog (lowercase, sorted). Completion iterates it
