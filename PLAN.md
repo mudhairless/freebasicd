@@ -2,7 +2,7 @@
 
 ## 1. State summary
 
-Repository `main`, clean working tree, `ctest` 14/14 green. LspCpp (vendored,
+Repository `main`, clean working tree, `ctest` 15/15 green. LspCpp (vendored,
 pinned `19150d12`) supplies framing/JSON-RPC/typed 3.17 messages,
 tomlplusplus (vendored, pinned `30172438` v3.4.0) parses the server's config
 file, and GNU gettext (system libintl, never vendored; `cmake/FindIntl.cmake`
@@ -27,7 +27,7 @@ architecture, and the remaining work.
 | M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
 | M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
 | M11 — configuration + workspace folders | done (2026-09: `freebasiclsp.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
-| M12 — code actions: quick fixes for missing includes + block closers | next |
+| M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree) |
 | M13 — editor extras: selectionRange, callHierarchy, codeLens | next |
 | M14 — pull diagnostics (backlog) | next |
 | M15 — type/go-to + type hierarchy (backlog) | next |
@@ -50,10 +50,14 @@ stable shape:
 - `src/language.{h,cpp}` — reserved-word catalog, block-closer facts, wiki doc
   URLs, dialect detection helpers, `isSuffixChar`, and the 247-row `Intrinsic`
   catalog (`intrinsicFor`, `intrinsics`, `intrinsicDocsUrl`,
-  `signatureParamLabels`, `statementPosition`); the project-layout folder-name
+  `signatureParamLabels`, `statementPosition`, `expectedCloserAt` — the one
+  answer for "which closer does the block opened here expect", shared by the
+  inlay-hint labels and the M12 quick fix); the project-layout folder-name
   catalog (`isSourceDirName`/`isIncludeDirName` — a static 48+68 table of
   source/include directory names across ~30 languages, matched ASCII-
   case-insensitively) that names project roots for workspace detection.
+  `isReservedWord` matches the keyword catalog case-insensitively, as fbc
+  does.
 - `src/analysis_cache.{h,cpp}` — `AnalysisCache`: content-addressed
   `ParseResult` + token vector per path (FNV-1a content hash as the identity),
   open-buffer entries exempt from FIFO eviction, `removePath` on close.
@@ -103,6 +107,15 @@ stable shape:
   broad root or in single-file mode, by `ensureWorkspaceIndex` (each root
   adopts its file at construction), and by `workspace/didChangeConfiguration`
   (re-read on notification).
+- `src/code_actions.{h,cpp}` — quick fixes (M12), LSP-agnostic and in byte
+  offsets: `QuickFix`/`TextEditBytes` plus the `quickFixProviders()` registry
+  keyed on diagnostic code, so a new fix is one row and one function and a code
+  with no row offers nothing. Providers are pure functions of (diagnostic,
+  `QuickFixContext`), which carries the document bytes, its analysis, an index
+  snapshot, and the document's own `resolveInclude` seam — the last is what
+  makes an include fix correct by construction (a candidate is offered only
+  when the next publish would resolve it). Also owns
+  `unresolvedIncludeDiagnostics`, shared with the publish path.
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
   `WorkingFiles` + the per-workspace `WorkspaceIndex` map (`indexes_`, keyed
   by normalized root under `indexesMutex_`; registered client folders with a
@@ -128,8 +141,8 @@ stable shape:
   (`index->applySettings`, which re-resolves include edges); the root's open
   buffers are cleared/re-published to match the diagnostics flag and their
   include edges re-resolved on an `includePaths` change. Feature handlers gate
-  on `settingsForDocument` (semantic tokens / inlay hints → empty results when
-  off; diagnostics → empty publish per open buffer then silence).
+  on `settingsForDocument` (semantic tokens / inlay hints / code actions → empty
+  results when off; diagnostics → empty publish per open buffer then silence).
 - `src/main.cpp` — stdio entry; `LanguageSession` + exit condition.
 
 Implemented LSP methods: `initialize`/`shutdown`/`exit`, `didOpen`/`didChange`/
@@ -142,6 +155,8 @@ filtering after `.`/`->`), `signatureHelp` (user
 declarations and built-in functions), `workspace/symbol` (aggregated across
 per-root indexes), `prepareRename`,
 `rename` (resolution-based workspace edits),
+`codeAction` (M12 quick fixes: missing-include retarget + missing block closer,
+answering from the diagnostics the next publish would carry),
 `workspace/didChangeWatchedFiles` (per-index routing),
 `workspace/didChangeWorkspaceFolders` (per-root index add/remove),
 `workspace/didChangeConfiguration` (per-root `freebasiclsp.toml` re-read +
@@ -596,6 +611,64 @@ parser sees.
 > Promoted from the §6 "not doing (soon)" list (2026-09): thin while
 > diagnostics were syntax-level only, now that M6 ships include diagnostics the
 > two quick fixes below are cheap and high-value.
+
+> Status: landed 2026-09, `ctest` 15/15 green, `clang-format` clean. Two
+> deviations from the sketch below, both forced by how the diagnostics are
+> actually produced, plus one protocol detail.
+>
+> **Registry, not a monolith.** `src/code_actions.{h,cpp}` holds the
+> LSP-agnostic, byte-offset fix layer: `QuickFix`, `TextEditBytes`,
+> `QuickFixContext`, and a `quickFixProviders()` table of
+> `{diagnostic code, provider}` rows (`unterminated-block`,
+> `include-not-found`) with `quickFixProviderFor(code)` doing the lookup. A
+> provider is a pure function of (diagnostic, context); everything
+> workspace-shaped enters through `QuickFixContext` (an index snapshot, the
+> document's path, and a `resolveInclude` callback), so providers are unit
+> tested with no index, session, or disk. A third fix is one row plus one
+> function — no session, capability, or protocol change.
+>
+> **The include fix retargets instead of inserting.** The sketch said "insert
+> the missing `#include` line at the top of the file", but the diagnostic is
+> anchored on an *existing* directive whose literal resolved nowhere, so a new
+> line leaves that edge unresolved and the diagnostic standing. The fix
+> rewrites that directive's literal (the quotes are outside the diagnostic's
+> range) to a workspace file whose name — or stem, so a mistyped extension
+> still matches — fits. Candidates are expressed relative to the including
+> file, and one is offered only when `resolveIncludeTarget` — the same seam
+> `include-not-found` derives from — accepts it, so applying the edit resolves
+> the edge by construction. Cap of 5, shallowest first; no candidate, no fix.
+> The publish path and the fix key both build the diagnostic from
+> `unresolvedIncludeDiagnostics` (now in the code-action module), which is what
+> keeps their ranges from drifting apart.
+>
+> **The closer fix closes exactly one block.** The sketch said "inserted at
+> the block end (from `blockRanges`)", but the parser closes every
+> unterminated block at EOF, so `blockRanges` cannot say which block is inner:
+> inserting the outer `END SUB` first would invert the nesting. Each fix
+> therefore appends the *innermost* still-open closer (the one the parser
+> reports first) at the buffer end, indented like its opener, in the buffer's
+> line ending, above any trailing blank lines; the re-parse after each
+> application makes the next enclosing block innermost, so applying the fixes
+> in turn nests them correctly. The closer text comes from the new
+> `expectedCloserAt` in `language.{h,cpp}`, which `inlay_hints.cpp` now also
+> calls, so a hint label and a quick fix can never name different closers.
+>
+> **Response shape.** LspCpp types `td_codeAction::response` as
+> `std::vector<lsCommandWithAny>` (no `CodeAction` struct), so each fix is a
+> `Command` with an empty `command` and a single serialized single-file
+> `WorkspaceEdit` in `arguments` — the client's cue to apply it itself. Since
+> the response is a bare command list, `context.only` is filtered server-side
+> (`kindRequested`, segment-aligned prefix match, so `quickfix` serves
+> `quickfix.something` but not `quickfixes`). The handler answers from what
+> the *next publish* would report (parse diagnostics plus this document's
+> unresolved includes, unioned with the client's `context.diagnostics`, deduped
+> by code + start offset, filtered to the request range), so a client sending
+> an empty context still gets its fix, and gates on
+> `settingsForDocument(...).diagnosticsOn` like the publish path.
+>
+> Files: `src/code_actions.{h,cpp}`, `language.{h,cpp}` (`expectedCloserAt`),
+> `session.{h,cpp}`, `inlay_hints.cpp`, tests (`code_actions_checks`,
+> `session_integration`).
 
 `textDocument/codeAction` returns fixes keyed off the published diagnostics
 (`codeActionProvider = { codeActionKinds: ["quickfix"] }`); each fix is a

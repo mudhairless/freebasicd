@@ -110,14 +110,29 @@ must stay there. Encoding directives that the lexer/parser must honor:
   (`reindexIncludeEdges`, no re-parse), reconciles the root's open buffers
   (diagnostics off ⇒ one empty publish then silence, on ⇒ re-publish; an
   `includePaths` change re-resolves the buffers' include edges), and the
-  diagnostics / semantic-tokens / inlay-hints handlers gate on
+  diagnostics / semantic-tokens / inlay-hints / code-action handlers gate on
   `settingsForDocument` with empty-result semantics when a flag is off.
+- **Quick fixes (M12)**: `src/code_actions.{h,cpp}` is the LSP-agnostic,
+  byte-offset fix layer, registered as a `{diagnostic code, provider}` table
+  (`quickFixProviders()`, looked up with `quickFixProviderFor`). A provider is
+  a pure function of (diagnostic, `QuickFixContext`); the context is the *only*
+  way it reaches workspace state (an index snapshot, the document path, and a
+  `resolveInclude` callback wired to `resolveIncludeTarget`). A fix therefore
+  never guesses: offer a candidate only when that seam accepts it, or nothing.
+  **Adding a fix = one function + one table row**; do not touch `session.cpp`
+  or the capability. Note LspCpp types `td_codeAction::response` as
+  `std::vector<lsCommandWithAny>`, so a fix ships as a `Command` with an empty
+  `command` and a serialized `WorkspaceEdit` in `arguments`, and `context.only`
+  must be filtered server-side. Diagnostics a fix keys on must be built by the
+  same function the publish path uses (`unresolvedIncludeDiagnostics`), or the
+  published range and the fix's range drift apart.
 - Capabilities advertise only implemented features; `positionEncoding: "utf-16"`.
 
 ## Verification
 
 - Unit drivers in `tests/` via ctest: `lexer_checks`, `parser_checks`,
-  `utf16_checks`, `settings_checks`, and a `session_integration` test driving
+  `utf16_checks`, `settings_checks`, `code_actions_checks`, and a
+  `session_integration` test driving
   `LanguageSession` with in-memory streams (LspCpp `tests/test_helpers.h`).
 - The system `fbc` compiler (1.10.2) is available for ground-truthing ambiguous
   FreeBASIC constructs.

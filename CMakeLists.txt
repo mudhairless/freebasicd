@@ -44,6 +44,7 @@ find_program(GETTEXT_XGETTEXT_EXECUTABLE xgettext)
 # workspace index (M4) is in-memory only.
 add_library(freebasiclsp_lang STATIC
     src/analysis_cache.cpp
+    src/code_actions.cpp
     src/i18n.cpp
     src/index.cpp
     src/inlay_hints.cpp
@@ -249,6 +250,15 @@ add_executable(inlay_hints_checks
 target_include_directories(inlay_hints_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(inlay_hints_checks PRIVATE freebasiclsp_lang)
 add_test(NAME inlay_hints_checks COMMAND inlay_hints_checks)
+
+# M12 quick fixes: the providers, exercised as pure functions over a document
+# (no index, no session) plus the registry's answer for a code with no fix.
+add_executable(code_actions_checks
+    tests/code_actions_checks.cpp
+)
+target_include_directories(code_actions_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(code_actions_checks PRIVATE freebasiclsp_lang)
+add_test(NAME code_actions_checks COMMAND code_actions_checks)
 
 # M9 editor grammars: a deterministic emitter shared by the writer tool and the
 # freshness test. RapidJSON is compile-time only (the emitter parses its own

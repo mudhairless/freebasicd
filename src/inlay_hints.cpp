@@ -99,25 +99,10 @@ std::vector<InlayHintItem> inlayHints(AnalyzedDoc const &doc,
     if (opener == nullptr) {
       continue;
     }
-    std::string label;
-    if (opener->kind == TokenKind::Keyword) {
-      BlockCloser closer;
-      if (!blockForOpener(toLowerChars(opener->text()), &closer)) {
-        continue;
-      }
-      label = closerDisplay(closer);
-    } else if (opener->kind == TokenKind::Preprocessor) {
-      // Preprocessor blocks are a parser special case: #IF/#IFDEF/#IFNDEF ->
-      // #ENDIF, #MACRO -> #ENDMACRO (not in kBlockOpeners).
-      std::string const word = toLowerChars(preprocessorWord(opener->text()));
-      if (word == "if" || word == "ifdef" || word == "ifndef") {
-        label = "#ENDIF";
-      } else if (word == "macro") {
-        label = "#ENDMACRO";
-      } else {
-        continue;
-      }
-    } else {
+    // The same lookup the M12 `unterminated-block` quick fix uses, so a hint
+    // and a fix can never name the closer differently.
+    std::string label = expectedCloserAt(doc.tokens, br.beg);
+    if (label.empty()) {
       continue;
     }
     out.push_back({static_cast<std::uint32_t>(endOfLine(

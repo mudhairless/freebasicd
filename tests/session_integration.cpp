@@ -742,6 +742,224 @@ void TestInitializeReportsSyncCapabilities() {
          "initialize response must advertise rename support");
   Expect(response.find("\"prepareProvider\":true") != std::string::npos,
          "initialize response must advertise prepareRename support");
+  Expect(response.find("\"codeActionProvider\"") != std::string::npos,
+         "initialize response must advertise codeAction support");
+  Expect(response.find("\"quickfix\"") != std::string::npos,
+         "codeActionProvider must advertise the quickfix kind it serves");
+
+  session.stop();
+}
+
+// M12 quick-fix fixtures: a sandbox holding the real header one directory
+// down, so `#include "config.bai"` resolves nowhere while `inc/config.bi` is a
+// workspace file the retarget fix can find.
+struct CodeActionFixture {
+  std::filesystem::path sandbox;
+  std::string mainUri;
+
+  CodeActionFixture() {
+    static std::atomic<long> counter{0};
+    sandbox = std::filesystem::temp_directory_path() /
+              ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+               std::to_string(counter.fetch_add(1)));
+    std::filesystem::create_directories(sandbox / "inc");
+    {
+      std::ofstream out(sandbox / "inc" / "config.bi");
+      out << "dim shared cfg as integer\n";
+    }
+    mainUri = "file://" + (sandbox / "main.bas").string();
+  }
+
+  ~CodeActionFixture() {
+    std::error_code ec;
+    std::filesystem::remove_all(sandbox, ec);
+  }
+};
+
+// A codeAction request for line `line` of `uri`, with an empty client-side
+// diagnostic list (what a client sends when the user asks from the lightbulb
+// with no selection) and an optional `only` kind filter. `endChar` 0 asks at
+// the line's first character — a bare cursor; anything larger spans the line,
+// which is how a client asks for every diagnostic on it.
+std::string CodeActionFrame(std::string const &id, std::string const &uri,
+                            int line, std::string const &only = {},
+                            int endChar = 0) {
+  std::string frame =
+      "{\"jsonrpc\":\"2.0\",\"id\":\"" + id +
+      "\",\"method\":\"textDocument/codeAction\",\"params\":{\"textDocument\":"
+      "{\"uri\":\"" +
+      uri + "\"},\"range\":{\"start\":{\"line\":" + std::to_string(line) +
+      ",\"character\":0},\"end\":{\"line\":" + std::to_string(line) +
+      ",\"character\":" + std::to_string(endChar) +
+      "}},\"context\":{\"diagnostics\":[]";
+  if (!only.empty()) {
+    frame += ",\"only\":[\"" + only + "\"]";
+  }
+  frame += "}}}";
+  return frame;
+}
+
+std::string OpenFrame(std::string const &uri, std::string const &text) {
+  return R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+         R"({"uri":")" +
+         uri + R"(","languageId":"basic","version":1,"text":")" +
+         ToJsonString(text) + "\"}}}";
+}
+
+// A didChange that replaces [sl,sc]-[el,ec] with `text`, as applying a
+// WorkspaceEdit looks to the server.
+std::string ReplaceFrame(std::string const &uri, int sl, int sc, int el, int ec,
+                         std::string const &text) {
+  return R"({"jsonrpc":"2.0","method":"textDocument/didChange","params":)"
+         R"({"textDocument":{"uri":")" +
+         uri +
+         R"(","version":2},"contentChanges":[{"range":{"start":{"line":)" +
+         std::to_string(sl) + R"(,"character":)" + std::to_string(sc) +
+         R"(},"end":{"line":)" + std::to_string(el) + R"(,"character":)" +
+         std::to_string(ec) + R"(}},"text":")" + ToJsonString(text) + "\"}]}}";
+}
+
+void TestCodeActionInsertsMissingCloser() {
+  CodeActionFixture fix;
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  // The SUB never closes, so the parser publishes `unterminated-block` at the
+  // opener and nothing else.
+  input->append(
+      MakeLspFrame(OpenFrame(fix.mainUri, "sub main()\n  print 1\n").c_str()));
+  Expect(
+      WaitForPublishedUri(output, 1).find("\"code\":\"unterminated-block\"") !=
+          std::string::npos,
+      "an unterminated block must publish its diagnostic before it is fixable");
+
+  std::string const reply =
+      PollRequest(input, output, "cacl", "Insert", [&](std::string const &id) {
+        return CodeActionFrame(id, fix.mainUri, 0);
+      });
+  Expect(reply.find("\"title\":\"Insert 'END SUB'\"") != std::string::npos,
+         "a code action must be titled with the closer it inserts");
+  Expect(reply.find("\"command\":\"\"") != std::string::npos,
+         "a fix must ship as a command the client applies itself");
+  Expect(reply.find("\"newText\":\"END SUB\\n\"") != std::string::npos,
+         "the fix must insert the closer with its own line ending");
+  Expect(reply.find("\"start\":{\"line\":2,\"character\":0}") !=
+             std::string::npos,
+         "the closer must land at the end of the buffer");
+
+  // Applying the fix's edit clears the diagnostic it answers: the re-parse sees
+  // a closed block and publishes nothing. The inserted closer is uppercase, so
+  // this also rides on keywords closing blocks whatever their case.
+  input->append(
+      MakeLspFrame(ReplaceFrame(fix.mainUri, 2, 0, 2, 0, "END SUB\n").c_str()));
+  Expect(
+      LastPublish(WaitForPublishedUri(output, 2)).find("unterminated-block") ==
+          std::string::npos,
+      "applying the closer fix must clear the diagnostic on re-parse");
+
+  session.stop();
+}
+
+void TestCodeActionRetargetsMissingInclude() {
+  CodeActionFixture fix;
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const rootUri = "file://" + fix.sandbox.string();
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  WaitForOutputContaining(output, "\"id\":\"init\"");
+
+  // A mistyped extension: `config.bai` resolves nowhere, `inc/config.bi` does.
+  input->append(MakeLspFrame(
+      OpenFrame(fix.mainUri, "#include \"config.bai\"\nprint 1\n").c_str()));
+  Expect(WaitForPublishedUri(output, 1).find(
+             "\"code\":\"include-not-found\"") != std::string::npos,
+         "an unresolvable include must publish before it is fixable");
+
+  // The candidate comes from the index, so this retries until the background
+  // scan has read the sandbox. The request spans the whole line: a client
+  // asking about the directive names a range covering it.
+  std::string const reply = PollRequest(
+      input, output, "cainc", "Change include to", [&](std::string const &id) {
+        return CodeActionFrame(id, fix.mainUri, 0, {}, 1000);
+      });
+  Expect(reply.find("\"title\":\"Change include to \\\"inc/config.bi\\\"\"") !=
+             std::string::npos,
+         "the include fix must name the target it would write");
+  Expect(reply.find("\"start\":{\"line\":0,\"character\":10},\"end\":"
+                    "{\"line\":0,\"character\":20}") != std::string::npos,
+         "the include fix must replace the literal, quotes left in place");
+  Expect(reply.find("\"newText\":\"inc/config.bi\"") != std::string::npos,
+         "the include fix must write the resolvable literal");
+
+  input->append(MakeLspFrame(
+      ReplaceFrame(fix.mainUri, 0, 10, 0, 20, "inc/config.bi").c_str()));
+  Expect(
+      LastPublish(WaitForPublishedUri(output, 2)).find("include-not-found") ==
+          std::string::npos,
+      "retargeting the include must clear the diagnostic on re-parse");
+
+  session.stop();
+}
+
+void TestCodeActionOffersNothingUnfixable() {
+  CodeActionFixture fix;
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  // A stray closer is a parse diagnostic with no registered fix, and it is
+  // also the request's whole range, so nothing may be offered for it.
+  input->append(
+      MakeLspFrame(OpenFrame(fix.mainUri, "end sub\nprint 1\n").c_str()));
+  Expect(WaitForPublishedUri(output, 1).find("\"code\":\"stray-closer\"") !=
+             std::string::npos,
+         "a stray closer must publish its diagnostic");
+  std::string const unfixable = PollRequest(
+      input, output, "caun", "\"result\":[]", [&](std::string const &id) {
+        return CodeActionFrame(id, fix.mainUri, 0);
+      });
+  Expect(unfixable.find("\"result\":[]") != std::string::npos,
+         "a diagnostic with no registered fix must offer no code actions");
+
+  // And a request for a kind this server does not serve gets nothing, even
+  // where a fix exists: the response is a bare command list, so the filter is
+  // honored here rather than by the client.
+  input->append(
+      MakeLspFrame(OpenFrame(fix.mainUri, "sub main()\n  print 1\n").c_str()));
+  WaitForPublishedUri(output, 2);
+  std::string const refactor = PollRequest(
+      input, output, "caref", "\"result\":[]", [&](std::string const &id) {
+        return CodeActionFrame(id, fix.mainUri, 0, "refactor");
+      });
+  Expect(refactor.find("\"result\":[]") != std::string::npos,
+         "a non-quickfix kind filter must return no code actions");
+  std::string const quickfix =
+      PollRequest(input, output, "caqf", "Insert", [&](std::string const &id) {
+        return CodeActionFrame(id, fix.mainUri, 0, "quickfix");
+      });
+  Expect(quickfix.find("Insert 'END SUB'") != std::string::npos,
+         "an explicit quickfix filter must still return the fixes");
 
   session.stop();
 }
@@ -4538,6 +4756,9 @@ int main(int argc, char **argv) {
   RUN_TEST(TestInitializeServesStaticWatchersToNonDynamicClient);
   RUN_TEST(TestInitializedRegistersWatchedFilesDynamically);
   RUN_TEST(TestMissingIncludePublishesDiagnostic);
+  RUN_TEST(TestCodeActionInsertsMissingCloser);
+  RUN_TEST(TestCodeActionRetargetsMissingInclude);
+  RUN_TEST(TestCodeActionOffersNothingUnfixable);
   RUN_TEST(TestWatchedFilesRescanConverges);
   RUN_TEST(TestConfigFileRootDetection);
   RUN_TEST(TestConfigMarkerRootUsedAsIsEagerIndex);

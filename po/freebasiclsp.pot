@@ -7,14 +7,33 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasiclsp\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-09-24 13:29-0500\n"
-"PO-Revision-Date: 2026-09-24 13:29-0500\n"
+"POT-Creation-Date: 2026-09-25 13:56-0500\n"
+"PO-Revision-Date: 2026-09-25 13:56-0500\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
+
+#. TRANSLATORS: %s is a FreeBASIC block closer written verbatim
+#. (END SUB, NEXT, WEND, #ENDIF, ...); it is never translated.
+#: src/code_actions.cpp:134
+#, c-format
+msgid "Insert '%s'"
+msgstr ""
+
+#. TRANSLATORS: %s is an include path the fix would write (e.g.
+#. inc/config.bi), quoted; it is never translated.
+#: src/code_actions.cpp:233
+#, c-format
+msgid "Change include to \"%s\""
+msgstr ""
+
+#: src/code_actions.cpp:283
+#, c-format
+msgid "include file not found: \"%s\""
+msgstr ""
 
 #: src/parser.cpp:95
 #, c-format
@@ -61,45 +80,40 @@ msgstr ""
 msgid "%s without %s"
 msgstr ""
 
-#: src/session.cpp:349
-#, c-format
-msgid "include file not found: \"%s\""
-msgstr ""
-
-#: src/session.cpp:641
+#: src/session.cpp:736
 #, c-format
 msgid "%s/freebasiclsp.toml is not valid TOML; keeping defaults"
 msgstr ""
 
-#: src/session.cpp:654
+#: src/session.cpp:749
 #, c-format
 msgid "workspace root: %s"
 msgstr ""
 
-#: src/session.cpp:675
+#: src/session.cpp:770
 msgid "version-control marker"
 msgstr ""
 
-#: src/session.cpp:678
+#: src/session.cpp:773
 #, c-format
 msgid "config file %s"
 msgstr ""
 
-#: src/session.cpp:681
+#: src/session.cpp:776
 msgid "source/include directory"
 msgstr ""
 
-#: src/session.cpp:690
+#: src/session.cpp:785
 #, c-format
 msgid "workspace root %s (detected via %s; no client root)"
 msgstr ""
 
-#: src/session.cpp:697
+#: src/session.cpp:792
 #, c-format
 msgid "workspace root %s (detected via %s; client root %s)"
 msgstr ""
 
-#: src/session.cpp:1036
+#: src/session.cpp:1141
 #, c-format
 msgid ""
 "workspace root %s has no version-control marker or config file; index scope "

@@ -15,6 +15,7 @@
 #include "LibLsp/lsp/general/shutdown.h"
 #include "LibLsp/lsp/lsAny.h"
 #include "LibLsp/lsp/textDocument/SemanticTokens.h"
+#include "LibLsp/lsp/textDocument/code_action.h"
 #include "LibLsp/lsp/textDocument/completion.h"
 #include "LibLsp/lsp/textDocument/declaration_definition.h"
 #include "LibLsp/lsp/textDocument/did_change.h"
@@ -44,6 +45,7 @@
 #include "LibLsp/lsp/workspace/symbol.h"
 
 #include "analysis_cache.h"
+#include "code_actions.h"
 #include "index.h"
 #include "resolve.h"
 #include "semantic_tokens_lsp.h"
@@ -209,6 +211,11 @@ private:
   onPrepareRename(td_prepareRename::request const &req);
   td_rename::response onRename(td_rename::request const &req);
   wp_symbol::response onWorkspaceSymbol(wp_symbol::request const &req);
+  // Quick fixes (M12). LspCpp models the response as a bare command list, so
+  // each fix ships as `Command{title, "", [WorkspaceEdit]}` — the empty command
+  // name is the client's cue to apply `arguments[0]` itself — and the kind
+  // filter in `context.only` is honored here rather than by the client.
+  td_codeAction::response onCodeAction(td_codeAction::request const &req);
   td_semanticTokens_full::response
   onSemanticTokensFull(td_semanticTokens_full::request const &req);
   td_semanticTokens_full_delta::response

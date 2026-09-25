@@ -1385,6 +1385,42 @@ bool statementPosition(std::vector<Token> const &tokens, std::uint32_t off) {
   return false;
 }
 
+std::string expectedCloserAt(std::vector<Token> const &tokens,
+                             std::uint32_t openerBeg) {
+  Token const *opener = nullptr;
+  for (Token const &t : tokens) { // tokens are in source order
+    if (t.beg == openerBeg) {
+      opener = &t;
+      break;
+    }
+    if (t.beg > openerBeg) {
+      break;
+    }
+  }
+  if (opener == nullptr) {
+    return {};
+  }
+  if (opener->kind == TokenKind::Keyword) {
+    BlockCloser closer;
+    if (!blockForOpener(toLowerChars(std::string(opener->text())), &closer)) {
+      return {};
+    }
+    return closerDisplay(closer);
+  }
+  if (opener->kind == TokenKind::Preprocessor) {
+    // Preprocessor blocks are a parser special case: #IF/#IFDEF/#IFNDEF ->
+    // #ENDIF, #MACRO -> #ENDMACRO (not in the keyword opener table).
+    std::string const word = toLowerChars(preprocessorWord(opener->text()));
+    if (word == "if" || word == "ifdef" || word == "ifndef") {
+      return "#ENDIF";
+    }
+    if (word == "macro") {
+      return "#ENDMACRO";
+    }
+  }
+  return {};
+}
+
 namespace {
 
 BlockCloser fromRow(const BlockRow &r) {

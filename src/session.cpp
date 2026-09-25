@@ -17,6 +17,7 @@
 #include "symbols.h"
 #include "utf16.h"
 
+#include "LibLsp/JsonRpc/json.h"
 #include "LibLsp/lsp/LanguageSession.h"
 #include "LibLsp/lsp/client/registerCapability.h"
 #include "LibLsp/lsp/general/exit.h"
@@ -33,6 +34,7 @@
 #include "LibLsp/lsp/lsp_completion.h"
 #include "LibLsp/lsp/lsp_diagnostic.h"
 #include "LibLsp/lsp/symbol.h"
+#include "LibLsp/lsp/textDocument/code_action.h"
 #include "LibLsp/lsp/textDocument/completion.h"
 #include "LibLsp/lsp/textDocument/declaration_definition.h"
 #include "LibLsp/lsp/textDocument/did_change.h"
@@ -52,6 +54,9 @@
 #include "LibLsp/lsp/workspace/did_change_configuration.h"
 #include "LibLsp/lsp/workspace/did_change_watched_files.h"
 #include "LibLsp/lsp/workspace/symbol.h"
+
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -327,28 +332,121 @@ std::vector<lsDiagnostic> convertDiagnostics(std::string_view content,
 // Unresolved `#include`/`#include once` literals of an indexed entry become
 // `include-not-found` Errors at the literal's own range. Only the open
 // buffer's own edges are diagnosed (M6); inter-file closure diagnostics wait
-// for pull diagnostics (M14).
+// for pull diagnostics (M14). The diagnostics are built by the code-action
+// module (M12) so a quick fix keyed on the code addresses exactly the range
+// the publish reported.
 void appendIncludeDiagnostics(std::string_view content,
                               fblang::IndexedFile const &entry,
                               std::vector<lsDiagnostic> *out) {
-  for (auto const &e : entry.includes) {
-    if (!e.target.empty()) {
-      continue;
-    }
-    if (e.targetRange.beg >= e.targetRange.end ||
-        e.targetRange.end > content.size()) {
-      continue; // a directive with no filename literal
-    }
+  for (fblang::Diagnostic const &d :
+       fblang::unresolvedIncludeDiagnostics(entry.includes, content.size())) {
     lsDiagnostic diag;
-    diag.range =
-        fblang::utf16Range(content, e.targetRange.beg, e.targetRange.end);
-    diag.severity = static_cast<lsDiagnosticSeverity>(fblang::Severity::Error);
-    diag.code.emplace(std::make_pair<optional<std::string>, optional<int>>(
-        std::string("include-not-found"), {}));
+    diag.range = fblang::utf16Range(content, d.range.beg, d.range.end);
+    diag.severity = static_cast<lsDiagnosticSeverity>(d.severity);
+    diag.code.emplace(
+        std::make_pair<optional<std::string>, optional<int>>(d.code, {}));
     diag.source.emplace("freebasiclsp");
-    diag.message = fblang::trf("include file not found: \"%s\"", e.literal);
+    diag.message = d.message;
     out->push_back(std::move(diag));
   }
+}
+
+// LSP 3.17 CodeActionKind matching: a `context.only` entry selects actions of
+// that kind, and a dot-separated ancestor selects its descendants
+// ("quickfix" serves "quickfix" and "quickfix.something", but not
+// "quickfixes"). The kind must be a segment-aligned prefix, never a bare
+// string prefix.
+bool kindRequested(std::vector<std::string> const &only,
+                   std::string const &kind) {
+  for (std::string const &filter : only) {
+    if (filter == kind) {
+      return true;
+    }
+    if (filter.size() < kind.size() && kind[filter.size()] == '.' &&
+        kind.compare(0, filter.size(), filter) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// One quick fix as the client consumes it: a single-file WorkspaceEdit
+// serialized into the opaque `lsp::Any` a lsCommandWithAny carries (LspCpp
+// exposes no typed setter for it). An empty `command` is the client's cue to
+// apply `arguments[0]` itself, which is how a server-only edit travels.
+lsp::Any fixCommandArgument(std::string const &uri, std::string_view content,
+                            fblang::QuickFix const &fix) {
+  lsWorkspaceEdit edit;
+  edit.changes.emplace();
+  std::vector<lsTextEdit> edits;
+  edits.reserve(fix.edits.size());
+  for (fblang::TextEditBytes const &e : fix.edits) {
+    lsTextEdit te;
+    te.range = fblang::utf16Range(content, e.range.beg, e.range.end);
+    te.newText = e.newText;
+    edits.push_back(std::move(te));
+  }
+  (*edit.changes)[uri] = std::move(edits);
+
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  JsonWriter out(&writer);
+  Reflect(out, edit);
+
+  lsp::Any any;
+  any.SetJsonString(std::string(buffer.GetString(),
+                                static_cast<std::size_t>(buffer.GetSize())),
+                    lsp::Any::kObjectType);
+  return any;
+}
+
+// The diagnostics a `textDocument/codeAction` request should answer for: what
+// the next publish would report inside `range` (parse diagnostics plus the
+// document's unresolved includes), plus whatever the client listed in its
+// context. Deriving our own set is what lets a client that sends an empty
+// context — or sends one for a diagnostic we no longer publish — still get an
+// answer.
+std::vector<fblang::Diagnostic>
+requestedDiagnostics(fblang::AnalyzedDoc const &doc, std::string_view content,
+                     lsRange const &range,
+                     std::vector<fblang::Diagnostic> const &published,
+                     std::vector<lsDiagnostic> const &fromClient) {
+  std::uint32_t const beg =
+      fblang::byteOffsetForUtf16Position(content, range.start);
+  std::uint32_t const end =
+      fblang::byteOffsetForUtf16Position(content, range.end);
+  auto inRange = [beg, end](fblang::SourceRange const &r) {
+    // A zero-width request is a cursor: the diagnostic must cover the point.
+    return r.beg <= end && r.end >= beg;
+  };
+
+  std::vector<fblang::Diagnostic> out;
+  auto add = [&out](fblang::Diagnostic d) {
+    for (fblang::Diagnostic const &seen : out) {
+      if (seen.code == d.code && seen.range.beg == d.range.beg) {
+        return; // the client restating a diagnostic we already have
+      }
+    }
+    out.push_back(std::move(d));
+  };
+  for (fblang::Diagnostic const &d : published) {
+    if (inRange(d.range)) {
+      add(d);
+    }
+  }
+  for (lsDiagnostic const &cd : fromClient) {
+    if (!cd.code || !cd.code->first) {
+      continue; // a code-less diagnostic names no fix
+    }
+    fblang::Diagnostic d;
+    d.range.beg = fblang::byteOffsetForUtf16Position(content, cd.range.start);
+    d.range.end = fblang::byteOffsetForUtf16Position(content, cd.range.end);
+    d.severity = cd.severity ? static_cast<fblang::Severity>(*cd.severity)
+                             : fblang::Severity::Error;
+    d.code = *cd.code->first;
+    add(std::move(d));
+  }
+  return out;
 }
 
 // Deepest symbol (by range nesting) covering `off`, or nullptr.
@@ -852,6 +950,8 @@ void FreeBasicServer::registerHandlers() {
   session_.on([this](td_rename::request const &req) { return onRename(req); });
   session_.on(
       [this](wp_symbol::request const &req) { return onWorkspaceSymbol(req); });
+  session_.on(
+      [this](td_codeAction::request const &req) { return onCodeAction(req); });
   session_.on([this](td_semanticTokens_full::request const &req) {
     return onSemanticTokensFull(req);
   });
@@ -926,6 +1026,13 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
 
   rsp.result.capabilities.workspaceSymbolProvider.emplace();
   rsp.result.capabilities.workspaceSymbolProvider->first.emplace(true);
+
+  // Code actions: quickfix only (M12). The options arm carries the kind list;
+  // there is no codeAction/resolve request, so no resolveProvider.
+  rsp.result.capabilities.codeActionProvider.emplace();
+  rsp.result.capabilities.codeActionProvider->second.emplace();
+  rsp.result.capabilities.codeActionProvider->second->codeActionKinds
+      .emplace_back("quickfix");
 
   // Semantic tokens: the legend always; full + delta always; the viewport
   // `range` provider only when the client asks for it (clients that don't fall
@@ -2502,6 +2609,94 @@ FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
         info.containerName.emplace(m.container);
       }
       rsp.result.push_back(std::move(info));
+    }
+  }
+  return rsp;
+}
+
+td_codeAction::response
+FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
+  td_codeAction::response rsp;
+  rsp.id = req.id;
+
+  // The response is a bare command list, so the `context.only` filter the
+  // client would normally apply to CodeAction objects is ours to honor: a
+  // refactor-only or source-only request gets nothing.
+  if (req.params.context.only &&
+      !kindRequested(*req.params.context.only, "quickfix")) {
+    return rsp;
+  }
+
+  std::string const path = req.params.textDocument.uri.GetAbsolutePath().path();
+  std::string const normPath = fblang::normalizePath(path);
+  // Quick fixes are keyed off the published diagnostics; with diagnostics off
+  // the client is never told about any, so there is nothing to fix (M11's
+  // gate, the same one the publish path obeys).
+  if (!settingsForDocument(normPath).diagnosticsOn) {
+    return rsp;
+  }
+
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
+    return rsp;
+  }
+  std::string_view const content = cached->content;
+  fblang::AnalyzedDoc const &doc = cached->analysis;
+
+  // The set of diagnostics the next publish would carry: the parse
+  // diagnostics plus this document's own unresolved include edges (the
+  // `include-not-found` set M6 publishes, taken from the same live entry).
+  std::vector<fblang::Diagnostic> published = doc.parse.diagnostics;
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  if (index) {
+    if (std::shared_ptr<fblang::IndexedFile const> const entry =
+            index->fileAt(normPath)) {
+      std::vector<fblang::Diagnostic> const unresolved =
+          fblang::unresolvedIncludeDiagnostics(entry->includes, content.size());
+      published.insert(published.end(), unresolved.begin(), unresolved.end());
+    }
+  }
+
+  // One snapshot for the whole reply: a fix provider may mine it for candidate
+  // targets, and a concurrent folder add/remove cannot pull the vector a
+  // provider is reading out from under it.
+  std::filesystem::path const documentPath(path);
+  std::vector<std::shared_ptr<fblang::IndexedFile const>> const files =
+      index ? index->snapshot()
+            : std::vector<std::shared_ptr<fblang::IndexedFile const>>{};
+
+  fblang::QuickFixContext ctx;
+  ctx.content = content;
+  ctx.doc = &doc;
+  ctx.documentPath = &documentPath;
+  if (index) {
+    ctx.workspaceFiles = &files;
+    // The document's own include-resolution seam, so a candidate literal is
+    // offered only when the next publish would resolve it.
+    ctx.resolveInclude = [&path, index](std::string const &literal) {
+      return fblang::resolveIncludeTarget(literal, path, index->root(),
+                                          fblang::defaultSystemIncludeDir(),
+                                          index->includeDirs());
+    };
+  }
+
+  for (fblang::Diagnostic const &d :
+       requestedDiagnostics(doc, content, req.params.range, published,
+                            req.params.context.diagnostics)) {
+    fblang::QuickFixProvider const *const provider =
+        fblang::quickFixProviderFor(d.code);
+    if (provider == nullptr) {
+      continue; // a diagnostic with no registered fix offers nothing
+    }
+    for (fblang::QuickFix const &fix : (*provider)(d, ctx)) {
+      lsCommandWithAny cmd;
+      cmd.title = fix.title;
+      cmd.command.clear(); // the client applies arguments[0] itself
+      cmd.arguments.emplace();
+      cmd.arguments->push_back(fixCommandArgument(
+          req.params.textDocument.uri.GetRawPath(), content, fix));
+      rsp.result.push_back(std::move(cmd));
     }
   }
   return rsp;

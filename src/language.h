@@ -131,4 +131,12 @@ std::vector<std::string_view> signatureParamLabels(Intrinsic const &fn);
 // design — a false "expression" only withholds statement completion.
 bool statementPosition(std::vector<Token> const &tokens, std::uint32_t off);
 
+// The closer the block opened at byte offset `openerBeg` expects — "END SUB",
+// "NEXT", "WEND", "#ENDIF", ... — or "" when no token starts there or the token
+// opens no block. One answer for the whole server: the inlay-hint closer hints
+// and the M12 `unterminated-block` quick fix must never name a closer
+// differently.
+std::string expectedCloserAt(std::vector<Token> const &tokens,
+                             std::uint32_t openerBeg);
+
 } // namespace fblang
