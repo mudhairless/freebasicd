@@ -3,7 +3,8 @@
 ## 1. State summary
 
 Repository `main`, clean working tree, `ctest` 15/15 green. LspCpp (vendored,
-pinned `19150d12`) supplies framing/JSON-RPC/typed 3.17 messages,
+pinned `19150d12` plus four local commits) supplies
+framing/JSON-RPC/typed 3.17 messages,
 tomlplusplus (vendored, pinned `30172438` v3.4.0) parses the server's config
 file, and GNU gettext (system libintl, never vendored; `cmake/FindIntl.cmake`
 + `FindGettext`) localizes log and diagnostic messages from committed
@@ -27,7 +28,7 @@ architecture, and the remaining work.
 | M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
 | M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
 | M11 — configuration + workspace folders | done (2026-09: `freebasiclsp.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
-| M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree) |
+| M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree; fixes answer as LSP `CodeAction`s carrying `kind` + the diagnostic + an `edit` keyed by the request's URI, not as empty-id `Command`s — the first cut shipped the `Command` shape and the actions listed but did nothing) |
 | M13 — editor extras: selectionRange, callHierarchy, codeLens | next |
 | M14 — pull diagnostics (backlog) | next |
 | M15 — type/go-to + type hierarchy (backlog) | next |
@@ -450,9 +451,10 @@ the design; sub-tasks land in order.
 > deviations from the sketch: the vendored `SemanticTokensEdit` was reshaped to
 > the wire `start`/`deleteCount`/`data` form (third local LspCpp commit
 > `45846f7`) instead of adding a translation layer, so generic reflection is
-> correct at every call depth; only `full` results enter the delta cache (a
-> `range` resultId is never a baseline, so a delta can never diff against a
-> viewport-scoped set); and the grammar emitter is a shared
+> correct at every call depth (a later local LspCpp commit took the same route
+> for the `codeAction` result type — see M12); only `full` results enter the
+> delta cache (a `range` resultId is never a baseline, so a delta can never
+> diff against a viewport-scoped set); and the grammar emitter is a shared
 > `tools/grammar_emitter` module consumed by both the `gen_grammar` tool and
 > `grammar_checks`, so the freshness gate byte-diffs by construction rather than
 > regenerating into a temp dir. Follow-up: the enum conformance pass surfaced
@@ -653,12 +655,26 @@ parser sees.
 > `expectedCloserAt` in `language.{h,cpp}`, which `inlay_hints.cpp` now also
 > calls, so a hint label and a quick fix can never name different closers.
 >
-> **Response shape.** LspCpp types `td_codeAction::response` as
-> `std::vector<lsCommandWithAny>` (no `CodeAction` struct), so each fix is a
-> `Command` with an empty `command` and a single serialized single-file
-> `WorkspaceEdit` in `arguments` — the client's cue to apply it itself. Since
-> the response is a bare command list, `context.only` is filtered server-side
-> (`kindRequested`, segment-aligned prefix match, so `quickfix` serves
+> **Response shape: a `CodeAction`, not a `Command`.** The protocol's
+> `textDocument/codeAction` result is `(Command | CodeAction)[]`, and only the
+> second variant can carry a fix: a `Command` is an id the client *executes*,
+> and there is no standard id meaning "apply this edit". The first cut shipped
+> `lsCommandWithAny` with an empty `command` and a serialized `WorkspaceEdit` in
+> `arguments[0]` (LspCpp typed the response as `std::vector<lsCommandWithAny>`
+> upstream) on the assumption that an empty command is the client's cue to
+> apply `arguments[0]` — it is not, so the fix listed in the lightbulb and did
+> nothing when picked. The `changes` key was a bare filesystem path for the
+> same class of reason (`GetRawPath()` instead of the URI), so even a client
+> that did read the edit could not match it to a document. LspCpp already
+> shipped the `CodeAction` struct and the `TextDocumentCodeAction::Either`
+> reader, so the fix is a fourth local submodule commit (`50be209`): the
+> request now answers with `std::vector<TextDocumentCodeAction::Either>` plus
+> the missing `Either` writer, and the handler emits a typed `CodeAction` —
+> `title`, `kind:
+> "quickfix"`, the diagnostic it answers, and `edit.changes` keyed by the
+> request's own URI, echoed verbatim so a percent-encoded or non-`file` scheme
+> survives. Since every fix is a quickfix, `context.only` stays a server-side
+> gate (`kindRequested`, segment-aligned prefix match, so `quickfix` serves
 > `quickfix.something` but not `quickfixes`). The handler answers from what
 > the *next publish* would report (parse diagnostics plus this document's
 > unresolved includes, unioned with the client's `context.diagnostics`, deduped

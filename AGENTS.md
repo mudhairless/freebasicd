@@ -9,7 +9,7 @@ repository (default branch `main`).
 - **LspCpp** (github.com/kuafuwang/LspCpp) is the LSP/JSON-RPC library. It is
   vendored as a **git submodule** at `third_party/LspCpp`, **pinned to a fork
   of commit `19150d12c4ae26239d75258ed598ba8ea3587cb7`** (upstream master,
-  2026-08-21; no release tag exists yet) **plus three local commits**:
+  2026-08-21; no release tag exists yet) **plus four local commits**:
   `310e1e6` adding the watched-files registration types upstream lacks —
   `lsFileSystemWatcher`/`lsDidChangeWatchedFilesOptions`
   (`workspace/did_change_watched_files.h`), `Registration::registerOptions`
@@ -22,8 +22,17 @@ repository (default branch `main`).
   (`textDocument/SemanticTokens.h`): the struct now carries the LSP wire shape
   (`start`/`deleteCount` in flat-array elements, `data`) so generic reflection
   is correct at every call depth, instead of the token-count projection whose
-  non-template `Reflect` overload only won for direct top-level calls. Restore
-  with `git submodule update --init`. Consumed
+  non-template `Reflect` overload only won for direct top-level calls, and
+  `50be209` making `textDocument/codeAction` answer with the type the protocol
+  defines — the result is `(Command | CodeAction)[]`, i.e.
+  `std::vector<TextDocumentCodeAction::Either>`, not
+  `std::vector<lsCommandWithAny>`. A `Command` is an id the client *executes*,
+  so a server that can only return those cannot hand the client a
+  `WorkspaceEdit` to apply; upstream's own reader existed but the matching
+  writer did not, so the local commit adds it (`lsCodeAction.h`,
+  `src/lsp/lsp.cpp`, mirroring `LocationListEither::Either`) plus
+  `lsp_types_roundtrip_tests` coverage of the edit variant. Restore with
+  `git submodule update --init`. Consumed
   via `add_subdirectory(third_party/LspCpp)` and linked as the `lspcpp`
   target. No Boost is required (`LSPCPP_STANDALONE_ASIO` is the default);
   build with `LSPCPP_BUILD_WEBSOCKETS=OFF`, `LSPCPP_BUILD_EXAMPLES=OFF`,
@@ -120,12 +129,14 @@ must stay there. Encoding directives that the lexer/parser must honor:
   `resolveInclude` callback wired to `resolveIncludeTarget`). A fix therefore
   never guesses: offer a candidate only when that seam accepts it, or nothing.
   **Adding a fix = one function + one table row**; do not touch `session.cpp`
-  or the capability. Note LspCpp types `td_codeAction::response` as
-  `std::vector<lsCommandWithAny>`, so a fix ships as a `Command` with an empty
-  `command` and a serialized `WorkspaceEdit` in `arguments`, and `context.only`
-  must be filtered server-side. Diagnostics a fix keys on must be built by the
-  same function the publish path uses (`unresolvedIncludeDiagnostics`), or the
-  published range and the fix's range drift apart.
+  or the capability. A fix ships as an LSP `CodeAction` (`title`, `kind:
+  "quickfix"`, the diagnostic it answers, and `edit.changes` keyed by the
+  request's own URI) — never as a `Command`: a Command is an id the client
+  *executes*, so an empty-id Command with the edit in `arguments` lists in the
+  lightbulb and does nothing when picked. `context.only` is filtered
+  server-side. Diagnostics a fix keys on must be built by the same function the
+  publish path uses (`unresolvedIncludeDiagnostics`), or the published range and
+  the fix's range drift apart.
 - Capabilities advertise only implemented features; `positionEncoding: "utf-16"`.
 
 ## Verification

@@ -310,21 +310,30 @@ lsDocumentSymbol convertSymbol(std::string_view content,
   return out;
 }
 
+// One language-layer diagnostic as the protocol carries it. The byte-offset
+// range becomes the UTF-16 range of the document it was reported against, and
+// the `code` rides along because M12's quick fixes key on it (and because a
+// client groups its lightbulb entries by code).
+lsDiagnostic toLsDiagnostic(std::string_view content,
+                            fblang::Diagnostic const &d) {
+  lsDiagnostic diag;
+  diag.range = fblang::utf16Range(content, d.range.beg, d.range.end);
+  diag.severity = static_cast<lsDiagnosticSeverity>(d.severity);
+  if (!d.code.empty()) {
+    diag.code.emplace(
+        std::make_pair<optional<std::string>, optional<int>>(d.code, {}));
+  }
+  diag.source.emplace("freebasiclsp");
+  diag.message = d.message;
+  return diag;
+}
+
 std::vector<lsDiagnostic> convertDiagnostics(std::string_view content,
                                              fblang::ParseResult const &parse) {
   std::vector<lsDiagnostic> out;
   out.reserve(parse.diagnostics.size());
   for (auto const &d : parse.diagnostics) {
-    lsDiagnostic diag;
-    diag.range = fblang::utf16Range(content, d.range.beg, d.range.end);
-    diag.severity = static_cast<lsDiagnosticSeverity>(d.severity);
-    if (!d.code.empty()) {
-      diag.code.emplace(
-          std::make_pair<optional<std::string>, optional<int>>(d.code, {}));
-    }
-    diag.source.emplace("freebasiclsp");
-    diag.message = d.message;
-    out.push_back(std::move(diag));
+    out.push_back(toLsDiagnostic(content, d));
   }
   return out;
 }
@@ -340,14 +349,7 @@ void appendIncludeDiagnostics(std::string_view content,
                               std::vector<lsDiagnostic> *out) {
   for (fblang::Diagnostic const &d :
        fblang::unresolvedIncludeDiagnostics(entry.includes, content.size())) {
-    lsDiagnostic diag;
-    diag.range = fblang::utf16Range(content, d.range.beg, d.range.end);
-    diag.severity = static_cast<lsDiagnosticSeverity>(d.severity);
-    diag.code.emplace(
-        std::make_pair<optional<std::string>, optional<int>>(d.code, {}));
-    diag.source.emplace("freebasiclsp");
-    diag.message = d.message;
-    out->push_back(std::move(diag));
+    out->push_back(toLsDiagnostic(content, d));
   }
 }
 
@@ -370,12 +372,22 @@ bool kindRequested(std::vector<std::string> const &only,
   return false;
 }
 
-// One quick fix as the client consumes it: a single-file WorkspaceEdit
-// serialized into the opaque `lsp::Any` a lsCommandWithAny carries (LspCpp
-// exposes no typed setter for it). An empty `command` is the client's cue to
-// apply `arguments[0]` itself, which is how a server-only edit travels.
-lsp::Any fixCommandArgument(std::string const &uri, std::string_view content,
-                            fblang::QuickFix const &fix) {
+// One quick fix as the client consumes it: a `CodeAction` carrying the kind we
+// advertise, the diagnostic it answers, and a single-file WorkspaceEdit keyed
+// by the request's own URI. A CodeAction with an `edit` is the shape the
+// protocol defines for a server-side fix — the client applies the edit and the
+// re-parse clears the diagnostic. A `Command` cannot express this: a Command is
+// an id the client executes, and there is no standard id that means "apply this
+// edit", so a fix shipped that way shows up in the menu and then does nothing.
+CodeAction quickFixCodeAction(std::string const &uri, std::string_view content,
+                              fblang::Diagnostic const &d,
+                              fblang::QuickFix const &fix) {
+  CodeAction action;
+  action.title = fix.title;
+  action.kind = std::string("quickfix");
+  action.diagnostics.emplace();
+  action.diagnostics->push_back(toLsDiagnostic(content, d));
+
   lsWorkspaceEdit edit;
   edit.changes.emplace();
   std::vector<lsTextEdit> edits;
@@ -387,17 +399,8 @@ lsp::Any fixCommandArgument(std::string const &uri, std::string_view content,
     edits.push_back(std::move(te));
   }
   (*edit.changes)[uri] = std::move(edits);
-
-  rapidjson::StringBuffer buffer;
-  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-  JsonWriter out(&writer);
-  Reflect(out, edit);
-
-  lsp::Any any;
-  any.SetJsonString(std::string(buffer.GetString(),
-                                static_cast<std::size_t>(buffer.GetSize())),
-                    lsp::Any::kObjectType);
-  return any;
+  action.edit.emplace(std::move(edit));
+  return action;
 }
 
 // The diagnostics a `textDocument/codeAction` request should answer for: what
@@ -2619,9 +2622,8 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
   td_codeAction::response rsp;
   rsp.id = req.id;
 
-  // The response is a bare command list, so the `context.only` filter the
-  // client would normally apply to CodeAction objects is ours to honor: a
-  // refactor-only or source-only request gets nothing.
+  // Every fix we offer is a quickfix, so the `context.only` filter is a
+  // server-side gate: a refactor-only or source-only request gets nothing.
   if (req.params.context.only &&
       !kindRequested(*req.params.context.only, "quickfix")) {
     return rsp;
@@ -2690,13 +2692,12 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
       continue; // a diagnostic with no registered fix offers nothing
     }
     for (fblang::QuickFix const &fix : (*provider)(d, ctx)) {
-      lsCommandWithAny cmd;
-      cmd.title = fix.title;
-      cmd.command.clear(); // the client applies arguments[0] itself
-      cmd.arguments.emplace();
-      cmd.arguments->push_back(fixCommandArgument(
-          req.params.textDocument.uri.GetRawPath(), content, fix));
-      rsp.result.push_back(std::move(cmd));
+      // The edit is keyed by the request's URI verbatim (not its path): a
+      // `changes` key the client cannot match to a document is an edit it
+      // silently drops.
+      rsp.result.emplace_back();
+      rsp.result.back().second = quickFixCodeAction(
+          req.params.textDocument.uri.raw_uri_, content, d, fix);
     }
   }
   return rsp;

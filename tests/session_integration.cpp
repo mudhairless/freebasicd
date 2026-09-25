@@ -845,13 +845,27 @@ void TestCodeActionInsertsMissingCloser() {
       });
   Expect(reply.find("\"title\":\"Insert 'END SUB'\"") != std::string::npos,
          "a code action must be titled with the closer it inserts");
-  Expect(reply.find("\"command\":\"\"") != std::string::npos,
-         "a fix must ship as a command the client applies itself");
+  // A `CodeAction` carrying an `edit`, not a `Command`: the client applies an
+  // edit and executes a command id, so a fix shipped as a command (or with a
+  // bare path for the `changes` key) lists in the menu and then does nothing.
+  Expect(reply.find("\"kind\":\"quickfix\"") != std::string::npos,
+         "a fix must carry the kind the client filters on");
+  Expect(reply.find("\"command\"") == std::string::npos,
+         "a fix must not ship as a command the client would have to execute");
+  Expect(reply.find("\"edit\":{\"changes\":{\"") != std::string::npos,
+         "a fix must carry the edit the client applies");
+  Expect(reply.find("\"diagnostics\":[{\"range\":{\"start\":{\"line\":0,"
+                    "\"character\":0}") != std::string::npos,
+         "a fix must echo the diagnostic it answers");
   Expect(reply.find("\"newText\":\"END SUB\\n\"") != std::string::npos,
          "the fix must insert the closer with its own line ending");
   Expect(reply.find("\"start\":{\"line\":2,\"character\":0}") !=
              std::string::npos,
          "the closer must land at the end of the buffer");
+  // The `changes` key must be the document's URI, verbatim: a key the client
+  // cannot match to an open buffer is an edit it silently discards.
+  Expect(reply.find("\"" + fix.mainUri + "\":[{\"range\"") != std::string::npos,
+         "the edit must be keyed by the request's own document URI");
 
   // Applying the fix's edit clears the diagnostic it answers: the re-parse sees
   // a closed block and publishes nothing. The inserted closer is uppercase, so
@@ -906,6 +920,8 @@ void TestCodeActionRetargetsMissingInclude() {
          "the include fix must replace the literal, quotes left in place");
   Expect(reply.find("\"newText\":\"inc/config.bi\"") != std::string::npos,
          "the include fix must write the resolvable literal");
+  Expect(reply.find("\"" + fix.mainUri + "\":[{\"range\"") != std::string::npos,
+         "the include fix's edit must be keyed by the document URI");
 
   input->append(MakeLspFrame(
       ReplaceFrame(fix.mainUri, 0, 10, 0, 20, "inc/config.bi").c_str()));
@@ -943,8 +959,8 @@ void TestCodeActionOffersNothingUnfixable() {
          "a diagnostic with no registered fix must offer no code actions");
 
   // And a request for a kind this server does not serve gets nothing, even
-  // where a fix exists: the response is a bare command list, so the filter is
-  // honored here rather than by the client.
+  // where a fix exists: every fix is a quickfix, so the filter is honored here
+  // rather than by the client.
   input->append(
       MakeLspFrame(OpenFrame(fix.mainUri, "sub main()\n  print 1\n").c_str()));
   WaitForPublishedUri(output, 2);
