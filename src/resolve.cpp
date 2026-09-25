@@ -1047,7 +1047,7 @@ bool walkIntermediateMembers(AnalyzedDoc const &doc,
 // Whether `off` sits inside a member procedure implementation of the type
 // whose key is `ownerKey` — a file root registered as `sub Type.name(...)`
 // (root key = the type name, `<type>.` in its header signature). fbc
-// (FreeBASIC.md §4, KeyPgVisPrivate/Protected): only from inside the type's
+// (FreeBASIC.md §7 Access sections): only from inside the type's
 // own member procedures are private/protected members reachable; every
 // outside path (`.`/`->`/`with` at module level or in a foreign procedure) is
 // error 202. The parser models no inheritance, so `Extends`-derived access is
@@ -1208,8 +1208,8 @@ MemberCompletion resolveMemberCompletion(AnalyzedDoc const &doc,
   mc.owner = typeDecl;
   mc.ownerTypeName = std::string(typeDecl.decl->name);
 
-  // Access filter (FreeBASIC.md §4, fbc 1.10.2): public members always;
-  // private/protected additionally inside the owner type's own member
+  // Access filter (FreeBASIC.md §7 Access sections, fbc 1.10.2): public members
+  // always; private/protected additionally inside the owner type's own member
   // procedures. The owner of a qualified enum chain is an Enum root whose
   // Const children are always public, so only Type members ever get gated.
   bool const insideOwner =

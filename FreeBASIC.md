@@ -144,6 +144,116 @@ Non-`END` closures: `FOR ... NEXT` (closed by `NEXT`, no `END FOR`);
 - Single-line `IF...THEN` takes no closer.
 - `EXIT`/`CONTINUE` take a block-target keyword (`EXIT FOR`, `CONTINUE DO`…).
 
+### Record and enum bodies (`TYPE` / `UNION` / `ENUM`)
+
+Documentation: https://www.freebasic.net/wiki/CatPgUserDefTypes
+
+A record or enum body is a **member list, not a statement list** — the only
+things its grammar accepts are a member declaration, a nested record/enum, or
+an access section. A procedure body is the opposite: it accepts any statement.
+That asymmetry is why a missing closer's correct position is block-kind
+dependent — see "Where a missing closer belongs" below.
+
+Legal `TYPE`/`UNION` body members `(fbc)`:
+
+| member | example |
+|---|---|
+| field, `Dim` **optional** | `x As Single` / `Dim x As Single` |
+| static field | `Static s As Integer` |
+| type constant | `Const c = 1` |
+| member procedure declaration | `Declare Sub`, `Declare Function`, `Declare Constructor`, … |
+| access section | `Public:` / `Private:` / `Protected:` (next subsection) |
+| nested record or enum | `Type … End Type`, `Union … End Union`, `Enum … End Enum` |
+
+`Dim` is optional because "variables are created in UDTs much the same way
+variables are created normally, except that the Dim keyword is optional"
+`(wiki)`. Both spellings declare a field fbc resolves through `p.member`
+`(fbc)`.
+
+Legal `ENUM` body members: `name`, `name = expr`, `name(…) = expr`.
+
+Anything else in the body is a hard error, and fbc anchors the missing closer
+on the offending statement `(fbc)`:
+
+| body | statement | fbc |
+|---|---|---|
+| TYPE/UNION | `y = 1.5` | `error 17: Syntax error, found '=' in 'y = 1.5'` + `error 19: Expected 'END TYPE' or 'END UNION' in 'y = 1.5'` |
+| TYPE/UNION | `print 1` | `error 17: Syntax error in 'print 1'` |
+| TYPE/UNION | `sub foo()` | `error 17: Syntax error, found 'foo' in 'sub foo()'` |
+| TYPE/UNION | `if 1 then` | `error 17: Syntax error in 'if 1 then'` |
+| TYPE/UNION | `dim shared g As Integer` | `error 17: Syntax error, found 'g'` |
+| TYPE/UNION | `redim preserve q(3)` | `error 63: Expected array, found 'q'` |
+| TYPE/UNION | `foo()` | `error 9: Expected expression, found ')'` |
+| ENUM | `dim c As Integer` | `error 3: Expected End-of-Line` + `error 74: Expected 'END ENUM'` |
+| ENUM | `sub foo()` | `error 3: Expected End-of-Line, found 'sub'` + `error 74: Expected 'END ENUM', found 'sub' in 'end sub'` |
+
+`Field = n` (field alignment) and `Extends t` are **opener-line** modifiers, not
+body members: `type t / Field = 4 / x As Single / End Type` is `error 17:
+Syntax error, found '=' in 'field = 4'`, while `type t Field = 4` and
+`type b Extends a` both compile `(fbc)`.
+
+**A record must declare at least one data field** `(fbc)`. `Type`/`Union`/`Enum`
+with no field is `error 256: An ENUM, TYPE or UNION cannot be empty`, and
+**none** of a nested record/enum, a `Declare`d member procedure, an access
+section, a `Const`, or a `Static` field counts toward it — only a plain data
+field does. So a record whose body is *only* nested types is rejected, while
+the same nesting plus one field compiles.
+
+**A field's declared type must already be declared** — there are no forward type
+references. `type a / b As b / End Type` written before the later
+`type b / … / End Type` is `error 14: Expected identifier, found 'b' in
+'b as b'` (the `Dim` spelling fails identically). A field naming a different,
+already-declared type is fine: `type a / x As Single / End Type` then
+`type b / Dim q As a / End Type` compiles `(fbc)`.
+
+**By-value recursion is illegal** `(fbc)`: a field whose type is the type
+enclosing it is `error 88: Recursive TYPE or UNION not allowed`. `Ptr` is the
+workaround, and an array does not help — inside `type point`, `Dim p As Point`
+and `Dim p As Point(10)` both give `error 88`, while `Dim p As Point Ptr`
+compiles. Note the corollary, because it matters for error recovery: since
+`Dim p As Point` inside `type point` can never be a field, a buffer that
+contains one cannot be read as an unclosed record whose body continues past it.
+
+#### Where a missing closer belongs
+
+fbc ends a record/enum body at the **first statement the body grammar cannot
+accept** and names that statement in the message (`error 19` / `error 74`
+above); likewise it ends a control block at the first closer that does not
+match (`error 13: Expected 'NEXT', found 'end'` for a `FOR` met by `end sub`,
+`error 125: Expected 'END SUB' in '<stmt>'` for a procedure met by a statement
+that is illegal inside it) `(fbc)`. So the closer belongs immediately **before**
+that statement, not at the end of the file. Procedure bodies are the exception
+that proves the rule: their grammar accepts everything, so there the end of the
+buffer really is the best available guess. See §12.15 for what this parser does
+today.
+
+### Access sections
+
+Documentation: https://www.freebasic.net/wiki/KeyPgVisPrivate
+Documentation: https://www.freebasic.net/wiki/KeyPgVisPublic
+Documentation: https://www.freebasic.net/wiki/KeyPgVisProtected
+
+`Public:` / `Private:` / `Protected:` are valid **only inside a `TYPE` body**
+`(fbc)`. fbc rejects them everywhere else: a `Union` body gives `error 17:
+Syntax error, found 'public' in 'public:'`, an `Enum` body `error 3: Expected
+End-of-Line, found 'public'`, module level `error 17: Syntax error, found ':'
+in 'public:'`, and inside a procedure `error 61: Illegal inside functions,
+found 'private'`. The wiki records them as "new to FreeBASIC" and "available
+only in the `-lang fb` dialect" `(wiki, see §11)`.
+
+A section gates every member declaration after it until the next section, and
+members are **`Public:` by default** when no section has been seen `(wiki)` —
+`type t / n As Integer / End Type` then `v.n` compiles `(fbc)`. Reaching a
+non-public member from outside the type is `error 202: Illegal member access,
+found 'nome' in 'print v.nome'` `(fbc)`. The wiki puts the permitted scope as
+"only from inside a member procedure of their Type or Class" (plus, for
+`Protected`, "classes which are derived from this Type or Class"), and adds
+that "seen from inside such a member procedure, it is as if the protected
+member is in fact public … regardless of the object on which the access
+operator is applied" `(wiki)`. Whether a *derived* type's ordinary code (as
+opposed to its member procedures) may read an inherited `Protected` member was
+not probed here; treat the wiki sentence as the source until it is.
+
 ## 8. Scope and visibility
 
 Documentation: https://www.freebasic.net/wiki/ProPgVariableScope
@@ -169,6 +279,9 @@ Probe results:
 So: **scope blocks nest and inherit; procedure bodies do not see module-level
 plain `Dim`/`Common`** — only `Shared`/`Common Shared` module names plus their
 own locals and enclosing-in-procedure block names.
+
+Type-member visibility (`Public:`/`Private:`/`Protected:`) is *not* in this
+table — it is a record-body construct, documented under §7 Access sections.
 
 Identifier lookup order `(wiki, ProPgIdentifierLookup; partial page)`:
 innermost scope → enclosing scopes → current namespace/type, then members →
@@ -203,6 +316,8 @@ header) in every includer. Probe-verified with fbc 1.10.2:
   `Enum` block is `error 42` (`order1.bas`), and a module `Dim green`
   shadowing an enum member `green` wins regardless of which block came
   first (`order2.bas`, `order3.bas` both print 2).
+- What may appear in an `Enum` body, and where a missing `End Enum` belongs,
+  is in §7 (Record and enum bodies).
 
 ## 9. Module model
 
@@ -260,6 +375,8 @@ Documentation: https://www.freebasic.net/wiki/CompilerDialects
     default-typed `Dim q` (§2), `LongInt` not accepted in `qb`
     (probe: `error 14: Expected identifier`), QB 64-K `String` limits, legacy
     control-flow syntax — all gated to non-`fb` dialects.
+  - Type access sections (`Public:`/`Private:`/`Protected:`) are "available
+    only in the `-lang fb` dialect" `(wiki, §7 Access sections)`.
   - Deftype directives (`DEFINT`/`DEFLNG`/`DEFSNG`/`DEFSTR`/`DEFBYTE`/…)
     set the implicit default type per first letter; suffix throws override
     `DEFxxx`. Without `Option Explicit`, undeclared-but-referenced variables
@@ -363,3 +480,20 @@ to "the language is what the lexer does":
     collision with a distinct variable name (`dim p as Position`), and
     static-member completion (`T.counter`) is out of scope entirely — type
     names never complete their members today.
+15. **A record body swallows the rest of the file until its `END` is typed.**
+    §7 (Record and enum bodies) records that a record body is a member list,
+    not a statement list, and that fbc ends the body at the first statement it
+    cannot accept — naming that statement in `error 19` / `error 74`. This
+    parser has no member-grammar check: while a `Type`/`Union`/`Enum` block is
+    open it treats *every* line as a potential member, so after a deleted
+    `End Type` the rest of the file is parsed inside the record. The visible
+    damage is not just a missing closer: module-level code after the record is
+    captured as its fields, so a later use of the same name raises a spurious
+    `duplicate-definition`, and the record's `blockRanges` entry (folding) runs
+    to end-of-source. For `blocks_type.bas` with `end type` deleted, `dim p as
+    point` is captured as a field of `point` and `duplicate-definition: 'p'`
+    is published on the following line. It also makes the `unterminated-block`
+    quick fix append its closer at end-of-buffer, since that is the only
+    insertion point the parse exposes. Fixed by adding the member-grammar
+    predicate to `language.cpp` and having the parser record each block's
+    logical end; until then, treat a record-body boundary as unmodelled.

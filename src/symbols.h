@@ -61,9 +61,9 @@ enum class SymbolKind {
 };
 
 // Member visibility as gated by an access section inside a TYPE body
-// (`Private:`, `Public:`, `Protected:` — FreeBASIC.md §4, KeyPgVisPrivate/
-// KeyPgVisPublic/KeyPgVisProtected). Members default to Public; a section
-// gates every member declaration after it until the next section. Only TYPE
+// (`Private:`, `Public:`, `Protected:` — FreeBASIC.md §7 Access sections).
+// Members default to Public; a section gates every member declaration after it
+// until the next section. Only TYPE
 // members ever carry a non-default value — Union bodies reject access
 // sections (fbc: syntax error) and enum members are always Public.
 enum class Access { Public, Private, Protected };

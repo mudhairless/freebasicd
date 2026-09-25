@@ -58,10 +58,11 @@ struct Container {
   Symbol *sym;                          // null for module scope
   std::unordered_set<std::string> keys; // dedupe for names at this level
   // Current access section inside a TYPE body (`Private:`/`Public:`/
-  // `Protected:`, FreeBASIC.md §4): gates every member captured into this
-  // container until the next section keyword. Defaults Public; only a TYPE
-  // container ever changes it (Union bodies reject sections, and everything
-  // else — module scope, procedures, enums — stays Public).
+  // `Protected:`, FreeBASIC.md §7 Access sections): gates every member
+  // captured into this container until the next section keyword. Defaults
+  // Public; only a TYPE container ever changes it (Union bodies reject
+  // sections, and everything else — module scope, procedures, enums — stays
+  // Public).
   Access access = Access::Public;
   explicit Container(Symbol *s) : sym(s) {}
 };
@@ -480,7 +481,7 @@ private:
 
     // Access section: `Private:`, `Public:`, `Protected:`. Inside a TYPE body
     // it gates every member declaration after it until the next section
-    // (FreeBASIC.md §4, KeyPgVisPrivate/Public/Protected; fbc 1.10.2:
+    // (FreeBASIC.md §7 Access sections; fbc 1.10.2:
     // section-colon syntax only, and only inside a Type — a Union rejects it
     // with a syntax error — and only in `-lang fb`). The section declares
     // nothing; stamps are applied by addSymbol from the container gate.

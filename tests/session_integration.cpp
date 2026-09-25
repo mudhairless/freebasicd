@@ -377,7 +377,8 @@ char const *kCompletionFrame =
 // accessible members — never keywords, globals, or intrinsics. The example
 // type has a private member, so a module-level `p.` offers just x/y; inside
 // the type's own member procedure the private member is offered too
-// (FreeBASIC.md §4, fbc's error-202 gate). The variable name is `p`, distinct
+// (FreeBASIC.md §7 Access sections, fbc's error-202 gate). The variable name
+// is `p`, distinct
 // from the type `Position`: FreeBASIC keys identifiers case-insensitively, so
 // `dim position as Position` would collide the variable with its own type
 // (fbc separates the namespaces; today's resolver does not — see §12).

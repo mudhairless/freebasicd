@@ -2205,7 +2205,8 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
   // Context-aware member completion: a `.`/`->` chain (including the
   // `with`-implicit leading dot and qualified `EnumName.member`) completes
   // only the base object's accessible members — never FreeBASIC keywords,
-  // globals, or intrinsics (FreeBASIC.md §4). Non-public members are gated:
+  // globals, or intrinsics (FreeBASIC.md §7 Access sections). Non-public
+  // members are gated:
   // they appear only inside a member procedure of the owner type.
   fblang::MemberCompletion const mc = fblang::resolveMemberCompletion(
       doc, normPath, offset, index ? index.get() : nullptr);

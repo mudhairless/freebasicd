@@ -639,7 +639,7 @@ int main() {
           "https://www.freebasic.net/wiki/KeyPgEnum");
   }
 
-  // TYPE access sections (FreeBASIC.md §4, KeyPgVisPrivate/Public/Protected):
+  // TYPE access sections (FreeBASIC.md §7 Access sections):
   // `Private:`/`Public:`/`Protected:` inside a TYPE body gate every member
   // declared after them until the next section; members default to Public.
   // Union bodies reject the section syntax (fbc: syntax error) and enum

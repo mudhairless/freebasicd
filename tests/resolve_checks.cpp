@@ -1039,8 +1039,8 @@ static void TestEnumConformance() {
 // completion scan shares the hover chain machinery: virtual mode for the bare
 // operator (`p.`), name mode for a partially typed member (`p.x`), plus the
 // `with`-implicit leading dot, `->`, chained, and qualified-enum shapes. The
-// access filter (FreeBASIC.md §4) shows Private/Protected members only inside
-// the owner type's own member procedures.
+// access filter (FreeBASIC.md §7 Access sections) shows Private/Protected
+// members only inside the owner type's own member procedures.
 static void TestMemberCompletionContexts() {
   // Public-only at module level; the private member appears only inside a
   // member-procedure implementation of the same type.

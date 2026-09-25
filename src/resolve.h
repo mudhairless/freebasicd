@@ -170,7 +170,8 @@ struct MemberCompletion {
   // The Type/Union root owning `members` (or an Enum root for qualified
   // `EnumName.` access); empty when the chain base did not resolve.
   CrossDecl owner;
-  // Every accessible member of the owner, access-filtered (FreeBASIC.md §4):
+  // Every accessible member of the owner, access-filtered (FreeBASIC.md §7
+  // Access sections):
   // Public members always; Private/Protected only when `off` sits inside a
   // member procedure implementation of the owner type (fbc error 202 on any
   // outside path). Enumerators are always listed.
