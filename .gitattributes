@@ -1,0 +1,15 @@
+# LF in the working tree on every platform, including Windows checkouts.
+#
+# `text=auto` normalizes on commit (so the repository content is unchanged) and
+# `eol=lf` pins what lands on disk. Without this, a Windows checkout under the
+# default `core.autocrlf=true` rewrites LF to CRLF, which broke a byte-exact
+# gate: grammar_checks compares the committed editors/* files against what
+# tools/grammar_emitter.cpp generates, and the emitter writes \n in binary
+# mode, so all three files read as stale (observed on the Windows CI leg, run
+# 36270273546). Reproduced locally by converting the three files to CRLF.
+#
+# `auto` still leaves real binaries alone, so this needs no per-file exceptions.
+* text=auto eol=lf
+
+# The vendored submodules keep their own rules; this file does not reach into
+# them, and nothing here compares their bytes.
