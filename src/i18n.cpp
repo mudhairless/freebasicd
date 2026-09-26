@@ -18,9 +18,9 @@ namespace fblang {
 
 namespace {
 
-constexpr const char *kDomain = "freebasiclsp";
+constexpr const char *kDomain = "freebasicd";
 
-// The directory holding <lang>/LC_MESSAGES/freebasiclsp.mo trees. Order:
+// The directory holding <lang>/LC_MESSAGES/freebasicd.mo trees. Order:
 // an explicit override wins, then the build-tree catalog (dev builds run
 // straight from the build directory), then the configured install prefix as a
 // last resort — the tree only exists there once `cmake --install` ran.

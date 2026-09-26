@@ -2,8 +2,11 @@
 
 ## 1. State summary
 
-Repository `main`, clean working tree, `ctest` 15/15 green. LspCpp (vendored
-from our fork `mudhairless/LspCpp` at `0badddd`, i.e. upstream `19150d12` plus
+Repository `main`, clean working tree, `ctest` 15/15 green. The project is
+`freebasicd` (renamed from `freebasiclsp` 2026-09-25), version 0.7.0 under
+semantic versioning: the number is bumped only when a release ships, never in
+an ordinary feature or fix commit. LspCpp (vendored from our fork
+`mudhairless/LspCpp` at `0badddd`, i.e. upstream `19150d12` plus
 five local commits) supplies
 framing/JSON-RPC/typed 3.17 messages,
 tomlplusplus (vendored, pinned `30172438` v3.4.0) parses the server's config
@@ -28,16 +31,16 @@ architecture, and the remaining work.
 | M8 — `prepareRename` + `rename` (workspace) | done |
 | M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
 | M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
-| M11 — configuration + workspace folders | done (2026-09: `freebasiclsp.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
+| M11 — configuration + workspace folders | done (2026-09: `freebasicd.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
 | M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree; fixes answer as LSP `CodeAction`s carrying `kind` + the diagnostic + an `edit` keyed by the request's URI, not as empty-id `Command`s — the first cut shipped the `Command` shape and the actions listed but did nothing) |
 | M13 — editor extras: selectionRange, callHierarchy, codeLens | next |
 | M14 — pull diagnostics (backlog) | next |
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
-| M18 — public release: README / editor setup, CI (moved from M11) | next |
+| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, and the version is pinned at 0.7.0. Left: per-editor wiring docs, the CI matrix's first green run) |
 | M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
-| M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasiclsp`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasiclsp.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
+| M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasicd`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasicd.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
 
 ## 2. What exists (condensed)
 
@@ -94,13 +97,13 @@ stable shape:
   `trf(msgid, a0..a2)` (translates the template, inserts `%s` arguments —
   keywords, identifiers, file names, the proper noun `FreeBASIC` — verbatim so
   they never enter a translatable literal), `initI18n()` (domain
-  `freebasiclsp`, UTF-8 output, environment message locale), and
+  `freebasicd`, UTF-8 output, environment message locale), and
   `setClientLocale(IETF tag)` wired to `InitializeParams.locale` (best-effort;
   only tags the OS can install switch the catalog). Translational invariants
   ("never translate FreeBASIC or keywords") are enforced as code by
   `tests/i18n_checks`; catalogs build from committed `po/*.po` via the
   `translations` target.
-- `src/settings.{h,cpp}` — server configuration from a `freebasiclsp.toml` at a
+- `src/settings.{h,cpp}` — server configuration from a `freebasicd.toml` at a
   workspace root: `Settings{ includePaths, diagnosticsOn, semanticTokensOn,
   inlayHintsOn }` with fixed defaults, unknown keys ignored, malformed values
   never degrading a session. `hasConfigFile` marks a directory a workspace
@@ -161,7 +164,7 @@ per-root indexes), `prepareRename`,
 answering from the diagnostics the next publish would carry),
 `workspace/didChangeWatchedFiles` (per-index routing),
 `workspace/didChangeWorkspaceFolders` (per-root index add/remove),
-`workspace/didChangeConfiguration` (per-root `freebasiclsp.toml` re-read +
+`workspace/didChangeConfiguration` (per-root `freebasicd.toml` re-read +
 `Settings` re-apply, feature-gate and include-seam behavior), and the
 `workspaceFolders` capability (`supported` + `changeNotifications`).
 
@@ -199,11 +202,28 @@ plan engineers around:
    watchers in the `initialize` reply, events fan into the owning root's
    `WorkspaceIndex::watchedFilesChanged`, and folder add/remove re-key the
    per-root indexes. `workspace/didChangeConfiguration` re-reads each root's
-   `freebasiclsp.toml` (payload ignored) and re-applies `Settings` per root
+   `freebasicd.toml` (payload ignored) and re-applies `Settings` per root
    (include seam + feature gates). Force-disabling the fbc system include
    search (step ⑥) remains open.
-3. No README, editor-setup docs, or CI matrix.
-4. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
+3. No per-editor wiring docs and no green CI matrix yet. `README.md` landed
+   2026-09-25, and `cmake --install` + the 0.7.0 version came with it; the
+   editors' setup recipes and the first hosted CI run are still open.
+4. The install tree is **not relocatable**: `FBLANG_LOCALEDIR_INSTALL` is
+   `${CMAKE_INSTALL_PREFIX}/share/locale` baked in at configure time
+   (`src/i18n.cpp`'s probe order: `FBLANG_LOCALEDIR` env override, then the
+   build tree, then that path). `cmake --install --prefix /somewhere/else`
+   therefore leaves the binary unable to find its own catalogs unless the env
+   override is set, which the README documents. The fix is to resolve
+   `share/locale` relative to the executable's own path
+   (`/proc/self/exe`, `_NSGetExecutablePath`, `GetModuleFileName`), or to drop
+   `CMAKE_INSTALL_PREFIX` in favor of a relative lookup. Not done in the 0.7.0
+   wave because it is platform code that only a real multi-platform CI run can
+   verify.
+5. The version reaches users only through a startup stderr line. The protocol
+   has a place for it, `initialize`'s `serverInfo`, but LspCpp's
+   `InitializeResult` models `capabilities` alone, so reporting it means a
+   sixth commit on the fork branch (`lsp-3.17-completions`) plus a pin bump.
+6. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
    `callHierarchy`, `codeLens` (M13), and pull diagnostics (M14). None is
    required by the target editors; each ships as its own milestone.
 
@@ -538,7 +558,7 @@ parser sees.
 ### M11 — Configuration + workspace folders
 
 > Status: landed 2026-09, `ctest` 13/13 green, `clang-format` clean. Both
-> halves shipped. **Config half:** each index root owns its `freebasiclsp.toml`
+> halves shipped. **Config half:** each index root owns its `freebasicd.toml`
 > (`src/settings.{h,cpp}`, `Settings{ includePaths, diagnosticsOn,
 > semanticTokensOn, inlayHintsOn }`, tomlplusplus vendored and pinned to
 > `30172438` v3.4.0). `workspace/didChangeConfiguration` re-reads every live
@@ -574,14 +594,14 @@ parser sees.
 > re-resolves includes); `workspaceFolderRoots_` holds the registered folders
 > that are themselves workspace roots, and a folder removal closes its root's
 > index only while nothing else needs it; a present-but-malformed
-> `freebasiclsp.toml` logs an error and keeps the defaults.
+> `freebasicd.toml` logs an error and keeps the defaults.
 
 > Re-scoped (2026-09): the release-facing deliverables (README, editor setup,
 > CI) moved out to M18. M11 is now the server-configuration and multi-root
 > milestone; the public-release polish ships last, after the feature work.
 
 - **Configuration** — `workspace/didChangeConfiguration` re-reads each root's
-  `freebasiclsp.toml` (payload ignored, idempotent) and re-applies `Settings{
+  `freebasicd.toml` (payload ignored, idempotent) and re-applies `Settings{
   includePaths, diagnosticsOn, semanticTokensOn, inlayHintsOn }` per root —
   few keys, fixed defaults, forward-compatible unknown-key ignore; a
   present-but-malformed file logs an error and keeps the defaults. The index
@@ -761,27 +781,52 @@ with the M5.5/6 file pipeline, format-on-type triggers) is deliberately
 unspecified here; it gets fleshed out as a dedicated design pass before
 implementation.
 
-### M18 — Public release: README, editor setup, CI
+### M18 — Public release: install, version, editor setup, CI
 
 > Moved out of M11 (2026-09): the user-facing and shipping artifacts land
 > after the configuration/workspace-folder, code-action, and editor-extras
-> milestones, at the end of the near-term plan. The
-> `.github/workflows/ci.yml` scaffold is already committed; everything else
-> here is new.
+> milestones, at the end of the near-term plan.
+>
+> Status: partially landed 2026-09-25. The project is `freebasicd` 0.7.0
+> (renamed from `freebasiclsp`), `README.md` ships with the repo, and
+> `cmake --install` lays down the binary, the message catalogs, and
+> `LICENSE.md`. No version tag, no packaged artifact, no CI run yet.
 
-- `README.md`: build/test, capability table, position-encoding note, per-editor
-  wiring (`docs/editors/` — neovim builtin LSP, minimal vscode client,
-  emacs `lsp-mode`). Each wiring doc installs the M9 grammar (`editors/`) and
-  turns on semantic tokens.
-- `.github/workflows/ci.yml`: build + `ctest` on a Linux/macOS/Windows matrix
-  (`checkout --recurse-submodules`); not enabled until the repo is pushed.
-  Expect to fix Windows path handling in `index.cpp` defaults and any
-  MSVC/LspCpp issues once it runs. The CI also regenerates the M9 grammar from
-  the catalog (the M9 freshness gate) so a catalog edit cannot ship without a
-  matching grammar update.
-- Files: `README.md`, `docs/editors/`, `.github/`.
-- Acceptance: README + wiring docs accurate end-to-end on all three editors;
-  CI green on Linux/macOS/Windows once the repo is pushed and enabled.
+- Done (2026-09-25):
+  - The rename to `freebasicd` across the CMake project, the binary and static
+    library targets, the gettext domain and `po/freebasicd.pot`, the
+    `freebasicd.toml` config file, the runtime log/diagnostic `source`
+    strings, and the docs. The fork's LspCpp branch was renamed
+    `freebasic-lsp` → `lsp-3.17-completions` to name what it carries.
+  - `README.md`: status (early, agentic-coding testbed), build/test,
+    capability table, `freebasicd.toml`, architecture map, localization.
+  - `project(freebasicd VERSION 0.7.0 ...)`, semantic versioning, bumped only
+    at a release. The number reaches users through a startup stderr line; the
+    protocol's `serverInfo` is **not** reported, because LspCpp's
+    `InitializeResult` has no such field and adding it means a sixth fork
+    commit.
+  - `install(TARGETS freebasicd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})`
+    plus the catalog tree and `LICENSE.md` (GPL requires shipping the license
+    with the binary).
+- Left:
+  - Per-editor wiring recipes under `docs/editors/`: neovim builtin LSP,
+    minimal vscode client, emacs `lsp-mode`. Each installs the M9 grammar
+    (`editors/`) and turns on semantic tokens. The README carries a generic
+    stdio snippet until these land.
+  - `.github/workflows/ci.yml`: build + `ctest` on a Linux/macOS/Windows
+    matrix (`checkout --recurse-submodules`); enabled once the repo is pushed.
+    Expect to install gettext on the macOS/Windows runners, and to fix Windows
+    path handling in `index.cpp` defaults and any MSVC/LspCpp issues once it
+    runs. The CI also regenerates the M9 grammar from the catalog (the M9
+    freshness gate) so a catalog edit cannot ship without a matching grammar
+    update; a `clang-format --dry-run --Werror` job would close the gap
+    between the local milestone gate and CI.
+  - `CONTRIBUTING.md` / `CODE_OF_CONDUCT.md` / `SECURITY.md`, and a first
+    tagged release.
+- Files: `README.md`, `docs/editors/`, `.github/`, `CMakeLists.txt`.
+- Acceptance: wiring docs accurate end-to-end on all three editors; CI green on
+  Linux/macOS/Windows; `cmake --install` produces a prefix whose binary runs
+  with its catalogs.
 
 ### M19 — Context-aware member completion (UDT members only)
 
@@ -836,7 +881,7 @@ implementation.
 > runtime (`tr`, `trf` with up to three verbatim `%s` insertions,
 > `initI18n`, `setClientLocale` from `InitializeParams.locale`); the
 > `translations` target compiles every committed po to
-> `<build>/share/locale/<lang>/LC_MESSAGES/freebasiclsp.mo` (installed to the
+> `<build>/share/locale/<lang>/LC_MESSAGES/freebasicd.mo` (installed to the
 > prefix too), so a dev binary picks up its catalogs. The two
 > never-translate invariants — the proper noun `FreeBASIC` and uppercase
 > keyword spellings must never appear in a translatable literal — are
@@ -848,7 +893,7 @@ implementation.
 > structural checks still run.
 
 - Runtime wiring: `src/i18n.{h,cpp}` — `initI18n()` binds domain
-  `freebasiclsp` to the build-tree / install-prefix catalog (env override
+  `freebasicd` to the build-tree / install-prefix catalog (env override
   `FBLANG_LOCALEDIR`), forces UTF-8 via `bind_textdomain_codeset`, and
   activates the environment's *message* locale only (numeric/parsing facets
   stay at "C" so LSP output never depends on the UI locale);
@@ -864,7 +909,7 @@ implementation.
 - Toolchain (CMake, `if(GETTEXT_FOUND)`): `po-template` (xgettext:
   `--keyword=tr --keyword=trf:1 --flag=trf:1:c-format
   --add-comments=TRANSLATORS:`, extracts from `src/*.{cpp,h}` +
-  `tools/*.cpp`) regenerates `po/freebasiclsp.pot`; `update-po` (msgmerge)
+  `tools/*.cpp`) regenerates `po/freebasicd.pot`; `update-po` (msgmerge)
   refreshes the po files; `translations ALL` (msgfmt `--check`, so a
   placeholder drift against the pot becomes a build error) compiles every
   committed po under `${FBLANG_LOCALE_OUT}/<lang>/LC_MESSAGES`. Only
@@ -886,7 +931,7 @@ implementation.
 - Files: `src/i18n.{h,cpp}`, `src/parser.cpp`, `src/session.cpp`,
   `src/main.cpp` (`initI18n()` at startup), `cmake/FindIntl.cmake`,
   `CMakeLists.txt` (gettext section + `i18n_checks`/`i18n-test-catalog`
-  wiring), `po/freebasiclsp.pot` + 29 `po/<lang>.po`,
+  wiring), `po/freebasicd.pot` + 29 `po/<lang>.po`,
   `tests/i18n_checks.cpp`.
 - Acceptance: `cmake --build` + `ctest` 14/14 green; `clang-format` clean;
   `po-template` then `update-po` reproduce the committed pot with no msgid

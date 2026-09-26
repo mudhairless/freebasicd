@@ -642,7 +642,7 @@ char const kDidCloseFrame[] =
     R"FB({"uri":"file:///tmp/hello.bas"}})FB";
 
 // The didChangeConfiguration payload is ignored (settings live in each root's
-// freebasiclsp.toml); the notification only signals the server to re-read.
+// freebasicd.toml); the notification only signals the server to re-read.
 char const *kDidChangeConfigurationFrame =
     R"({"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{}}})";
 
@@ -1022,7 +1022,7 @@ void TestDiagnosticsReflectParseErrors() {
          "duplicate dims must be reported with the offending name");
   Expect(output_all.find("\"severity\":2") != std::string::npos,
          "duplicate dims must be reported as warnings");
-  Expect(output_all.find("\"source\":\"freebasiclsp\"") != std::string::npos,
+  Expect(output_all.find("\"source\":\"freebasicd\"") != std::string::npos,
          "diagnostics must carry the server source name");
   Expect(output_all.find("\"start\":{\"line\":1,\"character\":4}") !=
              std::string::npos,
@@ -3001,7 +3001,7 @@ void TestWatchedFilesRescanConverges() {
 
 // --- M11: per-workspace indexes ---
 
-// A freebasiclsp.toml marks its directory as a workspace root (priority-3
+// A freebasicd.toml marks its directory as a workspace root (priority-3
 // detection). Under a *broad* client root the nearest config file between the
 // opened document and the client root names the project; in single-file mode
 // the nearest config file above the document does. Sibling trees stay outside
@@ -3021,7 +3021,7 @@ void TestConfigFileRootDetection() {
   std::filesystem::create_directories(proj / "data");
   std::filesystem::create_directories(sibling);
   {
-    std::ofstream out(proj / "freebasiclsp.toml");
+    std::ofstream out(proj / "freebasicd.toml");
     out << "[server]\n";
     std::ofstream out2(proj / "src" / "app.bas");
     out2 << "sub cfgProjOnly()\nend sub\n";
@@ -3102,7 +3102,7 @@ void TestConfigFileRootDetection() {
   std::filesystem::create_directories(lp / "data");
   std::filesystem::create_directories(lone / "step");
   {
-    std::ofstream out(lp / "freebasiclsp.toml");
+    std::ofstream out(lp / "freebasicd.toml");
     out << "[server]\n";
     std::ofstream out2(lp / "src" / "app.bas");
     out2 << "sub cfgSfProjOnly()\nend sub\n";
@@ -3172,7 +3172,7 @@ void TestConfigFileRootDetection() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
-// A client root that bears a freebasiclsp.toml (rootUri or a registered
+// A client root that bears a freebasicd.toml (rootUri or a registered
 // workspace folder) is *itself* a workspace root: it is used as-is and indexed
 // eagerly at initialize, so workspace/symbol serves its symbols before any
 // document is opened. A config-carrying registered folder joins the priority-0
@@ -3188,7 +3188,7 @@ void TestConfigMarkerRootUsedAsIsEagerIndex() {
   std::filesystem::create_directories(proj / "sub");
   std::filesystem::create_directories(sandbox / "elsewhere");
   {
-    std::ofstream out(proj / "freebasiclsp.toml");
+    std::ofstream out(proj / "freebasicd.toml");
     out << "[server]\n";
     std::ofstream out2(proj / "sub" / "app.bas");
     out2 << "sub eagerOnly()\nend sub\n";
@@ -3248,7 +3248,7 @@ void TestConfigMarkerRootUsedAsIsEagerIndex() {
   std::filesystem::path const fa = sandbox / "fa";
   std::filesystem::create_directories(fa);
   {
-    std::ofstream out(fa / "freebasiclsp.toml");
+    std::ofstream out(fa / "freebasicd.toml");
     out << "[server]\n";
     std::ofstream out2(fa / "a.bas");
     out2 << "sub folderCfgOnly()\nend sub\n";
@@ -3310,11 +3310,11 @@ void TestMultiWorkspaceFoldersStayIsolated() {
   std::filesystem::create_directories(fa);
   std::filesystem::create_directories(fb);
   {
-    std::ofstream out(fa / "freebasiclsp.toml");
+    std::ofstream out(fa / "freebasicd.toml");
     out << "[server]\n";
     std::ofstream out2(fa / "a.bas");
     out2 << "sub alphaOnly()\nend sub\n";
-    std::ofstream out3(fb / "freebasiclsp.toml");
+    std::ofstream out3(fb / "freebasicd.toml");
     out3 << "[server]\n";
     std::ofstream out4(fb / "b.bas");
     out4 << "sub betaOnly()\nend sub\n";
@@ -3418,11 +3418,11 @@ void TestWorkspaceFoldersChangedAddRemove() {
   std::filesystem::create_directories(fa);
   std::filesystem::create_directories(fb);
   {
-    std::ofstream out(fa / "freebasiclsp.toml");
+    std::ofstream out(fa / "freebasicd.toml");
     out << "[server]\n";
     std::ofstream out2(fa / "a.bas");
     out2 << "sub addOnly()\nend sub\n";
-    std::ofstream out3(fb / "freebasiclsp.toml");
+    std::ofstream out3(fb / "freebasicd.toml");
     out3 << "[server]\n";
     std::ofstream out4(fb / "b.bas");
     out4 << "sub addedOnly()\nend sub\n";
@@ -4139,7 +4139,7 @@ void TestInlayHintsReturned() {
   session.stop();
 }
 
-// M11: a freebasiclsp.toml written after open that gains includePaths must
+// M11: a freebasicd.toml written after open that gains includePaths must
 // make a previously-unreachable `#include` resolve on the *next*
 // didChangeConfiguration — the root's open buffer is re-resolved (no
 // include-not-found any more) and cross-file resolution reaches the header.
@@ -4196,7 +4196,7 @@ void TestDidChangeConfigurationIncludePathResolves() {
   // Write the config and signal the change; the notification carries no
   // settings of its own (the payload is ignored, the file is the truth).
   {
-    std::ofstream out(ws / "freebasiclsp.toml");
+    std::ofstream out(ws / "freebasicd.toml");
     out << "includePaths = [\"vendor/extra\"]\n";
   }
   input->append(MakeLspFrame(kDidChangeConfigurationFrame));
@@ -4278,7 +4278,7 @@ void TestDidChangeConfigurationDiagnosticsToggle() {
 
   // Off: one empty publish per open buffer...
   {
-    std::ofstream out(sandbox / "freebasiclsp.toml");
+    std::ofstream out(sandbox / "freebasicd.toml");
     out << "diagnosticsOn = false\n";
   }
   input->append(MakeLspFrame(kDidChangeConfigurationFrame));
@@ -4310,7 +4310,7 @@ void TestDidChangeConfigurationDiagnosticsToggle() {
   // On again: the root's open buffer is re-published with its current errors
   // (the buffer now holds the `case 1` stray closer).
   {
-    std::ofstream out(sandbox / "freebasiclsp.toml");
+    std::ofstream out(sandbox / "freebasicd.toml");
     out << "diagnosticsOn = true\n";
   }
   input->append(MakeLspFrame(kDidChangeConfigurationFrame));
@@ -4341,13 +4341,13 @@ void TestSemanticTokensAndInlayHintsGates() {
   std::filesystem::create_directories(fb);
   {
     // fa disables both features; fb keeps the defaults.
-    std::ofstream out(fa / "freebasiclsp.toml");
+    std::ofstream out(fa / "freebasicd.toml");
     out << "semanticTokensOn = false\ninlayHintsOn = false\n";
     std::ofstream aSem(fa / "a.bas");
     aSem << "dim counter as integer\ncounter = 1\n";
     std::ofstream aInlay(fa / "ai.bas");
     aInlay << "sub greet()\n    print 1\nend sub\ndim x$\n";
-    std::ofstream out2(fb / "freebasiclsp.toml");
+    std::ofstream out2(fb / "freebasicd.toml");
     out2 << "[server]\n";
     std::ofstream bSem(fb / "b.bas");
     bSem << "dim counter as integer\ncounter = 1\n";
@@ -4502,13 +4502,13 @@ void TestSettingsApplyPerRootOnly() {
   std::filesystem::create_directories(fa / "vendor" / "extra");
   std::filesystem::create_directories(fb / "vendor" / "extra");
   {
-    std::ofstream out(fa / "freebasiclsp.toml");
+    std::ofstream out(fa / "freebasicd.toml");
     out << "[server]\n";
     std::ofstream faHdr(fa / "vendor" / "extra" / "inner.bi");
     faHdr << "dim shared aInner as integer\n";
     std::ofstream faSrc(fa / "a.bas");
     faSrc << "#include \"inner.bi\"\nelse\n";
-    std::ofstream out2(fb / "freebasiclsp.toml");
+    std::ofstream out2(fb / "freebasicd.toml");
     out2 << "[server]\n";
     std::ofstream fbHdr(fb / "vendor" / "extra" / "inner.bi");
     fbHdr << "dim shared bInner as integer\n";
@@ -4567,7 +4567,7 @@ void TestSettingsApplyPerRootOnly() {
   // file stays byte-identical, so fb's settings are unchanged and the
   // notification must leave fb's buffers alone.
   {
-    std::ofstream out(fa / "freebasiclsp.toml");
+    std::ofstream out(fa / "freebasicd.toml");
     out << "includePaths = [\"vendor/extra\"]\n";
   }
   input->append(MakeLspFrame(kDidChangeConfigurationFrame));

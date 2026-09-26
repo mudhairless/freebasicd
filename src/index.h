@@ -199,7 +199,7 @@ private:
   std::map<std::string, std::vector<IncludeEdge>>
       outInc_; // path -> include edges
 
-  // The configuration governing this root (freebasiclsp.toml), applied by the
+  // The configuration governing this root (freebasicd.toml), applied by the
   // session after construction and re-applied on didChangeConfiguration.
   // Guarded by mu_ like the maps above. `includeDirs_` caches
   // settings_.includePaths resolved to absolute paths against root_.

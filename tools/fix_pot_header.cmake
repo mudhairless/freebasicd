@@ -11,7 +11,7 @@
 # placeholders, and the revision date are fixed here. Idempotent: every
 # substitution below targets a placeholder that only raw xgettext output
 # contains, so re-running po-template reproduces the committed file exactly.
-set(_pot "${CMAKE_SOURCE_DIR}/po/freebasiclsp.pot")
+set(_pot "${CMAKE_SOURCE_DIR}/po/freebasicd.pot")
 file(READ "${_pot}" _content)
 
 string(REPLACE "# SOME DESCRIPTIVE TITLE."
@@ -19,8 +19,8 @@ string(REPLACE "# SOME DESCRIPTIVE TITLE."
 string(REPLACE "# Copyright (C) YEAR Ebben Feagan"
   "# Copyright (C) 2026 Ebben Feagan" _content "${_content}")
 string(REPLACE
-  "# This file is distributed under the same license as the freebasiclsp package."
-  "# This file is distributed under the same license as the freebasiclsp package (GPL-3.0-or-later)."
+  "# This file is distributed under the same license as the freebasicd package."
+  "# This file is distributed under the same license as the freebasicd package (GPL-3.0-or-later)."
   _content "${_content}")
 string(REPLACE "# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR."
   "# Ebben Feagan <ebben.feagan@gmail.com>, 2026." _content "${_content}")

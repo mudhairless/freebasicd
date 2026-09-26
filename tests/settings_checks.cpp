@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// settings_checks: freebasiclsp.toml parsing and the config-file root marker.
+// settings_checks: freebasicd.toml parsing and the config-file root marker.
 // LSP-agnostic: parseSettings/settingsForDir/hasConfigFile are plain data
 // behind tomlplusplus, exercised directly here (M11).
 

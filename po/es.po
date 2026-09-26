@@ -1,11 +1,11 @@
 # Spanish translations for FreeBASIC Language Server.
 # Copyright (C) 2026 Ebben Feagan
-# This file is distributed under the same license as the freebasiclsp package (GPL-3.0-or-later).
+# This file is distributed under the same license as the freebasicd package (GPL-3.0-or-later).
 # Automatically generated, 2026.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: freebasiclsp\n"
+"Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
 "POT-Creation-Date: 2026-09-24 12:59-0500\n"
 "PO-Revision-Date: 2026-09-24 12:59-0500\n"
@@ -69,7 +69,7 @@ msgstr ""
 
 #: src/session.cpp:635
 #, c-format
-msgid "%s/freebasiclsp.toml is not valid TOML; keeping defaults"
+msgid "%s/freebasicd.toml is not valid TOML; keeping defaults"
 msgstr ""
 
 #: src/session.cpp:648

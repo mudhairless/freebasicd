@@ -145,7 +145,7 @@ nearestProjectRoot(std::filesystem::path start,
 }
 
 // Nearest ancestor of `start` (inclusive) at or below `limit` holding a
-// freebasiclsp.toml — the config-file root marker. Mirrors
+// freebasicd.toml — the config-file root marker. Mirrors
 // nearestProjectRoot: never widens past `limit`.
 std::optional<std::filesystem::path>
 nearestConfigRoot(std::filesystem::path start,
@@ -170,7 +170,7 @@ nearestConfigRoot(std::filesystem::path start,
 
 // Unbounded upward walk for single-file mode: the nearest ancestor of `start`
 // satisfying `pred`, stopping before the home folder and the drive root. A
-// `.git` or `~/freebasiclsp.toml` at the personal directory must never capture
+// `.git` or `~/freebasicd.toml` at the personal directory must never capture
 // every lone file, mirroring the source-layout walk's home guard
 // (findSourceLayoutRoot).
 std::filesystem::path homeDirectory(); // defined below
@@ -323,7 +323,7 @@ lsDiagnostic toLsDiagnostic(std::string_view content,
     diag.code.emplace(
         std::make_pair<optional<std::string>, optional<int>>(d.code, {}));
   }
-  diag.source.emplace("freebasiclsp");
+  diag.source.emplace("freebasicd");
   diag.message = d.message;
   return diag;
 }
@@ -730,7 +730,7 @@ void FreeBasicServer::setExitHandler(std::function<void()> exitHandler) {
 }
 
 // fblang::settingsForDir with parse-failure logging: a missing or
-// comment-only freebasiclsp.toml is normal (defaults, nothing logged); a
+// comment-only freebasicd.toml is normal (defaults, nothing logged); a
 // present-but-malformed one also keeps the defaults but says so on stderr
 // instead of silently treating a broken config as defaults.
 fblang::Settings settingsForDirLogged(std::filesystem::path const &dir) {
@@ -738,8 +738,8 @@ fblang::Settings settingsForDirLogged(std::filesystem::path const &dir) {
   fblang::Settings const s = fblang::settingsForDir(dir, &ok);
   if (!ok) {
     (void)std::fprintf(
-        stderr, "[freebasiclsp] %s\n",
-        fblang::trf("%s/freebasiclsp.toml is not valid TOML; keeping defaults",
+        stderr, "[freebasicd] %s\n",
+        fblang::trf("%s/freebasicd.toml is not valid TOML; keeping defaults",
                     fblang::normalizePath(dir))
             .c_str());
   }
@@ -751,7 +751,7 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
     return;
   }
   std::string const normRoot = fblang::normalizePath(root);
-  (void)std::fprintf(stderr, "[freebasiclsp] %s\n",
+  (void)std::fprintf(stderr, "[freebasicd] %s\n",
                      fblang::trf("workspace root: %s", normRoot).c_str());
   std::lock_guard<std::mutex> const lock(indexesMutex_);
   if (indexes_.find(normRoot) != indexes_.end()) {
@@ -787,14 +787,14 @@ void logDetectedRoot(FreeBasicServer::IndexRootChoice const &choice,
   std::string const normRoot = fblang::normalizePath(choice.root);
   if (clientRoot.empty()) {
     (void)std::fprintf(
-        stderr, "[freebasiclsp] %s\n",
+        stderr, "[freebasicd] %s\n",
         fblang::trf("workspace root %s (detected via %s; no client root)",
                     normRoot, how)
             .c_str());
     return;
   }
   (void)std::fprintf(
-      stderr, "[freebasiclsp] %s\n",
+      stderr, "[freebasicd] %s\n",
       fblang::trf("workspace root %s (detected via %s; client root %s)",
                   normRoot, how, fblang::normalizePath(clientRoot))
           .c_str());
@@ -1095,7 +1095,7 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
 
   // Workspace folders: every registered folder is recorded; folders that are
   // themselves workspace roots (a version-control marker or a
-  // freebasiclsp.toml) get their own index right away, so files opened under
+  // freebasicd.toml) get their own index right away, so files opened under
   // them are served without waiting for a didOpen. Broad folders defer to
   // per-document detection (chooseIndexRoot). workspaceFolderRoots_ feeds the
   // priority-0 containment lookup above.
@@ -1142,7 +1142,7 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
       ensureWorkspaceIndex(rootPath);
     } else {
       (void)std::fprintf(
-          stderr, "[freebasiclsp] %s\n",
+          stderr, "[freebasicd] %s\n",
           fblang::trf("workspace root %s has no version-control marker or "
                       "config file; index scope deferred to the first opened "
                       "document (detection: version-control marker, config "
@@ -1386,7 +1386,7 @@ void FreeBasicServer::onWorkspaceFoldersChanged(
 
 void FreeBasicServer::onDidChangeConfiguration(
     Notify_WorkspaceDidChangeConfiguration::notify const &notify) {
-  // The payload is ignored: settings live in each root's freebasiclsp.toml,
+  // The payload is ignored: settings live in each root's freebasicd.toml,
   // so the notification is only a signal to re-read them. The re-read is
   // idempotent — no config change, no effect; an empty/comment-only file and
   // a missing one both mean defaults, unchanged.

@@ -20,7 +20,7 @@
 //      translators never see; lowercase homographs in English prose ("for doc
 //      comments") are ordinary words and stay allowed.
 //   3. Freshness: every translatable literal must exist as a msgid in the
-//      committed po/freebasiclsp.pot, so a new message cannot ship without the
+//      committed po/freebasicd.pot, so a new message cannot ship without the
 //      template translators work from.
 
 #include <algorithm>
@@ -306,7 +306,7 @@ void TestPotFreshness() {
   CHECK(!pot.empty());
   for (Literal const &lit : lits) {
     if (pot.find(lit.text) == pot.end()) {
-      std::printf("  %s: literal missing from po/freebasiclsp.pot:\n"
+      std::printf("  %s: literal missing from po/freebasicd.pot:\n"
                   "    \"%s\"\n    (run: cmake --build build --target "
                   "po-template, then update-po)\n",
                   lit.site.c_str(), lit.text.c_str());

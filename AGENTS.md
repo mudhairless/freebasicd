@@ -10,8 +10,10 @@ repository (default branch `main`).
   `third_party/LspCpp` from **our fork,
   [github.com/mudhairless/LspCpp](https://github.com/mudhairless/LspCpp)**
   (`.gitmodules` points there; the submodule is pinned to
-  `0badddd9d76ae3582d8771b9baa86e9bddcbaf6f` on the fork's `freebasic-lsp`
-  branch, which is **upstream `19150d12c4ae26239d75258ed598ba8ea3587cb7`**
+  `0badddd9d76ae3582d8771b9baa86e9bddcbaf6f` on the fork's
+  `lsp-3.17-completions` branch (named for what it carries: the LSP 3.17 types
+  and serialization upstream still lacks), which is **upstream
+  `19150d12c4ae26239d75258ed598ba8ea3587cb7`**
   (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus five
   commits of ours**: `310e1e6` adding the watched-files registration types
   upstream lacks —
@@ -45,17 +47,17 @@ repository (default branch `main`).
   **Working on the fork**: inside `third_party/LspCpp`, `origin` is
   `mudhairless/LspCpp` (our fork, fetch = HTTPS, push = SSH) and `upstream` is
   `kuafuwang/LspCpp` with its push URL disabled. The checked-out branch is
-  `freebasic-lsp` (tracks `origin/freebasic-lsp`); the fork's `master` is left
-  at upstream. To pick up upstream changes:
-  `git fetch upstream && git switch freebasic-lsp && git rebase upstream/master`,
-  then `git push --force-with-lease origin freebasic-lsp` and bump the pinned
-  commit here (`.gitmodules` URL is unchanged, so `git submodule update --init`
-  keeps working for contributors).
+  `lsp-3.17-completions` (tracks `origin/lsp-3.17-completions`); the fork's
+  `master` is left at upstream. To pick up upstream changes:
+  `git fetch upstream && git switch lsp-3.17-completions && git rebase
+  upstream/master`, then `git push --force-with-lease origin
+  lsp-3.17-completions` and bump the pinned commit here (`.gitmodules` URL is
+  unchanged, so `git submodule update --init` keeps working for contributors).
 - LspCpp handles all protocol JSON via its bundled RapidJSON. 
 - **tomlplusplus** (github.com/marzer/tomlplusplus) is vendored as a **git
   submodule** at `third_party/tomlplusplus`, pinned to `30172438` (v3.4.0).
   Header-only — an INTERFACE target (`tomlplusplus::tomlplusplus`) whose only
-  cost is the include dir. It parses the server's `freebasiclsp.toml` config
+  cost is the include dir. It parses the server's `freebasicd.toml` config
   file (`src/settings.{h,cpp}`, M11). Restore with
   `git submodule update --init`.
 - Requires CMake 3.16+ and C++17.
@@ -117,14 +119,14 @@ must stay there. Encoding directives that the lexer/parser must honor:
 - **Workspace roots (M11)**: root selection is `chooseIndexRoot`'s priority
   0–5 — the deepest registered marker-root containing the file; a client root
   that is itself a workspace root as-is; else the nearest VCS marker, then the
-  nearest `freebasiclsp.toml` (config-file marker), then the source/include
+  nearest `freebasicd.toml` (config-file marker), then the source/include
   layout walk (`findSourceLayoutRoot`, up to the drive root / `$HOME`); and
   single-file mode when no client root exists. A file outside every index root
   is served **resolution-only** through the session-root index's on-demand
   closure — never its own index (it would leak into workspace/symbol) and
   never the single-file branch while a client root exists. A detected root
   that replaces the client's is logged to stderr with the signal.
-  `src/settings.{h,cpp}` parses `freebasiclsp.toml` (`hasConfigFile` is the
+  `src/settings.{h,cpp}` parses `freebasicd.toml` (`hasConfigFile` is the
   marker; `Settings` keys with fixed defaults). Each index owns a `Settings`
   snapshot adopted at construction (`ensureWorkspaceIndex` →
   `index->applySettings(settingsForDirLogged(root))`); `workspace/
@@ -221,7 +223,24 @@ Gotchas learned the hard way (2026-09):
   duplicated switch/case-`if` branches, an ignored `snprintf` result,
   `std::move` of a trivially-copyable type, `path`-by-value params made
   `const&`, const-correctness pass, loop→`std::any_of`/`find_if` conversions.
-  Visual check: exit 0, zero diagnostics, `ctest` 7/7 green.
+  Visual check: exit 0, zero diagnostics, `ctest` 15/15 green.
+
+## Versioning
+
+The project follows **semantic versioning**. The single source of the number
+is `project(freebasicd LANGUAGES CXX VERSION <x.y.z> ...)` in `CMakeLists.txt`;
+CMake passes it to `main.cpp` as `FBLANG_VERSION`, and that is the only place
+it surfaces (the LSP `initialize` reply cannot carry it, LspCpp's
+`InitializeResult` has no `serverInfo` field).
+
+- **Bump the version only when a release ships.** Feature commits, fix
+  commits, refactors, and docs commits never touch it. A release is a version
+  bump plus a tag, and the tag is what the number is for.
+- Pre-1.0 (anything `0.y.z`): MINOR is the feature wave, PATCH is fixes and
+  docs. BREAKING in the 0.x line means "the protocol surface or the config
+  file changed shape", and it takes the MINOR.
+- Keep it below 1.0 until the LSP surface, the `freebasicd.toml` keys, and the
+  install layout have held still long enough to call stable.
 
 ## Git workflow
 

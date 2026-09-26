@@ -8,9 +8,9 @@
 
 // Localization support: GNU gettext (system libintl, found via
 // cmake/FindIntl.cmake — never vendored) for log and diagnostic messages.
-// The message domain is "freebasiclsp"; catalogs are built by the CMake
+// The message domain is "freebasicd"; catalogs are built by the CMake
 // `translations` target from po/*.po and live under
-// <locale>/<lang>/LC_MESSAGES/freebasiclsp.mo.
+// <locale>/<lang>/LC_MESSAGES/freebasicd.mo.
 //
 // Never-translate invariants, enforced by tests/i18n_checks:
 //   * the word `FreeBASIC` never appears inside a translatable literal — it
@@ -32,7 +32,7 @@
 
 namespace fblang {
 
-// Initialize gettext: bind the "freebasiclsp" domain to the locale catalog
+// Initialize gettext: bind the "freebasicd" domain to the locale catalog
 // directory (env override FBLANG_LOCALEDIR, else the build-tree catalog for a
 // dev build, else the configured install prefix), force UTF-8 output, and put
 // the process into its environment locale. Idempotent; call once at startup.

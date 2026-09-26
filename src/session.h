@@ -76,7 +76,7 @@ public:
       ClientRoot,     // the client-provided root, used as-is
       RegisteredRoot, // a registered workspace-folder root containing the file
       VcsMarker,      // nearest version-control-marked ancestor within/at it
-      ConfigFile,     // nearest ancestor holding a freebasiclsp.toml
+      ConfigFile,     // nearest ancestor holding a freebasicd.toml
       SourceLayout,   // no VCS/config marker; ancestor holding a source/include
                       // child
       SingleFile,     // no client root; the opened file's own directory
@@ -111,7 +111,7 @@ private:
 
   // In-memory per-workspace symbol indexes (M11): one index per workspace
   // root, keyed by normalized root. Registered client workspace folders that
-  // bear a root marker (a version-control marker or freebasiclsp.toml) are
+  // bear a root marker (a version-control marker or freebasicd.toml) are
   // indexed at initialize and tracked in workspaceFolderRoots_; broad folders
   // defer to per-document detection; single-file mode roots at the opened
   // file's project or its own directory. Handlers snapshot a shared_ptr under
@@ -184,7 +184,7 @@ private:
   onWatchedFiles(Notify_WorkspaceDidChangeWatchedFiles::notify const &notify);
   void onWorkspaceFoldersChanged(
       Notify_WorkspaceDidChangeWorkspaceFolders::notify const &notify);
-  // Settings for every index root live in freebasiclsp.toml files, not in
+  // Settings for every index root live in freebasicd.toml files, not in
   // client configuration chunks: the didChangeConfiguration payload is ignored
   // and the notification is only a signal to re-read each root's config file
   // (idempotent — a no-op when nothing changed) and re-apply whatever did.

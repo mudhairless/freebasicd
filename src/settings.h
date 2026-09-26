@@ -13,13 +13,13 @@
 
 namespace fblang {
 
-// The server-side configuration file. A `freebasiclsp.toml` at a directory
+// The server-side configuration file. A `freebasicd.toml` at a directory
 // marks that directory as a workspace root (it joins the version-control and
 // source/include-layout markers), and carries the root's settings. Parsed with
 // the vendored tomlplusplus (third_party/tomlplusplus) — M11.
-inline constexpr char const *kConfigFileName = "freebasiclsp.toml";
+inline constexpr char const *kConfigFileName = "freebasicd.toml";
 
-// Server configuration read from `freebasiclsp.toml` at a workspace root.
+// Server configuration read from `freebasicd.toml` at a workspace root.
 // Few keys, fixed defaults. Unknown keys are ignored and a malformed or
 // type-mismatched table keeps the defaults, so a bad config file never
 // degrades a session below the defaults.
@@ -42,11 +42,11 @@ struct Settings {
   }
 };
 
-// True when `dir/freebasiclsp.toml` exists as a regular file — the marker that
+// True when `dir/freebasicd.toml` exists as a regular file — the marker that
 // `dir` is a workspace root.
 bool hasConfigFile(std::filesystem::path const &dir);
 
-// Parse a freebasiclsp.toml document into Settings. Unknown keys are ignored;
+// Parse a freebasicd.toml document into Settings. Unknown keys are ignored;
 // a parse failure or a key of the wrong type keeps that key's default, so the
 // parser can never produce a Settings the server considers invalid. When `ok`
 // is non-null it is set to false only when the document is malformed TOML
@@ -54,7 +54,7 @@ bool hasConfigFile(std::filesystem::path const &dir);
 // to log an error instead of silently treating a broken config as defaults.
 Settings parseSettings(std::string_view tomlText, bool *ok = nullptr);
 
-// Settings for `dir`: parsed from `dir/freebasiclsp.toml` when it exists,
+// Settings for `dir`: parsed from `dir/freebasicd.toml` when it exists,
 // else the defaults. `ok` is forwarded to parseSettings (false only for
 // malformed TOML; a missing file or an empty/comment-only one is fine).
 Settings settingsForDir(std::filesystem::path const &dir, bool *ok = nullptr);
