@@ -23,6 +23,12 @@ set(LSPCPP_BUILD_PERF_SMOKE OFF CACHE BOOL "" FORCE)
 set(LSPCPP_BUILD_FUZZER OFF CACHE BOOL "" FORCE)
 set(LSPCPP_USE_CPP17 ON CACHE BOOL "" FORCE)
 set(LSPCPP_STANDALONE_ASIO ON CACHE BOOL "" FORCE)
+# ixwebsocket is added by LspCpp regardless of LSPCPP_BUILD_WEBSOCKETS (that
+# flag only drops LspCpp's own WebSocketServer.cpp), and ixwebsocket defaults
+# USE_ZLIB to ON for permessage-deflate. We serve over stdio, so nothing
+# reaches that compression; leaving it on adds a hard zlib dependency that
+# Linux and macOS satisfy by accident and a Windows runner does not have.
+set(USE_ZLIB OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(third_party/LspCpp)
 
