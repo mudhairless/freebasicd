@@ -15,10 +15,12 @@ name: CI
   push:
     branches: [main]
     # Markdown-only pushes (PLAN, README, hygiene files) cannot break a build.
-    # "**.md" is the form GitHub documents for "at any depth".
-    paths-ignore: ["**.md"]
+    # "**/*.md", not "**.md": the latter does not match a root-level .md, and a
+    # docs-only push ran all five legs anyway (observed on eecbf81, an
+    # AGENTS.md + PLAN.md commit).
+    paths-ignore: ["**/*.md"]
   pull_request:
-    paths-ignore: ["**.md"]
+    paths-ignore: ["**/*.md"]
   workflow_dispatch:
 
 permissions:
