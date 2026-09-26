@@ -34,10 +34,15 @@ env:
   # failure unexplainable. Bump this together with the local tool.
   CLANG_FORMAT_VERSION: "22.1.8"
   # GNU gettext for the Windows leg: there is no system one, and the CMake
-  # build compiles every po file to a .mo. This bundle ships the tools
-  # (msgfmt/msgmerge/xgettext) plus the MSVC import library for the runtime,
-  # which is what cmake/FindIntl.cmake looks for.
-  GETTEXT_WINDOWS_URL: >-
+  # build compiles every po file to a .mo with msgfmt. Two archives, because
+  # mlocati splits the release: the plain bundle has the tools but no headers,
+  # and the -dev-msvc bundle has libintl.h plus the MSVC import library but no
+  # executables. Both unzip to the same bin/include/lib layout, so extracting
+  # both into one directory yields a prefix that satisfies FindGettext (tools)
+  # and FindIntl (header + library) at once.
+  GETTEXT_WINDOWS_TOOLS_URL: >-
+    https://github.com/mlocati/gettext-iconv-windows/releases/download/v1.0-v1.19/gettext1.0-iconv1.19-shared-64.zip
+  GETTEXT_WINDOWS_DEV_URL: >-
     https://github.com/mlocati/gettext-iconv-windows/releases/download/v1.0-v1.19/gettext1.0-iconv1.19-shared-64-dev-msvc.zip
 
 jobs:
@@ -97,19 +102,27 @@ jobs:
         if: matrix.gettext == 'zip'
         shell: pwsh
         run: |
-          $zip = Join-Path $env:RUNNER_TEMP 'gettext.zip'
           $dest = Join-Path $env:RUNNER_TEMP 'gettext'
-          Invoke-WebRequest $env:GETTEXT_WINDOWS_URL -OutFile $zip
-          Expand-Archive $zip -DestinationPath $dest -Force
-          # Do not assume the archive's internal layout: find the tool and
-          # take its prefix, so a repack cannot silently break the build.
+          $archives = @($env:GETTEXT_WINDOWS_TOOLS_URL, $env:GETTEXT_WINDOWS_DEV_URL)
+          foreach ($url in $archives) {
+            $zip = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetFileName($url))
+            Invoke-WebRequest $url -OutFile $zip
+            Expand-Archive $zip -DestinationPath $dest -Force
+          }
+          # Do not assume the archives' internal layout: find the tool and take
+          # its prefix, so a repack cannot silently break the build. Assert both
+          # halves here rather than in configure, where a missing header or
+          # import library reads as an unrelated find_library failure.
           $msgfmt = Get-ChildItem -Path $dest -Recurse -Filter 'msgfmt.exe' |
             Select-Object -First 1
-          if (-not $msgfmt) { throw "msgfmt.exe missing from $env:GETTEXT_WINDOWS_URL" }
+          if (-not $msgfmt) { throw "msgfmt.exe missing from $archives" }
           $root = $msgfmt.Directory.Parent.FullName
+          if (-not (Test-Path (Join-Path $root 'include\libintl.h'))) {
+            throw "libintl.h missing under $root: the -dev-msvc bundle did not land"
+          }
           Write-Host "gettext root: $root"
-          # The bin directory holds both the tools and the runtime DLLs
-          # (intl-8.dll), so one PATH entry serves configure, build, and test.
+          # One PATH entry serves configure, build, and test: the tools
+          # (msgfmt, msgmerge) and the runtime DLLs both live in bin.
           "$($msgfmt.Directory.FullName)" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "GETTEXT_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           & "$($msgfmt.FullName)" --version | Select-Object -First 1
@@ -134,7 +147,7 @@ jobs:
         shell: pwsh
         run: >-
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          "-DCMAKE_PREFIX_PATH=$env:GETTEXT_ROOT" ${{ matrix.cmake_args }}
+          "-DGETTEXT_ROOT=$env:GETTEXT_ROOT" ${{ matrix.cmake_args }}
 
       # --config Release drives the multi-config generator on Windows and is
       # ignored by the single-config generators on Linux and macOS.

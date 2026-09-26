@@ -73,7 +73,17 @@ add_library(freebasicd_core STATIC
     src/session.cpp
     src/utf16.cpp
 )
-target_link_libraries(freebasicd_core PRIVATE freebasicd_lang lspcpp)
+# freebasicd_lang is PUBLIC, lspcpp PRIVATE, and the difference is load-bearing.
+# A static library hands its PRIVATE dependencies to consumers as
+# $<LINK_ONLY:...>: the library stays on the link line but its usage
+# requirements do not follow. src/main.cpp includes i18n.h, so the executable
+# needs freebasicd_lang's include directory *and* Intl::Intl's, which is the
+# gettext prefix on macOS and Windows. It built anyway on Linux only because
+# glibc's libintl.h sits in /usr/include, a default search path. lspcpp stays
+# PRIVATE because no header of ours includes it.
+target_link_libraries(freebasicd_core
+    PUBLIC freebasicd_lang
+    PRIVATE lspcpp)
 
 add_executable(freebasicd
     src/main.cpp
