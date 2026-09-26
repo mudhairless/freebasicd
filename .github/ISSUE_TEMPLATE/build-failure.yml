@@ -1,0 +1,122 @@
+name: Build or CI failure
+description: The project does not configure, compile, or pass its tests on your machine or on a runner.
+title: "[build] "
+labels:
+  - build
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The project is verified on Linux with GCC and Clang. macOS and Windows
+        are expected to need work, and this template exists to collect what is
+        missing rather than to decide whether it is your fault.
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it fail?
+      options:
+        - Locally, at configure time
+        - Locally, at build time
+        - Locally, at test time
+        - GitHub Actions
+        - On a machine I do not control (packaging, distro, editor plugin)
+    validations:
+      required: true
+
+  - type: input
+    id: command
+    attributes:
+      label: The exact command
+      description: The full configure, build, or test command you ran.
+      placeholder: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: The first error, not the last
+      description: >
+        Compiler output buries the first error under a thousand follow-on
+        lines. Paste from the top of the failure, including the first
+        `error:` or `CMake Error`.
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: Windows 11 24H2, macOS 14.5, Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: input
+    id: toolchain
+    attributes:
+      label: Compiler and version
+      description: Output of the compiler's `--version`, or the Visual Studio or Xcode version.
+      placeholder: "gcc (GCC) 13.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: cmake
+    attributes:
+      label: CMake version
+      description: The project requires 3.16 or newer.
+      placeholder: 3.28.3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: gettext
+    attributes:
+      label: Is GNU gettext installed?
+      description: >
+        `msgfmt` and friends. Without them the build still succeeds and skips
+        the message catalogs, so a catalog failure is a different problem from
+        a compiler failure.
+      options:
+        - "Yes, msgfmt is on PATH"
+        - "No, not installed"
+        - "Only on Linux, not on this platform"
+        - I do not know
+    validations:
+      required: true
+
+  - type: textarea
+    id: submodules
+    attributes:
+      label: Output of `git submodule status`
+      description: >
+        Both dependencies are submodules, and a clone without `--recursive`
+        does not configure. Every line should show a leading space, and the
+        LspCpp line should end in the pinned commit, not a `-` or `+`.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: A `freebasicd.toml` if you have one
+      description: >
+        Optional. A config file at a workspace root changes include resolution
+        and feature gates, so its contents can explain a surprising test
+        result.
+      render: toml
+    validations:
+      required: false
+
+  - type: textarea
+    id: extras
+    attributes:
+      label: Anything else
+      description: >
+        Environment variables that matter (`FBLANG_LOCALEDIR`), an unusual
+        filesystem, a path with spaces or non-ASCII characters, the container
+        or WSL setup.
+    validations:
+      required: false

@@ -141,13 +141,26 @@ and moves only when a release ships. See `AGENTS.md` §Versioning.
 
 ## Reporting bugs
 
-Issues are welcome, and FreeBASIC semantics questions are the most useful kind.
-Please include:
+There are four issue templates, and each asks for the evidence that kind of
+report needs:
 
-- A minimal `.bas` file, and the dialect if it is not `fb` (`#lang` or
-  `$lang`).
-- What you expected and what the server did, with the exact diagnostic.
-- The startup line from stderr, which carries the version, plus your platform
-  and editor.
+- **Bug report** — the server gets something wrong. Asks which feature, the
+  minimal `.bas` file, the dialect, the exact diagnostic, the startup line
+  that carries the version, and your client. A missing feature is often a
+  client that never sent the request, so the client matters.
+- **fbc divergence** — the server and the real `fbc` disagree about FreeBASIC
+  semantics. Asks for the compiler's own output with its error number, your
+  `fbc` version, the construct in FreeBASIC's words, and whether
+  `FreeBASIC.md` §12 already documents it.
+- **Build or CI failure** — it does not configure, compile, or pass its tests.
+  Asks for the first error, the toolchain, whether gettext is present, and
+  `git submodule status`, which is the usual cause.
+- **Feature request** — something it should do. Asks what you do instead
+  today, which is usually what decides whether it gets built.
+
+FreeBASIC semantics questions are the most useful kind of issue, but a
+question about the language itself belongs on the
+[FreeBASIC wiki](https://www.freebasic.net/wiki/DocToc). If the server and the
+wiki disagree, that is a divergence report.
 
 Security vulnerabilities do not go in issues. See [`SECURITY.md`](SECURITY.md).

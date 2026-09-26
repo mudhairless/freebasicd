@@ -1,0 +1,142 @@
+name: Bug report
+description: Something the server gets wrong, on a document it should understand.
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A minimal `.bas` file is worth more than a long description. If the
+        language server is disagreeing with `fbc` about what FreeBASIC means,
+        use the **fbc divergence** template instead, it asks for different
+        evidence.
+
+  - type: dropdown
+    id: feature
+    attributes:
+      label: Which feature is wrong?
+      description: The capability the problem shows up in.
+      options:
+        - Diagnostics (parse errors, unterminated block, unresolved include)
+        - Hover
+        - Go to definition
+        - Find references
+        - Document highlight
+        - Rename
+        - Completion
+        - Signature help
+        - Document symbols
+        - Folding ranges
+        - Semantic tokens (highlighting)
+        - Inlay hints
+        - Code actions (quick fixes)
+        - Workspace symbols
+        - Workspace folders or `freebasicd.toml`
+        - Something else
+    validations:
+      required: true
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: What happens?
+      options:
+        - Wrong result (no error, wrong answer)
+        - Spurious error or diagnostic
+        - Missing error or diagnostic
+        - Crash or hang
+        - Feature is not advertised or the client never calls it
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: dialect
+    attributes:
+      label: Language dialect
+      description: >
+        Only `fb` is implemented. Other dialects get a best-effort `fb` parse
+        plus a `lang-mode` information diagnostic. Name the dialect in the
+        repro if it is not `fb`.
+      placeholder: fb
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal FreeBASIC source
+      description: >
+        The smallest file that shows the problem, including its
+        `#include`/`#inclib` lines if the bug needs another file. A client
+        only shares what the editor loads, so say which files must be open.
+      render: freebasic
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: >
+        What you did in the editor, not what the server does internally.
+        "Open the file, type `x.` at the end of line 3" beats "the completer
+        is broken".
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What a correct FreeBASIC tool would have shown or done.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+      description: >
+        The exact diagnostic text, hover, or completion item, copied rather
+        than paraphrased. If the server logged anything to stderr, include
+        it.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Server version
+      description: >
+        The startup line on stderr prints it, in the form
+        `[freebasicd] freebasicd 0.7.0 starting`. There are no releases yet,
+        so say "main at <commit>" if you built from source.
+      placeholder: "[freebasicd] freebasicd 0.7.0 starting"
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: Editor or LSP client
+      description: >
+        Name and version. Clients differ in what they ask for, so a missing
+        feature is often a client that never sent the request.
+      placeholder: neovim 0.11
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >
+        Operating system, and anything else that could matter: a
+        `freebasicd.toml` with non-default settings, a multi-root workspace,
+        a file outside the workspace root, the presence of an `fbc`
+        installation.
+      placeholder: Linux, single-root workspace, no freebasicd.toml
+    validations:
+      required: false

@@ -816,6 +816,16 @@ implementation.
     and `SECURITY.md` (GitHub private advisories, an in-scope list for an LSP
     server, out-of-scope list, and the "no CLA, no DCO" position inherited
     from GPL terms).
+  - `.github/ISSUE_TEMPLATE/`: four issue forms (bug, fbc divergence, build or
+    CI failure, feature request) plus a `config.yml` that routes security
+    reports to the private advisory form and points language questions at the
+    wiki. Each form asks for what that class of report actually needs, and
+    nothing is a free-form "describe the problem": the bug form wants the
+    feature, the dialect, a minimal `.bas`, the exact diagnostic, the stderr
+    startup line that carries the version, and the client; the divergence form
+    wants fbc's own output and whether `FreeBASIC.md` §12 already lists it;
+    the build form wants the first error, the toolchain, gettext, and
+    `git submodule status`.
 - Left:
   - Per-editor wiring recipes under `docs/editors/`: neovim builtin LSP,
     minimal vscode client, emacs `lsp-mode`. Each installs the M9 grammar

@@ -1,0 +1,100 @@
+name: Feature request
+description: Something the server should do that it does not do yet.
+title: "[feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project is built by an AI coding agent working through the
+        roadmap in `PLAN.md`. Before you file: the open gaps are listed in
+        `PLAN.md` section 4, and the unimplemented LSP 3.17 requests
+        (`selectionRange`, `callHierarchy`, `codeLens`, pull diagnostics,
+        document links, completion resolve) are already tracked as M13 to M17.
+        Filing those is fine, but pointing at the milestone with your use case
+        is more useful than filing blind.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the server?
+      options:
+        - A language feature (FreeBASIC construct we do not model)
+        - An LSP request we do not implement
+        - Cross-file behavior (includes, workspace roots, visibility rules)
+        - Editor experience (configuration, grammars, workflow)
+        - Build, packaging, or install
+        - Diagnostics quality
+        - Translations
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: want
+    attributes:
+      label: What should it do?
+      description: >
+        Describe the behavior, not the implementation. What you would see in
+        the editor if this worked.
+    validations:
+      required: true
+
+  - type: textarea
+    id: now
+    attributes:
+      label: What do you do instead today?
+      description: >
+        The workaround, and what it costs you. This is usually the part that
+        decides whether the feature gets built.
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: Editor or LSP client
+      description: >
+        Feature requests get filtered by what clients actually support, so
+        knowing the client tells us whether the feature is reachable.
+      placeholder: neovim 0.11, VS Code 1.95
+    validations:
+      required: true
+
+  - type: input
+    id: plan
+    attributes:
+      label: Is it already on the roadmap?
+      description: >
+        A `PLAN.md` section 4 item or a milestone number, if you found one.
+      placeholder: "PLAN.md section 4, item 6 (M13 codeLens)"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: willing
+    attributes:
+      label: Would you send the patch?
+      description: >
+        Honest answers only. A "no" does not disqualify the request, it just
+        changes who has to do the work.
+      options:
+        - "Yes, I can write it"
+        - "Yes, with guidance"
+        - "No, but I can test it"
+        - "No"
+    validations:
+      required: true
+
+  - type: textarea
+    id: contributing
+    attributes:
+      label: If you can send a patch
+      description: >
+        Optional. Anything a reviewer should know before reading it: the parts
+        of the language layer or LSP handler you already looked at, and
+        whether an AI agent would write it. `CONTRIBUTING.md` covers the
+        gates a change has to pass.
+    validations:
+      required: false

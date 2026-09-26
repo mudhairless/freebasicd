@@ -1,0 +1,117 @@
+name: fbc divergence
+description: The server and the real fbc compiler disagree about FreeBASIC semantics.
+title: "[divergence] "
+labels:
+  - bug
+  - language
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The language facts this server is built on live in `FreeBASIC.md`, and
+        the places where the implementation is knowingly behind real `fbc` are
+        listed in its section 12. Check that list first: if your case is
+        already written down, say so in the last field, it may just need the
+        doc linked from your editor.
+
+        If instead the server is confidently wrong, this template is the one.
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal FreeBASIC source
+      description: The smallest file where fbc and the server disagree.
+      render: freebasic
+    validations:
+      required: true
+
+  - type: textarea
+    id: fbc
+    attributes:
+      label: What fbc does
+      description: >
+        The compiler output, warning, or error, copied verbatim, including the
+        number. `fbc` 1.10.2 is the version the language facts were verified
+        against, but report what your version actually does.
+      placeholder: "main.bas(3): error 42: Symbol not defined: FOO"
+    validations:
+      required: true
+
+  - type: textarea
+    id: server
+    attributes:
+      label: What the server does
+      description: >
+        The exact diagnostic, hover, or completion result. "No diagnostic" is
+        a valid answer, and the most interesting one.
+    validations:
+      required: true
+
+  - type: input
+    id: fbcversion
+    attributes:
+      label: fbc version
+      description: Output of `fbc -v`.
+      placeholder: fbc 1.10.2 (2023-11-30)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: dialect
+    attributes:
+      label: Language dialect
+      description: >
+        The dialect is part of the answer: `fb` mode ignores identifier
+        suffixes, other dialects do not.
+      options:
+        - fb
+        - fblite
+        - qb
+        - Other (named in the repro)
+    validations:
+      required: true
+
+  - type: input
+    id: construct
+    attributes:
+      label: The construct, in FreeBASIC's words
+      description: >
+        The keyword, statement, or type at issue, so the report can be filed
+        against the right section of `FreeBASIC.md`.
+      placeholder: SHARED / COMMON SHARED, END SELECT, TYPE access sections
+    validations:
+      required: true
+
+  - type: dropdown
+    id: known
+    attributes:
+      label: Is it already listed as a divergence?
+      description: See `FreeBASIC.md` section 12.
+      options:
+        - "Yes, and the behavior still is wrong"
+        - "Yes, and the behavior is what that section describes"
+        - "No, I checked"
+        - "I have not read section 12"
+    validations:
+      required: true
+
+  - type: input
+    id: section
+    attributes:
+      label: If yes, which entry?
+      description: Section 12 entry number or the FreeBASIC.md section it lives in.
+      placeholder: "12.6, #include once guard states"
+    validations:
+      required: false
+
+  - type: input
+    id: wiki
+    attributes:
+      label: FreeBASIC documentation page
+      description: >
+        Optional. The wiki `ProPg` page you used to decide what fbc should
+        do, if any. These facts are cited from the wiki and probe-verified,
+        and a citation disagreement is itself useful.
+      placeholder: https://www.freebasic.net/wiki/ProPgVariableScope
+    validations:
+      required: false
