@@ -157,23 +157,40 @@ must stay there. Encoding directives that the lexer/parser must honor:
 
 ## Verification
 
-- Unit drivers in `tests/` via ctest: `lexer_checks`, `parser_checks`,
-  `utf16_checks`, `settings_checks`, `code_actions_checks`, and a
-  `session_integration` test driving
-  `LanguageSession` with in-memory streams (LspCpp `tests/test_helpers.h`).
+- Unit drivers in `tests/` via ctest (15 suites: `lexer_checks`,
+  `analysis_cache_checks`, `language_checks`, `parser_checks`,
+  `resolve_checks`, `corpus_checks`, `utf16_checks`,
+  `semantic_tokens_checks`, `inlay_hints_checks`, `code_actions_checks`,
+  `grammar_checks`, `index_checks`, `settings_checks`, `i18n_checks`, and
+  `session_integration`, which drives `LanguageSession` with in-memory
+  streams — LspCpp `tests/test_helpers.h`).
 - The system `fbc` compiler (1.10.2) is available for ground-truthing ambiguous
   FreeBASIC constructs.
+- Hosted CI (`.github/workflows/ci.yml`): the `build-test` job configures,
+  builds, and `ctest`s on Linux (gcc and clang), macOS (AppleClang), and
+  Windows (MSVC), then installs into a scratch prefix and checks the tree with
+  `tools/check_install_tree.cmake`; the `clang-format` job enforces the
+  formatting gate below on Linux. A green local run is not a substitute for
+  the macOS and Windows legs — those only exist on CI.
 
 ### clang-format
 
 Formatting is **part of the milestone gate** (unlike tidy): the repo's
 `.clang-format` pins the LLVM standard (2-space indent, attached braces,
-80-column). Run the check before acceptance / commit on all supported C++
-files:
+80-column). CI runs the command below on every push and pull request
+(`clang-format` job, Linux only); run it locally before acceptance / commit:
 
 ```
-clang-format --dry-run --Werror src/*.cpp src/*.h tests/*.cpp tools/*.cpp
+git ls-files '*.cpp' '*.h' | grep -v '^third_party/' \
+  | xargs clang-format --dry-run --Werror
 ```
+
+Every tracked C++ file, so a new file in a new directory cannot escape the
+gate; `git ls-files` does not descend into the submodules, and the filter says
+so out loud. **Keep the local tool and the workflow's pin in step**
+(`CLANG_FORMAT_VERSION`, currently `22.1.8`): the gate fails on tool drift as
+much as on code drift, and an unpinned formatter makes that failure
+unexplainable.
 
 Apply with `clang-format -i <file>` (or `--lines=start:end` for a region, e.g.
 right after `clang-tidy --fix`). Corpus `.bas`/`.diag` files and

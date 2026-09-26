@@ -1,11 +1,24 @@
 name: CI
 
-# Scaffolded ahead of first run (M18). Not enabled until the repo is pushed
-# to GitHub; expect Windows/macOS fixes on the first real run.
+# Two jobs, and nothing else:
+#   build-test    configure + build + ctest on Linux (gcc and clang), macOS
+#                 (AppleClang), and Windows (MSVC), then install the tree into
+#                 a scratch prefix and check what landed in it.
+#   clang-format  the formatting gate AGENTS.md calls part of the milestone
+#                 gate, run on Linux only with a pinned clang-format.
+#
+# The first run lands with the repository push. Nothing here has ever run on
+# GitHub, so treat the macOS and Windows legs as unproven until they are green
+# (PLAN.md, M18).
+
 "on":
   push:
     branches: [main]
+    # Markdown-only pushes (PLAN, README, hygiene files) cannot break a build.
+    # "**.md" is the form GitHub documents for "at any depth".
+    paths-ignore: ["**.md"]
   pull_request:
+    paths-ignore: ["**.md"]
   workflow_dispatch:
 
 permissions:
@@ -15,28 +28,156 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Pin the formatter to the version used locally: the gate fails on tool
+  # drift as well as on code drift, and an unpinned clang-format makes that
+  # failure unexplainable. Bump this together with the local tool.
+  CLANG_FORMAT_VERSION: "22.1.8"
+  # GNU gettext for the Windows leg: there is no system one, and the CMake
+  # build compiles every po file to a .mo. This bundle ships the tools
+  # (msgfmt/msgmerge/xgettext) plus the MSVC import library for the runtime,
+  # which is what cmake/FindIntl.cmake looks for.
+  GETTEXT_WINDOWS_URL: >-
+    https://github.com/mlocati/gettext-iconv-windows/releases/download/v1.0-v1.19/gettext1.0-iconv1.19-shared-64-dev-msvc.zip
+
 jobs:
   build-test:
-    name: build+test (${{ matrix.os }})
+    name: build+test (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     strategy:
+      # One broken leg must not hide the state of the other three.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+        include:
+          - os: ubuntu-latest
+            label: linux/gcc
+            gettext: apt
+            cmake_args: -DCMAKE_CXX_COMPILER=g++
+          - os: ubuntu-latest
+            label: linux/clang
+            gettext: apt
+            cmake_args: -DCMAKE_CXX_COMPILER=clang++
+          - os: macos-latest
+            label: macos/appleclang
+            gettext: brew
+            cmake_args: ""
+          - os: windows-latest
+            label: windows/msvc
+            gettext: zip
+            cmake_args: ""
     steps:
       - name: Checkout (recursive submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
+          # Both dependencies are submodules; a shallow, submodule-less
+          # checkout does not configure.
           submodules: recursive
 
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      # gettext: the tools build the 29 catalogs (msgfmt), and i18n_checks
+      # builds one of its own at configure time. The install check below
+      # counts the catalogs, so a leg that silently skipped them fails there.
+      - name: Install gettext (Linux)
+        if: matrix.gettext == 'apt'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y gettext
+          msgfmt --version | head -1
 
-      # --config / -C Release: used by the Windows (multi-config) generator,
-      # ignored by single-config generators on macOS/Linux.
+      - name: Install gettext (macOS)
+        if: matrix.gettext == 'brew'
+        run: |
+          brew install gettext
+          # Homebrew keeps gettext keg-only, so its tools are not on PATH and
+          # FindGettext would not see them without this.
+          printf '%s\n' "$(brew --prefix gettext)/bin" >> "$GITHUB_PATH"
+          msgfmt --version | head -1
+
+      - name: Install gettext (Windows)
+        if: matrix.gettext == 'zip'
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'gettext.zip'
+          $dest = Join-Path $env:RUNNER_TEMP 'gettext'
+          Invoke-WebRequest $env:GETTEXT_WINDOWS_URL -OutFile $zip
+          Expand-Archive $zip -DestinationPath $dest -Force
+          # Do not assume the archive's internal layout: find the tool and
+          # take its prefix, so a repack cannot silently break the build.
+          $msgfmt = Get-ChildItem -Path $dest -Recurse -Filter 'msgfmt.exe' |
+            Select-Object -First 1
+          if (-not $msgfmt) { throw "msgfmt.exe missing from $env:GETTEXT_WINDOWS_URL" }
+          $root = $msgfmt.Directory.Parent.FullName
+          Write-Host "gettext root: $root"
+          # The bin directory holds both the tools and the runtime DLLs
+          # (intl-8.dll), so one PATH entry serves configure, build, and test.
+          "$($msgfmt.Directory.FullName)" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "GETTEXT_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & "$($msgfmt.FullName)" --version | Select-Object -First 1
+
+      # One configure step per gettext flavour, rather than one step that
+      # branches on the shell: each leg then reads as the exact command that
+      # runs, which is what a failed first run needs.
+      - name: Configure (system gettext)
+        if: matrix.gettext == 'apt'
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH=/usr ${{ matrix.cmake_args }}
+
+      - name: Configure (Homebrew gettext)
+        if: matrix.gettext == 'brew'
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="$(brew --prefix gettext)" ${{ matrix.cmake_args }}
+
+      - name: Configure (downloaded gettext)
+        if: matrix.gettext == 'zip'
+        shell: pwsh
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          "-DCMAKE_PREFIX_PATH=$env:GETTEXT_ROOT" ${{ matrix.cmake_args }}
+
+      # --config Release drives the multi-config generator on Windows and is
+      # ignored by the single-config generators on Linux and macOS.
       - name: Build
         run: cmake --build build --config Release --parallel
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+      # The install rules are the only release-shaped thing this project has,
+      # so they get a test: a scratch prefix under the build directory, then
+      # the tree is checked for the binary, the license, and every catalog.
+      - name: Install into a scratch prefix
+        run: cmake --install build --config Release --prefix build/install-prefix
+
+      - name: Check the install tree
+        run: >-
+          cmake -DFBLANG_INSTALL_PREFIX=build/install-prefix
+          -DFBLANG_EXPECT_CATALOGS=29 -P tools/check_install_tree.cmake
+
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # pipx, not apt: the pin has to be the exact version used locally, and
+      # the PyPI clang-format wheel is a single self-contained binary.
+      - name: Install clang-format (pinned)
+        run: |
+          pipx install clang-format==${{ env.CLANG_FORMAT_VERSION }}
+          printf '%s\n' "$(pipx environment --value PIPX_BIN_DIR)" >> "$GITHUB_PATH"
+
+      - name: Version
+        run: clang-format --version
+
+      # Every tracked C++ file, not the glob the milestone gate used to
+      # spell out: a new file in a new directory cannot escape this, and the
+      # submodule's contents are not tracked by this repository. xargs turns
+      # the list into arguments without an unquoted command substitution.
+      - name: Formatting gate
+        run: >-
+          git ls-files '*.cpp' '*.h' | grep -v '^third_party/'
+          | xargs clang-format --dry-run --Werror

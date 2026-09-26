@@ -38,7 +38,7 @@ architecture, and the remaining work.
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
-| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, and the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) are in. Left: per-editor wiring docs, the CI matrix's first green run, the first tag) |
+| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. Left: per-editor wiring docs, the CI matrix's first green run, the first tag) |
 | M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
 | M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasicd`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasicd.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
 
@@ -205,9 +205,16 @@ plan engineers around:
    `freebasicd.toml` (payload ignored) and re-applies `Settings` per root
    (include seam + feature gates). Force-disabling the fbc system include
    search (step ⑥) remains open.
-3. No per-editor wiring docs and no green CI matrix yet. `README.md` landed
-   2026-09-25, and `cmake --install` + the 0.7.0 version came with it; the
-   editors' setup recipes and the first hosted CI run are still open.
+3. No per-editor wiring docs yet, and the hosted CI matrix has never run.
+   `README.md`, `cmake --install`, and the 0.7.0 version landed 2026-09-25;
+   so did `.github/workflows/ci.yml` — four `build-test` legs (Linux gcc and
+   clang, macOS AppleClang, Windows MSVC), a Linux-only `clang-format` job
+   pinned to 22.1.8, and an install-tree check
+   (`tools/check_install_tree.cmake`) that asserts the binary, `LICENSE.md`,
+   and all 29 catalogs. The Linux legs were run locally end to end; macOS and
+   Windows exist only in the workflow, and Windows is the one to watch (its
+   gettext comes from a downloaded bundle, see item 6). The editors' setup
+   recipes are still open.
 4. The install tree is **not relocatable**: `FBLANG_LOCALEDIR_INSTALL` is
    `${CMAKE_INSTALL_PREFIX}/share/locale` baked in at configure time
    (`src/i18n.cpp`'s probe order: `FBLANG_LOCALEDIR` env override, then the
@@ -223,7 +230,17 @@ plan engineers around:
    has a place for it, `initialize`'s `serverInfo`, but LspCpp's
    `InitializeResult` models `capabilities` alone, so reporting it means a
    sixth commit on the fork branch (`lsp-3.17-completions`) plus a pin bump.
-6. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
+6. Windows localization is borrowed, not shipped. `cmake/FindIntl.cmake` needs
+   a real libintl on Windows, and CI gets one from a downloaded
+   `mlocati/gettext-iconv-windows` bundle (tools + MSVC import library +
+   `intl-8.dll` in `bin`). So a Windows build links a DLL from outside the
+   repo: an installed tree would start with the DLL beside the binary or not at
+   all. `install(TARGETS ...)` does not install DLLs, so this is packaging
+   work for the first release that ships a Windows binary — deciding between
+   vendoring the DLL, static-linking libintl, or dropping gettext on Windows
+   (all 29 catalogs are empty today, so an English-only Windows build loses
+   nothing yet).
+7. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
    `callHierarchy`, `codeLens` (M13), and pull diagnostics (M14). None is
    required by the target editors; each ships as its own milestone.
 
@@ -788,9 +805,11 @@ implementation.
 > milestones, at the end of the near-term plan.
 >
 > Status: partially landed 2026-09-25. The project is `freebasicd` 0.7.0
-> (renamed from `freebasiclsp`), `README.md` ships with the repo, and
+> (renamed from `freebasiclsp`), `README.md` ships with the repo,
 > `cmake --install` lays down the binary, the message catalogs, and
-> `LICENSE.md`. No version tag, no packaged artifact, no CI run yet.
+> `LICENSE.md`, the hygiene files and issue forms are in, and the CI workflow
+> is written and linted but has never run. No version tag, no packaged
+> artifact.
 
 - Done (2026-09-25):
   - The rename to `freebasicd` across the CMake project, the binary and static
@@ -826,24 +845,34 @@ implementation.
     wants fbc's own output and whether `FreeBASIC.md` §12 already lists it;
     the build form wants the first error, the toolchain, gettext, and
     `git submodule status`.
+  - `.github/workflows/ci.yml`, two jobs. `build-test` runs a four-leg matrix —
+    Linux gcc, Linux clang, macOS AppleClang, Windows MSVC — through
+    configure, build, `ctest` (15 suites), then `cmake --install` into
+    `build/install-prefix` and `tools/check_install_tree.cmake`, which asserts
+    the binary, `LICENSE.md`, and all 29 catalogs (a leg that silently skipped
+    gettext therefore fails there instead of shipping an English-only tree).
+    gettext is installed per platform: apt on Linux, `brew install gettext` +
+    `GITHUB_PATH` on macOS (keg-only, so it is not on PATH by default), and
+    the `mlocati/gettext-iconv-windows` bundle on Windows, which is the only
+    way to get both the tools and an MSVC-linkable libintl there. The
+    `clang-format` job is Linux-only and pins the formatter to the local
+    version (22.1.8) through pipx, gating the same `git ls-files | xargs
+    clang-format --dry-run --Werror` command AGENTS.md documents. The
+    workflow is linted with `actionlint` (1.7.12) and its shell blocks with
+    shellcheck; both the Linux legs and the install check were also run
+    locally end to end. macOS and Windows remain unproven until the repo is
+    pushed — that first run is the real acceptance test.
 - Left:
   - Per-editor wiring recipes under `docs/editors/`: neovim builtin LSP,
     minimal vscode client, emacs `lsp-mode`. Each installs the M9 grammar
     (`editors/`) and turns on semantic tokens. The README carries a generic
     stdio snippet until these land.
-  - `.github/workflows/ci.yml`: build + `ctest` on a Linux/macOS/Windows
-    matrix (`checkout --recurse-submodules`); enabled once the repo is pushed.
-    Expect to install gettext on the macOS/Windows runners, and to fix Windows
-    path handling in `index.cpp` defaults and any MSVC/LspCpp issues once it
-    runs. The CI also regenerates the M9 grammar from the catalog (the M9
-    freshness gate) so a catalog edit cannot ship without a matching grammar
-    update; a `clang-format --dry-run --Werror` job would close the gap
-    between the local milestone gate and CI.
   - A first tagged release: `git tag` at the version the release notes claim,
     plus a CPack config if a downloadable artifact is wanted. Nothing else in
     this milestone needs to be invented for that.
 - Files: `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
-  `SECURITY.md`, `docs/editors/`, `.github/`, `CMakeLists.txt`.
+  `SECURITY.md`, `docs/editors/`, `.github/`, `CMakeLists.txt`,
+  `tools/check_install_tree.cmake`.
 - Acceptance: wiring docs accurate end-to-end on all three editors; CI green on
   Linux/macOS/Windows; `cmake --install` produces a prefix whose binary runs
   with its catalogs.
