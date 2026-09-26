@@ -38,7 +38,7 @@ architecture, and the remaining work.
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
-| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, and the version is pinned at 0.7.0. Left: per-editor wiring docs, the CI matrix's first green run) |
+| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, and the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) are in. Left: per-editor wiring docs, the CI matrix's first green run, the first tag) |
 | M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
 | M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasicd`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasicd.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
 
@@ -808,6 +808,14 @@ implementation.
   - `install(TARGETS freebasicd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})`
     plus the catalog tree and `LICENSE.md` (GPL requires shipping the license
     with the binary).
+  - Public-repo hygiene: `CONTRIBUTING.md` (the three gates an outside
+    contributor must pass, where things live, how to add a quick fix, how to
+    patch LspCpp through the fork, translation rules, and the rule that agent
+    authorship is disclosed in the PR), `CODE_OF_CONDUCT.md` (a short custom
+    policy rather than Contributor Covenant, reporting to the maintainer),
+    and `SECURITY.md` (GitHub private advisories, an in-scope list for an LSP
+    server, out-of-scope list, and the "no CLA, no DCO" position inherited
+    from GPL terms).
 - Left:
   - Per-editor wiring recipes under `docs/editors/`: neovim builtin LSP,
     minimal vscode client, emacs `lsp-mode`. Each installs the M9 grammar
@@ -821,9 +829,11 @@ implementation.
     freshness gate) so a catalog edit cannot ship without a matching grammar
     update; a `clang-format --dry-run --Werror` job would close the gap
     between the local milestone gate and CI.
-  - `CONTRIBUTING.md` / `CODE_OF_CONDUCT.md` / `SECURITY.md`, and a first
-    tagged release.
-- Files: `README.md`, `docs/editors/`, `.github/`, `CMakeLists.txt`.
+  - A first tagged release: `git tag` at the version the release notes claim,
+    plus a CPack config if a downloadable artifact is wanted. Nothing else in
+    this milestone needs to be invented for that.
+- Files: `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
+  `SECURITY.md`, `docs/editors/`, `.github/`, `CMakeLists.txt`.
 - Acceptance: wiring docs accurate end-to-end on all three editors; CI green on
   Linux/macOS/Windows; `cmake --install` produces a prefix whose binary runs
   with its catalogs.
