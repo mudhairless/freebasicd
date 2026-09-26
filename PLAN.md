@@ -38,7 +38,7 @@ architecture, and the remaining work.
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
-| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers) and `clang-format` green, and the two platform legs each failed for a reason only that platform can show: Windows on an MSVC `min`/`max` macro collision inside vendored LspCpp (fixed in fork commit `8a67671`), macOS on a use-after-free in the `workspace/symbol` reply build that only a sanitizer finds (fixed by carrying the snapshot pin in the value; TSan clean). Left: per-editor wiring docs, the first all-green run, the first tag) |
+| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers), `clang-format`, and macOS are green and holding; each platform leg failed first for a reason only that platform could show, and all four causes are now fixed (Windows: an MSVC `min`/`max` macro collision in vendored LspCpp, a CRLF checkout breaking the byte-exact `grammar_checks`, and a lost wakeup in the index's rescan shutdown; macOS: a use-after-free in the `workspace/symbol` reply build, found with TSan). Left: per-editor wiring docs, the first all-green run, the first tag) |
 | M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
 | M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasicd`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasicd.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
 
@@ -906,7 +906,44 @@ implementation.
       (`FileMatches::file` is a `shared_ptr<IndexedFile const>`, and
       `MemberAccess` grew a `file` pin beside `member` for the same reason —
       both now match `CrossDecl`'s documented contract). TSan on the rebuilt
-      binary: 0 reports.
+      binary: 0 reports. Green on every run since (the pin fix was the last
+      change to touch it; several further pushes, all macOS legs green).
+  - With macOS settled, the **Windows** leg turned out to have two more
+    problems, both invisible to `ctest` and neither reproducible on Linux:
+    - `grammar_checks` reported all three `editors/*` files stale. The Windows
+      checkout rewrites LF to CRLF under the default `core.autocrlf=true`, and
+      the gate byte-compares the committed files against an emitter that writes
+      `\n` in binary mode. Reproduced locally by `sed`-ing CRLF into the three
+      files — same three failures, same order. Fixed with a `.gitattributes`
+      (`* text=auto eol=lf`), verified by forcing a re-checkout under
+      `core.autocrlf=true` and confirming the files stay LF. `corpus_checks`
+      reads files too and passed on Windows because it compares diagnostic
+      codes, not bytes.
+    - `session_integration` never returned: 11 minutes with no output at all,
+      killed by hand. Two defects in `src/index.cpp`, both of which stop the
+      process dead rather than failing it. (1) `close()` cleared `running_`
+      without holding `rescanMu_`, so the store+notify could land in the window
+      between `rescanLoop`'s predicate check and its block inside `wait()` — a
+      lost wakeup, the loop parks forever, and `close()`'s `rescan_.join()`
+      never returns. (2) `scan(true)` is reachable from a handler thread
+      (`ensureWorkspaceIndex`) as well as from the rescan loop, and both do
+      `scanner_.join()` then reassign `scanner_`: two threads on one
+      `std::thread` is undefined behavior. Fixed by clearing `running_` under
+      `rescanMu_` and putting every `scanner_` join/reassignment under a new
+      `scannerMu_`. The new `index_checks` case races notifications against
+      teardown 64 times and fails (rather than hangs) on a wedge; it cannot
+      reproduce the original race deterministically, since a lost notification
+      leaves no trace. Local evidence that this is at least not a regression:
+      25 plain + 5 TSan runs of `index_checks` clean, `session_integration`
+      still 13.7s, TSan 0 warnings on both.
+  - The lesson recorded in AGENTS.md's ThreadSanitizer section: TSan and ctest
+    are both blind to a lost wakeup and to a shared `std::thread`, and both
+    present as *silence*. Hence the two cheap guards that make the next one
+    diagnosable instead of theoretical — `session_integration` prints a
+    flushed `[ RUN ] <test>` line per test, and CI passes `ctest --timeout
+    300` (ctest's own 1500s default let the hang hold the whole job). Verified
+    on a synthetic always-sleeping test that ctest does print a timed-out
+    test's captured output, so the last `[ RUN ]` line names the culprit.
 - Left:
   - Per-editor wiring recipes under `docs/editors/`: neovim builtin LSP,
     minimal vscode client, emacs `lsp-mode`. Each installs the M9 grammar
@@ -916,8 +953,8 @@ implementation.
     plus a CPack config if a downloadable artifact is wanted. Nothing else in
     this milestone needs to be invented for that.
 - Files: `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
-  `SECURITY.md`, `docs/editors/`, `.github/`, `CMakeLists.txt`,
-  `tools/check_install_tree.cmake`.
+  `SECURITY.md`, `docs/editors/`, `.github/`, `.gitattributes`,
+  `CMakeLists.txt`, `tools/check_install_tree.cmake`.
 - Acceptance: wiring docs accurate end-to-end on all three editors; CI green on
   Linux/macOS/Windows; `cmake --install` produces a prefix whose binary runs
   with its catalogs.

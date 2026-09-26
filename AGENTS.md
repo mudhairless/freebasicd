@@ -222,6 +222,28 @@ out a pointer into a snapshot must carry the pin** — `CrossDecl::file`,
 for the same reason. Holding the `WorkspaceIndex` is *not* the pin: a scan
 replaces the entries inside it.
 
+**What TSan cannot see, in the same file.** A lost wakeup and a two-thread
+`std::thread` handoff are both invisible to TSan *and* to `ctest`, and both
+present the same way — no output, no failure, the process simply stops. Both
+bit the Windows leg (`close()` cleared `running_` outside `rescanMu_`, so a
+store+notify could land between `rescanLoop`'s predicate check and its block and
+park the loop forever; and `scan(true)` is reachable from a handler thread as
+well as the rescan loop, so two threads could join and reassign one
+`std::thread`). Two rules follow, and neither needs a sanitizer to check:
+
+- **A condition variable's predicate state changes under the mutex the waiter
+  blocks on.** An atomic flag is not a substitute — the waiter holds nothing
+  the notifier is obliged to take, so the notification can be lost. Every wait
+  that shutdown depends on needs a timeout *or* the lock discipline; the index
+  has the lock discipline.
+- **One `std::thread`, one thread touching it.** Every `join()` and every
+  reassignment of `scanner_` is under `scannerMu_`.
+
+When a suite hangs on a platform you cannot reproduce, make it name itself
+before theorizing: `session_integration` prints `[ RUN ] <test>` per test
+(flushed, so it survives a process that never exits) and CI passes
+`ctest --timeout`, which prints the captured output of a test that times out.
+
 ### clang-format
 
 Formatting is **part of the milestone gate** (unlike tidy): the repo's
