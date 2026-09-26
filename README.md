@@ -1,5 +1,7 @@
 # freebasicd
 
+[![CI](https://github.com/mudhairless/freebasicd/actions/workflows/ci.yml/badge.svg)](https://github.com/mudhairless/freebasicd/actions/workflows/ci.yml)
+
 A FreeBASIC Language Server.
 
 A [Language Server

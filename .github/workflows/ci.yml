@@ -165,19 +165,20 @@ jobs:
 
       # pipx, not apt: the pin has to be the exact version used locally, and
       # the PyPI clang-format wheel is a single self-contained binary.
-      - name: Install clang-format (pinned)
+      #
+      # Install, report the version, and gate in one step, because the PATH
+      # entry is prepended rather than appended: the runner image ships its own
+      # clang-format (18.1.3 on ubuntu-24.04) and GITHUB_PATH only appends,
+      # which would let the image's binary quietly win over the pin.
+      - name: Formatting gate
         run: |
           pipx install clang-format==${{ env.CLANG_FORMAT_VERSION }}
-          printf '%s\n' "$(pipx environment --value PIPX_BIN_DIR)" >> "$GITHUB_PATH"
-
-      - name: Version
-        run: clang-format --version
-
-      # Every tracked C++ file, not the glob the milestone gate used to
-      # spell out: a new file in a new directory cannot escape this, and the
-      # submodule's contents are not tracked by this repository. xargs turns
-      # the list into arguments without an unquoted command substitution.
-      - name: Formatting gate
-        run: >-
-          git ls-files '*.cpp' '*.h' | grep -v '^third_party/'
-          | xargs clang-format --dry-run --Werror
+          pipx_bin=$(pipx environment --value PIPX_BIN_DIR)
+          export PATH="$pipx_bin:$PATH"
+          clang-format --version
+          # Every tracked C++ file, not the glob the milestone gate used to
+          # spell out: a new file in a new directory cannot escape this, and
+          # the submodule's contents are not tracked by this repository. xargs
+          # turns the list into arguments without an unquoted substitution.
+          git ls-files '*.cpp' '*.h' | grep -v '^third_party/' \
+            | xargs clang-format --dry-run --Werror
