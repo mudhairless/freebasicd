@@ -2,8 +2,9 @@
 
 ## 1. State summary
 
-Repository `main`, clean working tree, `ctest` 15/15 green. LspCpp (vendored,
-pinned `19150d12` plus four local commits) supplies
+Repository `main`, clean working tree, `ctest` 15/15 green. LspCpp (vendored
+from our fork `mudhairless/LspCpp` at `0badddd`, i.e. upstream `19150d12` plus
+five local commits) supplies
 framing/JSON-RPC/typed 3.17 messages,
 tomlplusplus (vendored, pinned `30172438` v3.4.0) parses the server's config
 file, and GNU gettext (system libintl, never vendored; `cmake/FindIntl.cmake`
@@ -667,7 +668,7 @@ parser sees.
 > same class of reason (`GetRawPath()` instead of the URI), so even a client
 > that did read the edit could not match it to a document. LspCpp already
 > shipped the `CodeAction` struct and the `TextDocumentCodeAction::Either`
-> reader, so the fix is a fourth local submodule commit (`50be209`): the
+> reader, so the fix is a local submodule commit (`50be209`): the
 > request now answers with `std::vector<TextDocumentCodeAction::Either>` plus
 > the missing `Either` writer, and the handler emits a typed `CodeAction` —
 > `title`, `kind:

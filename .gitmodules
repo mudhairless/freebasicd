@@ -1,6 +1,6 @@
 [submodule "third_party/LspCpp"]
 	path = third_party/LspCpp
-	url = https://github.com/kuafuwang/LspCpp.git
+	url = https://github.com/mudhairless/LspCpp.git
 [submodule "third_party/tomlplusplus"]
 	path = third_party/tomlplusplus
 	url = https://github.com/marzer/tomlplusplus.git

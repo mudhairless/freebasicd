@@ -6,11 +6,15 @@ repository (default branch `main`).
 
 ## Dependencies
 
-- **LspCpp** (github.com/kuafuwang/LspCpp) is the LSP/JSON-RPC library. It is
-  vendored as a **git submodule** at `third_party/LspCpp`, **pinned to a fork
-  of commit `19150d12c4ae26239d75258ed598ba8ea3587cb7`** (upstream master,
-  2026-08-21; no release tag exists yet) **plus four local commits**:
-  `310e1e6` adding the watched-files registration types upstream lacks —
+- **LspCpp** is the LSP/JSON-RPC library, vendored as a **git submodule** at
+  `third_party/LspCpp` from **our fork,
+  [github.com/mudhairless/LspCpp](https://github.com/mudhairless/LspCpp)**
+  (`.gitmodules` points there; the submodule is pinned to
+  `0badddd9d76ae3582d8771b9baa86e9bddcbaf6f` on the fork's `freebasic-lsp`
+  branch, which is **upstream `19150d12c4ae26239d75258ed598ba8ea3587cb7`**
+  (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus five
+  commits of ours**: `310e1e6` adding the watched-files registration types
+  upstream lacks —
   `lsFileSystemWatcher`/`lsDidChangeWatchedFilesOptions`
   (`workspace/did_change_watched_files.h`), `Registration::registerOptions`
   (`client/registerCapability.h`), and
@@ -31,12 +35,22 @@ repository (default branch `main`).
   `WorkspaceEdit` to apply; upstream's own reader existed but the matching
   writer did not, so the local commit adds it (`lsCodeAction.h`,
   `src/lsp/lsp.cpp`, mirroring `LocationListEither::Either`) plus
-  `lsp_types_roundtrip_tests` coverage of the edit variant. Restore with
-  `git submodule update --init`. Consumed
+  `lsp_types_roundtrip_tests` coverage of the edit variant, and `0badddd`
+  fixing the test's access to the edit's `std::optional` changes.
+  Restore with `git submodule update --init`. Consumed
   via `add_subdirectory(third_party/LspCpp)` and linked as the `lspcpp`
   target. No Boost is required (`LSPCPP_STANDALONE_ASIO` is the default);
   build with `LSPCPP_BUILD_WEBSOCKETS=OFF`, `LSPCPP_BUILD_EXAMPLES=OFF`,
   `LSPCPP_BUILD_TESTS=OFF`.
+  **Working on the fork**: inside `third_party/LspCpp`, `origin` is
+  `mudhairless/LspCpp` (our fork, fetch = HTTPS, push = SSH) and `upstream` is
+  `kuafuwang/LspCpp` with its push URL disabled. The checked-out branch is
+  `freebasic-lsp` (tracks `origin/freebasic-lsp`); the fork's `master` is left
+  at upstream. To pick up upstream changes:
+  `git fetch upstream && git switch freebasic-lsp && git rebase upstream/master`,
+  then `git push --force-with-lease origin freebasic-lsp` and bump the pinned
+  commit here (`.gitmodules` URL is unchanged, so `git submodule update --init`
+  keeps working for contributors).
 - LspCpp handles all protocol JSON via its bundled RapidJSON. 
 - **tomlplusplus** (github.com/marzer/tomlplusplus) is vendored as a **git
   submodule** at `third_party/tomlplusplus`, pinned to `30172438` (v3.4.0).
