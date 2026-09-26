@@ -118,7 +118,9 @@ jobs:
           if (-not $msgfmt) { throw "msgfmt.exe missing from $archives" }
           $root = $msgfmt.Directory.Parent.FullName
           if (-not (Test-Path (Join-Path $root 'include\libintl.h'))) {
-            throw "libintl.h missing under $root: the -dev-msvc bundle did not land"
+            # ${root}, not $root: PowerShell reads "$root:" as a drive-qualified
+            # variable and the whole script stops parsing.
+            throw "libintl.h missing under ${root}: the -dev-msvc bundle did not land"
           }
           Write-Host "gettext root: $root"
           # One PATH entry serves configure, build, and test: the tools
