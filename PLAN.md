@@ -6,8 +6,8 @@ Repository `main`, clean working tree, `ctest` 15/15 green. The project is
 `freebasicd` (renamed from `freebasiclsp` 2026-09-25), version 0.7.0 under
 semantic versioning: the number is bumped only when a release ships, never in
 an ordinary feature or fix commit. LspCpp (vendored from our fork
-`mudhairless/LspCpp` at `0badddd`, i.e. upstream `19150d12` plus
-five local commits) supplies
+`mudhairless/LspCpp` at `8a67671`, i.e. upstream `19150d12` plus
+eight local commits) supplies
 framing/JSON-RPC/typed 3.17 messages,
 tomlplusplus (vendored, pinned `30172438` v3.4.0) parses the server's config
 file, and GNU gettext (system libintl, never vendored; `cmake/FindIntl.cmake`
@@ -38,7 +38,7 @@ architecture, and the remaining work.
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
-| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. Left: per-editor wiring docs, the CI matrix's first green run, the first tag) |
+| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers) and `clang-format` green, and the two platform legs each failed for a reason only that platform can show: Windows on an MSVC `min`/`max` macro collision inside vendored LspCpp (fixed in fork commit `8a67671`), macOS on a use-after-free in the `workspace/symbol` reply build that only a sanitizer finds (fixed by carrying the snapshot pin in the value; TSan clean). Left: per-editor wiring docs, the first all-green run, the first tag) |
 | M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
 | M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasicd`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasicd.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
 
@@ -882,8 +882,31 @@ implementation.
     clang-format --dry-run --Werror` command AGENTS.md documents. The
     workflow is linted with `actionlint` (1.7.12) and its shell blocks with
     shellcheck; both the Linux legs and the install check were also run
-    locally end to end. macOS and Windows remain unproven until the repo is
-    pushed — that first run is the real acceptance test.
+    locally end to end. Its `paths-ignore` was `["**.md"]`, which skipped
+    nothing — two docs-only pushes (`f1b3f51`, `eecbf81`) ran all five legs —
+    so it now reads `["**/*.md"]`.
+  - The first pushed runs, and what each failing leg turned out to be:
+    - **Windows** died in `lspcpp.vcxproj` on `error C2589: '(': illegal
+      token on right side of '::'` at `third_party/LspCpp/src/lsp/utils.cpp:594`
+      — the UTF-16 offset conversion's `std::min`, with `min`/`max` arriving
+      as function-like macros from that file's `<Windows.h>`. Only MSVC pulls
+      in `Windows.h`, so no local platform can show it. Fixed in the fork
+      (`8a67671`, the eighth local commit: `#define NOMINMAX` before the
+      include, which is what `lsp.cpp` already does for its own).
+    - **macOS** was green on four runs and then took `session_integration`
+      with a segfault, in `TestSourceLayoutRootRecognizesCatalogNames` — the
+      one test that hammers `workspace/symbol` while a background scan
+      re-indexes the same paths. ThreadSanitizer found the cause in one run
+      (9 reports, all one bug): `onWorkspaceSymbol`'s `FileMatches` held a
+      raw `IndexedFile const *` out of `idx->snapshot()`, and the scan thread
+      `upsert`s entries wholesale, so the reply build read a freed entry
+      while doing per-file I/O. Linux reads stale-but-intact freed memory,
+      so 12/12 local runs were green; macOS's allocator reuses the block and
+      it crashes. Fixed by carrying the pin in the value
+      (`FileMatches::file` is a `shared_ptr<IndexedFile const>`, and
+      `MemberAccess` grew a `file` pin beside `member` for the same reason —
+      both now match `CrossDecl`'s documented contract). TSan on the rebuilt
+      binary: 0 reports.
 - Left:
   - Per-editor wiring recipes under `docs/editors/`: neovim builtin LSP,
     minimal vscode client, emacs `lsp-mode`. Each installs the M9 grammar

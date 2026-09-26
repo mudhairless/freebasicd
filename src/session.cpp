@@ -1612,8 +1612,9 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
   // own declared type for chained access (`.sectors(i).floorHeight`). The
   // closure may live in a sibling project outside the workspace root (the
   // requesting document's own project), so warm it on demand first. The walk
-  // returns pointers into the workspace snapshot; hold the snapshot for the
-  // whole handler so a concurrent re-root cannot free them.
+  // returns a pointer into a workspace entry, and `access` carries that
+  // entry's pin (MemberAccess::file), so a concurrent rescan cannot free it
+  // under this handler.
   ensureRequestClosure(normPath);
   std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
   fblang::MemberAccess const access = fblang::resolveMemberAccess(
@@ -2197,8 +2198,9 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
   // The requesting document may open from a sibling project outside the
   // workspace root; warm its live-buffer include closure so member access can
   // find the owner type across files (mirrors onHover). The member-completion
-  // walk and the closure-roots pass below return pointers into the snapshot;
-  // pin it for the whole handler (mirrors onHover).
+  // walk returns pointers into a workspace entry, and `mc` carries that
+  // entry's pin (`mc.owner.file`) for as long as it is in scope — same
+  // contract as MemberAccess::file.
   ensureRequestClosure(normPath);
   std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
 
@@ -2553,8 +2555,11 @@ FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
     fblang::Symbol const *sym;
     std::string container;
   };
+  // `file` is the pinned snapshot entry, not a pointer into it: a background
+  // scan replaces entries wholesale (upsert), so a raw pointer dies with the
+  // old entry mid-reply — while this loop is off doing file I/O per file.
   struct FileMatches {
-    fblang::IndexedFile const *file;
+    std::shared_ptr<fblang::IndexedFile const> file;
     std::vector<Match> matches;
   };
 
@@ -2591,7 +2596,7 @@ FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
       if (matches.empty()) {
         continue;
       }
-      hits.push_back(FileMatches{file.get(), std::move(matches)});
+      hits.push_back(FileMatches{file, std::move(matches)});
     }
   }
 

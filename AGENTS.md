@@ -194,6 +194,34 @@ must stay there. Encoding directives that the lexer/parser must honor:
   formatting gate below on Linux. A green local run is not a substitute for
   the macOS and Windows legs — those only exist on CI.
 
+### ThreadSanitizer
+
+**On demand, like clang-tidy — not part of the gate.** `ctest` cannot see a
+data race, and the workspace index is the one place where a bug of this class
+is invisible locally: the handler pool reads a `WorkspaceIndex` snapshot while
+the background scan thread `upsert`s the same paths, and on Linux the freed
+entry usually still holds its old bytes, so a use-after-free reads as correct.
+macOS reuses the block and segfaults, which is how a Linux-green suite failed
+one macOS run in five. Run the integration driver under TSan when touching
+`src/index.{h,cpp}`, `src/session.cpp`, or anything that hands a raw pointer
+into a snapshot:
+
+```
+cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS="-fsanitize=thread -g" \
+    -DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
+    -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+cmake --build build-tsan --target session_integration --parallel
+./build-tsan/session_integration 2>&1 | grep -c 'WARNING: ThreadSanitizer'
+```
+
+Zero is the bar. The rule the two findings teach: **a result type that hands
+out a pointer into a snapshot must carry the pin** — `CrossDecl::file`,
+`MemberAccess::file`, and `MemberCompletion::owner.file` are that pin, and
+`onWorkspaceSymbol`'s per-file hit list holds `shared_ptr<IndexedFile const>`
+for the same reason. Holding the `WorkspaceIndex` is *not* the pin: a scan
+replaces the entries inside it.
+
 ### clang-format
 
 Formatting is **part of the milestone gate** (unlike tidy): the repo's

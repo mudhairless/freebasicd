@@ -1121,6 +1121,11 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
     return out;
   }
   out.ownerTypeName = std::string(typeDecl.decl->name);
+  // The member is a child of the owner type, so the entry that holds it is
+  // the one `typeDecl` already pinned; hand that pin on with the result
+  // (MemberAccess::file) or the caller reads a freed snapshot as soon as a
+  // background scan upserts this path.
+  out.file = typeDecl.file;
   out.member = findMember(*typeDecl.decl, segs.back().name);
   if (out.member == nullptr) {
     return out;

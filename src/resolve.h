@@ -133,6 +133,14 @@ CrossDecl findTypeDecl(AnalyzedDoc const &doc,
 
 // Result of resolving a `.`/`->` member access under the cursor.
 struct MemberAccess {
+  // The indexed entry `member` points into, pinned for as long as this result
+  // lives — same contract as CrossDecl::file. The member is a child of the
+  // owner type, which lives in another file's entry, and a background scan
+  // replaces entries wholesale: a bare Symbol pointer into one dangles the
+  // moment that scan upserts the same path. `file == nullptr` when `member`
+  // points into the request-local `AnalyzedDoc` (an in-file `with`-implicit
+  // base), which the caller already pins.
+  std::shared_ptr<IndexedFile const> file;
   Symbol const *member = nullptr; // the field declaration found, or nullptr
   std::string baseName;      // root variable (`with` target or lhs identifier),
                              // for "member of `map`" display; empty for chained
