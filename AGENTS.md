@@ -10,11 +10,11 @@ repository (default branch `main`).
   `third_party/LspCpp` from **our fork,
   [github.com/mudhairless/LspCpp](https://github.com/mudhairless/LspCpp)**
   (`.gitmodules` points there; the submodule is pinned to
-  `0badddd9d76ae3582d8771b9baa86e9bddcbaf6f` on the fork's
+  `a98ddcee26d53a42e32b3a50c714cca37dc10229` on the fork's
   `lsp-3.17-completions` branch (named for what it carries: the LSP 3.17 types
   and serialization upstream still lacks), which is **upstream
   `19150d12c4ae26239d75258ed598ba8ea3587cb7`**
-  (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus five
+  (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus six
   commits of ours**: `310e1e6` adding the watched-files registration types
   upstream lacks —
   `lsFileSystemWatcher`/`lsDidChangeWatchedFilesOptions`
@@ -37,13 +37,22 @@ repository (default branch `main`).
   `WorkspaceEdit` to apply; upstream's own reader existed but the matching
   writer did not, so the local commit adds it (`lsCodeAction.h`,
   `src/lsp/lsp.cpp`, mirroring `LocationListEither::Either`) plus
-  `lsp_types_roundtrip_tests` coverage of the edit variant, and `0badddd`
-  fixing the test's access to the edit's `std::optional` changes.
+  `lsp_types_roundtrip_tests` coverage of the edit variant, `0badddd`
+  fixing the test's access to the edit's `std::optional` changes, and
+  `a98ddce` gating `lspcpp_set_target_options`'s boost nuget packages on
+  `NOT LSPCPP_STANDALONE_ASIO` (it asked a Visual Studio generator for seven
+  of them unconditionally, so configure died with "Can't find target of
+  boost.1.76.0.0" for a dependency the build does not have — the block 20
+  lines above that installs the same packages already skipped it).
   Restore with `git submodule update --init`. Consumed
   via `add_subdirectory(third_party/LspCpp)` and linked as the `lspcpp`
   target. No Boost is required (`LSPCPP_STANDALONE_ASIO` is the default);
   build with `LSPCPP_BUILD_WEBSOCKETS=OFF`, `LSPCPP_BUILD_EXAMPLES=OFF`,
-  `LSPCPP_BUILD_TESTS=OFF`.
+  `LSPCPP_BUILD_TESTS=OFF`, and `USE_ZLIB=OFF` (ixwebsocket is added whatever
+  `LSPCPP_BUILD_WEBSOCKETS` says, and defaults it on for a compression a stdio
+  server cannot reach; without this the Windows leg stops on a missing zlib).
+  Windows builds with the Visual Studio generator, so keep that branch of
+  LspCpp working.
   **Working on the fork**: inside `third_party/LspCpp`, `origin` is
   `mudhairless/LspCpp` (our fork, fetch = HTTPS, push = SSH) and `upstream` is
   `kuafuwang/LspCpp` with its push URL disabled. The checked-out branch is
