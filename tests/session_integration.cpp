@@ -18,6 +18,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -25,9 +26,73 @@
 namespace {
 using test::Expect;
 using test::FeedableIStream;
-using test::MakeLspFrame;
 using test::StringOStream;
 using test::WaitForOutputContaining;
+
+// ---------------------------------------------------------------------------
+// Document URIs
+// ---------------------------------------------------------------------------
+//
+// Every document in this suite is named by a `file://` URI, and no test builds
+// one by gluing "file://" onto path.string(): that is a native path with a
+// scheme stapled on, which is not a URI and is not even valid inside the JSON
+// frame that carries it. On Windows path.string() has backslashes, and in a
+// JSON string a backslash is an escape — "\t" and "\f" are legal and silently
+// corrupt the path, and "\w" (from the "\ws" directory the sandboxes use) is
+// not a legal escape at all, so the whole message fails to parse, the server
+// never answers, and the test fails on a poll budget rather than on its
+// assertion. That is what kept every sandbox-backed test red on the Windows
+// leg.
+//
+// So both halves go through one encoder: LspCpp's, over fblang::normalizePath
+// output, which is what the server echoes back for the same file. That fixes
+// the separators, puts the third slash before a drive letter, percent-encodes
+// what is unsafe, and matches the server's own lower-cased Windows spelling
+// byte for byte.
+std::string FileUri(std::filesystem::path const &path) {
+  return make_file_scheme_uri(fblang::normalizePath(path));
+}
+
+// The suite's documents all live under a directory of their own, named here
+// and never created: no test writes a file at any of these URIs, they all hand
+// their text to didOpen, so the directory is a workspace root and nothing else.
+// Keeping it out of the platform temp root itself is the point — the scan
+// behind that root must not walk the sandboxes the other tests write there, or
+// the suite indexes its own leftovers and one test's answer depends on which
+// tests ran before it.
+std::string const &tmpUriPath() {
+  static std::string const base = [] {
+    // `FileUri` returns a whole file: URI, so drop the scheme the literals
+    // already carry and leave the placeholder holding the path part alone.
+    std::string const full =
+        FileUri(std::filesystem::temp_directory_path() / "fblsp-docs");
+    return full.substr(std::string_view("file://").size());
+  }();
+  return base;
+}
+
+// Expands the {{tmp}} placeholder the URIs in this file are written against, so
+// a literal can read as the URI it is (`file://{{tmp}}/hello.bas`) and still
+// name a drive on Windows.
+std::string Expand(std::string body) {
+  static constexpr std::string_view kToken = "{{tmp}}";
+  std::string const &base = tmpUriPath();
+  for (size_t at = 0;;) {
+    size_t const hit = body.find(kToken, at);
+    if (hit == std::string::npos) {
+      return body;
+    }
+    body.replace(hit, kToken.size(), base);
+    at = hit + base.size();
+  }
+}
+
+// Shadows test::MakeLspFrame so every frame in the suite is expanded, which
+// keeps the placeholder out of all ~200 call sites instead of threading it
+// through each one.
+std::string MakeLspFrame(std::string const &body) {
+  return test::MakeLspFrame(Expand(body));
+}
 
 // M7 two-file fixture: a header declaring a shared module var, a plain module
 // var, and a proc that reads the shared one; a client .bas that includes it and
@@ -88,11 +153,11 @@ struct TwoFileFixture {
       std::ofstream out(wsDir / "extra.bi");
       out << kExtraContent;
     }
-    libUri = "file://" + (wsDir / "lib.bi").string();
-    mainUri = "file://" + (wsDir / "main.bas").string();
-    progUri = "file://" + (wsDir / "prog.bas").string();
-    extraUri = "file://" + (wsDir / "extra.bi").string();
-    rootUri = "file://" + wsDir.string();
+    libUri = FileUri(wsDir / "lib.bi");
+    mainUri = FileUri(wsDir / "main.bas");
+    progUri = FileUri(wsDir / "prog.bas");
+    extraUri = FileUri(wsDir / "extra.bi");
+    rootUri = FileUri(wsDir);
   }
 
   ~TwoFileFixture() {
@@ -175,58 +240,58 @@ std::string ResultIdOf(std::string const &response) {
   return response.substr(start, end - start);
 }
 
-char const *kUri = "file:///tmp/hello.bas";
+char const *kUri = "file://{{tmp}}/hello.bas";
 
 char const kInitializeFrame[] =
     R"FB({"jsonrpc":"2.0","id":"init","method":"initialize","params":{}})FB";
 
 char const kDidOpenFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hello.bas","languageId":"basic","version":1,"text":"print \"hello\"\n"}}})FB";
+    R"FB({"uri":"file://{{tmp}}/hello.bas","languageId":"basic","version":1,"text":"print \"hello\"\n"}}})FB";
 
 char const kDidChangeFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hello.bas","version":2},"contentChanges":[{"range":)FB"
+    R"FB({"uri":"file://{{tmp}}/hello.bas","version":2},"contentChanges":[{"range":)FB"
     R"FB({"start":{"line":1,"character":0},"end":{"line":1,"character":0}},"text":"' comment\n"}]}})FB";
 
 char const kDidOpenDupFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hello.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/hello.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"dim x as integer\ndim x as string"}}})FB";
 
 // BUGS.md reuse example: a block-local `dim x` shadows the module `dim x`
 // (valid FreeBASIC), so must not be reported as a duplicate definition.
 char const kDidOpenScopeDupFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hello.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/hello.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"dim x as integer = 1\nscope\n    dim x as string = \"Hello\"\nend scope\nx = x + 1\n"}}})FB";
 
 char const kDidOpenHierFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hello.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/hello.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"sub greet(name as string)\n    print name\nend sub\n\n)FB"
     R"FB(function clamp(v as integer, lo as integer, hi as integer) as integer\n)FB"
     R"FB(    if v < lo then return lo\n    if v > hi then return hi\nend function\n"}}})FB";
 
 char const *kDocumentSymbolFrame =
     R"FB({"jsonrpc":"2.0","id":"dsym","method":"textDocument/documentSymbol","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hello.bas"}}})FB";
 
 // Line 4 is the `function clamp(...)` header; the cursor sits on that line.
 char const *kHoverFrame =
     R"FB({"jsonrpc":"2.0","id":"hov","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"},"position":{"line":4,"character":1}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hello.bas"},"position":{"line":4,"character":1}}})FB";
 
 char const *kHoverOnBodyFrame =
     R"FB({"jsonrpc":"2.0","id":"hov2","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"},"position":{"line":5,"character":4}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hello.bas"},"position":{"line":5,"character":4}}})FB";
 
 // A WITH + FOR + IF document mirroring drd/temp/src/engine.bas: a block-local
 // `v1` used inside a `type(...)` initializer. Hovering the *usage* must show
 // v1's declaration, not the enclosing block.
 char const kDidOpenHoverUsageFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hovuse.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/hovuse.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"sub ProcessSectorPhysics(map as map_struct, secIndex as integer)\n)FB"
     R"FB(    with map\n)FB"
     R"FB(        for i as integer = 0 to 3\n)FB"
@@ -241,22 +306,22 @@ char const kDidOpenHoverUsageFrame[] =
 // Hover the `v1` usage inside the `type(...)` initializer (line 5, char 40).
 char const *kHoverUsageFrame =
     R"FB({"jsonrpc":"2.0","id":"hvu","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovuse.bas"},"position":{"line":5,"character":40}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovuse.bas"},"position":{"line":5,"character":40}}})FB";
 
 // Hover the `v1` declaration itself (line 3, char 27).
 char const *kHoverDeclFrame =
     R"FB({"jsonrpc":"2.0","id":"hvd","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovuse.bas"},"position":{"line":3,"character":27}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovuse.bas"},"position":{"line":3,"character":27}}})FB";
 
 // Hover the loop counter `i` in the for header (line 2, char 12).
 char const *kHoverCounterFrame =
     R"FB({"jsonrpc":"2.0","id":"hvc","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovuse.bas"},"position":{"line":2,"character":12}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovuse.bas"},"position":{"line":2,"character":12}}})FB";
 
 // Hover a module-level Dim usage (resolve.bas line 1, char 0 = `counter`).
 char const *kModuleDimHoverFrame =
     R"FB({"jsonrpc":"2.0","id":"hvm","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":0}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/resolve.bas"},"position":{"line":1,"character":0}}})FB";
 
 // Member-access hover (the reported regression): a WITH + inline UDT
 // document mirroring drd/temp's world.bi/engine.bas shape. Hovering
@@ -264,7 +329,7 @@ char const *kModuleDimHoverFrame =
 // declaration and its owning variable/type — never the enclosing sub.
 char const kDidOpenMemberHoverFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hovmem.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/hovmem.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"type Wall\n)FB"
     R"FB(    as integer v1, v2\n)FB"
     R"FB(end type\n)FB"
@@ -290,17 +355,17 @@ char const kDidOpenMemberHoverFrame[] =
 // Hover the `walls` member of the with-target (line 16, char 26).
 char const *kMemberHoverWallFrame =
     R"FB({"jsonrpc":"2.0","id":"hmm","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovmem.bas"},"position":{"line":16,"character":26}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovmem.bas"},"position":{"line":16,"character":26}}})FB";
 
 // Hover `floorHeight` through the indexed chain (line 17, char 50).
 char const *kMemberHoverFloorFrame =
     R"FB({"jsonrpc":"2.0","id":"hmf","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovmem.bas"},"position":{"line":17,"character":50}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovmem.bas"},"position":{"line":17,"character":50}}})FB";
 
 // Hover `v1` of the plain local variable (line 18, char 29).
 char const *kMemberHoverLocalFrame =
     R"FB({"jsonrpc":"2.0","id":"hml","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovmem.bas"},"position":{"line":18,"character":29}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovmem.bas"},"position":{"line":18,"character":29}}})FB";
 
 // Enum conformance hover: an `Explicit` enum's branded value
 // (`MyEnum.value_1`), a plain enum's qualified member with a *reserved-word*
@@ -309,7 +374,7 @@ char const *kMemberHoverLocalFrame =
 // declaration — the empty/orphan hover regression.
 char const kDidOpenEnumHoverFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/enumhov.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/enumhov.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"enum MyEnum explicit\n)FB"
     R"FB(    value_1 = 1\n)FB"
     R"FB(    value_2 = 2\n)FB"
@@ -325,53 +390,53 @@ char const kDidOpenEnumHoverFrame[] =
 // Hover the explicit enum's branded member (line 8, char 15 = `value_1`).
 char const *kEnumHoverBrandedFrame =
     R"FB({"jsonrpc":"2.0","id":"he1","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/enumhov.bas"},"position":{"line":8,"character":15}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/enumhov.bas"},"position":{"line":8,"character":15}}})FB";
 
 // Hover the reserved-word enum name's branded member (line 9, char 14 =
 // `green` of `color.green`).
 char const *kEnumHoverKeywordNameFrame =
     R"FB({"jsonrpc":"2.0","id":"he2","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/enumhov.bas"},"position":{"line":9,"character":14}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/enumhov.bas"},"position":{"line":9,"character":14}}})FB";
 
 // Hover a bare plain-enum member usage (line 10, char 8 = `green`).
 char const *kEnumHoverBareFrame =
     R"FB({"jsonrpc":"2.0","id":"he3","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/enumhov.bas"},"position":{"line":10,"character":8}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/enumhov.bas"},"position":{"line":10,"character":8}}})FB";
 
 char const *kFoldingRangeFrame =
     R"FB({"jsonrpc":"2.0","id":"fold","method":"textDocument/foldingRange","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hello.bas"}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hello.bas"}}})FB";
 
 // A second document exercising identifier resolution: module dim, a usage,
 // and a sub with a shadowing local dim.
 char const kDidOpenResolveFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/resolve.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/resolve.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"dim counter as integer\ncounter = counter + 1\n"}}})FB";
 
 char const *kDefinitionFrame =
     R"FB({"jsonrpc":"2.0","id":"def","method":"textDocument/definition","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":0}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/resolve.bas"},"position":{"line":1,"character":0}}})FB";
 
 char const *kReferencesFrame =
     R"FB({"jsonrpc":"2.0","id":"ref","method":"textDocument/references","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":0},)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/resolve.bas"},"position":{"line":1,"character":0},)FB"
     R"FB("context":{"includeDeclaration":true}}})FB";
 
 char const *kHighlightFrame =
     R"FB({"jsonrpc":"2.0","id":"hl","method":"textDocument/documentHighlight","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":0}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/resolve.bas"},"position":{"line":1,"character":0}}})FB";
 
 // A module with a function and a call to get signature help inside the call.
 char const kDidOpenCallsFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/calls.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/calls.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"function add(a as integer, b as integer) as integer\n    return a + b\nend function\n\n)FB"
     R"FB(dim x as integer\nx = add(1, \n"}}})FB";
 
 char const *kCompletionFrame =
     R"FB({"jsonrpc":"2.0","id":"comp","method":"textDocument/completion","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":8}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/resolve.bas"},"position":{"line":1,"character":8}}})FB";
 
 // Member completion context (PLAN.md M19): `p.` must complete only the UDT's
 // accessible members — never keywords, globals, or intrinsics. The example
@@ -384,7 +449,7 @@ char const *kCompletionFrame =
 // (fbc separates the namespaces; today's resolver does not — see §12).
 char const kDidOpenMemberCompletionModuleFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/memcomp.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/memcomp.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"type Position\n)FB"
     R"FB(    x as integer\n)FB"
     R"FB(    y as integer\n)FB"
@@ -397,11 +462,11 @@ char const kDidOpenMemberCompletionModuleFrame[] =
 // Cursor at the end of line 7 (`p.`), right after the dot.
 char const *kMemberCompletionModuleFrame =
     R"FB({"jsonrpc":"2.0","id":"mc1","method":"textDocument/completion","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/memcomp.bas"},"position":{"line":7,"character":2}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/memcomp.bas"},"position":{"line":7,"character":2}}})FB";
 
 char const kDidOpenMemberCompletionProcFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/memcomp2.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/memcomp2.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"type Position\n)FB"
     R"FB(    x as integer\n)FB"
     R"FB(    y as integer\n)FB"
@@ -416,22 +481,22 @@ char const kDidOpenMemberCompletionProcFrame[] =
 // member procedure implementation.
 char const *kMemberCompletionProcFrame =
     R"FB({"jsonrpc":"2.0","id":"mc2","method":"textDocument/completion","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/memcomp2.bas"},"position":{"line":8,"character":8}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/memcomp2.bas"},"position":{"line":8,"character":8}}})FB";
 
 char const *kSignatureHelpFrame =
     R"FB({"jsonrpc":"2.0","id":"sig","method":"textDocument/signatureHelp","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/calls.bas"},"position":{"line":5,"character":11}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/calls.bas"},"position":{"line":5,"character":11}}})FB";
 
 char const *kKeywordHoverFrame =
     R"FB({"jsonrpc":"2.0","id":"khh","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/calls.bas"},"position":{"line":4,"character":0}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/calls.bas"},"position":{"line":4,"character":0}}})FB";
 
 // A procedure whose body is a dense run of reserved keywords: hovering any of
 // them must show the keyword wiki link, never the enclosing sub signature (the
 // reported regression). `sub` at its own header still shows the signature.
 char const kDidOpenKeywordBodyFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/keybody.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/keybody.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"sub run(m as Map, secIndex as integer)\n)FB"
     R"FB(    dim as integer walls\n)FB"
     R"FB(    with map\n)FB"
@@ -441,23 +506,23 @@ char const kDidOpenKeywordBodyFrame[] =
 // Hover the `dim` inside the body (line 1, char 4).
 char const *kKeywordBodyDimFrame =
     R"FB({"jsonrpc":"2.0","id":"hkd","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/keybody.bas"},"position":{"line":1,"character":4}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/keybody.bas"},"position":{"line":1,"character":4}}})FB";
 
 // Hover the `with` inside the body (line 2, char 4).
 char const *kKeywordBodyWithFrame =
     R"FB({"jsonrpc":"2.0","id":"hkw","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/keybody.bas"},"position":{"line":2,"character":4}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/keybody.bas"},"position":{"line":2,"character":4}}})FB";
 
 // Hover the `end` closer (line 4, char 4).
 char const *kKeywordBodyEndFrame =
     R"FB({"jsonrpc":"2.0","id":"hke","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/keybody.bas"},"position":{"line":4,"character":4}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/keybody.bas"},"position":{"line":4,"character":4}}})FB";
 
 // Hover the `sub` word of its own header (line 0, char 0): the keyword opens
 // the declaration, so the signature — not a generic wiki link — is shown.
 char const *kKeywordBodySubHeadFrame =
     R"FB({"jsonrpc":"2.0","id":"hks","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/keybody.bas"},"position":{"line":0,"character":0}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/keybody.bas"},"position":{"line":0,"character":0}}})FB";
 
 // Cross-file member hover: the field's type lives in a header the requesting
 // file's include closure cannot reach (the `#include` names a missing file),
@@ -466,7 +531,7 @@ char const *kKeywordBodySubHeadFrame =
 // and not to the enclosing sub. Types are only in the second buffer.
 char const kDidOpenCrossTypeMainFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hovx.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/hovx.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"#include once \"zzz_unresolved.bi\"\n)FB"
     R"FB(sub run(m as Map)\n)FB"
     R"FB(    dim as integer walls\n)FB"
@@ -475,7 +540,7 @@ char const kDidOpenCrossTypeMainFrame[] =
 
 char const kDidOpenCrossTypeWorldFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/world.bi","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/world.bi","languageId":"basic","version":1,)FB"
     R"FB("text":"type Wall\n)FB"
     R"FB(    as integer v1, v2\n)FB"
     R"FB(end type\n)FB"
@@ -486,7 +551,7 @@ char const kDidOpenCrossTypeWorldFrame[] =
 // Hover the `walls` member in `m.walls(1)` (line 3, char 26).
 char const *kCrossTypeMemberFrame =
     R"FB({"jsonrpc":"2.0","id":"hxm","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovx.bas"},"position":{"line":3,"character":26}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovx.bas"},"position":{"line":3,"character":26}}})FB";
 
 // FreeBASIC lets reserved words name type members (`as string name`), so
 // hovering `t.name` must show the member/type info — never the intrinsic/
@@ -494,7 +559,7 @@ char const *kCrossTypeMemberFrame =
 // FreeBASIC.md §2).
 char const kDidOpenKeywordMemberFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hovkw.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/hovkw.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"type Mytype\n)FB"
     R"FB(    as string name\n)FB"
     R"FB(    as integer other\n)FB"
@@ -511,18 +576,18 @@ char const kDidOpenKeywordMemberFrame[] =
 // a separate pre-existing wart, so poke the middle of the word.
 char const *kKeywordMemberHoverModuleFrame =
     R"FB({"jsonrpc":"2.0","id":"hkm","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovkw.bas"},"position":{"line":5,"character":3}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovkw.bas"},"position":{"line":5,"character":3}}})FB";
 
 // Hover the member's own declaration `name` in `as string name` (line 1,
 // char 15): must behave like any identifier field, not the keyword page.
 char const *kKeywordMemberHoverDeclFrame =
     R"FB({"jsonrpc":"2.0","id":"hkd","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovkw.bas"},"position":{"line":1,"character":15}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovkw.bas"},"position":{"line":1,"character":15}}})FB";
 
 // Hover `name` in `v.name` inside a sub body (line 8, char 7).
 char const *kKeywordMemberHoverSubFrame =
     R"FB({"jsonrpc":"2.0","id":"hks","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovkw.bas"},"position":{"line":8,"character":7}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovkw.bas"},"position":{"line":8,"character":7}}})FB";
 
 // Unknown declared type: `map` is `as Shape`, but no `Shape` type exists
 // anywhere (not in this file, not the workspace). Hovering `.walls` inside the
@@ -530,7 +595,7 @@ char const *kKeywordMemberHoverSubFrame =
 // colliding local `walls` or to the enclosing sub's signature.
 char const kDidOpenHovUnknownTypeFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hovunk.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/hovunk.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"sub run(map as Shape, secIndex as integer)\n)FB"
     R"FB(    dim as integer walls\n)FB"
     R"FB(    with map\n)FB"
@@ -541,14 +606,14 @@ char const kDidOpenHovUnknownTypeFrame[] =
 // Hover the `walls` member of `.walls(secIndex)` (line 3, char 28).
 char const *kHoverUnknownTypeMemberFrame =
     R"FB({"jsonrpc":"2.0","id":"hxu","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovunk.bas"},"position":{"line":3,"character":28}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovunk.bas"},"position":{"line":3,"character":28}}})FB";
 
 // Known type, missing member: `Map` exists with only a `walls` field, so
 // `m2.missing` cannot resolve to a field — the hover must still name the
 // owning variable and its (known) type.
 char const kDidOpenHovMissingMemberFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hovmiss.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/hovmiss.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"type Map\n)FB"
     R"FB(    as integer walls(10)\n)FB"
     R"FB(end type\n)FB"
@@ -559,57 +624,57 @@ char const kDidOpenHovMissingMemberFrame[] =
 // Hover the `missing` member of `m2.missing` (line 4, char 26).
 char const *kHoverMissingMemberFrame =
     R"FB({"jsonrpc":"2.0","id":"hxq","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/hovmiss.bas"},"position":{"line":4,"character":26}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovmiss.bas"},"position":{"line":4,"character":26}}})FB";
 
 // Intrinsic catalog document: expression-prefix positions (`s = le`, `s = pr`),
 // a statement-position prefix (`pr`), an intrinsic call for signature help, and
 // a `$`-suffixed hover target.
 char const kDidOpenIntrinsicFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/intr.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/intr.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"dim s as string\ns = le\ns = pr\npr\ns = mid$( \"abcdef\", 2 )\ns = left$\n"}}})FB";
 
 char const *kIntrinsicExprLeFrame =
     R"FB({"jsonrpc":"2.0","id":"ile","method":"textDocument/completion","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/intr.bas"},"position":{"line":1,"character":6}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/intr.bas"},"position":{"line":1,"character":6}}})FB";
 
 char const *kIntrinsicExprPrFrame =
     R"FB({"jsonrpc":"2.0","id":"iep","method":"textDocument/completion","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/intr.bas"},"position":{"line":2,"character":6}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/intr.bas"},"position":{"line":2,"character":6}}})FB";
 
 char const *kIntrinsicStmtPrFrame =
     R"FB({"jsonrpc":"2.0","id":"isp","method":"textDocument/completion","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/intr.bas"},"position":{"line":3,"character":2}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/intr.bas"},"position":{"line":3,"character":2}}})FB";
 
 char const *kIntrinsicSignatureFrame =
     R"FB({"jsonrpc":"2.0","id":"isg","method":"textDocument/signatureHelp","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/intr.bas"},"position":{"line":4,"character":20}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/intr.bas"},"position":{"line":4,"character":20}}})FB";
 
 char const *kIntrinsicHoverFrame =
     R"FB({"jsonrpc":"2.0","id":"ihv","method":"textDocument/hover","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/intr.bas"},"position":{"line":5,"character":4}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/intr.bas"},"position":{"line":5,"character":4}}})FB";
 
 // A semantic-tokens document: `dim`/`as` keywords, a declared variable with a
 // declaration modifier, its usage, `=`/`+` operators, and two numbers. The
 // trailing `1` becomes `12` in the change frame, which shifts the last token.
 char const kSemOpenFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/fblsp-sem.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/fblsp-sem.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"dim counter as integer\ncounter = 1\n"}}})FB";
 
 char const kSemChangeFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/fblsp-sem.bas","version":2},"contentChanges":[{"range":)FB"
+    R"FB({"uri":"file://{{tmp}}/fblsp-sem.bas","version":2},"contentChanges":[{"range":)FB"
     R"FB({"start":{"line":1,"character":10},"end":{"line":1,"character":11}},"text":"12"}]}})FB";
 
 char const *kSemFullFrame =
     R"FB({"jsonrpc":"2.0","id":"stfull","method":"textDocument/semanticTokens/full","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/fblsp-sem.bas"}}})FB";
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/fblsp-sem.bas"}}})FB";
 
 std::string SemDeltaFrame(std::string const &id, std::string const &previous) {
   return "{\"jsonrpc\":\"2.0\",\"id\":\"" + id +
          "\",\"method\":\"textDocument/semanticTokens/full/delta\",\"params\":"
-         "{\"textDocument\":{\"uri\":\"file:///tmp/fblsp-sem.bas\"},"
+         "{\"textDocument\":{\"uri\":\"file://{{tmp}}/fblsp-sem.bas\"},"
          "\"previousResultId\":\"" +
          previous + "\"}}";
 }
@@ -622,24 +687,24 @@ char const kInitializeSemRangeFrame[] =
 // Viewport over line 1 only; the response must drop the line-0 tokens.
 char const *kSemRangeFrame =
     R"FB({"jsonrpc":"2.0","id":"strag","method":"textDocument/semanticTokens/range","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/fblsp-sem.bas"},"range":{"start":{"line":1,"character":0},)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/fblsp-sem.bas"},"range":{"start":{"line":1,"character":0},)FB"
     R"FB("end":{"line":1,"character":15}}}})FB";
 
 // Inlay-hint document: a SUB block (closer hint) and a suffix-typed dim without
 // an AS clause (inferred-type hint).
 char const kInlayOpenFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/fblsp-inlay.bas","languageId":"basic","version":1,)FB"
+    R"FB({"uri":"file://{{tmp}}/fblsp-inlay.bas","languageId":"basic","version":1,)FB"
     R"FB("text":"sub greet()\n    print 1\nend sub\ndim x$\n"}}})FB";
 
 char const *kInlayHintFrame =
     R"FB({"jsonrpc":"2.0","id":"inh","method":"textDocument/inlayHint","params":)FB"
-    R"FB({"textDocument":{"uri":"file:///tmp/fblsp-inlay.bas"},"range":{"start":{"line":0,"character":0},)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/fblsp-inlay.bas"},"range":{"start":{"line":0,"character":0},)FB"
     R"FB("end":{"line":3,"character":0}}}})FB";
 
 char const kDidCloseFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":)FB"
-    R"FB({"uri":"file:///tmp/hello.bas"}})FB";
+    R"FB({"uri":"file://{{tmp}}/hello.bas"}})FB";
 
 // The didChangeConfiguration payload is ignored (settings live in each root's
 // freebasicd.toml); the notification only signals the server to re-read.
@@ -768,7 +833,7 @@ struct CodeActionFixture {
       std::ofstream out(sandbox / "inc" / "config.bi");
       out << "dim shared cfg as integer\n";
     }
-    mainUri = "file://" + (sandbox / "main.bas").string();
+    mainUri = FileUri(sandbox / "main.bas");
   }
 
   ~CodeActionFixture() {
@@ -892,7 +957,7 @@ void TestCodeActionRetargetsMissingInclude() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const rootUri = "file://" + fix.sandbox.string();
+  std::string const rootUri = FileUri(fix.sandbox);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       rootUri + "\"}}";
@@ -994,7 +1059,7 @@ void TestDidOpenPublishesDiagnostics() {
   input->append(MakeLspFrame(kDidOpenFrame));
   std::string const output_all = WaitForPublishedUri(output, 1);
 
-  Expect(output_all.find(kUri) != std::string::npos,
+  Expect(output_all.find(Expand(kUri)) != std::string::npos,
          "publishDiagnostics must carry the opened uri");
   Expect(output_all.find("\"diagnostics\":[]") != std::string::npos,
          "a healthy document must publish no diagnostics");
@@ -2119,8 +2184,8 @@ void TestWorkspaceSymbolIndexesWorkspace() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const fileUri = "file://" + (wsDir / "lib.bi").string();
-  std::string const rootUri = "file://" + wsDir.string();
+  std::string const fileUri = FileUri(wsDir / "lib.bi");
+  std::string const rootUri = FileUri(wsDir);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       rootUri + "\"}}";
@@ -2185,7 +2250,7 @@ void TestOutsideFileNotIndexed() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const rootUri = "file://" + wsDir.string();
+  std::string const rootUri = FileUri(wsDir);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       rootUri + "\"}}";
@@ -2195,7 +2260,7 @@ void TestOutsideFileNotIndexed() {
          "initialize must advertise workspace/symbol");
 
   // Open a header living outside the workspace root.
-  std::string const outsideUri = "file://" + (outsideDir / "dep.bi").string();
+  std::string const outsideUri = FileUri(outsideDir / "dep.bi");
   std::string const openFrame =
       R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
       R"({"uri":")" +
@@ -2275,7 +2340,7 @@ void TestHoverWorksForDocOutsideWorkspaceRoot() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const rootUri = "file://" + wsDir.string();
+  std::string const rootUri = FileUri(wsDir);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       rootUri + "\"}}";
@@ -2285,8 +2350,7 @@ void TestHoverWorksForDocOutsideWorkspaceRoot() {
          "initialize must advertise workspace/symbol");
 
   // Open the out-of-root engine.bas and hover `.walls` (line 4, char 26).
-  std::string const engineUri =
-      "file://" + (projDir / "src" / "engine.bas").string();
+  std::string const engineUri = FileUri(projDir / "src" / "engine.bas");
   std::string const openFrame =
       R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
       R"({"uri":")" +
@@ -2367,8 +2431,8 @@ void TestSourceLayoutRootNarrowsToOpenedProject() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const appUri = "file://" + (proj / "src" / "app.bas").string();
-  std::string const broadRootUri = "file://" + broad.string();
+  std::string const appUri = FileUri(proj / "src" / "app.bas");
+  std::string const broadRootUri = FileUri(broad);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       broadRootUri + "\"}}";
@@ -2463,7 +2527,7 @@ void TestSourceLayoutRootRecognizesCatalogNames() {
     std::filesystem::create_directories(proj / cases[i].dir);
     std::ofstream out(proj / cases[i].dir / "app.bas");
     out << "sub " << cases[i].symbol << "()\nend sub\n";
-    appUris.push_back("file://" + (proj / cases[i].dir / "app.bas").string());
+    appUris.push_back(FileUri(proj / cases[i].dir / "app.bas"));
   }
 
   lsp::NullLog log;
@@ -2475,7 +2539,7 @@ void TestSourceLayoutRootRecognizesCatalogNames() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const broadRootUri = "file://" + broad.string();
+  std::string const broadRootUri = FileUri(broad);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       broadRootUri + "\"}}";
@@ -2574,7 +2638,7 @@ void TestSourceLayoutRootSingleFileMode() {
                  .find("\"workspaceSymbolProvider\":") != std::string::npos,
          "initialize must advertise workspace/symbol");
 
-  std::string const appUri = "file://" + (proj / "src" / "app.bas").string();
+  std::string const appUri = FileUri(proj / "src" / "app.bas");
   std::string const openFrame =
       R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
       R"({"uri":")" +
@@ -2630,8 +2694,7 @@ void TestSourceLayoutRootSingleFileMode() {
                  .find("\"workspaceSymbolProvider\":") != std::string::npos,
          "initialize must advertise workspace/symbol");
 
-  std::string const plainUri =
-      "file://" + (sandbox / "plain" / "file.bas").string();
+  std::string const plainUri = FileUri(sandbox / "plain" / "file.bas");
   std::string const openPlain =
       R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
       R"({"uri":")" +
@@ -2699,8 +2762,8 @@ void TestBroadRootNarrowsToOpenedProject() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const appUri = "file://" + (proj / "app.bas").string();
-  std::string const broadRootUri = "file://" + broad.string();
+  std::string const appUri = FileUri(proj / "app.bas");
+  std::string const broadRootUri = FileUri(broad);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       broadRootUri + "\"}}";
@@ -2783,7 +2846,7 @@ void TestBroadRootNarrowsToAnyVcsProject() {
     std::filesystem::create_directories(proj / cases[i].marker);
     std::ofstream out(proj / "app.bas");
     out << "sub " << cases[i].symbol << "()\nend sub\n";
-    appUris.push_back("file://" + (proj / "app.bas").string());
+    appUris.push_back(FileUri(proj / "app.bas"));
   }
 
   lsp::NullLog log;
@@ -2795,7 +2858,7 @@ void TestBroadRootNarrowsToAnyVcsProject() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const broadRootUri = "file://" + broad.string();
+  std::string const broadRootUri = FileUri(broad);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       broadRootUri + "\"}}";
@@ -2868,7 +2931,7 @@ void TestMissingIncludePublishesDiagnostic() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const badUri = "file://" + (sandbox / "main.bas").string();
+  std::string const badUri = FileUri(sandbox / "main.bas");
   std::string const badOpenFrame =
       R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
       R"({"uri":")" +
@@ -2890,7 +2953,7 @@ void TestMissingIncludePublishesDiagnostic() {
       "the include range must cover the filename literal, not the whole line");
 
   // A resolvable include must not produce an include-not-found diagnostic.
-  std::string const goodUri = "file://" + (sandbox / "uses.bas").string();
+  std::string const goodUri = FileUri(sandbox / "uses.bas");
   std::string const goodOpenFrame =
       R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
       R"({"uri":")" +
@@ -2936,8 +2999,8 @@ void TestWatchedFilesRescanConverges() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const fileUri = "file://" + (wsDir / "lib.bi").string();
-  std::string const rootUri = "file://" + wsDir.string();
+  std::string const fileUri = FileUri(wsDir / "lib.bi");
+  std::string const rootUri = FileUri(wsDir);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       rootUri + "\"}}";
@@ -3040,8 +3103,8 @@ void TestConfigFileRootDetection() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const appUri = "file://" + (proj / "src" / "app.bas").string();
-  std::string const broadRootUri = "file://" + broad.string();
+  std::string const appUri = FileUri(proj / "src" / "app.bas");
+  std::string const broadRootUri = FileUri(broad);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       broadRootUri + "\"}}";
@@ -3125,7 +3188,7 @@ void TestConfigFileRootDetection() {
                  .find("\"workspaceSymbolProvider\":") != std::string::npos,
          "initialize must advertise workspace/symbol");
 
-  std::string const sfUri = "file://" + (lp / "src" / "app.bas").string();
+  std::string const sfUri = FileUri(lp / "src" / "app.bas");
   std::string const openSf =
       R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
       R"({"uri":")" +
@@ -3205,7 +3268,7 @@ void TestConfigMarkerRootUsedAsIsEagerIndex() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const rootUri = "file://" + proj.string();
+  std::string const rootUri = FileUri(proj);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       rootUri + "\"}}";
@@ -3262,7 +3325,7 @@ void TestConfigMarkerRootUsedAsIsEagerIndex() {
   server2.registerHandlers();
   session2.start(input2, output2);
 
-  std::string const faUri = "file://" + fa.string();
+  std::string const faUri = FileUri(fa);
   std::string const init2 =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"workspaceFolders":[)"
       R"({"uri":")" +
@@ -3329,8 +3392,8 @@ void TestMultiWorkspaceFoldersStayIsolated() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const faUri = "file://" + fa.string();
-  std::string const fbUri = "file://" + fb.string();
+  std::string const faUri = FileUri(fa);
+  std::string const fbUri = FileUri(fb);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"workspaceFolders":[)"
       R"({"uri":")" +
@@ -3367,7 +3430,7 @@ void TestMultiWorkspaceFoldersStayIsolated() {
 
   // Isolation: opening B's document and completing at module level must offer
   // B's own module root but never A's (B is served by B's index alone).
-  std::string const bUri = "file://" + (fb / "b.bas").string();
+  std::string const bUri = FileUri(fb / "b.bas");
   std::string const openFrame =
       R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
       R"({"uri":")" +
@@ -3437,8 +3500,8 @@ void TestWorkspaceFoldersChangedAddRemove() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const faUri = "file://" + fa.string();
-  std::string const fbUri = "file://" + fb.string();
+  std::string const faUri = FileUri(fa);
+  std::string const fbUri = FileUri(fb);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"workspaceFolders":[)"
       R"({"uri":")" +
@@ -4168,10 +4231,9 @@ void TestDidChangeConfigurationIncludePathResolves() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const mainUri = "file://" + (ws / "main.bas").string();
-  std::string const headerUri =
-      "file://" + (ws / "vendor" / "extra" / "exthdr.bi").string();
-  std::string const rootUri = "file://" + ws.string();
+  std::string const mainUri = FileUri(ws / "main.bas");
+  std::string const headerUri = FileUri(ws / "vendor" / "extra" / "exthdr.bi");
+  std::string const rootUri = FileUri(ws);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       rootUri + "\"}}";
@@ -4256,8 +4318,8 @@ void TestDidChangeConfigurationDiagnosticsToggle() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const mainUri = "file://" + (sandbox / "main.bas").string();
-  std::string const rootUri = "file://" + sandbox.string();
+  std::string const mainUri = FileUri(sandbox / "main.bas");
+  std::string const rootUri = FileUri(sandbox);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
       rootUri + "\"}}";
@@ -4364,12 +4426,12 @@ void TestSemanticTokensAndInlayHintsGates() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const faUri = "file://" + fa.string();
-  std::string const fbUri = "file://" + fb.string();
-  std::string const aSemUri = "file://" + (fa / "a.bas").string();
-  std::string const aInlayUri = "file://" + (fa / "ai.bas").string();
-  std::string const bSemUri = "file://" + (fb / "b.bas").string();
-  std::string const bInlayUri = "file://" + (fb / "bi.bas").string();
+  std::string const faUri = FileUri(fa);
+  std::string const fbUri = FileUri(fb);
+  std::string const aSemUri = FileUri(fa / "a.bas");
+  std::string const aInlayUri = FileUri(fa / "ai.bas");
+  std::string const bSemUri = FileUri(fb / "b.bas");
+  std::string const bInlayUri = FileUri(fb / "bi.bas");
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"workspaceFolders":[)"
       R"({"uri":")" +
@@ -4525,10 +4587,10 @@ void TestSettingsApplyPerRootOnly() {
   server.registerHandlers();
   session.start(input, output);
 
-  std::string const faUri = "file://" + fa.string();
-  std::string const fbUri = "file://" + fb.string();
-  std::string const aUri = "file://" + (fa / "a.bas").string();
-  std::string const bUri = "file://" + (fb / "b.bas").string();
+  std::string const faUri = FileUri(fa);
+  std::string const fbUri = FileUri(fb);
+  std::string const aUri = FileUri(fa / "a.bas");
+  std::string const bUri = FileUri(fb / "b.bas");
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"workspaceFolders":[)"
       R"({"uri":")" +
@@ -4623,7 +4685,7 @@ void TestRepeatRequestsShareAnalysis() {
 
   auto completionFrame = [](std::string const &id) {
     return R"({"jsonrpc":"2.0","id":")" + id +
-           R"(","method":"textDocument/completion","params":{"textDocument":{"uri":"file:///tmp/resolve.bas"},"position":{"line":1,"character":8}}})";
+           R"(","method":"textDocument/completion","params":{"textDocument":{"uri":"file://{{tmp}}/resolve.bas"},"position":{"line":1,"character":8}}})";
   };
 
   input->append(MakeLspFrame(completionFrame("c1").c_str()));
@@ -4668,12 +4730,12 @@ void TestVersionlessChangeServesFreshAnalysis() {
 
   // Full-document replacement, no "version" key on the textDocument.
   input->append(MakeLspFrame(
-      R"FB({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///tmp/resolve.bas"},"contentChanges":[{"range":{"start":{"line":0,"character":0},"end":{"line":1,"character":21}},"text":"dim total as integer\ntotal = total + 1\n"}]}})FB"));
+      R"FB({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file://{{tmp}}/resolve.bas"},"contentChanges":[{"range":{"start":{"line":0,"character":0},"end":{"line":1,"character":21}},"text":"dim total as integer\ntotal = total + 1\n"}]}})FB"));
   Expect(WaitForPublishedUri(output, 2).empty() == false,
          "the versionless change must publish diagnostics");
 
   input->append(MakeLspFrame(
-      R"({"jsonrpc":"2.0","id":"ds2","method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///tmp/resolve.bas"}}})"));
+      R"({"jsonrpc":"2.0","id":"ds2","method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file://{{tmp}}/resolve.bas"}}})"));
   std::string const syms = WaitForOutputContaining(output, "\"id\":\"ds2\"");
   Expect(syms.find("\"name\":\"total\"") != std::string::npos,
          "the versionless change's new declaration must be visible");

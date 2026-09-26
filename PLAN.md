@@ -38,7 +38,7 @@ architecture, and the remaining work.
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
-| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers), `clang-format`, and macOS are green and holding; each platform leg failed first for a reason only that platform could show, and all four causes are now fixed (Windows: an MSVC `min`/`max` macro collision in vendored LspCpp, a CRLF checkout breaking the byte-exact `grammar_checks`, and a lost wakeup in the index's rescan shutdown; macOS: a use-after-free in the `workspace/symbol` reply build, found with TSan). Left: per-editor wiring docs, the first all-green run, the first tag) |
+| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers), `clang-format`, and macOS are green and holding; each platform leg failed first for a reason only that platform could show, and all four causes are now fixed (Windows: an MSVC `min`/`max` macro collision in vendored LspCpp, a CRLF checkout breaking the byte-exact `grammar_checks`, and a *test-harness* defect — the fixtures built `file://` URIs by string concatenation, which is malformed JSON on Windows, so eleven tests never got an answer and burned their poll budgets, which is what looked like a hang; macOS: a use-after-free in the `workspace/symbol` reply build, found with TSan). Two real latent index defects found while chasing the apparent hang (a lost wakeup in rescan shutdown, and a `std::thread` reachable from two threads) are fixed on their own merits, not as the cause. Left: per-editor wiring docs, the first all-green run, the first tag) |
 | M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
 | M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasicd`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasicd.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
 
@@ -919,31 +919,76 @@ implementation.
       `core.autocrlf=true` and confirming the files stay LF. `corpus_checks`
       reads files too and passed on Windows because it compares diagnostic
       codes, not bytes.
-    - `session_integration` never returned: 11 minutes with no output at all,
-      killed by hand. Two defects in `src/index.cpp`, both of which stop the
-      process dead rather than failing it. (1) `close()` cleared `running_`
-      without holding `rescanMu_`, so the store+notify could land in the window
-      between `rescanLoop`'s predicate check and its block inside `wait()` — a
-      lost wakeup, the loop parks forever, and `close()`'s `rescan_.join()`
-      never returns. (2) `scan(true)` is reachable from a handler thread
-      (`ensureWorkspaceIndex`) as well as from the rescan loop, and both do
-      `scanner_.join()` then reassign `scanner_`: two threads on one
-      `std::thread` is undefined behavior. Fixed by clearing `running_` under
-      `rescanMu_` and putting every `scanner_` join/reassignment under a new
-      `scannerMu_`. The new `index_checks` case races notifications against
-      teardown 64 times and fails (rather than hangs) on a wedge; it cannot
-      reproduce the original race deterministically, since a lost notification
-      leaves no trace. Local evidence that this is at least not a regression:
-      25 plain + 5 TSan runs of `index_checks` clean, `session_integration`
-      still 13.7s, TSan 0 warnings on both.
+    - `session_integration` appeared to hang: 11 minutes with no output at all,
+      killed by hand. **The two `src/index.cpp` defects fixed for this were
+      real, and are still worth fixing, but they were not the cause** — the
+      `[ RUN ]` instrumentation added below is what disproved that, and the
+      real cause turned out to be in the tests. Read after the fact:
+      (1) `close()` cleared `running_` without holding `rescanMu_`, so a
+      store+notify could land in the window between `rescanLoop`'s predicate
+      check and its block inside `wait()` — a lost wakeup, and `close()`'s
+      `rescan_.join()` would never return. (2) `scan(true)` is reachable from a
+      handler thread (`ensureWorkspaceIndex`) as well as from the rescan loop,
+      and both do `scanner_.join()` then reassign `scanner_`: two threads on one
+      `std::thread` is undefined behavior. Both are fixed (clear `running_`
+      under `rescanMu_`; every `scanner_` join/reassignment under a new
+      `scannerMu_`) and the new `index_checks` case races notifications against
+      teardown 64 times and fails rather than hangs on a wedge. The case cannot
+      reproduce either race deterministically — a lost notification leaves no
+      trace — so it is a smoke test, not a reproducer.
+    - The stall itself, once the suite could name itself: **not a hang at all.**
+      The `[ RUN ]` lines and a `ctest --timeout 300` turned 11 minutes of
+      silence into `14/15 ... ***Timeout 300.01 sec` with a legible failure
+      list — 12 failing tests, and *the only* 12. Eleven are the
+      `StartIndexedSession` tests, and the cause is that the fixtures built
+      document URIs by gluing `"file://"` onto `path.string()`. On Windows
+      that yields backslashes, and a backslash inside a JSON string is an
+      escape: `\t` and `\f` corrupt the path silently and `\w` (from the `\ws`
+      directory the fixture uses) is not a legal escape at all, so the
+      `initialize` frame fails to parse, the server never answers, and each of
+      those tests burns its full ~20 s poll budget before failing. A dozen
+      20-second budgets *is* an apparent hang. Fixed by building every URI
+      through LspCpp's `make_file_scheme_uri` over `fblang::normalizePath`
+      output — the same call the server makes when it echoes a URI, so test and
+      server agree byte for byte. Proof, not inference: `json.loads` on the
+      Windows form reports `Invalid \escape` at the `\w`; and because
+      LspCpp's drive-letter branch is a runtime check rather than a
+      preprocessor one, a probe linked against `lspcpp` prints the exact
+      Windows URIs from Linux (`file:///d%3A/tmp/...`, drive colon
+      percent-encoded, which `RawPathFromFileUri` decodes back).
+    - The same wave fixed the 68 hardcoded `file:///tmp/...` document URIs,
+      which are not Windows URIs at all (they decode to a drive-less path).
+      They now read `file://{{tmp}}/...`, expanded by a `MakeLspFrame` that
+      shadows `test::MakeLspFrame`, so no call site changed; `{{tmp}}` resolves
+      to a per-suite directory that is deliberately never created, which also
+      stops the 60 in-memory tests from rooting their workspace at the shared
+      temp directory and scanning each other's leftovers.
+    - Still unexplained: the twelfth test, `TestReferencesListAllSites`, failed
+      3 range assertions while `didOpen`, the response envelope, and
+      `TestHighlightCoversAllSites` on the *same document* all passed — so the
+      reply was well formed and the failure was inside cross-file resolution.
+      Falsified by experiment: a colliding `dim counter` in a sibling file
+      under the shared root (references is closure-scoped, so it cannot be
+      hijacked), a torn read (LspCpp writes header+body as one `write`), and
+      an index that has not caught up with the open buffer
+      (`ensureRequestClosure` builds the entry on demand from the live buffer).
+      It sent a POSIX-shaped URI, which this wave removes, so it may well be
+      the same root cause — but that is a hypothesis, and the next Windows run
+      settles it.
   - The lesson recorded in AGENTS.md's ThreadSanitizer section: TSan and ctest
     are both blind to a lost wakeup and to a shared `std::thread`, and both
     present as *silence*. Hence the two cheap guards that make the next one
     diagnosable instead of theoretical — `session_integration` prints a
     flushed `[ RUN ] <test>` line per test, and CI passes `ctest --timeout
-    300` (ctest's own 1500s default let the hang hold the whole job). Verified
-    on a synthetic always-sleeping test that ctest does print a timed-out
-    test's captured output, so the last `[ RUN ]` line names the culprit.
+    300` (ctest's own 1500s default let the stall hold the whole job).
+    Verified on a synthetic always-sleeping test that ctest does print a
+    timed-out test's captured output, so the last `[ RUN ]` line names the
+    culprit. Paid for itself immediately: they converted a 25-minute
+    hand-killed mystery into one readable failure list, which is what found
+    the URI defect. The companion lesson, also in AGENTS.md: a fixture that
+    builds a wire-format string by string surgery fails as *malformed input*
+    rather than as a wrong answer, and a poll-based wait reports that as a
+    timeout — so a bug in the harness can present as the platform being slow.
 - Left:
   - Per-editor wiring recipes under `docs/editors/`: neovim builtin LSP,
     minimal vscode client, emacs `lsp-mode`. Each installs the M9 grammar

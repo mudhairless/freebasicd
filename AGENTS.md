@@ -225,11 +225,14 @@ replaces the entries inside it.
 **What TSan cannot see, in the same file.** A lost wakeup and a two-thread
 `std::thread` handoff are both invisible to TSan *and* to `ctest`, and both
 present the same way — no output, no failure, the process simply stops. Both
-bit the Windows leg (`close()` cleared `running_` outside `rescanMu_`, so a
-store+notify could land between `rescanLoop`'s predicate check and its block and
-park the loop forever; and `scan(true)` is reachable from a handler thread as
-well as the rescan loop, so two threads could join and reassign one
-`std::thread`). Two rules follow, and neither needs a sanitizer to check:
+were real defects here and are fixed (`close()` cleared `running_` outside
+`rescanMu_`, so a store+notify could land between `rescanLoop`'s predicate check
+and its block and park the loop forever; and `scan(true)` is reachable from a
+handler thread as well as the rescan loop, so two threads could join and
+reassign one `std::thread`). What the evidence actually showed is that they
+were **not** what stalled the Windows leg: with the tests naming themselves, the
+stall turned out to be accumulated poll budgets, not a wedge — see the URI note
+below. Two rules follow, and neither needs a sanitizer to check:
 
 - **A condition variable's predicate state changes under the mutex the waiter
   blocks on.** An atomic flag is not a substitute — the waiter holds nothing
@@ -243,6 +246,25 @@ When a suite hangs on a platform you cannot reproduce, make it name itself
 before theorizing: `session_integration` prints `[ RUN ] <test>` per test
 (flushed, so it survives a process that never exits) and CI passes
 `ctest --timeout`, which prints the captured output of a test that times out.
+That instrumentation is what turned "the Windows leg hangs" into "these eleven
+tests fail, here are their assertions" in one run.
+
+**`file://` + `path.string()` is not a URI.** A `file:` URI needs forward
+slashes, a third slash before a drive letter, and percent-encoding of anything
+unsafe. A backslash is not merely wrong in a URI — inside the JSON frame that
+carries it, a backslash is an *escape*, so `"d:\tmp\ws"` silently corrupts the
+path via `\t`/`\f` and fails to parse outright on `\w`, the message never
+reaches the server, and every test that sent it fails on a poll budget rather
+than on an assertion (≈20 s apiece, which is what made a dozen failures look
+like a hang). Build URIs through LspCpp's `make_file_scheme_uri` over
+`fblang::normalizePath` output — the same call the server makes when it echoes a
+URI, so a test and the server agree byte for byte on every platform. The same
+applies to a *hardcoded* URI: `file:///tmp/x.bas` is not a Windows URI at all
+(it decodes to a drive-less path), so the suite writes its documents against a
+`{{tmp}}` placeholder that `MakeLspFrame` expands per platform. The lesson
+generalizes: a test fixture that builds a wire-format string by string surgery
+fails as *malformed input*, not as a wrong answer, and a poll-based wait turns
+that into a timeout instead of a failure.
 
 ### clang-format
 
