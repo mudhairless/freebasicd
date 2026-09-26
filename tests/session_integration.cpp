@@ -4733,6 +4733,25 @@ void TestReferencesClosureReusesAnalysis() {
   session.stop();
 }
 
+// RUN_TEST is silent when a test passes, so a hang or a crash on a platform we
+// cannot reproduce locally leaves ctest's captured output with nothing in it —
+// the Windows leg once sat on session_integration for eleven minutes and the
+// log said only that test 14 had started. Print the name first and flush it:
+// ctest prints what a test emitted when it fails *or times out*, so the last
+// line printed is then the answer. Redefined here rather than in LspCpp's
+// test_helpers.h, which is vendored and not ours to change.
+#undef RUN_TEST
+#define RUN_TEST(fn)                                                           \
+  do {                                                                         \
+    if (test::ShouldRunTest(#fn)) {                                            \
+      std::printf("[ RUN      ] %s\n", #fn);                                   \
+      std::fflush(stdout);                                                     \
+      (fn)();                                                                  \
+    } else {                                                                   \
+      ++test::SkippedTests();                                                  \
+    }                                                                          \
+  } while (0)
+
 int main(int argc, char **argv) {
   test::InitTestFilter(argc, argv);
   RUN_TEST(TestInitializeReportsSyncCapabilities);

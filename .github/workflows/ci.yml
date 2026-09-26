@@ -159,7 +159,12 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+        # --timeout bounds a hang. ctest's own default is 1500s, which is how a
+        # wedged session_integration once held the Windows leg for the whole
+        # job; 300s is ~20x the whole local suite and still fails fast. ctest
+        # prints a timed-out test's captured output, so session_integration's
+        # per-test progress lines name the one that stopped.
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 300
 
       # The install rules are the only release-shaped thing this project has,
       # so they get a test: a scratch prefix under the build directory, then
