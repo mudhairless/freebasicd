@@ -225,12 +225,21 @@ private:
 
   std::atomic<bool> running_{false};
   std::thread scanner_;
+  // Serializes the scanner_ handoff in scan(true); see the comment there. The
+  // rescan loop below is the other async caller, so "only the loop starts
+  // scans" is not true.
+  std::mutex scannerMu_;
 
   // Debounced watched-files rescan: events coalesce in `rescanQueued_`, the
   // dedicated `rescanLoop` waits out a quiet window (kRescanDebounce), then
   // scans on `scanner_`. Keeping the loop here (not in the session) preserves
   // the close() join ordering: `rescan_` is joined before `scanner_`, so
   // close() can never race the loop's scan(true) join-previous.
+  //
+  // close() clears `running_` under `rescanMu_`, never outside it: the loop
+  // blocks in wait() on that mutex, and a store+notify that slips in between
+  // its predicate check and its block is a lost wakeup, which parks the loop
+  // forever and hangs close()'s join.
   std::thread rescan_;
   std::mutex rescanMu_;
   std::condition_variable rescanCv_;

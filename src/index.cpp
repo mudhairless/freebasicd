@@ -447,7 +447,18 @@ void WorkspaceIndex::open() {
 }
 
 void WorkspaceIndex::close() {
-  running_.store(false);
+  {
+    // Under rescanMu_, because that is the mutex rescanLoop's wait() blocks on:
+    // clearing the flag outside it lets the store+notify land in the window
+    // between the loop's predicate check and its block, where the notification
+    // is lost — the loop then parks forever and the join below never returns.
+    // The condition_variable contract is that the predicate's state changes
+    // under the mutex; `running_` being atomic does not make an unsynchronized
+    // change safe, because the waiter is not holding anything the notifier must
+    // take. A lost wakeup here is a hang, not a crash, so nothing reports it.
+    std::lock_guard<std::mutex> const lk(rescanMu_);
+    running_.store(false);
+  }
   // Wake the rescan loop's parked waits; a scan it already started finishes
   // before the join below (rescan_ is joined before scanner_ so the two can
   // never join the same scanner_ concurrently).
@@ -455,8 +466,18 @@ void WorkspaceIndex::close() {
   if (rescan_.joinable()) {
     rescan_.join();
   }
-  if (scanner_.joinable()) {
-    scanner_.join();
+  {
+    // Under scannerMu_ for the same reason close() clears running_ under
+    // rescanMu_: two threads must never join one std::thread. The rescan_ join
+    // above already retired the loop, and a handler cannot be inside scan(true)
+    // while the destructor runs (it would hold a shared_ptr, and the
+    // destructor needs the last one gone) — so this lock is idle today. It is
+    // here so the invariant is local to the two joins instead of resting on
+    // close() having no other caller.
+    std::lock_guard<std::mutex> const lk(scannerMu_);
+    if (scanner_.joinable()) {
+      scanner_.join();
+    }
   }
 }
 
@@ -466,6 +487,18 @@ void WorkspaceIndex::close() {
 
 void WorkspaceIndex::scan(bool async) {
   if (async) {
+    // Serialized, because two threads reach this: the rescan loop, and a
+    // handler thread (ensureWorkspaceIndex calls scan(true) for a new root).
+    // std::thread::join and the assignment are not thread-safe against each
+    // other, so letting both run hands one std::thread object to two joins and
+    // a reassignment — undefined behavior, and a plausible way to wedge a join.
+    // The lock spans the join deliberately: keeping the previous scan from
+    // overlapping the new one is the point, and the join was already
+    // synchronous in the calling thread before this lock existed, so the only
+    // new wait is between two concurrent callers. That is rare and short — a
+    // freshly created index has no previous scan to join, which is the case
+    // the handler-side caller is always in.
+    std::lock_guard<std::mutex> const lk(scannerMu_);
     if (scanner_.joinable()) {
       scanner_.join();
     }

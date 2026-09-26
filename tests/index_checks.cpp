@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -330,6 +331,58 @@ int main() {
       CHECK(w.byKey("greet").size() == 1);
     }
     w.close();
+  }
+
+  // Shutdown always completes. A lost wakeup in the rescan loop's wait is
+  // neither a crash nor a wrong value: the thread parks forever, the joining
+  // close() never returns, and the process stops making progress with nothing
+  // on stdout — the shape of the Windows CI leg that sat on this suite for
+  // eleven minutes. The lost notification leaves no trace, so this cannot
+  // reproduce the original race deterministically; what it does check is that
+  // the interleaving which lost it (notifications racing teardown) still tears
+  // the index down, and it reports a wedge instead of hanging the suite.
+  {
+    fs::path const wsC = sandbox / "shutdownws";
+    fs::create_directories(wsC);
+    writeFile(wsC / "a.bas", "dim alpha as integer\n");
+    int const kRounds = 64;
+    int wedged = -1;
+    for (int round = 0; round < kRounds && wedged < 0; ++round) {
+      // Heap-allocated so a wedged close can leak the index instead of running
+      // close() a second time from the destructor and hanging there.
+      std::unique_ptr<WorkspaceIndex> idx(new WorkspaceIndex(wsC));
+      idx->open();
+      idx->scan(true);
+
+      std::atomic<bool> stop{false};
+      std::thread notifier([&] {
+        for (int i = 0; i < 512 && !stop.load(); ++i) {
+          idx->watchedFilesChanged();
+        }
+      });
+      std::atomic<bool> done{false};
+      std::thread closer([&] {
+        idx->close();
+        done.store(true);
+      });
+
+      // Two seconds for a close over a one-file workspace: generous by orders
+      // of magnitude, and bounded so a wedge fails the check.
+      for (int spin = 0; spin < 2000 && !done.load(); ++spin) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      stop.store(true);
+      notifier.join();
+      if (!done.load()) {
+        wedged = round;
+        closer.detach();
+        idx.release();
+        break;
+      }
+      closer.join();
+    }
+    CHECK_MSG(wedged < 0,
+              "close() must return even when watched-files events race it");
   }
 
   // Workspace scoping: the index only ever holds files under its root. A
