@@ -205,16 +205,38 @@ plan engineers around:
    `freebasicd.toml` (payload ignored) and re-applies `Settings` per root
    (include seam + feature gates). Force-disabling the fbc system include
    search (step ⑥) remains open.
-3. No per-editor wiring docs yet, and the hosted CI matrix has never run.
-   `README.md`, `cmake --install`, and the 0.7.0 version landed 2026-09-25;
-   so did `.github/workflows/ci.yml` — four `build-test` legs (Linux gcc and
-   clang, macOS AppleClang, Windows MSVC), a Linux-only `clang-format` job
-   pinned to 22.1.8, and an install-tree check
+3. No per-editor wiring docs yet. `README.md`, `cmake --install`, and the
+   0.7.0 version landed 2026-09-25; so did `.github/workflows/ci.yml` — four
+   `build-test` legs (Linux gcc and clang, macOS AppleClang, Windows MSVC), a
+   Linux-only `clang-format` job pinned to 22.1.8, and an install-tree check
    (`tools/check_install_tree.cmake`) that asserts the binary, `LICENSE.md`,
-   and all 29 catalogs. The Linux legs were run locally end to end; macOS and
-   Windows exist only in the workflow, and Windows is the one to watch (its
-   gettext comes from a downloaded bundle, see item 6). The editors' setup
-   recipes are still open.
+   and all 29 catalogs. The matrix has now run on GitHub, and the three
+   platform legs each failed first for a reason only that platform can show,
+   which is the argument for having them at all:
+   - **macOS** died at `#include <libintl.h>` in `src/main.cpp`. The header was
+     found and the gettext include directory did reach `freebasicd_lang`; it
+     never reached the executable, because `freebasicd_core` linked
+     `freebasicd_lang` PRIVATE and a static library hands its private
+     dependencies to consumers as `$<LINK_ONLY:...>` — on the link line,
+     without the usage requirements. Linux hid it: glibc's `libintl.h` is in
+     `/usr/include`, a default search directory. `freebasicd_lang` is PUBLIC
+     now; the executable's flags gained `-I src`, which it had never had.
+   - **Windows** died in its gettext step, then in configure three times over:
+     mlocati splits the release and the `-dev-msvc` bundle has `libintl.h` and
+     the import library but *no* tools (both bundles now go into one prefix);
+     a `$root:` in a `throw` string, which PowerShell reads as a drive-qualified
+     variable, so the script never parsed (actionlint and shellcheck only lint
+     bash, so the pwsh blocks are now parse-checked locally with the real
+     parser); a missing zlib that only ixwebsocket's unused websocket path
+     wants (`USE_ZLIB=OFF`); and LspCpp asking a Visual Studio generator for
+     seven boost nuget packages the build does not have (fork commits
+     `a98ddce` + `9feb484`).
+   - Two latent `cmake/FindIntl.cmake` defects surfaced with them and are
+     fixed: its not-found branch could never be fatal (CMake does not turn a
+     module's `<Name>_FOUND FALSE` into a configure error, which is *why* the
+     macOS leg died in the compiler), and the `-DGETTEXT_ROOT` its header
+     documented was never read.
+   The editors' setup recipes are still open.
 4. The install tree is **not relocatable**: `FBLANG_LOCALEDIR_INSTALL` is
    `${CMAKE_INSTALL_PREFIX}/share/locale` baked in at configure time
    (`src/i18n.cpp`'s probe order: `FBLANG_LOCALEDIR` env override, then the

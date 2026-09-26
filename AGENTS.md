@@ -10,11 +10,11 @@ repository (default branch `main`).
   `third_party/LspCpp` from **our fork,
   [github.com/mudhairless/LspCpp](https://github.com/mudhairless/LspCpp)**
   (`.gitmodules` points there; the submodule is pinned to
-  `a98ddcee26d53a42e32b3a50c714cca37dc10229` on the fork's
+  `9feb4843e4ff3756ba8ed7a104011e98604538ec` on the fork's
   `lsp-3.17-completions` branch (named for what it carries: the LSP 3.17 types
   and serialization upstream still lacks), which is **upstream
   `19150d12c4ae26239d75258ed598ba8ea3587cb7`**
-  (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus six
+  (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus seven
   commits of ours**: `310e1e6` adding the watched-files registration types
   upstream lacks —
   `lsFileSystemWatcher`/`lsDidChangeWatchedFilesOptions`
@@ -43,7 +43,13 @@ repository (default branch `main`).
   `NOT LSPCPP_STANDALONE_ASIO` (it asked a Visual Studio generator for seven
   of them unconditionally, so configure died with "Can't find target of
   boost.1.76.0.0" for a dependency the build does not have — the block 20
-  lines above that installs the same packages already skipped it).
+  lines above that installs the same packages already skipped it), completed
+  by `9feb484`, which brings the seventh call (`boost_thread-vc141`) inside
+  that guard too — `a98ddce` opened the guard between the first and the last
+  of the seven, so CI skipped six and died on the seventh. Only the Visual
+  Studio generator reaches that branch, and no local platform can configure
+  it, so a change to LspCpp's CMake has to be checked by reading it, not by
+  building it.
   Restore with `git submodule update --init`. Consumed
   via `add_subdirectory(third_party/LspCpp)` and linked as the `lspcpp`
   target. No Boost is required (`LSPCPP_STANDALONE_ASIO` is the default);
