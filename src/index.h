@@ -54,9 +54,13 @@ struct IndexedFile {
   bool pragmaOnce = false;
 
   // Whether this entry came from a scan of the on-disk source (true) or from
-  // a live open buffer (false). Scan is disk truth, buffers are live truth:
-  // a `fromDisk=false` entry must never satisfy scan's mtime/size cache-hit,
-  // or an unsaved buffer would shadow the source that scan is about to read.
+  // a live open buffer (false). Buffers outrank disk, and that is the whole
+  // point of the flag: the parse here records byte offsets, and a reply
+  // converts them with a line table built from a *different* copy whenever the
+  // two disagree (an unsaved edit, or line endings the editor normalized on the
+  // way in), which lands the range one column out per line they differ. So scan
+  // skips a `fromDisk=false` path outright rather than treating it as a
+  // cache-hit miss, and didChange is what refreshes it.
   bool fromDisk = true;
 };
 
@@ -95,10 +99,11 @@ public:
   void close();
 
   // Re-stat every workspace file; parse changed/new files, drop vanished
-  // ones. Reuses entries whose (mtime, size) still match — open-buffer
-  // entries (fromDisk=false) never satisfy this cache-hit, so scan always
-  // replaces a lingering buffer parse with disk truth. When `async` the
-  // scan runs on an internal thread (returns immediately).
+  // ones. Reuses entries whose (mtime, size) still match. Open-buffer entries
+  // (fromDisk=false) are skipped entirely — the client owns those bytes until
+  // didClose, and re-parsing the disk copy over them would leave the index
+  // describing a different file than the one a reply is measured against. When
+  // `async` the scan runs on an internal thread (returns immediately).
   void scan(bool async = true);
 
   // A `workspace/didChangeWatchedFiles` event arrived. A debounced rescan
@@ -299,8 +304,8 @@ std::optional<std::string> resolveIncludeTarget(
 // against `workspaceRoot` from the including file's directory, with the
 // root's config include dirs joining the search as step ② (see
 // resolveIncludeTarget). `doc`'s symbol tree is copied into `roots` (the
-// caller keeps `doc` alive). `fromDisk=false` marks an open-buffer entry that
-// must never satisfy scan's mtime/size cache-hit.
+// caller keeps `doc` alive). `fromDisk=false` marks an open-buffer entry,
+// which scan skips rather than re-parsing from disk.
 IndexedFile indexedFileFromAnalysis(
     std::string const &normalizedPath, std::uint64_t mtime, std::uint64_t size,
     AnalyzedDoc const &doc, std::filesystem::path const &workspaceRoot,

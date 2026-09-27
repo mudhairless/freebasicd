@@ -557,11 +557,24 @@ void WorkspaceIndex::scan(bool async) {
     {
       std::lock_guard<std::mutex> const lk(mu_);
       auto found = files_.find(norm);
-      // A fromDisk=false open-buffer entry must never satisfy scan's
-      // cache-hit: scan is disk truth, buffers are live truth.
-      if (found != files_.end() && found->second->fromDisk &&
-          found->second->mtime == mtime && found->second->size == size) {
-        continue;
+      if (found != files_.end()) {
+        // An open buffer outranks disk, so the scan must not re-parse it. The
+        // two are the same file with potentially different bytes -- unsaved
+        // edits, or line endings the editor normalized on the way in -- and
+        // the index's byte offsets have to describe the bytes a reply is
+        // measured against. A disk parse here leaves the index describing one
+        // copy while contentForPath still serves the other, and a cross-file
+        // range comes back displaced by one column per line the two disagree
+        // on (that is what put `dim localOnly` at 1:5 instead of 1:4 when the
+        // fixture's text-mode ofstream wrote CRLF to disk under an LF didOpen).
+        // didChange re-upserts the buffer, so nothing is lost by skipping.
+        if (!found->second->fromDisk) {
+          continue;
+        }
+        // Disk truth is unchanged: keep the entry and its mtime/size cache.
+        if (found->second->mtime == mtime && found->second->size == size) {
+          continue;
+        }
       }
     }
 
@@ -579,10 +592,10 @@ void WorkspaceIndex::scan(bool async) {
       // Open-buffer entries (fromDisk=false) are live truth and survive the
       // scan even when the file is not on disk (a new file, or an in-memory
       // client buffer whose path only exists in the editor). Evicting them
-      // would drop an open document from the index mid-session. Only
-      // disk-derived state is subject to disk truth; a closed-then-deleted
-      // file's stale open entry is replaced by the next scan's disk read (the
-      // cache-hit guard never accepts it, so scan re-reads and re-upserts).
+      // would drop an open document from the index mid-session, and the scan
+      // never re-reads one either (see the guard above), so a closed-then-
+      // deleted file's entry stays until didClose drops it — which is the
+      // client's call to make, not the filesystem's.
       if (!itm->second->fromDisk) {
         ++itm;
         continue;

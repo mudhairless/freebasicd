@@ -128,8 +128,16 @@ must stay there. Encoding directives that the lexer/parser must honor:
 - **Index**: each `WorkspaceIndex` is **in-memory only** — nothing is ever
   written to disk. A background scan parses the workspace (plus a debounced
   rescan on watched-file events); open-buffer entries are marked
-  `fromDisk=false` so scan's mtime/size cache-hit can never accept a live
-  buffer's parse. Since M11 the server owns **one index per workspace root**:
+  `fromDisk=false` and the scan **skips them entirely** — an open buffer
+  outranks disk, because the index's byte offsets have to describe the bytes a
+  reply is measured against, and a disk re-parse leaves the two describing
+  different files (the Windows leg's `dim localOnly` at 1:5 instead of 1:4,
+  CRLF on disk under an LF `didOpen`; pinned by
+  `TestScanKeepsOpenBufferAheadOfDisk` and the matching `index_checks` block).
+  Closed files stay disk truth, which is what makes a watched-files event
+  converge an external edit (`TestWatchedFilesRescanConverges` — its header is
+  closed for exactly that reason). Since M11 the server owns **one index per
+  workspace root**:
   `indexes_` (a map keyed by normalized root) under a single `indexesMutex_`
   holds the registered client folders that are themselves workspace roots,
   detected roots, and single-file roots. Session handlers snapshot a
@@ -229,6 +237,19 @@ out a pointer into a snapshot must carry the pin** — `CrossDecl::file`,
 `onWorkspaceSymbol`'s per-file hit list holds `shared_ptr<IndexedFile const>`
 for the same reason. Holding the `WorkspaceIndex` is *not* the pin: a scan
 replaces the entries inside it.
+
+**The same rule for bytes: an offset is meaningless without the content it is
+relative to.** A parse records byte offsets, and a reply converts them with a
+line table built from *some* copy of the file. When those two copies differ, the
+answer is wrong in a way no test of the *answer* explains — the request was
+fine, the resolution was fine, and the location was still off. So the scan must
+not re-parse an open buffer (§Index), and the general form to remember when adding
+a result type is: whatever hands out an offset has to be the same thing that
+supplies the line table. The tell is a fixture that writes bytes the client
+never sent: the two-file fixtures write through a text-mode `ofstream`, so on
+MSVC the disk copy is CRLF and the `didOpen` text is LF, which is why this class
+of defect can be invisible on Linux and *is* visible there
+(`TestScanKeepsOpenBufferAheadOfDisk` reproduces the runner's exact reply).
 
 **What TSan cannot see, in the same file.** A lost wakeup and a two-thread
 `std::thread` handoff are both invisible to TSan *and* to `ctest`, and both

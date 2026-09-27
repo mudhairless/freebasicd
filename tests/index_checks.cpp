@@ -257,11 +257,18 @@ int main() {
     closure.close();
   }
 
-  // Open-buffer entries (fromDisk=false) never satisfy scan's mtime/size
-  // cache-hit: scan re-reads disk and replaces the buffer parse.
+  // An open buffer outranks disk, and a rescan must leave it alone. The buffer
+  // and the disk copy are the same path with possibly different bytes, and the
+  // index's byte offsets have to describe the bytes a reply is measured against
+  // -- a disk parse here is what put a cross-file range one column out per CRLF
+  // on the Windows leg (`dim localOnly` at 1:5 instead of 1:4), because the
+  // index held the disk offsets while contentForPath still served the buffer.
+  //
+  // The two copies disagree on the *width* of the name as well as its spelling,
+  // so a swapped entry cannot slip through a name-only check: in the buffer
+  // `wide` is at bytes 5..9, on disk `diskonly` is at 4..12.
   {
-    writeFile(ws / "buf.bas",
-              "dim counter as integer\ncounter = counter + 1\n");
+    writeFile(ws / "buf.bas", "dim diskonly as integer\n");
     std::string const bufNorm = normalizePath(ws / "buf.bas");
     std::uint64_t mt = 0;
     std::uint64_t sz = 0;
@@ -271,32 +278,35 @@ int main() {
     live.open();
     live.scan(false);
 
-    // A buffer diverges from disk; the upserted entry must not shadow what
-    // scan sees.
-    AnalyzedDoc doc = analyze("dim ghost as string\nprint ghost\n");
+    AnalyzedDoc doc = analyze("dim  wide as integer\n");
     live.upsert(indexedFileFromAnalysis(bufNorm, mt, sz, doc, ws,
                                         /*fromDisk=*/false));
     {
       auto const f = live.fileAt(bufNorm);
-      bool sawGhost = false;
-      for (Symbol const &root : f->roots) {
-        sawGhost = sawGhost || root.key == "ghost";
-      }
-      CHECK_MSG(sawGhost, "the live buffer parse is served to queries");
+      CHECK_MSG(f != nullptr && !f->fromDisk,
+                "an upserted open buffer is indexed as a live entry");
+      CHECK_MSG(live.byKey("wide").size() == 1,
+                "the live buffer parse is served to queries");
     }
-    // The fromDisk=false entry never satisfies the in-memory cache-hit:
-    // scan re-reads disk and replaces the buffer parse.
     live.scan(false);
-    auto const f = live.fileAt(bufNorm);
-    CHECK(f != nullptr);
-    bool sawGhost = false;
-    bool sawCounter = false;
-    for (Symbol const &root : f->roots) {
-      sawGhost = sawGhost || root.key == "ghost";
-      sawCounter = sawCounter || root.key == "counter";
+    {
+      auto const f = live.fileAt(bufNorm);
+      CHECK_MSG(f != nullptr && !f->fromDisk,
+                "a rescan must not demote an open buffer to a disk entry");
+      CHECK_MSG(live.byKey("wide").size() == 1,
+                "a rescan must not replace an open buffer with the disk parse");
+      CHECK_MSG(live.byKey("diskonly").empty(),
+                "the disk copy must not displace the open buffer");
+      auto const wide = live.byKey("wide");
+      if (wide.size() == 1) {
+        // The offsets are the point of the whole rule: they are what every
+        // cross-file range into this file is measured against.
+        CHECK_MSG(wide[0].decl->selection.beg == 5,
+                  "the buffer's byte offsets must survive a rescan");
+        CHECK_MSG(wide[0].decl->selection.end == 9,
+                  "the buffer's name end must survive a rescan");
+      }
     }
-    CHECK(!sawGhost);
-    CHECK(sawCounter);
     live.close();
   }
 

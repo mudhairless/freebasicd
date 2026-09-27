@@ -3254,6 +3254,18 @@ void TestWatchedFilesRescanConverges() {
     std::ofstream out(wsDir / "lib.bi");
     out << lib;
   }
+  // The header stays *closed*, because that is the case where disk is the
+  // truth: the rescan converges it. An open buffer is the opposite case -- the
+  // client owns those bytes until didClose, and a rescan that re-parsed the
+  // disk copy would leave the index's offsets describing a different file than
+  // the one a reply is measured against (see
+  // TestScanKeepsOpenBufferAheadOfDisk). Opening main.bas is also what a real
+  // editor does, and what picks the index root for this non-project client.
+  std::string const main = "#include \"lib.bi\"\nsub mainProc()\nend sub\n";
+  {
+    std::ofstream out(wsDir / "main.bas");
+    out << main;
+  }
 
   lsp::NullLog log;
   lsp::LanguageSession session(log);
@@ -3265,6 +3277,7 @@ void TestWatchedFilesRescanConverges() {
   session.start(input, output);
 
   std::string const fileUri = FileUri(wsDir / "lib.bi");
+  std::string const mainUri = FileUri(wsDir / "main.bas");
   std::string const rootUri = FileUri(wsDir);
   std::string const initFrame =
       R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
@@ -3279,8 +3292,8 @@ void TestWatchedFilesRescanConverges() {
   std::string const openFrame =
       R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
       R"({"uri":")" +
-      fileUri + R"(","languageId":"basic","version":1,"text":")" +
-      ToJsonString(lib) + "\"}}}";
+      mainUri + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString(main) + "\"}}}";
   input->append(MakeLspFrame(openFrame.c_str()));
 
   auto querySymbol = [&](int n, std::string const &name) {
@@ -3292,7 +3305,8 @@ void TestWatchedFilesRescanConverges() {
     return WaitForOutputContaining(output, id, 50);
   };
 
-  // The initial background scan must index lib.bi before the edit.
+  // The initial background scan must index the closed header before the edit --
+  // and since nothing opens it, only the scan can have read it.
   bool primed = false;
   for (int n = 0; n < 60 && !primed; ++n) {
     primed =
@@ -3325,6 +3339,100 @@ void TestWatchedFilesRescanConverges() {
   session.stop();
   std::error_code ec;
   std::filesystem::remove_all(sandbox, ec);
+}
+
+// An open buffer outranks disk, and a cross-file range is measured against the
+// buffer -- so a rescan that re-parses the disk copy moves the answer.
+//
+// The Windows leg is what proved the pairing matters. Every fixture here writes
+// through a text-mode ofstream, so MSVC put CRLF on disk under the LF text the
+// didOpen carried, and `dim localOnly` came back at 1:5-1:14 instead of
+// 1:4-1:13: the index held the disk parse's byte offsets while contentForPath
+// still served the buffer, one column out for every line the two copies
+// disagreed on. Nothing about the request was wrong and nothing about the index
+// was stale -- they were two different files.
+//
+// So the rescan here is *proven* to have run, or the assertion below is
+// vacuous: `converged` exists only in the new disk bytes of a file nothing
+// opened, so only a scan can have read them.
+void TestScanKeepsOpenBufferAheadOfDisk() {
+  TwoFileFixture const fix;
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto output = std::make_shared<StringOStream>();
+  FreeBasicServer server(session);
+  auto input = StartIndexedSession(
+      session, server, output, fix,
+      {{fix.mainUri, kMainContent}, {fix.libUri, kLibContent}});
+
+  auto definition = [&](std::string const &tag) {
+    return PollRequest(input, output, tag, fix.libUri, [&](std::string const &id) {
+      return R"({"jsonrpc":"2.0","id":")" + id +
+             R"(","method":"textDocument/definition","params":{"textDocument":{"uri":")" +
+             fix.mainUri + R"("},"position":{"line":2,"character":22}}})";
+    });
+  };
+  // The header's own columns: `dim localOnly` puts the name at 4..13.
+  auto inHeader = [](std::string const &reply) {
+    return reply.find("\"start\":{\"line\":1,\"character\":4}") !=
+               std::string::npos &&
+           reply.find("\"end\":{\"line\":1,\"character\":13}") !=
+               std::string::npos;
+  };
+
+  std::string const before = definition("sob");
+  Expect(inHeader(before),
+         ("the header's own columns must be reported before any rescan; "
+          "reply was " +
+          before.substr(0, 200))
+             .c_str());
+
+  // Binary, so these are the exact bytes on every platform: the disk copy
+  // diverges from the buffer by CRLF (one column per line after the first),
+  // and a closed file gains a symbol.
+  {
+    std::ofstream out(fix.wsDir / "lib.bi", std::ios::binary);
+    for (char c : std::string(kLibContent)) {
+      if (c == '\n') {
+        out.put('\r');
+      }
+      out.put(c);
+    }
+  }
+  {
+    std::ofstream out(fix.wsDir / "prog.bas", std::ios::binary);
+    out << kProgContent << "sub converged()\nend sub\n";
+  }
+  std::string const watchedFrame =
+      R"({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[)"
+      R"({"uri":")" +
+      fix.libUri + R"(","type":2},{"uri":")" + fix.progUri +
+      R"(","type":2}]}})";
+  input->append(MakeLspFrame(watchedFrame.c_str()));
+
+  bool rescanned = false;
+  for (int n = 0; n < 100 && !rescanned; ++n) {
+    std::string const id = "\"id\":\"sob" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"sob)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":"converged"}})";
+    input->append(MakeLspFrame(request.c_str()));
+    rescanned = WaitForOutputContaining(output, id, 50)
+                    .find("\"name\":\"converged\"") != std::string::npos;
+  }
+  Expect(rescanned,
+         "the rescan must read a closed file's new disk bytes, or the "
+         "assertion below proves nothing");
+
+  std::string const after = definition("soa");
+  Expect(inHeader(after),
+         ("a rescan must not move the header's columns off the open buffer; "
+          "reply was " +
+          after.substr(0, 200))
+             .c_str());
+
+  session.stop();
 }
 
 // --- M11: per-workspace indexes ---
@@ -5148,6 +5256,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestCodeActionRetargetsMissingInclude);
   RUN_TEST(TestCodeActionOffersNothingUnfixable);
   RUN_TEST(TestWatchedFilesRescanConverges);
+  RUN_TEST(TestScanKeepsOpenBufferAheadOfDisk);
   RUN_TEST(TestConfigFileRootDetection);
   RUN_TEST(TestConfigMarkerRootUsedAsIsEagerIndex);
   RUN_TEST(TestMultiWorkspaceFoldersStayIsolated);
