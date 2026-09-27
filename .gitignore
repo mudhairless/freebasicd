@@ -11,6 +11,8 @@ cmake_install.cmake
 CTestTestfile.cmake
 compile_commands.json
 Makefile
+# ctest run from the repo root instead of build/ leaves this behind
+Testing/
 
 # Object/binaries
 *.o
