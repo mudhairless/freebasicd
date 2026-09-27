@@ -257,6 +257,25 @@ before theorizing: `session_integration` prints `[ RUN ] <test>` per test
 That instrumentation is what turned "the Windows leg hangs" into "these eleven
 tests fail, here are their assertions" in one run.
 
+**The same argument covers silence, which is not a pass.** A process that dies
+prints nothing, and on MSVC every way out of `main` is quiet: the default
+terminate handler, an unhandled exception, and a hardware fault all leave an
+empty log, which ctest renders as a bare `***Failed` with no reason line. That
+signature — 70 `[ RUN ]` lines, zero failure messages, `***Failed` — means the
+process never returned; it is not an assertion that was skipped or a test that
+did nothing. So `RUN_TEST` brackets every test with `[ DONE ]`, catches an
+escaping exception to name the test and count it (one bad test no longer takes
+the suite with it), and `main` prints a final "all tests ran" line: a missing
+final line puts the death *inside* a test, a present one puts it in teardown or
+static destruction. `std::set_terminate` reports what escaped the tests and
+whether an exception was active at all (a bare terminate *is* the diagnosis —
+a joinable `std::thread`, a noexcept violation); on Windows an
+unhandled-exception filter prints the code and faulting address and returns
+`EXCEPTION_CONTINUE_SEARCH` so the crash still fails the test. It reports via
+`WriteFile`, not stdio: a fault can arrive while another thread holds the CRT
+stream lock, and a deadlock in the reporter would turn a crash into a hang —
+the exact failure this exists to make legible.
+
 **Then reproduce the platform's difference locally.** The next Windows wave
 failed 5 assertions across 3 tests, all from one cause, and the cause was not
 Windows-specific at all — only its *trigger* was (`%TEMP%` hands out an 8.3

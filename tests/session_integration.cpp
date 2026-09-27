@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -24,11 +25,102 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+// Last, so the macros it defines cannot reach a project or standard header
+// parsed above; NOMINMAX because <Windows.h> defines min/max as function-like
+// macros and every std::min after it expands to a `(` token. Same guard
+// LspCpp's lsp.cpp and utils.cpp use.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#endif
+
 namespace {
 using test::Expect;
 using test::FeedableIStream;
 using test::StringOStream;
 using test::WaitForOutputContaining;
+
+// ---------------------------------------------------------------------------
+// Naming a failure that has no message
+// ---------------------------------------------------------------------------
+//
+// ctest prints what a test emitted when it fails *or* times out, so the last
+// line printed is the answer. That works for an assertion, and for nothing
+// else: a process that dies prints no line at all, and on MSVC the ways a
+// process can die are exactly the quiet ones — the default terminate handler
+// says nothing, an unhandled exception says nothing, and a hardware fault says
+// nothing. The Windows leg hit exactly that: 70 tests started, not one
+// assertion failed, and the log said only that test 14 had started, because
+// the last `[ RUN ]` was the last line the process managed to write.
+//
+// So the boundaries and the reason are printed explicitly:
+//
+// - `[ RUN ]` / `[ DONE ]` bracket every test, and a final line after the
+// last one says whether main reached its return. That splits "died inside
+// a test" from "died on the way out" without knowing which in advance.
+// - An exception escaping a test is caught, attributed to that test, and
+// counted as a failure, so one bad test cannot hide the rest of the suite.
+// - `std::set_terminate` covers what escapes the tests (a destructor,
+// static teardown, a noexcept violation, a joinable `std::thread`) and
+// says whether an exception was even active, because a bare terminate
+// with no active exception is itself the diagnosis.
+// - On Windows an unhandled-exception filter prints the exception code
+// and faulting address, then returns EXCEPTION_CONTINUE_SEARCH so the
+// crash still happens and ctest still fails the test. It reports through
+// WriteFile rather than stdio: a fault can arrive while another thread
+// holds the CRT stream lock, and a deadlock in the reporter would turn
+// a crash into a hang, the failure mode this exists to make legible.
+//
+// None of this changes what a passing run prints except the `[ DONE ]` lines,
+// and none of it can turn a crash into a pass: every reporter either re-raises
+// or aborts.
+void PrintDiagnostic(std::string const &line) {
+  std::fputs(line.c_str(), stderr);
+  std::fputc('\n', stderr);
+  std::fflush(stderr);
+}
+
+void ReportEscapedTest(std::string const &name, char const *what) {
+  ++test::Failures();
+  PrintDiagnostic("[ THROW ] " + name + ": uncaught exception: " + what);
+}
+
+void ReportUncaught() {
+  std::string what = "no active exception (a joinable std::thread, or a "
+                     "noexcept violation)";
+  if (std::exception_ptr const active = std::current_exception()) {
+    try {
+      std::rethrow_exception(active);
+    } catch (std::exception const &e) {
+      what = e.what();
+    } catch (...) {
+      what = "non-std exception";
+    }
+  }
+  PrintDiagnostic("[ THROW ] outside any test: " + what);
+  std::abort();
+}
+
+#ifdef _WIN32
+LONG WINAPI ReportUnhandledException(EXCEPTION_POINTERS *info) {
+  if (info != nullptr && info->ExceptionRecord != nullptr) {
+    char text[192];
+    int const n = std::snprintf(
+        text, sizeof text,
+        "[  SEH   ] unhandled exception: code 0x%08lx at address %p\n",
+        info->ExceptionRecord->ExceptionCode,
+        info->ExceptionRecord->ExceptionAddress);
+    if (n > 0) {
+      DWORD written = 0;
+      WriteFile(GetStdHandle(STD_ERROR_HANDLE), text, (DWORD)n, &written,
+                nullptr);
+    }
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Document URIs
@@ -4982,13 +5074,26 @@ void TestReferencesClosureReusesAnalysis() {
 // ctest prints what a test emitted when it fails *or times out*, so the last
 // line printed is then the answer. Redefined here rather than in LspCpp's
 // test_helpers.h, which is vendored and not ours to change.
+//
+// The closing `[ DONE ]` and the catch are the other half of that: a run that
+// stops after a test's last `[ RUN ]` cannot say whether the test finished or
+// the process died inside it, and a test that throws would take the remaining
+// seventy with it. See "Naming a failure that has no message" above.
 #undef RUN_TEST
 #define RUN_TEST(fn)                                                           \
   do {                                                                         \
     if (test::ShouldRunTest(#fn)) {                                            \
       std::printf("[ RUN      ] %s\n", #fn);                                   \
       std::fflush(stdout);                                                     \
-      (fn)();                                                                  \
+      try {                                                                    \
+        (fn)();                                                                \
+      } catch (std::exception const &e) {                                      \
+        ReportEscapedTest(#fn, e.what());                                      \
+      } catch (...) {                                                          \
+        ReportEscapedTest(#fn, "non-std exception");                           \
+      }                                                                        \
+      std::printf("[ DONE  ] %s\n", #fn);                                      \
+      std::fflush(stdout);                                                     \
     } else {                                                                   \
       ++test::SkippedTests();                                                  \
     }                                                                          \
@@ -4996,6 +5101,10 @@ void TestReferencesClosureReusesAnalysis() {
 
 int main(int argc, char **argv) {
   test::InitTestFilter(argc, argv);
+  std::set_terminate(ReportUncaught);
+#ifdef _WIN32
+  SetUnhandledExceptionFilter(ReportUnhandledException);
+#endif
   RUN_TEST(TestInitializeReportsSyncCapabilities);
   RUN_TEST(TestDidOpenPublishesDiagnostics);
   RUN_TEST(TestDiagnosticsReflectParseErrors);
@@ -5066,5 +5175,13 @@ int main(int argc, char **argv) {
   RUN_TEST(TestRepeatRequestsShareAnalysis);
   RUN_TEST(TestVersionlessChangeServesFreshAnalysis);
   RUN_TEST(TestReferencesClosureReusesAnalysis);
+  // The last line of a healthy run. If it is missing, main never got here, and
+  // the last `[ DONE ]` names the test the process died in; if it is present,
+  // the death was after the suite — during teardown, static destruction, or a
+  // thread that outlived it. Those are different bugs with different fixes, and
+  // a log that cannot tell them apart costs a CI run per guess.
+  std::printf("[ DONE  ] all tests ran: %d failure(s), %d skipped\n",
+              test::Failures(), test::SkippedTests());
+  std::fflush(stdout);
   return test::Failures() == 0 ? 0 : 1;
 }
