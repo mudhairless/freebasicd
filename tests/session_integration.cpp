@@ -401,6 +401,48 @@ char const kDidOpenHierFrame[] =
     R"FB(function clamp(v as integer, lo as integer, hi as integer) as integer\n)FB"
     R"FB(    if v < lo then return lo\n    if v > hi then return hi\nend function\n"}}})FB";
 
+// M13 expand selection: the same nested document the byte-offset checks in
+// selection_checks use, so every coordinate in the reply can be read straight
+// off the source below.
+//
+//   0: sub outer()
+//   1:   dim total = 0
+//   2:   if total > 0 then
+//   3:     total = total + 1
+//   4:   end if
+//   5: end sub
+char const kDidOpenSelectionFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file://{{tmp}}/hello.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"sub outer()\n  dim total = 0\n  if total > 0 then\n    total = total + 1\n  end if\nend sub\n"}}})FB";
+
+// Two positions in one request, on the `total` token and on the `=` after it.
+// The result is positional, so two chains come back and result[i] belongs to
+// positions[i].
+char const *kSelectionRangeFrame =
+    R"FB({"jsonrpc":"2.0","id":"sel","method":"textDocument/selectionRange","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hello.bas"},"positions":[)FB"
+    R"FB({"line":3,"character":4},{"line":3,"character":10}]}})FB";
+
+// The whole reply for the first position: the token, then the statement, then
+// the IF block, then the SUB block. The file is not a level — it would add the
+// newline after `end sub` and nothing else.
+//
+// Asserted as one literal rather than by counting `parent` keys: this is the
+// check that the ancestors survive to the wire at all. LspCpp links them as
+// non-owning pointers into a per-thread arena, and a reply that lost them would
+// carry a single range and every editor's expand-selection would stop dead.
+char const kSelectionChain[] =
+    R"({"range":{"start":{"line":3,"character":4},"end":{"line":3,"character":9}},)"
+    R"("parent":{"range":{"start":{"line":3,"character":4},"end":{"line":3,"character":21}},)"
+    R"("parent":{"range":{"start":{"line":2,"character":2},"end":{"line":4,"character":8}},)"
+    R"("parent":{"range":{"start":{"line":0,"character":0},"end":{"line":5,"character":7}}}}}})";
+
+// The innermost level of the second chain: the `=` token, so the reply did not
+// answer both positions from the first one.
+char const kSelectionSecondToken[] =
+    R"("range":{"start":{"line":3,"character":10},"end":{"line":3,"character":11}})";
+
 char const *kDocumentSymbolFrame =
     R"FB({"jsonrpc":"2.0","id":"dsym","method":"textDocument/documentSymbol","params":)FB"
     R"FB({"textDocument":{"uri":"file://{{tmp}}/hello.bas"}}})FB";
@@ -1694,6 +1736,47 @@ void TestFoldingRangesReturned() {
   Expect(
       response.find("\"startLine\":4,\"endLine\":6") != std::string::npos,
       "the FUNCTION block must fold from line 4 up to the END FUNCTION line");
+
+  session.stop();
+}
+
+void TestSelectionRangeNestsParentChain() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  // The capability is asserted before the request: a chain is only worth
+  // building if a client is told the feature exists, and a reply that arrives
+  // for a capability the server never advertised proves nothing a client can
+  // rely on.
+  input->append(MakeLspFrame(kInitializeFrame));
+  std::string const init = WaitForOutputContaining(output, "\"id\":\"init\"");
+  Expect(init.find("\"selectionRangeProvider\":true") != std::string::npos,
+         "initialize must advertise selectionRange");
+
+  input->append(MakeLspFrame(kDidOpenSelectionFrame));
+  // Counted, not just waited for: the chain is built from the open buffer, so a
+  // didOpen that never published is a missing buffer and an empty reply, and
+  // `WaitForPublishedUri` hands back the same snapshot when it gives up.
+  WaitForPublishedUri(output, 1);
+  Expect(CountPublished(output->snapshot()) == 1,
+         "didOpen must publish diagnostics for the document the chain reads");
+
+  input->append(MakeLspFrame(kSelectionRangeFrame));
+  std::string const response =
+      WaitForOutputContaining(output, "\"id\":\"sel\"");
+
+  Expect(response.find("\"id\":\"sel\"") != std::string::npos,
+         "selectionRange request must receive a response");
+  Expect(response.find(kSelectionChain) != std::string::npos,
+         "the reply must carry the whole nested chain of the first position");
+  Expect(response.find(kSelectionSecondToken) != std::string::npos,
+         "the reply must answer the second position with a chain of its own");
 
   session.stop();
 }
@@ -5198,6 +5281,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestMemberHoverKeywordNamedMember);
   RUN_TEST(TestMemberHoverFallsBackToOwningVariable);
   RUN_TEST(TestFoldingRangesReturned);
+  RUN_TEST(TestSelectionRangeNestsParentChain);
   RUN_TEST(TestDefinitionResolvesToDeclaration);
   RUN_TEST(TestReferencesListAllSites);
   RUN_TEST(TestHighlightCoversAllSites);

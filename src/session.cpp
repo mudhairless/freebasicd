@@ -13,6 +13,8 @@
 #include "lexer.h"
 #include "parser.h"
 #include "resolve.h"
+#include "selection.h"
+#include "selection_lsp.h"
 #include "semantic_tokens.h"
 #include "symbols.h"
 #include "utf16.h"
@@ -49,6 +51,7 @@
 #include "LibLsp/lsp/textDocument/publishDiagnostics.h"
 #include "LibLsp/lsp/textDocument/references.h"
 #include "LibLsp/lsp/textDocument/rename.h"
+#include "LibLsp/lsp/textDocument/selectionRange.h"
 #include "LibLsp/lsp/textDocument/signature_help.h"
 #include "LibLsp/lsp/working_files.h"
 #include "LibLsp/lsp/workspace/did_change_configuration.h"
@@ -994,6 +997,9 @@ void FreeBasicServer::registerHandlers() {
   });
   session_.on(
       [this](td_inlayHint::request const &req) { return onInlayHint(req); });
+  session_.on([this](td_selectionRange::request const &req) {
+    return onSelectionRange(req);
+  });
 
   // The server->client client/registerCapability request is sent from the
   // `initialized` handler, after the parse/notification pools are running;
@@ -1092,6 +1098,11 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   // no resolve request is advertised or handled.
   rsp.result.capabilities.inlayHintProvider.emplace();
   rsp.result.capabilities.inlayHintProvider->second.emplace();
+
+  // Expand selection (M13): the bare-bool arm, since there is nothing to
+  // register and no resolve request behind it.
+  rsp.result.capabilities.selectionRangeProvider.emplace();
+  rsp.result.capabilities.selectionRangeProvider->first.emplace(true);
 
   // Workspace-level capabilities: folder support + change notifications are
   // advertised unconditionally, so a multi-folder client gets one index per
@@ -2902,6 +2913,32 @@ FreeBasicServer::onInlayHint(td_inlayHint::request const &req) {
     hint.label = item.label;
     rsp.result.push_back(std::move(hint));
   }
+  return rsp;
+}
+
+td_selectionRange::response
+FreeBasicServer::onSelectionRange(td_selectionRange::request const &req) {
+  td_selectionRange::response rsp;
+  rsp.id = req.id;
+
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
+    return rsp;
+  }
+  std::string_view const content = cached->content;
+
+  // One chain per requested position, in request order: the client maps
+  // result[i] to positions[i], so the chains are built as one batch and handed
+  // to selectionRanges together (it parks every chain's nodes in one arena).
+  std::vector<std::vector<fblang::SourceRange>> chains;
+  chains.reserve(req.params.positions.size());
+  for (lsPosition const &pos : req.params.positions) {
+    chains.push_back(fblang::selectionChain(
+        cached->analysis, content,
+        fblang::byteOffsetForUtf16Position(content, pos)));
+  }
+  rsp.result = fblang::selectionRanges(chains, content);
   return rsp;
 }
 

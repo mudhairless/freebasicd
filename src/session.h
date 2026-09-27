@@ -31,6 +31,7 @@
 #include "LibLsp/lsp/textDocument/publishDiagnostics.h"
 #include "LibLsp/lsp/textDocument/references.h"
 #include "LibLsp/lsp/textDocument/rename.h"
+#include "LibLsp/lsp/textDocument/selectionRange.h"
 #include "LibLsp/lsp/textDocument/signature_help.h"
 
 #include "LibLsp/lsp/working_files.h"
@@ -48,6 +49,8 @@
 #include "code_actions.h"
 #include "index.h"
 #include "resolve.h"
+#include "selection.h"
+#include "selection_lsp.h"
 #include "semantic_tokens_lsp.h"
 #include "settings.h"
 
@@ -223,6 +226,11 @@ private:
   td_semanticTokens_range::response
   onSemanticTokensRange(td_semanticTokens_range::request const &req);
   td_inlayHint::response onInlayHint(td_inlayHint::request const &req);
+  // Expand selection (M13): the token / statement / block / file chain at each
+  // requested position, nested outward. One response entry per requested
+  // position, which is the mapping the client assumes.
+  td_selectionRange::response
+  onSelectionRange(td_selectionRange::request const &req);
 
   // Allocate a fresh resultId ("st<counter>") and record `data` under it as
   // the current delta baseline, evicting the oldest entry past a fixed cap.

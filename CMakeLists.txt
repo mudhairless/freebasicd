@@ -62,6 +62,7 @@ add_library(freebasicd_lang STATIC
     src/lexer.cpp
     src/parser.cpp
     src/resolve.cpp
+    src/selection.cpp
     src/semantic_tokens.cpp
     src/settings.cpp
 )
@@ -77,6 +78,7 @@ target_compile_definitions(freebasicd_lang PUBLIC
 
 add_library(freebasicd_core STATIC
     src/session.cpp
+    src/selection_lsp.cpp
     src/utf16.cpp
 )
 # freebasicd_lang is PUBLIC, lspcpp PRIVATE, and the difference is load-bearing.
@@ -284,6 +286,15 @@ add_executable(inlay_hints_checks
 target_include_directories(inlay_hints_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(inlay_hints_checks PRIVATE freebasicd_lang)
 add_test(NAME inlay_hints_checks COMMAND inlay_hints_checks)
+
+# M13 expand selection: the byte-offset chains (token / statement / block /
+# file) over a document, with no index and no session.
+add_executable(selection_checks
+    tests/selection_checks.cpp
+)
+target_include_directories(selection_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(selection_checks PRIVATE freebasicd_lang)
+add_test(NAME selection_checks COMMAND selection_checks)
 
 # M12 quick fixes: the providers, exercised as pure functions over a document
 # (no index, no session) plus the registry's answer for a code with no fix.

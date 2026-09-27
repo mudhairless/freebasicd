@@ -33,7 +33,7 @@ architecture, and the remaining work.
 | M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
 | M11 — configuration + workspace folders | done (2026-09: `freebasicd.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), where both unbounded walks stop at the home folder, decided by `std::filesystem::equivalent` rather than a path compare because one directory routinely has two spellings (Windows' 8.3 `%TEMP%` against a long `%USERPROFILE%` is how the Windows CI leg found it), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
 | M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree; fixes answer as LSP `CodeAction`s carrying `kind` + the diagnostic + an `edit` keyed by the request's URI, not as empty-id `Command`s — the first cut shipped the `Command` shape and the actions listed but did nothing) |
-| M13 — editor extras: selectionRange, callHierarchy, codeLens | next |
+| M13 — editor extras: selectionRange, callHierarchy, codeLens | in progress (2026-09-27: aspect 1 `selectionRange` shipped — `src/selection.{h,cpp}` derives the expand-selection chain from `(tokens, blockRanges, content)` alone (token → `:`-separated statement → enclosing blocks → file), keeping a level only when it strictly contains the one below *and* adds non-blank text; `src/selection_lsp.{h,cpp}` parks the chain in a `thread_local` arena because LspCpp's `SelectionRange::parent` is a non-owning pointer, and the integration test asserts the nested chain on the wire. Aspects 2 (callHierarchy) and 3 (codeLens) planned, with their blockers and decisions recorded under the heading) |
 | M14 — pull diagnostics (backlog) | next |
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
@@ -121,6 +121,24 @@ stable shape:
   makes an include fix correct by construction (a candidate is offered only
   when the next publish would resolve it). Also owns
   `unresolvedIncludeDiagnostics`, shared with the publish path.
+- `src/selection.{h,cpp}` — expand-selection chains (M13), LSP-agnostic and in
+  byte offsets: `selectionChain(analysis, content, off)` returns the levels
+  around one offset, innermost first — the token the cursor is in (or the one
+  ending exactly at it), the `:`-separated statement segment, every enclosing
+  `parse.blockRanges` entry sorted by size, and the whole file. A level is kept
+  only when it strictly contains the level below it *and* adds some non-blank
+  text, so an expansion is always a visible change (a block's range stops at the
+  newline after its closer, so the file level would otherwise add one newline
+  and nothing else). `:` is never a level, a blank line seeds the block walk at
+  the cursor so the enclosing procedure survives, and an unterminated block has
+  no range at all, so its level is absent rather than wrong.
+- `src/selection_lsp.{h,cpp}` — the LSP seam for the above: `selectionRanges`
+  converts a whole batch of chains (one per requested position, in order) and
+  parks the nodes in a `thread_local` `std::deque` arena, because LspCpp links
+  `SelectionRange::parent` as a *non-owning* pointer and the response vector
+  owns only the innermost node. Safe because the reply is serialized inline on
+  the handler thread; the integration test asserts the nested chain reaches the
+  wire, which is what proves the lifetime.
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
   `WorkingFiles` + the per-workspace `WorkspaceIndex` map (`indexes_`, keyed
   by normalized root under `indexesMutex_`; registered client folders with a
@@ -166,6 +184,8 @@ per-root indexes), `prepareRename`,
 `rename` (resolution-based workspace edits),
 `codeAction` (M12 quick fixes: missing-include retarget + missing block closer,
 answering from the diagnostics the next publish would carry),
+`selectionRange` (M13 expand selection: token → statement → enclosing blocks →
+file, one chain per requested position),
 `workspace/didChangeWatchedFiles` (per-index routing),
 `workspace/didChangeWorkspaceFolders` (per-root index add/remove),
 `workspace/didChangeConfiguration` (per-root `freebasicd.toml` re-read +
@@ -266,9 +286,9 @@ plan engineers around:
    vendoring the DLL, static-linking libintl, or dropping gettext on Windows
    (all 29 catalogs are empty today, so an English-only Windows build loses
    nothing yet).
-7. Feasible 3.17 features are unimplemented and unadvertised: `selectionRange`,
-   `callHierarchy`, `codeLens` (M13), and pull diagnostics (M14). None is
-   required by the target editors; each ships as its own milestone.
+7. Feasible 3.17 features are unimplemented and unadvertised: `callHierarchy`,
+   `codeLens` (the rest of M13), and pull diagnostics (M14). None is required
+   by the target editors; each ships as its own milestone.
 
 ## 5. Forward plan
 
@@ -787,6 +807,65 @@ primitives, none touches the language model.
 - Acceptance: expand-selection yields the token/statement/block chain; a
   two-file fixture shows outgoing and incoming calls; a referenced procedure
   carries a "2 references" lens.
+
+> Status: aspect 1 (selectionRange) done; aspects 2 and 3 planned. One aspect
+> per wave, as the milestones before it: callHierarchy and codeLens each touch
+> the wire shapes above and want their own acceptance run.
+>
+> **Landed (aspect 1, 2026-09-27).** `src/selection.{h,cpp}` +
+> `src/selection_lsp.{h,cpp}`, handler, `selectionRangeProvider = true`, the
+> 16th suite `selection_checks`, and a `session_integration` test.
+>
+> The chain reads `(tokens, blockRanges, content)` only — the lexer has already
+> merged `_` continuations, so one Newline-delimited token run *is* one
+> statement, and `blockRanges` already carries Sub/Type/If blocks. The symbol
+> tree adds nothing, so nothing in it is touched.
+>
+> Three rules, all learned from the implementation and each pinned by a test:
+> a level is kept only when it *strictly contains* the level below it and adds
+> non-blank text (LSP requires `parent ⊇ child`, and a keystroke that selects
+> the same text reads as a broken expansion); a `:` separator is never a level
+> (as the innermost level it is not contained by the statement segment around
+> it, so it would suppress that segment); and a blank line seeds the block walk
+> with a zero-width probe at the cursor, or the enclosing procedure would be
+> skipped because no statement level exists to anchor the containment test.
+>
+> LspCpp's `SelectionRange::parent` is `optional<SelectionRange*>` — a
+> non-owning pointer, while the response vector owns only the innermost node, so
+> the ancestors must outlive the handler. They do: `sendSessionMessage`
+> serializes inline on the handler thread under the send mutex, and
+> `ResponseOrError(T&&)` moves the response (a vector move steals the buffer, so
+> the arena's nodes stay put). Hence a `thread_local std::deque` arena cleared
+> once per request — no fork commit. The whole batch of chains goes in one
+> `selectionRanges` call, because per-position calls would clear the arena
+> between chains and dangle the earlier ones; `session_integration` asserts the
+> *nested* `parent` chain on the wire, which is what proves the lifetime rather
+> than assuming it.
+>
+> The wire test's first cut failed for a reason worth keeping: its `didOpen`
+> frame was one closing brace short, so the frame failed to parse, the buffer
+> never opened, the handler answered `[]`, and the suite's
+> `WaitForPublishedUri` — which hands back the last snapshot when it gives up —
+> reported success anyway. The test now *counts* the publish. A fixture that
+> builds a wire string by surgery fails as malformed input, not as a wrong
+> answer, and a wait that can pass vacuously hides it.
+>
+> **Next: aspect 2 (callHierarchy).** One blocker found while planning it:
+> LspCpp's `td_outgoingCalls` is registered under the wire name
+> `"callHierarchy/CallHierarchyOutgoingCall"` — wrong, and upstream and
+> untouched since 2019. It needs no fork commit: define the type locally with
+> `"callHierarchy/outgoingCalls"` (the `semantic_tokens_lsp.h` precedent).
+> Identify the target in `incomingCalls` by `uri` + `range` rather than
+> `CallHierarchyItem::data`, since the tree has no `Reflect` for
+> `map<string, lsp::Any>` and hand-rolled wire-string surgery is banned.
+>
+> **Next: aspect 3 (codeLens).** Needs the M12 Command-honesty decision: a lens
+> cannot carry an edit, so it must be a `command` the client executes, which
+> means advertising `executeCommandProvider` and implementing
+> `freebasicd.showReferences`; plus a `codeLensOn` settings key and an i18n
+> `trf` for the title. Both are decisions, not plumbing — land them with the
+> aspect, not ahead of it.
+
 
 ### M14 — Pull diagnostics (backlog)
 

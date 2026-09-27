@@ -194,13 +194,13 @@ must stay there. Encoding directives that the lexer/parser must honor:
 
 ## Verification
 
-- Unit drivers in `tests/` via ctest (15 suites: `lexer_checks`,
+- Unit drivers in `tests/` via ctest (16 suites: `lexer_checks`,
   `analysis_cache_checks`, `language_checks`, `parser_checks`,
   `resolve_checks`, `corpus_checks`, `utf16_checks`,
-  `semantic_tokens_checks`, `inlay_hints_checks`, `code_actions_checks`,
-  `grammar_checks`, `index_checks`, `settings_checks`, `i18n_checks`, and
-  `session_integration`, which drives `LanguageSession` with in-memory
-  streams — LspCpp `tests/test_helpers.h`).
+  `semantic_tokens_checks`, `inlay_hints_checks`, `selection_checks`,
+  `code_actions_checks`, `grammar_checks`, `index_checks`, `settings_checks`,
+  `i18n_checks`, and `session_integration`, which drives `LanguageSession` with
+  in-memory streams — LspCpp `tests/test_helpers.h`).
 - The system `fbc` compiler (1.10.2) is available for ground-truthing ambiguous
   FreeBASIC constructs.
 - Hosted CI (`.github/workflows/ci.yml`): the `build-test` job configures,
@@ -237,6 +237,21 @@ out a pointer into a snapshot must carry the pin** — `CrossDecl::file`,
 `onWorkspaceSymbol`'s per-file hit list holds `shared_ptr<IndexedFile const>`
 for the same reason. Holding the `WorkspaceIndex` is *not* the pin: a scan
 replaces the entries inside it.
+
+**A third shape of the same rule: a pointer that must outlive the handler.**
+LspCpp's `SelectionRange::parent` is `optional<SelectionRange*>`, and the
+response vector owns only the innermost node, so `src/selection_lsp.{h,cpp}` has
+to park every ancestor somewhere that lives until the reply is written. It is a
+`thread_local std::deque` cleared once per request, which is sound *because*
+`sendSessionMessage` serializes the reply inline on the handler thread under the
+send mutex and `ResponseOrError(T&&)` moves the response (a vector move steals
+the buffer, so the parked nodes stay put) — one thread, one arena, no lock.
+Hand-rolled storage is only safe while that stays true, so the lifetime is
+asserted rather than assumed: `session_integration`'s selection-range test
+matches the **nested** `"parent"` chain on the wire, which fails the moment the
+ancestors are dropped. The same reasoning puts the whole batch of chains in one
+`selectionRanges` call — per-position calls would clear the arena between chains
+and dangle the ones already built.
 
 **The same rule for bytes: an offset is meaningless without the content it is
 relative to.** A parse records byte offsets, and a reply converts them with a
