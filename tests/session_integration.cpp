@@ -25,17 +25,6 @@
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
-// Last, so the macros it defines cannot reach a project or standard header
-// parsed above; NOMINMAX because <Windows.h> defines min/max as function-like
-// macros and every std::min after it expands to a `(` token. Same guard
-// LspCpp's lsp.cpp and utils.cpp use.
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
-#endif
-
 namespace {
 using test::Expect;
 using test::FeedableIStream;
@@ -66,16 +55,18 @@ using test::WaitForOutputContaining;
 // static teardown, a noexcept violation, a joinable `std::thread`) and
 // says whether an exception was even active, because a bare terminate
 // with no active exception is itself the diagnosis.
-// - On Windows an unhandled-exception filter prints the exception code
-// and faulting address, then returns EXCEPTION_CONTINUE_SEARCH so the
-// crash still happens and ctest still fails the test. It reports through
-// WriteFile rather than stdio: a fault can arrive while another thread
-// holds the CRT stream lock, and a deadlock in the reporter would turn
-// a crash into a hang, the failure mode this exists to make legible.
 //
 // None of this changes what a passing run prints except the `[ DONE ]` lines,
-// and none of it can turn a crash into a pass: every reporter either re-raises
-// or aborts.
+// and none of it can turn a crash into a pass: every reporter either counts a
+// failure or aborts.
+//
+// A Windows unhandled-exception filter was here too, and is deliberately not:
+// it printed a faulting address from a Release runner, where nothing can
+// resolve one, and it dragged <Windows.h> into a cross-platform test file for
+// that. The markers above already answer the question that address would have
+// been asked for — *which* test, or after the suite — and a hardware fault
+// needs a local repro whatever it prints. Add it back only if a crash localizes
+// to a test and `[ DONE ]` is not enough to act on.
 void PrintDiagnostic(std::string const &line) {
   std::fputs(line.c_str(), stderr);
   std::fputc('\n', stderr);
@@ -102,25 +93,6 @@ void ReportUncaught() {
   PrintDiagnostic("[ THROW ] outside any test: " + what);
   std::abort();
 }
-
-#ifdef _WIN32
-LONG WINAPI ReportUnhandledException(EXCEPTION_POINTERS *info) {
-  if (info != nullptr && info->ExceptionRecord != nullptr) {
-    char text[192];
-    int const n = std::snprintf(
-        text, sizeof text,
-        "[  SEH   ] unhandled exception: code 0x%08lx at address %p\n",
-        info->ExceptionRecord->ExceptionCode,
-        info->ExceptionRecord->ExceptionAddress);
-    if (n > 0) {
-      DWORD written = 0;
-      WriteFile(GetStdHandle(STD_ERROR_HANDLE), text, (DWORD)n, &written,
-                nullptr);
-    }
-  }
-  return EXCEPTION_CONTINUE_SEARCH;
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // Document URIs
@@ -347,8 +319,10 @@ std::string
 PollRequest(std::shared_ptr<FeedableIStream> const &input,
             std::shared_ptr<StringOStream> const &output,
             std::string const &prefix, std::string const &needle,
-            std::function<std::string(std::string const &)> const &frame,
-            int attempts = 40) {
+            std::function<std::string(std::string const &)> const &frame) {
+  // 40 attempts x 50 ms is 2 s per poll, which is ~20x what a settled index
+  // needs and still well inside ctest's per-test budget. No caller tunes it.
+  int constexpr attempts = 40;
   std::string last;
   for (int n = 0; n < attempts; ++n) {
     std::string const id = "\"id\":\"" + prefix + std::to_string(n) + "\"";
@@ -5210,9 +5184,6 @@ void TestReferencesClosureReusesAnalysis() {
 int main(int argc, char **argv) {
   test::InitTestFilter(argc, argv);
   std::set_terminate(ReportUncaught);
-#ifdef _WIN32
-  SetUnhandledExceptionFilter(ReportUnhandledException);
-#endif
   RUN_TEST(TestInitializeReportsSyncCapabilities);
   RUN_TEST(TestDidOpenPublishesDiagnostics);
   RUN_TEST(TestDiagnosticsReflectParseErrors);

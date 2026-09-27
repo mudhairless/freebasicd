@@ -290,12 +290,16 @@ the suite with it), and `main` prints a final "all tests ran" line: a missing
 final line puts the death *inside* a test, a present one puts it in teardown or
 static destruction. `std::set_terminate` reports what escaped the tests and
 whether an exception was active at all (a bare terminate *is* the diagnosis —
-a joinable `std::thread`, a noexcept violation); on Windows an
-unhandled-exception filter prints the code and faulting address and returns
-`EXCEPTION_CONTINUE_SEARCH` so the crash still fails the test. It reports via
-`WriteFile`, not stdio: a fault can arrive while another thread holds the CRT
-stream lock, and a deadlock in the reporter would turn a crash into a hang —
-the exact failure this exists to make legible.
+a joinable `std::thread`, a noexcept violation).
+
+**Keep this list to the portable markers.** A Windows unhandled-exception
+filter was in `session_integration` and is gone: it printed a faulting address
+from a Release runner, where nothing can resolve one, and it dragged
+`<Windows.h>` into a cross-platform test file to do it. The markers answer the
+question that address would have been asked for — *which* test, or after the
+suite — and a hardware fault needs a local repro whatever it prints. Add a
+platform reporter back only if a crash localizes to a test and `[ DONE ]` is
+demonstrably not enough to act on.
 
 **Then reproduce the platform's difference locally.** The next Windows wave
 failed 5 assertions across 3 tests, all from one cause, and the cause was not
