@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -93,6 +94,42 @@ std::string Expand(std::string body) {
 std::string MakeLspFrame(std::string const &body) {
   return test::MakeLspFrame(Expand(body));
 }
+
+// Set an environment variable for the length of a test and put it back, so a
+// test can steer the server's home-folder guard. homeDirectory() reads HOME
+// before USERPROFILE, so one variable covers both platforms; MSVC has no
+// setenv, and its _putenv_s removes the variable when given an empty value,
+// which is how the destructor undoes one that was not set to begin with.
+class ScopedEnv {
+public:
+  ScopedEnv(char const *name, std::string const &value) : name_(name) {
+    if (char const *const old = std::getenv(name); old != nullptr) {
+      hadOld_ = true;
+      old_ = old;
+    }
+    assign(value);
+  }
+  ~ScopedEnv() { assign(hadOld_ ? old_ : std::string()); }
+
+  ScopedEnv(ScopedEnv const &) = delete;
+  ScopedEnv &operator=(ScopedEnv const &) = delete;
+
+private:
+  void assign(std::string const &value) {
+#ifdef _WIN32
+    (void)_putenv_s(name_.c_str(), value.c_str());
+#else
+    if (value.empty()) {
+      (void)::unsetenv(name_.c_str());
+    } else {
+      (void)::setenv(name_.c_str(), value.c_str(), 1);
+    }
+#endif
+  }
+  std::string name_;
+  std::string old_;
+  bool hadOld_ = false;
+};
 
 // M7 two-file fixture: a header declaring a shared module var, a plain module
 // var, and a proc that reads the shared one; a client .bas that includes it and
@@ -2731,6 +2768,117 @@ void TestSourceLayoutRootSingleFileMode() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+// The home-folder guard that ends the two unbounded upward walks (the
+// single-file marker walk and the source/include layout walk) has to decide "is
+// this the home folder" by identity, not by comparing path objects: the two
+// spellings come from different places and routinely disagree. Windows reports
+// %USERPROFILE% in long form (C:\Users\runneradmin) while %TEMP% — and so every
+// document URI built from it — names the same folder 8.3-short
+// (C:\Users\RUNNER~1), and a home folder reached through a symlink keeps the
+// link in the walk's spelling. Miss the guard and the walk climbs out of the
+// home folder and roots the index at the profile or above: every stray .bas
+// under it joins the workspace, so one project's symbols surface in another's
+// workspace/symbol, and the project's own freebasicd.toml is never read, since
+// the settings lookup only looks in the chosen root. That is how the Windows
+// leg lost three tests, with %TEMP% handed out short.
+//
+// Each spelling below names the same directory the walk reaches but cannot be
+// matched to it by comparing paths, so the guard has to ask the filesystem:
+// `<home>/src/..` needs no privilege and runs everywhere, and the symlink is
+// the case a *lexical* normalization cannot answer either — the portable
+// stand-in for the 8.3 short name. Skipped with a printed note where the
+// platform will not create a symlink, which is a privilege, not a behaviour.
+void TestHomeFolderGuardAsksTheFilesystem() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::path const homeDir = sandbox / "home";
+  // Laid out the way the layout walk looks for a project: a `src` child at the
+  // top, so the walk finds a root the moment the guard lets it past home.
+  std::filesystem::create_directories(homeDir / "src");
+  std::filesystem::create_directories(homeDir / "lone");
+  {
+    std::ofstream out(homeDir / "src" / "stray.bas");
+    out << "sub homeStray()\nend sub\n";
+  }
+  std::vector<std::filesystem::path> spellings{homeDir / "src" / ".."};
+  {
+    std::error_code ec;
+    std::filesystem::create_directory_symlink(homeDir, sandbox / "homelink",
+                                              ec);
+    if (ec) {
+      std::printf("[ NOTE    ] home-folder guard: no symlink spelling (%s)\n",
+                  ec.message().c_str());
+    } else {
+      spellings.push_back(sandbox / "homelink");
+    }
+  }
+
+  for (std::filesystem::path const &spelling : spellings) {
+    ScopedEnv const home("HOME", spelling.string());
+
+    lsp::NullLog log;
+    lsp::LanguageSession session(log);
+    auto input = std::make_shared<FeedableIStream>();
+    auto output = std::make_shared<StringOStream>();
+    FreeBasicServer server(session);
+    server.registerHandlers();
+    session.start(input, output);
+
+    // No rootUri: single-file mode, so the layout walk names the workspace.
+    input->append(MakeLspFrame(kInitializeFrame));
+    Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                   .find("\"workspaceSymbolProvider\":") != std::string::npos,
+           "initialize must advertise workspace/symbol");
+
+    std::string const appUri = FileUri(homeDir / "lone" / "app.bas");
+    input->append(MakeLspFrame(
+        (R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+         R"({"uri":")" +
+         appUri + R"(","languageId":"basic","version":1,"text":")" +
+         ToJsonString("sub loneOnly()\nend sub\n") + "\"}}}")
+            .c_str()));
+
+    auto querySymbol = [&](char const *tag, int n, std::string const &name) {
+      std::string const id =
+          std::string("\"id\":\"") + tag + std::to_string(n) + "\"";
+      input->append(MakeLspFrame(
+          (std::string(R"({"jsonrpc":"2.0","id":")") + tag + std::to_string(n) +
+           R"(","method":"workspace/symbol","params":{"query":")" + name +
+           R"("}})")
+              .c_str()));
+      return WaitForOutputContaining(output, id, 50);
+    };
+
+    // The file's own directory is the workspace, so its declaration is there...
+    bool foundLone = false;
+    for (int n = 0; n < 60 && !foundLone; ++n) {
+      foundLone =
+          querySymbol("lone", n, "loneOnly").find("\"name\":\"loneOnly\"") !=
+          std::string::npos;
+    }
+    Expect(foundLone, "the opened file's own directory stays the workspace");
+
+    // ...and the layout project at the home folder is not, however the guard
+    // was spelled.
+    bool sawStray = false;
+    for (int n = 0; n < 40 && !sawStray; ++n) {
+      sawStray =
+          querySymbol("stray", n, "homeStray").find("\"name\":\"homeStray\"") !=
+          std::string::npos;
+    }
+    Expect(!sawStray,
+           "the home folder's own layout project must stay out of the "
+           "workspace of a file below it");
+
+    session.stop();
+  }
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
 // A client root that is itself a single project (has a .git marker) is used
 // as-is; a *broad* root (e.g. an editor reporting the home directory, which
 // hosts several sibling projects) is narrowed to the opened document's project
@@ -4848,6 +4996,7 @@ int main(int argc, char **argv) {
   RUN_TEST(TestSourceLayoutRootNarrowsToOpenedProject);
   RUN_TEST(TestSourceLayoutRootRecognizesCatalogNames);
   RUN_TEST(TestSourceLayoutRootSingleFileMode);
+  RUN_TEST(TestHomeFolderGuardAsksTheFilesystem);
   RUN_TEST(TestDidChangePushesDiagnostics);
   RUN_TEST(TestDidCloseEvictsAndPublishes);
   RUN_TEST(TestShutdownReturnsNullResult);

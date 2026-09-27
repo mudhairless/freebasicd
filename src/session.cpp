@@ -173,13 +173,51 @@ nearestConfigRoot(std::filesystem::path start,
 // `.git` or `~/freebasicd.toml` at the personal directory must never capture
 // every lone file, mirroring the source-layout walk's home guard
 // (findSourceLayoutRoot).
-std::filesystem::path homeDirectory(); // defined below
+std::filesystem::path homeDirectory() {
+  char const *home = std::getenv("HOME");
+  if (home != nullptr && *home != '\0') {
+    return home;
+  }
+  home = std::getenv("USERPROFILE");
+  if (home != nullptr && *home != '\0') {
+    return home;
+  }
+  return {};
+}
+
+// True when `dir` is the home folder, however each side happens to spell it.
+// The two spellings come from different places and routinely disagree: Windows
+// reports %USERPROFILE% in long form (C:\Users\runneradmin) while %TEMP% — and
+// so every document URI built from it — names the same folder 8.3-short
+// (C:\Users\RUNNER~1), and a home folder reached through a symlink keeps the
+// link in the walk's spelling. A `==` on the path object misses the guard in
+// both cases, the walk climbs out of the home folder, and the index roots at
+// the profile or above: every stray .bas under it joins the workspace (so one
+// project's symbols surface in another's workspace/symbol), and the project's
+// own freebasicd.toml is never read, because the settings lookup only looks in
+// the chosen root. Ask the filesystem which directory this is; a path that does
+// not exist answers false and the walk carries on upward, which is the old
+// behaviour for a dir it cannot resolve.
+bool isHomeFolder(std::filesystem::path const &home,
+                  std::filesystem::path const &dir) {
+  if (home.empty()) {
+    return false;
+  }
+  std::error_code ec;
+  return std::filesystem::equivalent(dir, home, ec);
+}
+
+// Unbounded upward walk for single-file mode: the nearest ancestor of `start`
+// satisfying `pred`, stopping before the home folder and the drive root. A
+// `.git` or `~/freebasicd.toml` at the personal directory must never capture
+// every lone file, mirroring the source-layout walk's home guard
+// (findSourceLayoutRoot).
 template <typename Pred>
 std::optional<std::filesystem::path>
 nearestMarkerAboveHome(std::filesystem::path start, Pred const &pred) {
   std::filesystem::path const home = homeDirectory();
   for (;;) {
-    if (!home.empty() && start == home) {
+    if (isHomeFolder(home, start)) {
       return std::nullopt; // home folder: fail path
     }
     std::filesystem::path const parent = start.parent_path();
@@ -191,18 +229,6 @@ nearestMarkerAboveHome(std::filesystem::path start, Pred const &pred) {
     }
     start = parent;
   }
-}
-
-std::filesystem::path homeDirectory() {
-  char const *home = std::getenv("HOME");
-  if (home != nullptr && *home != '\0') {
-    return home;
-  }
-  home = std::getenv("USERPROFILE");
-  if (home != nullptr && *home != '\0') {
-    return home;
-  }
-  return {};
 }
 
 // True when one of `dir`'s immediate children is a directory whose name is in
@@ -231,7 +257,9 @@ bool hasSourceLayoutChild(std::filesystem::path const &dir) {
 // rule is the fallback when no version-control marker exists anywhere on the
 // walk: `.../inner/src/file.bas` roots at `.../inner` (the first parent with a
 // `src` child). The home folder ends the walk without checking it, so a
-// personal `~/src` never swallows every project under the home directory.
+// personal `~/src` never swallows every project under the home directory — and
+// "the home folder" is decided by isHomeFolder, not by string equality, so a
+// profile whose name arrives spelled two ways still ends the walk.
 std::optional<std::filesystem::path>
 findSourceLayoutRoot(std::filesystem::path start) {
   std::filesystem::path const home = homeDirectory();
@@ -240,7 +268,7 @@ findSourceLayoutRoot(std::filesystem::path start) {
     if (parent == start) {
       return std::nullopt; // drive root: nothing above
     }
-    if (!home.empty() && start == home) {
+    if (isHomeFolder(home, start)) {
       return std::nullopt; // home folder: fail path
     }
     if (hasSourceLayoutChild(start)) {

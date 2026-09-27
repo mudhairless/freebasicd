@@ -147,6 +147,14 @@ must stay there. Encoding directives that the lexer/parser must honor:
   closure — never its own index (it would leak into workspace/symbol) and
   never the single-file branch while a client root exists. A detected root
   that replaces the client's is logged to stderr with the signal.
+  The two unbounded walks end at the home folder, and "is this the home
+  folder" is `isHomeFolder` — `std::filesystem::equivalent`, not a path
+  compare: Windows reports `%USERPROFILE%` long and `%TEMP%` (hence every
+  document URI under it) 8.3-short, and a symlinked home keeps the link, so a
+  `==` misses the guard, the walk climbs out, and the index roots at the
+  profile — every stray `.bas` under it joins the workspace and the project's
+  own `freebasicd.toml` is never read. That is not hypothetical: it is how the
+  Windows leg lost three tests.
   `src/settings.{h,cpp}` parses `freebasicd.toml` (`hasConfigFile` is the
   marker; `Settings` keys with fixed defaults). Each index owns a `Settings`
   snapshot adopted at construction (`ensureWorkspaceIndex` →
@@ -248,6 +256,18 @@ before theorizing: `session_integration` prints `[ RUN ] <test>` per test
 `ctest --timeout`, which prints the captured output of a test that times out.
 That instrumentation is what turned "the Windows leg hangs" into "these eleven
 tests fail, here are their assertions" in one run.
+
+**Then reproduce the platform's difference locally.** The next Windows wave
+failed 5 assertions across 3 tests, all from one cause, and the cause was not
+Windows-specific at all — only its *trigger* was (`%TEMP%` hands out an 8.3
+short name, `%USERPROFILE%` does not, so a path guard could not tell the
+profile from the walk's spelling). "These two paths name one directory" is
+buildable anywhere: a symlink to it, a `..` component in it, both spellings no
+path compare can match. `TestHomeFolderGuardAsksTheFilesystem` sets `HOME` to
+each in turn (a `ScopedEnv` shim, since MSVC has no `setenv`) and asserts the
+home folder's own project stays out of the index — so the defect fails a Linux
+run before it ever reaches a Windows runner. A platform-only trigger is not an
+excuse for a test you can only run there.
 
 **`file://` + `path.string()` is not a URI.** A `file:` URI needs forward
 slashes, a third slash before a drive letter, and percent-encoding of anything

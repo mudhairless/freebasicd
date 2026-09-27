@@ -31,14 +31,14 @@ architecture, and the remaining work.
 | M8 — `prepareRename` + `rename` (workspace) | done |
 | M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
 | M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
-| M11 — configuration + workspace folders | done (2026-09: `freebasicd.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
+| M11 — configuration + workspace folders | done (2026-09: `freebasicd.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), where both unbounded walks stop at the home folder, decided by `std::filesystem::equivalent` rather than a path compare because one directory routinely has two spellings (Windows' 8.3 `%TEMP%` against a long `%USERPROFILE%` is how the Windows CI leg found it), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
 | M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree; fixes answer as LSP `CodeAction`s carrying `kind` + the diagnostic + an `edit` keyed by the request's URI, not as empty-id `Command`s — the first cut shipped the `Command` shape and the actions listed but did nothing) |
 | M13 — editor extras: selectionRange, callHierarchy, codeLens | next |
 | M14 — pull diagnostics (backlog) | next |
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
-| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers), `clang-format`, and macOS are green and holding; each platform leg failed first for a reason only that platform could show, and all four causes are now fixed (Windows: an MSVC `min`/`max` macro collision in vendored LspCpp, a CRLF checkout breaking the byte-exact `grammar_checks`, and a *test-harness* defect — the fixtures built `file://` URIs by string concatenation, which is malformed JSON on Windows, so eleven tests never got an answer and burned their poll budgets, which is what looked like a hang; macOS: a use-after-free in the `workspace/symbol` reply build, found with TSan). Two real latent index defects found while chasing the apparent hang (a lost wakeup in rescan shutdown, and a `std::thread` reachable from two threads) are fixed on their own merits, not as the cause. Left: per-editor wiring docs, the first all-green run, the first tag) |
+| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers), `clang-format`, and macOS are green and holding; each platform leg failed first for a reason only that platform could show, and every cause found so far is fixed (Windows: an MSVC `min`/`max` macro collision in vendored LspCpp, a CRLF checkout breaking the byte-exact `grammar_checks`, a *test-harness* defect — the fixtures built `file://` URIs by string concatenation, which is malformed JSON on Windows, so eleven tests never got an answer and burned their poll budgets, which is what looked like a hang — and, once that was gone, a *server* defect the harness had been hiding: the home-folder guard that ends root selection's two unbounded walks compared path objects, and Windows spells the profile two ways (`%USERPROFILE%` long, `%TEMP%` 8.3-short), so the walk left the temp tree and every test's index rooted at the profile — 5 assertions across 3 tests, fixed with `std::filesystem::equivalent` and covered by a test that reproduces the spelling mismatch on any platform; macOS: a use-after-free in the `workspace/symbol` reply build, found with TSan). Two real latent index defects found while chasing the apparent hang (a lost wakeup in rescan shutdown, and a `std::thread` reachable from two threads) are fixed on their own merits, not as the cause. Left: per-editor wiring docs, the first all-green run, the first tag) |
 | M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
 | M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasicd`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasicd.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
 
@@ -133,8 +133,12 @@ stable shape:
   opened document's project — nearest VCS marker, then nearest config file,
   then the source/include layout walk (`findSourceLayoutRoot`, up to the drive
   root / `$HOME`) — and single-file mode roots at marker/config/layout or the
-  file's directory; a detected root that replaces the client's is logged to
-  stderr with the signal. Watched-file events route to the owning root's index
+  file's directory; the two unbounded walks end at the home folder, which
+  `isHomeFolder` identifies with `std::filesystem::equivalent` rather than a
+  path compare (Windows spells `%USERPROFILE%` long and `%TEMP%` 8.3-short, so
+  a compare misses the guard and the walk roots the index at the profile); a
+  detected root that replaces the client's is logged to stderr with the
+  signal. Watched-file events route to the owning root's index
   (`indexFor`); `workspace/symbol` aggregates the live indexes. A file outside
   every index root is served resolution-only through the session-root index's
   on-demand closure — never its own index or the single-file branch.
@@ -963,18 +967,52 @@ implementation.
       to a per-suite directory that is deliberately never created, which also
       stops the 60 in-memory tests from rooting their workspace at the shared
       temp directory and scanning each other's leftovers.
-    - Still unexplained: the twelfth test, `TestReferencesListAllSites`, failed
-      3 range assertions while `didOpen`, the response envelope, and
-      `TestHighlightCoversAllSites` on the *same document* all passed — so the
-      reply was well formed and the failure was inside cross-file resolution.
-      Falsified by experiment: a colliding `dim counter` in a sibling file
-      under the shared root (references is closure-scoped, so it cannot be
-      hijacked), a torn read (LspCpp writes header+body as one `write`), and
-      an index that has not caught up with the open buffer
-      (`ensureRequestClosure` builds the entry on demand from the live buffer).
-      It sent a POSIX-shaped URI, which this wave removes, so it may well be
-      the same root cause — but that is a hypothesis, and the next Windows run
-      settles it.
+    - The twelfth test, `TestReferencesListAllSites`, is no longer unexplained:
+      it passed on the run after the URI fix (it is among the 69 that ran, and
+      it reported no failure), which fits the hypothesis it was left under — it
+      sent a POSIX-shaped URI. The three experiments that had falsified the
+      others stand: a colliding `dim counter` in a sibling file under the root
+      (references is closure-scoped, so it cannot be hijacked), a torn read
+      (LspCpp writes header+body as one `write`), and an index that has not
+      caught up with the open buffer (`ensureRequestClosure` builds the entry on
+      demand from the live buffer).
+    - With the URIs fixed the suite stopped timing out and failed in 24 s with
+      five assertions across three tests — and the server's own stderr in that
+      log names the cause before any test does:
+      `workspace root c:\users\runner~1 (detected via source/include
+      directory; client root c:\users\runner~1\appdata\local\temp\fblsp-session-
+      …\ws)`. The chosen root was the **profile directory**, for every test.
+      `chooseIndexRoot`'s last two steps are unbounded upward walks that end at
+      the home folder, and the guard that ends them was `start == home` — a
+      compare of path *objects*, and the two spellings come from different
+      places: `%USERPROFILE%` is `C:\Users\runneradmin` while `%TEMP%` (and so
+      every document URI built from it, the fixtures' `FileUri` included) says
+      `C:\Users\RUNNER~1`. Same directory, two spellings, guard missed, walk
+      climbed out to the profile, which does hold a child whose name is in the
+      source/include catalog — that is all the log's "detected via
+      source/include directory" says.
+      Everything the three failures need follows from that one root: the
+      single-file test saw a sibling project it was told must stay out of the
+      workspace (and every other test's sandbox with it), and the two
+      `didChangeConfiguration` tests wrote `freebasicd.toml` into their client
+      root and watched it be ignored — `settingsForDir` only ever looks in the
+      chosen root, so the include stayed unresolved and the diagnostics toggle
+      never fired. Note what this is *not*: the timeout's disappearance was the
+      URI fix above, nothing here. This leg went from a 300 s timeout to a 24 s
+      run that names five failed assertions, with the other four legs
+      unchanged.
+    - Fixed with `isHomeFolder` — `std::filesystem::equivalent` instead of the
+      path compare, in both walks — and a regression test that does not need
+      Windows to fail: `TestHomeFolderGuardAsksTheFilesystem` points `HOME` at
+      the same directory twice, once as `<home>/src/..` and once through a
+      symlink (a `ScopedEnv` shim, since MSVC has no `setenv`), and asserts the
+      home folder's own layout project stays out of the workspace of a file
+      below it. The symlink spelling is the load-bearing one: it is the case a
+      *lexical* normalization cannot answer either, so a future refactor that
+      "fixes" the guard with a normalized string compare stays green here and
+      goes red on the Windows runner. Verified both ways on Linux: with
+      `session.cpp` reverted the test roots the index at the home folder and
+      fails its assertion, exactly as the Windows run did.
   - The lesson recorded in AGENTS.md's ThreadSanitizer section: TSan and ctest
     are both blind to a lost wakeup and to a shared `std::thread`, and both
     present as *silence*. Hence the two cheap guards that make the next one
