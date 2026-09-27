@@ -236,6 +236,21 @@ std::shared_ptr<FeedableIStream> StartIndexedSession(
 // Append the given request repeatedly (each attempt gets a fresh numeric id)
 // and return the first reply that contains `needle` — used to wait for the
 // asynchronous workspace scan to settle the index behind a cross-file resolve.
+//
+// The needle is matched against the *reply*, not against the output stream, and
+// that is the whole contract. The stream is cumulative: a needle naming a
+// document (`fix.libUri`) is already in it by the time the first request is
+// answered, because every didOpen publishes diagnostics for that document. So a
+// stream-scoped match returns the first reply whatever it says — the poll
+// silently stops waiting, and a caller asserting on the reply then fails on a
+// premature answer instead of waiting for the index to settle. That is not a
+// hypothetical: with the match scoped to the stream, a probe whose reply can
+// never name the header returns `"result":null` on attempt 0 while the header
+// URI sits in an earlier publish; scoped to the reply, the same probe retries
+// until its budget runs out, which is the behaviour the callers assume.
+//
+// A poll that does spend its budget says so, because from the caller's side a
+// give-up and a wrong answer are the same failed assertion.
 std::string
 PollRequest(std::shared_ptr<FeedableIStream> const &input,
             std::shared_ptr<StringOStream> const &output,
@@ -247,13 +262,23 @@ PollRequest(std::shared_ptr<FeedableIStream> const &input,
     std::string const id = "\"id\":\"" + prefix + std::to_string(n) + "\"";
     input->append(MakeLspFrame(frame(prefix + std::to_string(n)).c_str()));
     std::string const snapshot = WaitForOutputContaining(output, id, 50);
-    if (snapshot.find(needle) != std::string::npos) {
-      // Clip to the tail of the stream so callers can make negative
-      // assertions without seeing earlier replies of the same session.
-      return snapshot.substr(snapshot.rfind(id));
+    // Clip to this reply so callers can make negative assertions without
+    // seeing earlier replies of the same session. rfind can miss when the wait
+    // itself expired; an absent reply is a give-up, not a match, and the
+    // newest reply we did see stays the answer to return.
+    std::size_t const at = snapshot.rfind(id);
+    if (at == std::string::npos) {
+      continue;
     }
-    last = snapshot;
+    last = snapshot.substr(at);
+    if (last.find(needle) != std::string::npos) {
+      return last;
+    }
   }
+  std::fprintf(stderr,
+               "[ poll  ] %s: no reply matched \"%s\" in %d attempts; newest "
+               "reply was %.200s\n",
+               prefix.c_str(), needle.c_str(), attempts, last.c_str());
   return last;
 }
 
@@ -3829,11 +3854,18 @@ void TestCrossFileStorageGate() {
                R"(","method":"textDocument/definition","params":{"textDocument":{"uri":")" +
                fix.mainUri + R"("},"position":{"line":2,"character":22}}})";
       });
+  // The reply travels in the message: a poll that returns the wrong answer and
+  // a poll that waited its whole budget are the same failed assertion to the
+  // reader, and only the first one is obvious from the test.
+  std::string const why =
+      "module-level use of a plain header dim must resolve into the header; "
+      "reply was " +
+      moduleLevel.substr(0, 200);
   Expect(moduleLevel.find("\"start\":{\"line\":1,\"character\":4}") !=
                  std::string::npos &&
              moduleLevel.find("\"end\":{\"line\":1,\"character\":13}") !=
                  std::string::npos,
-         "module-level use of a plain header dim must resolve into the header");
+         why.c_str());
 
   // The same name inside a procedure must not resolve at all (fbc error 42).
   std::string const inside = PollRequest(

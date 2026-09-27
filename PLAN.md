@@ -38,7 +38,7 @@ architecture, and the remaining work.
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
-| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers), `clang-format`, and macOS are green and holding; each platform leg failed first for a reason only that platform could show, and every cause found so far is fixed (Windows: an MSVC `min`/`max` macro collision in vendored LspCpp, a CRLF checkout breaking the byte-exact `grammar_checks`, a *test-harness* defect — the fixtures built `file://` URIs by string concatenation, which is malformed JSON on Windows, so eleven tests never got an answer and burned their poll budgets, which is what looked like a hang — and, once that was gone, a *server* defect the harness had been hiding: the home-folder guard that ends root selection's two unbounded walks compared path objects, and Windows spells the profile two ways (`%USERPROFILE%` long, `%TEMP%` 8.3-short), so the walk left the temp tree and every test's index rooted at the profile — 5 assertions across 3 tests, fixed with `std::filesystem::equivalent` and covered by a test that reproduces the spelling mismatch on any platform; macOS: a use-after-free in the `workspace/symbol` reply build, found with TSan). Two real latent index defects found while chasing the apparent hang (a lost wakeup in rescan shutdown, and a `std::thread` reachable from two threads) are fixed on their own merits, not as the cause. Left: per-editor wiring docs, the first all-green run, the first tag) |
+| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers), `clang-format`, and macOS are green and holding; each platform leg failed first for a reason only that platform could show, and every cause found so far is fixed (Windows: an MSVC `min`/`max` macro collision in vendored LspCpp, a CRLF checkout breaking the byte-exact `grammar_checks`, a *test-harness* defect — the fixtures built `file://` URIs by string concatenation, which is malformed JSON on Windows, so eleven tests never got an answer and burned their poll budgets, which is what looked like a hang — and, once that was gone, a *server* defect the harness had been hiding: the home-folder guard that ends root selection's two unbounded walks compared path objects, and Windows spells the profile two ways (`%USERPROFILE%` long, `%TEMP%` 8.3-short), so the walk left the temp tree and every test's index rooted at the profile — 5 assertions across 3 tests, fixed with `std::filesystem::equivalent` and covered by a test that reproduces the spelling mismatch on any platform, which left exactly one failure: the suite's `PollRequest` helper matched its needle against the cumulative output stream rather than the reply, and every `didOpen` publishes diagnostics, so a needle naming a document was already there and the poll returned the first reply whatever it said — a premature answer read as a wrong one (proved on Linux with a probe whose reply can never name the header, and fixed by scoping the match to the reply, which also removes an `out_of_range` on a dead server); macOS: a use-after-free in the `workspace/symbol` reply build, found with TSan). Two real latent index defects found while chasing the apparent hang (a lost wakeup in rescan shutdown, and a `std::thread` reachable from two threads) are fixed on their own merits, not as the cause. Left: per-editor wiring docs, the first all-green run, the first tag) |
 | M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
 | M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasicd`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasicd.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
 
@@ -1013,6 +1013,44 @@ implementation.
       goes red on the Windows runner. Verified both ways on Linux: with
       `session.cpp` reverted the test roots the index at the home folder and
       fails its assertion, exactly as the Windows run did.
+    - Run `36291181583` (the home-guard commit) took the Windows leg from five
+      failed assertions in three tests to **one**, in 21.6 s, with all 70 tests
+      running and the other four legs green: the three failures were the ones
+      the profile-wide root explained, so the diagnosis is confirmed by its own
+      cure. What is left is `TestCrossFileStorageGate`, whose module-level
+      `definition` of a plain header dim into `lib.bi` came back without the
+      header's range.
+    - That one is the *harness*, and provably so without Windows:
+      `PollRequest` resends a request until the answer contains its needle, and
+      matched that needle against the cumulative output stream. Every `didOpen`
+      publishes diagnostics for its document, so a needle naming a document is
+      already in the stream before the first request is answered — the poll
+      returned whatever that first reply said and stopped waiting. A probe whose
+      reply can never name the header (`definition` at `main.bas:0:0`, needle
+      `fix.libUri`) reproduces it on Linux: `"result":null` on attempt 0, with
+      the header URI sitting in an earlier publish. Scoped to the reply, the
+      same probe runs to its budget. The suite's three URI needles (`cdef`,
+      `cg1`, `cby`) and the `"line":4` needle behind `chl` are all satisfiable
+      from an earlier message, so all four polls were one-way.
+    - Fixed by matching the needle in the region the caller inspects — the tail
+      from this reply's id — with the `rfind` miss handled (the old
+      `snapshot.substr(snapshot.rfind(id))` would have thrown `out_of_range` on
+      the first timed-out attempt, so a dead server failed by exception rather
+      than by assertion), plus a give-up line naming the prefix, the needle and
+      the newest reply. `cg1`'s assertion now carries the reply it judged, since
+      a give-up and a wrong answer are otherwise the same red line. Wall time is
+      unchanged locally (14.5 s, 70 tests, no give-ups): no caller depended on
+      the loose match.
+    - Not established: the runner's reply text. The probe proves the mechanism
+      exists and that the Windows assertion is consistent with it firing, not
+      which of two candidates produced the premature reply — the `didOpen` still
+      in flight when the request was handled, or the request beating the index.
+      Note the index is not the obvious suspect here: both fixture files are
+      *open buffers*, and an open buffer is upserted at `didOpen`, so
+      `ensureClosure` finds `lib.bi` in `files_` before any scan runs (that is
+      also why `/tmp` being tmpfs locally does not reproduce it). Scoped to the
+      reply, the poll retries either way; if the answer was wrong rather than
+      premature, the give-up line names it.
   - The lesson recorded in AGENTS.md's ThreadSanitizer section: TSan and ctest
     are both blind to a lost wakeup and to a shared `std::thread`, and both
     present as *silence*. Hence the two cheap guards that make the next one

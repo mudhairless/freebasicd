@@ -286,6 +286,20 @@ generalizes: a test fixture that builds a wire-format string by string surgery
 fails as *malformed input*, not as a wrong answer, and a poll-based wait turns
 that into a timeout instead of a failure.
 
+**A poll's needle must be scoped to the reply it returns.** `PollRequest`
+resends a request until the answer contains a needle, because the index behind a
+cross-file resolve settles asynchronously — and it matched that needle against
+the *whole output stream*, which is cumulative. Every `didOpen` publishes
+diagnostics for its document, so a needle naming a document is already in the
+stream before the first request is answered: the poll returned whatever that
+first reply said and stopped waiting, and the caller failed on a premature
+answer. The Windows leg's last assertion was exactly that, and it is provable
+anywhere — a probe whose reply can never name the header returns `"result":null`
+on attempt 0 while the header URI sits in an earlier publish. Two rules, both
+cheap: match the needle in the region the caller will inspect (the reply's tail),
+and let a poll that spends its budget say so, because from the caller's side a
+give-up and a wrong answer are the same failed assertion.
+
 ### clang-format
 
 Formatting is **part of the milestone gate** (unlike tidy): the repo's
