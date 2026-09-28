@@ -354,7 +354,9 @@ index **before** building features on it.
   `Storage`/`Shared` tagging deferred to M7 (`moduleScope` = "is a file root").
 - Acceptance: `byKey_`/`outInc_` projections and the closure (diamond + cycle
   `a.bi`↔`b.bi`) hold in memory across scans/upserts; `fromDisk=false` entries
-  never shadow scan hits; all 7 suites green.
+  never shadow scan hits — including when the scan's write lands *after* the
+  buffer arrived, which is the half `upsert` now refuses itself; all 7 suites
+  green.
 - Risk: occurrence-vector memory for large workspaces (mitigate: sites only,
   no payload text; FB files are tiny). Residual: request-side re-analyze per
   call — removed by M10's content-addressed analysis cache.

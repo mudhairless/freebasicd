@@ -134,6 +134,13 @@ must stay there. Encoding directives that the lexer/parser must honor:
   different files (the Windows leg's `dim localOnly` at 1:5 instead of 1:4,
   CRLF on disk under an LF `didOpen`; pinned by
   `TestScanKeepsOpenBufferAheadOfDisk` and the matching `index_checks` block).
+  That rule is enforced at **both** halves, and the write half is the one that
+  matters: the scan reads the flag, then reads and parses the file, and only
+  then writes — so a `didOpen` landing in that window is a check-then-act race,
+  and the integration test failed about one run in thirty until `upsert` itself
+  refused to let a `fromDisk` entry replace a `fromDisk=false` one. A rule a
+  reader can only satisfy at the check is not the rule; enforce it where the
+  decision is committed.
   Closed files stay disk truth, which is what makes a watched-files event
   converge an external edit (`TestWatchedFilesRescanConverges` — its header is
   closed for exactly that reason). Since M11 the server owns **one index per

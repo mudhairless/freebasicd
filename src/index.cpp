@@ -707,11 +707,27 @@ void WorkspaceIndex::upsert(IndexedFile entry) {
   // `operator=` first, so moving `entry` into the shared_ptr must not race
   // the subscript's key evaluation (which would leave an empty key).
   std::string const key = entry.path;
+  bool const fromDisk = entry.fromDisk;
   std::shared_ptr<IndexedFile const> ptr;
   {
     std::lock_guard<std::mutex> const lk(mu_);
     auto existing = files_.find(key);
     if (existing != files_.end()) {
+      // An open buffer outranks disk — and that has to be enforced here, at the
+      // write, not only in the scan. The scan reads this same flag, then reads
+      // and parses the file before it comes back to write, so a didOpen landing
+      // in that window is clobbered by a parse that started before the buffer
+      // existed: the index holds disk offsets while contentForPath still serves
+      // the buffer, and a cross-file range comes back one column out per line
+      // the two copies disagree on (that is what put `dim localOnly` at 1:5
+      // instead of 1:4 on the Windows leg). The integration test that pins that
+      // answer is `TestScanKeepsOpenBufferAheadOfDisk`, and it fails about one
+      // run in thirty because the window is a race. Nothing is lost by
+      // refusing the demotion: didChange re-upserts the buffer, and a file that
+      // is closed again is re-read by the next scan.
+      if (fromDisk && !existing->second->fromDisk) {
+        return;
+      }
       subtractFromProjections(existing->second);
     }
     ptr = std::make_shared<IndexedFile const>(std::move(entry));

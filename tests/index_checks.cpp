@@ -310,6 +310,61 @@ int main() {
     live.close();
   }
 
+  // The same rule at the *write*, which is the half the block above cannot
+  // reach. The scan reads that flag, then reads and parses the file before it
+  // returns to write, so a didOpen landing in that window used to be clobbered
+  // by the parse that started before the buffer existed — the window is a race,
+  // and `TestScanKeepsOpenBufferAheadOfDisk` in the integration driver, which
+  // pins the answer that follows, failed about one run in thirty because of it.
+  // Enforcing the invariant where it is decided makes it schedulable: these two
+  // upserts are the whole interleaving, in the order the race produced it, with
+  // no threads involved.
+  {
+    fs::path const ws = sandbox / "bufferwrite";
+    fs::create_directories(ws);
+    writeFile(ws / "buf.bas", "dim diskonly as integer\n");
+    std::string const norm = normalizePath(ws / "buf.bas");
+    std::uint64_t mt = 0;
+    std::uint64_t sz = 0;
+    statFile(ws / "buf.bas", &mt, &sz);
+
+    WorkspaceIndex w(ws);
+    w.open();
+    // The open buffer arrives first, as a didOpen does mid-scan.
+    AnalyzedDoc const buf = analyze("dim  wide as integer\n");
+    w.upsert(
+        indexedFileFromAnalysis(norm, mt, sz, buf, ws, /*fromDisk=*/false));
+    // Then the scan's disk parse of the same file lands, having decided before
+    // the buffer existed that it was free to write one.
+    AnalyzedDoc const disk = analyze("dim diskonly as integer\n");
+    w.upsert(
+        indexedFileFromAnalysis(norm, mt, sz, disk, ws, /*fromDisk=*/true));
+
+    auto const f = w.fileAt(norm);
+    CHECK_MSG(
+        f != nullptr && !f->fromDisk,
+        "a disk parse must not demote a live open buffer to a disk entry");
+    CHECK_MSG(w.byKey("diskonly").empty(),
+              "the disk copy must not replace the open buffer's parse");
+    auto const wide = w.byKey("wide");
+    CHECK_MSG(wide.size() == 1,
+              "the live buffer parse is still the one served");
+    if (wide.size() == 1) {
+      CHECK_MSG(wide[0].decl->selection.beg == 5,
+                "the buffer's byte offsets must survive a late disk parse");
+      CHECK_MSG(wide[0].decl->selection.end == 9,
+                "the buffer's name end must survive a late disk parse");
+    }
+    // A buffer edit is not a demotion, so it still replaces the entry: the rule
+    // is about which copy wins, not about refusing writes.
+    AnalyzedDoc const edited = analyze("dim  wider as integer\n");
+    w.upsert(indexedFileFromAnalysis(norm, mt, sz, edited, ws,
+                                     /*fromDisk=*/false));
+    CHECK_MSG(w.byKey("wider").size() == 1 && w.byKey("wide").empty(),
+              "a newer open-buffer parse must still replace the entry");
+    w.close();
+  }
+
   // watchedFilesChanged() converges an external edit without any session
   // involvement: the debounced rescan picks up a rewritten header.
   {
