@@ -15,6 +15,7 @@
 #include "LibLsp/lsp/general/shutdown.h"
 #include "LibLsp/lsp/lsAny.h"
 #include "LibLsp/lsp/textDocument/SemanticTokens.h"
+#include "LibLsp/lsp/textDocument/callHierarchy.h"
 #include "LibLsp/lsp/textDocument/code_action.h"
 #include "LibLsp/lsp/textDocument/completion.h"
 #include "LibLsp/lsp/textDocument/declaration_definition.h"
@@ -46,6 +47,8 @@
 #include "LibLsp/lsp/workspace/symbol.h"
 
 #include "analysis_cache.h"
+#include "call_hierarchy.h"
+#include "call_hierarchy_lsp.h"
 #include "code_actions.h"
 #include "index.h"
 #include "resolve.h"
@@ -231,6 +234,18 @@ private:
   // position, which is the mapping the client assumes.
   td_selectionRange::response
   onSelectionRange(td_selectionRange::request const &req);
+
+  // Call hierarchy (M13). All three carry the same item shape, and the two
+  // follow-ups take an item the client echoes back from prepare or from an
+  // outgoing call — identified by its `uri` + `selectionRange`, which are both
+  // in the item and both needed to convert the ranges that come back, so
+  // `CallHierarchyItem::data` stays unset (it is optional in the protocol).
+  td_prepareCallHierarchy::response
+  onPrepareCallHierarchy(td_prepareCallHierarchy::request const &req);
+  td_callHierarchyOutgoingCalls::response
+  onOutgoingCalls(td_callHierarchyOutgoingCalls::request const &req);
+  td_incomingCalls::response
+  onIncomingCalls(td_incomingCalls::request const &req);
 
   // Allocate a fresh resultId ("st<counter>") and record `data` under it as
   // the current delta baseline, evicting the oldest entry past a fixed cap.

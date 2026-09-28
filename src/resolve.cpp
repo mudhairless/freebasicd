@@ -25,20 +25,6 @@ namespace fblang {
 
 namespace {
 
-// A declaration's cross-snapshot identity: its owning file plus the selection
-// range of its name token. Unique per declaration: a (path, selection) pair
-// pins one Symbol across index snapshots and fresh parses of the same file.
-struct DeclIdentity {
-  std::string path;
-  std::uint32_t beg = 0;
-  std::uint32_t end = 0;
-};
-
-DeclIdentity identityOf(CrossDecl const &d, std::string const &fallbackPath) {
-  return {d.file ? d.file->path : fallbackPath, d.decl->selection.beg,
-          d.decl->selection.end};
-}
-
 // When the target is a module-scope root of the requesting file (found in-file,
 // `file == nullptr`), give it its index identity (`fileAt(normalizedPath)`)
 // so a same declaration re-resolved through tier 2 by a different file's
@@ -63,10 +49,6 @@ CrossDecl canonicalTarget(CrossDecl const &target,
     }
   }
   return target;
-}
-
-bool sameIdentity(DeclIdentity const &a, DeclIdentity const &b) {
-  return a.path == b.path && a.beg == b.beg && a.end == b.end;
 }
 
 // The declaration a token in `d` resolves to, expressed as a CrossDecl:
@@ -381,13 +363,23 @@ Symbol const *parentOf(std::vector<Symbol> const &roots, Symbol const *node) {
   return nullptr;
 }
 
-Symbol const *innermostScope(ParseResult const &parse, std::uint32_t off) {
+DeclIdentity identityOf(CrossDecl const &d, std::string const &fallbackPath) {
+  return {d.file ? d.file->path : fallbackPath, d.decl->selection.beg,
+          d.decl->selection.end};
+}
+
+Symbol const *innermostNode(ParseResult const &parse, std::uint32_t off) {
   Symbol const *best = nullptr;
   for (auto const &root : parse.roots) {
     if (Symbol const *d = deepestNesting(root, off)) {
       best = d;
     }
   }
+  return best;
+}
+
+Symbol const *innermostScope(ParseResult const &parse, std::uint32_t off) {
+  Symbol const *best = innermostNode(parse, off);
   while (best != nullptr && !isScopeKind(best->kind)) {
     best = parentOf(parse, best);
   }
@@ -496,6 +488,35 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
   return {};
 }
 
+std::vector<std::string> referencingFiles(std::string const &normalizedPath,
+                                          std::string const &declPath,
+                                          WorkspaceIndex const *index) {
+  // Insertion order keeps the requesting file first, the closure
+  // textual-pre-order next (matches resolveAcross), and reverse files after.
+  std::vector<std::string> files;
+  auto addFile = [&files](std::string const &f) {
+    if (std::find(files.begin(), files.end(), f) == files.end()) {
+      files.push_back(f);
+    }
+  };
+  addFile(normalizedPath);
+  if (index != nullptr) {
+    for (std::string const &p : index->transitiveIncludes(normalizedPath)) {
+      addFile(p);
+    }
+    addFile(declPath);
+    for (auto const &f : index->snapshot()) {
+      for (std::string const &p : index->transitiveIncludes(f->path)) {
+        if (p == declPath) {
+          addFile(f->path);
+          break;
+        }
+      }
+    }
+  }
+  return files;
+}
+
 std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
                                               std::string const &normalizedPath,
                                               std::uint32_t off,
@@ -520,35 +541,8 @@ std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
   DeclIdentity const self = identityOf(canon, normalizedPath);
   std::string const declPath = canon.file ? canon.file->path : normalizedPath;
 
-  // Candidate files: the requesting file, its forward include closure, the
-  // declaration's own file (a tier-3 byKey hit can land outside the closure),
-  // and reverse reachability — every file whose own closure reaches the
-  // declaration's file, so a rename at a header declaration covers all
-  // includers. Insertion order keeps the requesting file first, the closure
-  // textual-pre-order next (matches resolveAcross), and reverse files after.
-  std::vector<std::string> files;
-  auto addFile = [&files](std::string const &f) {
-    if (std::find(files.begin(), files.end(), f) == files.end()) {
-      files.push_back(f);
-    }
-  };
-  addFile(normalizedPath);
-  if (index != nullptr) {
-    for (std::string const &p : index->transitiveIncludes(normalizedPath)) {
-      addFile(p);
-    }
-    addFile(declPath);
-    for (auto const &f : index->snapshot()) {
-      for (std::string const &p : index->transitiveIncludes(f->path)) {
-        if (p == declPath) {
-          addFile(f->path);
-          break;
-        }
-      }
-    }
-  }
-
-  for (std::string const &fpath : files) {
+  for (std::string const &fpath :
+       referencingFiles(normalizedPath, declPath, index)) {
     std::shared_ptr<DocumentContent const> const dc = content(fpath);
     if (!dc) {
       continue;
@@ -563,7 +557,7 @@ std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
       if (r.decl == nullptr) {
         continue;
       }
-      if (sameIdentity(identityOf(r, fpath), self)) {
+      if (identityOf(r, fpath) == self) {
         out.push_back(OccurrenceSite{fpath, {t.beg, t.end}});
       }
     }

@@ -33,7 +33,7 @@ architecture, and the remaining work.
 | M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
 | M11 — configuration + workspace folders | done (2026-09: `freebasicd.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), where both unbounded walks stop at the home folder, decided by `std::filesystem::equivalent` rather than a path compare because one directory routinely has two spellings (Windows' 8.3 `%TEMP%` against a long `%USERPROFILE%` is how the Windows CI leg found it), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
 | M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree; fixes answer as LSP `CodeAction`s carrying `kind` + the diagnostic + an `edit` keyed by the request's URI, not as empty-id `Command`s — the first cut shipped the `Command` shape and the actions listed but did nothing) |
-| M13 — editor extras: selectionRange, callHierarchy, codeLens | in progress (2026-09-27: aspect 1 `selectionRange` shipped — `src/selection.{h,cpp}` derives the expand-selection chain from `(tokens, blockRanges, content)` alone (token → `:`-separated statement → enclosing blocks → file), keeping a level only when it strictly contains the one below *and* adds non-blank text; `src/selection_lsp.{h,cpp}` parks the chain in a `thread_local` arena because LspCpp's `SelectionRange::parent` is a non-owning pointer, and the integration test asserts the nested chain on the wire. Aspects 2 (callHierarchy) and 3 (codeLens) planned, with their blockers and decisions recorded under the heading) |
+| M13 — editor extras: selectionRange, callHierarchy, codeLens | in progress (2026-09-27: aspect 1 `selectionRange` shipped — `src/selection.{h,cpp}` derives the expand-selection chain from `(tokens, blockRanges, content)` alone (token → `:`-separated statement → enclosing blocks → file), keeping a level only when it strictly contains the one below *and* adds non-blank text; `src/selection_lsp.{h,cpp}` parks the chain in a `thread_local` arena because LspCpp's `SelectionRange::parent` is a non-owning pointer, and the integration test asserts the nested chain on the wire. 2026-09-27: aspect 2 `callHierarchy` shipped — `src/call_hierarchy.{h,cpp}` scans a body for the three call shapes fbc 1.10.2 accepts (`name(`, after `.`/`->`, and a bare statement-head name) and resolves each through one `CalleeResolver` seam, matching by `DeclIdentity` (file + name-token range) rather than by name, so a shadowing local is excluded by resolving the site and `foo`/`foo$` stay one symbol; nodes are procedures, properties are never callees, module-level call sites are dropped; `src/call_hierarchy_lsp.h` defines the outgoing-call request type locally because LspCpp registers it under the wrong wire name; the 17th suite `call_hierarchy_checks` plus a two-file integration test. Aspect 3 (codeLens) planned, with its decisions recorded under the heading) |
 | M14 — pull diagnostics (backlog) | next |
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
@@ -139,6 +139,22 @@ stable shape:
   owns only the innermost node. Safe because the reply is serialized inline on
   the handler thread; the integration test asserts the nested chain reaches the
   wire, which is what proves the lifetime.
+- `src/call_hierarchy.{h,cpp}` — call hierarchy (M13), LSP-agnostic and in byte
+  offsets: `callItemOf` copies a declaration into a `CallItem`; `procedureAt`
+  answers which procedure an offset belongs to (innermost node, then out to the
+  enclosing Sub/Function/Property/Constructor/Destructor — the analyzer own
+  containment rule, reused); `outgoingCalls` scans the caller body for
+  call-*shaped* tokens and resolves each through the `CalleeResolver` seam,
+  merging by `DeclIdentity`; `incomingCallsIn` is the per-file half over the
+  whole document, dropping module-level call sites (no enclosing declaration to
+  be the `from` node). Three call shapes, all fbc 1.10.2 ground truth: `name(`
+  (Name), after `.`/`->` (Member, parens optional), and a bare statement-head
+  name (Statement). Callable kinds are Sub/Function/Constructor/Destructor — a
+  property read is not a call and an operator is not reached as `name(`.
+- `src/call_hierarchy_lsp.h` — the one type this feature needs locally:
+  `td_callHierarchyOutgoingCalls`, registered under the protocol method name
+  `callHierarchy/outgoingCalls` (LspCpp own is `callHierarchy/
+  CallHierarchyOutgoingCall`) — the same precedent as `semantic_tokens_lsp.h`.
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
   `WorkingFiles` + the per-workspace `WorkspaceIndex` map (`indexes_`, keyed
   by normalized root under `indexesMutex_`; registered client folders with a
@@ -186,6 +202,9 @@ per-root indexes), `prepareRename`,
 answering from the diagnostics the next publish would carry),
 `selectionRange` (M13 expand selection: token → statement → enclosing blocks →
 file, one chain per requested position),
+`prepareCallHierarchy` + `callHierarchy/outgoingCalls` + `callHierarchy/
+incomingCalls` (M13 call hierarchy: nodes are procedures, edges are resolved
+call sites merged per callee and per caller),
 `workspace/didChangeWatchedFiles` (per-index routing),
 `workspace/didChangeWorkspaceFolders` (per-root index add/remove),
 `workspace/didChangeConfiguration` (per-root `freebasicd.toml` re-read +
@@ -286,9 +305,9 @@ plan engineers around:
    vendoring the DLL, static-linking libintl, or dropping gettext on Windows
    (all 29 catalogs are empty today, so an English-only Windows build loses
    nothing yet).
-7. Feasible 3.17 features are unimplemented and unadvertised: `callHierarchy`,
-   `codeLens` (the rest of M13), and pull diagnostics (M14). None is required
-   by the target editors; each ships as its own milestone.
+7. Feasible 3.17 features are unimplemented and unadvertised: `codeLens` (the
+   rest of M13) and pull diagnostics (M14). None is required by the target
+   editors; each ships as its own milestone.
 
 ## 5. Forward plan
 
@@ -808,9 +827,9 @@ primitives, none touches the language model.
   two-file fixture shows outgoing and incoming calls; a referenced procedure
   carries a "2 references" lens.
 
-> Status: aspect 1 (selectionRange) done; aspects 2 and 3 planned. One aspect
-> per wave, as the milestones before it: callHierarchy and codeLens each touch
-> the wire shapes above and want their own acceptance run.
+> Status: aspects 1 and 2 (selectionRange, callHierarchy) done; aspect 3
+> (codeLens) planned. One aspect per wave, as the milestones before it: each
+> touches the wire shapes above and wants their own acceptance run.
 >
 > **Landed (aspect 1, 2026-09-27).** `src/selection.{h,cpp}` +
 > `src/selection_lsp.{h,cpp}`, handler, `selectionRangeProvider = true`, the
@@ -850,14 +869,67 @@ primitives, none touches the language model.
 > builds a wire string by surgery fails as malformed input, not as a wrong
 > answer, and a wait that can pass vacuously hides it.
 >
-> **Next: aspect 2 (callHierarchy).** One blocker found while planning it:
-> LspCpp's `td_outgoingCalls` is registered under the wire name
-> `"callHierarchy/CallHierarchyOutgoingCall"` — wrong, and upstream and
-> untouched since 2019. It needs no fork commit: define the type locally with
-> `"callHierarchy/outgoingCalls"` (the `semantic_tokens_lsp.h` precedent).
-> Identify the target in `incomingCalls` by `uri` + `range` rather than
-> `CallHierarchyItem::data`, since the tree has no `Reflect` for
-> `map<string, lsp::Any>` and hand-rolled wire-string surgery is banned.
+> **Landed (aspect 2, 2026-09-27).** `src/call_hierarchy.{h,cpp}` +
+> `src/call_hierarchy_lsp.h`, three handlers, `callHierarchyProvider = true`,
+> the 17th suite `call_hierarchy_checks`, and a two-file `session_integration`
+> test (a header declares the callee, the client calls it twice — once with a
+> parameter list, once bare — and calls itself, so both directions cross the
+> include boundary).
+>
+> Three call shapes, all checked against fbc 1.10.2 before anything was written:
+> `name(`, after `.`/`->` (parens optional), and a bare statement-head name.
+> fbc accepts `s`, `s 1` and `s()` in `fb` mode, while `Call s` is error 146, so
+> there is no fourth shape to look for. Each shape resolves through the
+> `CalleeResolver` seam (a bare name through `resolveAcross`, a member through
+> the member resolver) and is then matched by `DeclIdentity` — the declaring
+> file plus the name-token range — never by name, because `foo`/`foo$` are one
+> symbol in `fb` mode. A local `dim helper` shadowing a `sub helper` is
+> excluded by *resolving the site*, not by comparing text, and the suite pins
+> it.
+>
+> Two filters are load-bearing, not cosmetic. A declaration own name token is
+> call-*shaped* (`sub s(` is `s` followed by `(` at a statement head), so every
+> declaration name is collected up front and skipped; without that, a recursive
+> Sub reports itself as calling its own signature line. And keyword tokens are
+> scanned in the Member shape only, because a reserved word is a legal member
+> name (`sub open()` parses, and the parser records it) while an `if` or a
+> `then` at statement position is not a callee — the resolver answers only for
+> a name that resolves, so a false positive costs a lookup.
+>
+> A `Property` is a node but never a callee (a read is not a call, and the
+> token stream cannot tell a read from a write without the assignment context),
+> and an `Operator` is neither — it is reached through the operator, never as
+> `name(`. A module-level call site is dropped from incoming calls: it has no
+> enclosing declaration to be the `from` node, and a node the client cannot
+> navigate to is not an answer. `prepareCallHierarchy` answers null at module
+> level for the same reason.
+>
+> The target is identified by `uri` + `selectionRange` — both already in the
+> item, and both needed to convert the follow-up ranges — so
+> `CallHierarchyItem::data` stays unset: the field is optional in the protocol
+> and nothing here could read an opaque blob back. That is the whole reason
+> there is no fork commit beyond the local `td_callHierarchyOutgoingCalls`. The
+> guess recorded above before the work started (that `data` cannot be written
+> because the tree lacks a `Reflect` for `map<string, lsp::Any>`) was wrong —
+> `Any` has a writer and the map does not — and it did not matter, because the
+> field is not used.
+>
+> Lifetime follows the TSan rule in AGENTS.md. `OutgoingCall::to` is a value
+> copy, so no symbol pointer escapes the outgoing scan; `IncomingCall::caller`
+> is a raw pointer into the scanned document, so the session holds that
+> document `shared_ptr` for the whole conversion loop — the pin is the pin.
+> `resolve.{h,cpp}` gained `DeclIdentity::operator==`, `identityOf`,
+> `innermostNode` and `referencingFiles` by promotion (the helpers were already
+> there under local names; `sameIdentity` is gone), so the scan and the
+> occurrence walk now share one definition of "the same declaration" and one
+> candidate set for "who can name this file" — which is why incoming calls walk
+> exactly the files `references` does.
+>
+> The suite first failed nine expectations, every one of them in the test own
+> expected strings: a `find` with no anchor returns the *declaration* of a
+> name, not its call site — the same first-match trap the selectionRange suite
+> walked into with `off()`, and the reason each anchor in
+> `call_hierarchy_checks` is a needle plus the snippet it sits after.
 >
 > **Next: aspect 3 (codeLens).** Needs the M12 Command-honesty decision: a lens
 > cannot carry an edit, so it must be a `command` the client executes, which

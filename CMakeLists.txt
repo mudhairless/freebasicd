@@ -54,6 +54,7 @@ find_program(GETTEXT_XGETTEXT_EXECUTABLE xgettext)
 # workspace index (M4) is in-memory only.
 add_library(freebasicd_lang STATIC
     src/analysis_cache.cpp
+    src/call_hierarchy.cpp
     src/code_actions.cpp
     src/i18n.cpp
     src/index.cpp
@@ -295,6 +296,16 @@ add_executable(selection_checks
 target_include_directories(selection_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(selection_checks PRIVATE freebasicd_lang)
 add_test(NAME selection_checks COMMAND selection_checks)
+
+# M13 call hierarchy: the enclosing-procedure lookup and the call scans over a
+# document, resolved through the module's own resolver seam (no index, no
+# session) so the shape rules and the identity matching are checkable alone.
+add_executable(call_hierarchy_checks
+    tests/call_hierarchy_checks.cpp
+)
+target_include_directories(call_hierarchy_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(call_hierarchy_checks PRIVATE freebasicd_lang)
+add_test(NAME call_hierarchy_checks COMMAND call_hierarchy_checks)
 
 # M12 quick fixes: the providers, exercised as pure functions over a document
 # (no index, no session) plus the registry's answer for a code with no fix.

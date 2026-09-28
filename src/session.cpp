@@ -751,6 +751,66 @@ SemanticTokensEdit diffTokenData(std::vector<std::int32_t> const &previous,
   return edit;
 }
 
+// A call-hierarchy item on the wire. `detail` is the declaration's signature
+// (the same text documentSymbol shows). `data` is left unset: the field is
+// optional in the protocol, and a node is already identified by `uri` +
+// `selectionRange` (see the identity helper below), so an opaque blob that
+// nothing here could read back would buy nothing.
+CallHierarchyItem callHierarchyItem(std::string_view content,
+                                    fblang::CallItem const &item) {
+  CallHierarchyItem out;
+  out.name = item.name;
+  out.kind = toLspSymbolKind(item.kind);
+  if (!item.detail.empty()) {
+    out.detail.emplace(item.detail);
+  }
+  out.uri = lsDocumentUri(AbsolutePath(item.file));
+  out.range = fblang::utf16Range(content, item.range.beg, item.range.end);
+  out.selectionRange =
+      fblang::utf16Range(content, item.selection.beg, item.selection.end);
+  return out;
+}
+
+// The identity a follow-up request is answered against: the item's file plus
+// its name-token range, which is what a (path, selection) pair means (see
+// fblang::DeclIdentity). A client that trimmed the selection range, or an item
+// from before an edit, yields a range that matches no declaration and the
+// request answers empty — better than picking a procedure by name.
+fblang::DeclIdentity callHierarchyIdentity(lsDocumentUri const &uri,
+                                           CallHierarchyItem const &item,
+                                           std::string_view content) {
+  fblang::DeclIdentity id;
+  id.path = fblang::normalizePath(uri.GetAbsolutePath().path());
+  id.beg =
+      fblang::byteOffsetForUtf16Position(content, item.selectionRange.start);
+  id.end = fblang::byteOffsetForUtf16Position(content, item.selectionRange.end);
+  return id;
+}
+
+// The resolver the call-hierarchy scans ask: a bare name goes through the same
+// three-tier lookup every other handler uses, and a member identifier needs the
+// member resolver, which walks the chain to the receiver's declared type. The
+// index may be null (single-file mode), then names resolve in-file only.
+fblang::CalleeResolver
+calleeResolver(std::shared_ptr<fblang::WorkspaceIndex> const &index,
+               std::string const &normPath) {
+  return [index, normPath](fblang::AnalyzedDoc const &doc,
+                           fblang::CalleeRef const &ref) -> fblang::CrossDecl {
+    if (ref.shape == fblang::CalleeRef::Shape::Member) {
+      fblang::MemberAccess const member =
+          fblang::resolveMemberAccess(doc, normPath, ref.off, index.get());
+      return fblang::CrossDecl{member.file, member.member};
+    }
+    if (index) {
+      return fblang::resolveAcross(doc, normPath, ref.off, *index);
+    }
+    if (fblang::Symbol const *const local = fblang::resolveAt(doc, ref.off)) {
+      return fblang::CrossDecl{nullptr, local};
+    }
+    return {};
+  };
+}
+
 } // namespace
 
 FreeBasicServer::FreeBasicServer(lsp::LanguageSession &session)
@@ -1000,6 +1060,17 @@ void FreeBasicServer::registerHandlers() {
   session_.on([this](td_selectionRange::request const &req) {
     return onSelectionRange(req);
   });
+  session_.on([this](td_prepareCallHierarchy::request const &req) {
+    return onPrepareCallHierarchy(req);
+  });
+  // The protocol's method name, not LspCpp's ("callHierarchy/CallHierarchy
+  // OutgoingCall") — see call_hierarchy_lsp.h.
+  session_.on([this](td_callHierarchyOutgoingCalls::request const &req) {
+    return onOutgoingCalls(req);
+  });
+  session_.on([this](td_incomingCalls::request const &req) {
+    return onIncomingCalls(req);
+  });
 
   // The server->client client/registerCapability request is sent from the
   // `initialized` handler, after the parse/notification pools are running;
@@ -1103,6 +1174,11 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   // register and no resolve request behind it.
   rsp.result.capabilities.selectionRangeProvider.emplace();
   rsp.result.capabilities.selectionRangeProvider->first.emplace(true);
+
+  // Call hierarchy (M13): the bare-bool arm, like selectionRange — three
+  // methods, no options and no resolve.
+  rsp.result.capabilities.callHierarchyProvider.emplace();
+  rsp.result.capabilities.callHierarchyProvider->first.emplace(true);
 
   // Workspace-level capabilities: folder support + change notifications are
   // advertised unconditionally, so a multi-folder client gets one index per
@@ -2939,6 +3015,133 @@ FreeBasicServer::onSelectionRange(td_selectionRange::request const &req) {
         fblang::byteOffsetForUtf16Position(content, pos)));
   }
   rsp.result = fblang::selectionRanges(chains, content);
+  return rsp;
+}
+
+td_prepareCallHierarchy::response FreeBasicServer::onPrepareCallHierarchy(
+    td_prepareCallHierarchy::request const &req) {
+  td_prepareCallHierarchy::response rsp;
+  rsp.id = req.id;
+
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
+    return rsp; // no result: the client shows no call-hierarchy affordance
+  }
+  std::string_view const content = cached->content;
+  fblang::Symbol const *const proc = fblang::procedureAt(
+      cached->analysis,
+      fblang::byteOffsetForUtf16Position(content, req.params.position));
+  if (proc == nullptr) {
+    return rsp; // module level: no declaration to anchor a hierarchy on
+  }
+
+  std::vector<CallHierarchyItem> items;
+  items.push_back(callHierarchyItem(
+      content,
+      fblang::callItemOf(
+          *proc, fblang::normalizePath(
+                     req.params.textDocument.uri.GetAbsolutePath().path()))));
+  rsp.result.emplace(std::move(items));
+  return rsp;
+}
+
+td_callHierarchyOutgoingCalls::response FreeBasicServer::onOutgoingCalls(
+    td_callHierarchyOutgoingCalls::request const &req) {
+  td_callHierarchyOutgoingCalls::response rsp;
+  rsp.id = req.id;
+
+  // No textDocument on this request — the item's uri is the only pointer to a
+  // file, so the same content+analysis pair answers both what the item names
+  // and what its ranges mean.
+  std::filesystem::path const path =
+      req.params.item.uri.GetAbsolutePath().path();
+  std::shared_ptr<fblang::DocumentContent const> const dc =
+      contentForPathAnalysis(path);
+  if (!dc) {
+    return rsp;
+  }
+  std::string const normPath = fblang::normalizePath(path);
+  fblang::DeclIdentity const id =
+      callHierarchyIdentity(req.params.item.uri, req.params.item, dc->content);
+  fblang::Symbol const *const proc = fblang::procedureAt(dc->analysis, id.beg);
+  if (proc == nullptr) {
+    return rsp;
+  }
+
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  ensureRequestClosure(normPath, index);
+  fblang::CalleeResolver const resolve = calleeResolver(index, normPath);
+  std::vector<fblang::OutgoingCall> const calls =
+      fblang::outgoingCalls(dc->analysis, normPath, proc, resolve);
+
+  std::vector<CallHierarchyOutgoingCall> result;
+  for (fblang::OutgoingCall const &call : calls) {
+    // The callee's own file holds its ranges, and it is not this request's
+    // document: convert against the bytes that file has now (an open buffer
+    // when the client has one), or skip the callee rather than misplace it.
+    std::optional<std::string> const toContent = contentForPath(call.to.file);
+    if (!toContent) {
+      continue;
+    }
+    CallHierarchyOutgoingCall outgoing;
+    outgoing.to = callHierarchyItem(*toContent, call.to);
+    for (fblang::SourceRange const &site : call.sites) {
+      outgoing.fromRanges.push_back(
+          fblang::utf16Range(dc->content, site.beg, site.end));
+    }
+    result.push_back(std::move(outgoing));
+  }
+  rsp.result.emplace(std::move(result));
+  return rsp;
+}
+
+td_incomingCalls::response
+FreeBasicServer::onIncomingCalls(td_incomingCalls::request const &req) {
+  td_incomingCalls::response rsp;
+  rsp.id = req.id;
+
+  std::filesystem::path const path =
+      req.params.item.uri.GetAbsolutePath().path();
+  std::shared_ptr<fblang::DocumentContent const> const targetFile =
+      contentForPathAnalysis(path);
+  if (!targetFile) {
+    return rsp;
+  }
+  std::string const normPath = fblang::normalizePath(path);
+  fblang::DeclIdentity const target = callHierarchyIdentity(
+      req.params.item.uri, req.params.item, targetFile->content);
+
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  ensureRequestClosure(normPath, index);
+
+  // The target's file, its include closure, and every indexed file whose
+  // closure reaches it — the same candidate set references/rename walk
+  // (resolve.h), so "who can name this" has one definition.
+  std::vector<CallHierarchyIncomingCall> result;
+  for (std::string const &candidate :
+       fblang::referencingFiles(normPath, normPath, index.get())) {
+    std::shared_ptr<fblang::DocumentContent const> const dc =
+        contentForPathAnalysis(candidate);
+    if (!dc) {
+      continue;
+    }
+    fblang::CalleeResolver const resolve = calleeResolver(index, candidate);
+    // `call.caller` points into `dc`'s analysis, so the result is converted
+    // while this loop still holds that shared_ptr.
+    for (fblang::IncomingCall const &call :
+         fblang::incomingCallsIn(dc->analysis, candidate, target, resolve)) {
+      CallHierarchyIncomingCall incoming;
+      incoming.from = callHierarchyItem(
+          dc->content, fblang::callItemOf(*call.caller, candidate));
+      for (fblang::SourceRange const &site : call.sites) {
+        incoming.fromRanges.push_back(
+            fblang::utf16Range(dc->content, site.beg, site.end));
+      }
+      result.push_back(std::move(incoming));
+    }
+  }
+  rsp.result.emplace(std::move(result));
   return rsp;
 }
 

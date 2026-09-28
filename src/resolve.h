@@ -71,6 +71,13 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
 // level. Dim/Const/Parameter nodes are not scopes and are walked through.
 Symbol const *innermostScope(ParseResult const &parse, std::uint32_t off);
 
+// Deepest symbol-tree node containing `off` — any kind, inclusive of a node's
+// end so a cursor on the closer token still lands inside — or nullptr for an
+// offset no construct covers (module level). The starting point for asking a
+// narrower question: innermostScope walks out of it to a scope kind, and
+// procedureAt (call_hierarchy.h) walks out to the procedure around it.
+Symbol const *innermostNode(ParseResult const &parse, std::uint32_t off);
+
 // The §12.2 storage-gate predicate (FreeBASIC.md §8): whether `siteScope`
 // (the innermost scope of the site, or nullptr) sits inside a procedure body.
 // Module-level plain `Dim`/`Common` (no `Shared`) are invisible only then —
@@ -99,6 +106,25 @@ struct CrossDecl {
     return file.get() == other.file.get() && decl == other.decl;
   }
 };
+
+// A declaration's cross-snapshot identity: its owning file plus the selection
+// range of its name token. Unique per declaration — a (path, selection) pair
+// pins one Symbol across index snapshots and fresh parses of the same file, so
+// it is how two independently parsed copies of one file are compared (and how
+// a call-hierarchy item is recognized when the client echoes it back).
+struct DeclIdentity {
+  std::string path;
+  std::uint32_t beg = 0;
+  std::uint32_t end = 0;
+
+  bool operator==(DeclIdentity const &other) const {
+    return path == other.path && beg == other.beg && end == other.end;
+  }
+};
+
+// `d.decl`'s identity; `fallbackPath` is the owning file when `d.file` is null
+// (the declaration lives in the caller's own document).
+DeclIdentity identityOf(CrossDecl const &d, std::string const &fallbackPath);
 
 // Cross-file resolution over an analyzed document, three tiers (FreeBASIC.md
 // §9/§12.2): (1) in-file scopes, shadowing wins; (2) module scope of each
@@ -238,5 +264,16 @@ std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
                                               std::uint32_t off,
                                               WorkspaceIndex const *index,
                                               ContentProvider const &content);
+
+// The files that can name a declaration living in `declPath`: the requesting
+// file, its forward include closure (textual pre-order), `declPath` itself (a
+// tier-3 byKey hit can land outside the closure), and reverse reachability —
+// every indexed file whose own closure reaches `declPath`, so a header
+// declaration covers all its includers. Deduped, in that order. The candidate
+// set behind occurrencesAcross, shared with the call-hierarchy incoming scan so
+// one definition of "who can reference this" answers both.
+std::vector<std::string> referencingFiles(std::string const &normalizedPath,
+                                          std::string const &declPath,
+                                          WorkspaceIndex const *index);
 
 } // namespace fblang

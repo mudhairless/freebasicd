@@ -194,11 +194,12 @@ must stay there. Encoding directives that the lexer/parser must honor:
 
 ## Verification
 
-- Unit drivers in `tests/` via ctest (16 suites: `lexer_checks`,
+- Unit drivers in `tests/` via ctest (17 suites: `lexer_checks`,
   `analysis_cache_checks`, `language_checks`, `parser_checks`,
   `resolve_checks`, `corpus_checks`, `utf16_checks`,
   `semantic_tokens_checks`, `inlay_hints_checks`, `selection_checks`,
-  `code_actions_checks`, `grammar_checks`, `index_checks`, `settings_checks`,
+  `call_hierarchy_checks`, `code_actions_checks`, `grammar_checks`,
+  `index_checks`, `settings_checks`,
   `i18n_checks`, and `session_integration`, which drives `LanguageSession` with
   in-memory streams — LspCpp `tests/test_helpers.h`).
 - The system `fbc` compiler (1.10.2) is available for ground-truthing ambiguous
@@ -233,7 +234,10 @@ cmake --build build-tsan --target session_integration --parallel
 
 Zero is the bar. The rule the two findings teach: **a result type that hands
 out a pointer into a snapshot must carry the pin** — `CrossDecl::file`,
-`MemberAccess::file`, and `MemberCompletion::owner.file` are that pin, and
+`MemberAccess::file`, `MemberCompletion::owner.file` and
+`fblang::IncomingCall::caller` are that pin (the last one a bare `Symbol const*`
+into a scanned `AnalyzedDoc`, so the caller's `shared_ptr<DocumentContent>` is
+held across the whole conversion), and
 `onWorkspaceSymbol`'s per-file hit list holds `shared_ptr<IndexedFile const>`
 for the same reason. Holding the `WorkspaceIndex` is *not* the pin: a scan
 replaces the entries inside it.
