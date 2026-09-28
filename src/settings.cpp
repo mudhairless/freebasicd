@@ -53,6 +53,9 @@ Settings parseSettings(std::string_view tomlText, bool *ok) {
   if (auto const v = root["inlayHintsOn"].value<bool>()) {
     s.inlayHintsOn = *v;
   }
+  if (auto const v = root["codeLensOn"].value<bool>()) {
+    s.codeLensOn = *v;
+  }
   return s;
 }
 

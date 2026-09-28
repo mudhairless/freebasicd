@@ -17,6 +17,7 @@
 #include "LibLsp/lsp/textDocument/SemanticTokens.h"
 #include "LibLsp/lsp/textDocument/callHierarchy.h"
 #include "LibLsp/lsp/textDocument/code_action.h"
+#include "LibLsp/lsp/textDocument/code_lens.h"
 #include "LibLsp/lsp/textDocument/completion.h"
 #include "LibLsp/lsp/textDocument/declaration_definition.h"
 #include "LibLsp/lsp/textDocument/did_change.h"
@@ -44,12 +45,14 @@
 #include "LibLsp/lsp/workspace/didChangeWorkspaceFolders.h"
 #include "LibLsp/lsp/workspace/did_change_configuration.h"
 #include "LibLsp/lsp/workspace/did_change_watched_files.h"
+#include "LibLsp/lsp/workspace/execute_command.h"
 #include "LibLsp/lsp/workspace/symbol.h"
 
 #include "analysis_cache.h"
 #include "call_hierarchy.h"
 #include "call_hierarchy_lsp.h"
 #include "code_actions.h"
+#include "code_lens.h"
 #include "index.h"
 #include "resolve.h"
 #include "selection.h"
@@ -247,6 +250,14 @@ private:
   td_incomingCalls::response
   onIncomingCalls(td_incomingCalls::request const &req);
 
+  // Code lens (M13): one "N references" lens per declaration, plus the command
+  // its click sends back. The two are one feature — a lens has no edit field,
+  // so `executeCommandProvider` + `workspace/executeCommand` is what makes the
+  // annotation clickable at all.
+  td_codeLens::response onCodeLens(td_codeLens::request const &req);
+  wp_executeCommand::response
+  onExecuteCommand(wp_executeCommand::request const &req);
+
   // Allocate a fresh resultId ("st<counter>") and record `data` under it as
   // the current delta baseline, evicting the oldest entry past a fixed cap.
   std::string storeDelta(std::vector<std::int32_t> const &data);
@@ -281,6 +292,40 @@ private:
   fblang::CrossDecl resolveAtOrAcross(fblang::AnalyzedDoc const &doc,
                                       std::string const &normalizedPath,
                                       std::uint32_t off);
+
+  // Which files a reference walk sweeps. Both name the same declaration; they
+  // differ in what the caller is asking about.
+  enum class ReferenceScope {
+    // The request document plus its forward include closure — one textual
+    // module. What `textDocument/references` answers from: the editor asked
+    // about this document, so the answer is the references it can see.
+    Closure,
+    // The same, plus every indexed file whose own closure reaches the
+    // declaration's file (resolve.h's `referencingFiles`). What the code lens
+    // counts: a header's references are its includers' call sites, so a
+    // per-file count would read 0 on every declaration in every header.
+    Workspace,
+  };
+
+  // Every reference site of `target` among the candidates `scope` names, sorted
+  // by (file, byte offset) and excluding the declaration's own name token. One
+  // definition of "the references to this declaration" behind all three of its
+  // callers — textDocument/references, the code lens count, and the
+  // `freebasicd.showReferences` command — so the number a lens shows and the
+  // list its click returns cannot drift apart.
+  //
+  // A site matches by declaration *identity* (owning file plus name-token
+  // range, resolve.h), never by Symbol pointer: every candidate is parsed into
+  // its own analysis, so one declaration is a different object in each of them,
+  // and a same-named local in a candidate file resolves to its own identity and
+  // is correctly not a match. `index` is the serving snapshot the caller holds
+  // for the whole walk; `target.file` pins the entry `target.decl` may point
+  // into.
+  std::vector<fblang::OccurrenceSite>
+  referenceSites(fblang::AnalyzedDoc const &doc, std::string const &docPath,
+                 fblang::CrossDecl const &target,
+                 std::shared_ptr<fblang::WorkspaceIndex> const &index,
+                 ReferenceScope scope);
 
   // A document opened from outside the workspace root (an editor working on a
   // sibling project beside the client root) has no workspace-scan entry: build

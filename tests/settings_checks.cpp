@@ -45,6 +45,7 @@ static void TestParseDefaults() {
   CHECK(s.diagnosticsOn);
   CHECK(s.semanticTokensOn);
   CHECK(s.inlayHintsOn);
+  CHECK(s.codeLensOn);
 
   Settings const s2 = parseSettings("# comment only\n");
   CHECK(s2.includePaths.empty());
@@ -55,13 +56,15 @@ static void TestParseFullSettings() {
   Settings const s = parseSettings("includePaths = [\"inc\", \"lib/x\"]\n"
                                    "diagnosticsOn = false\n"
                                    "semanticTokensOn = false\n"
-                                   "inlayHintsOn = false\n");
+                                   "inlayHintsOn = false\n"
+                                   "codeLensOn = false\n");
   CHECK(s.includePaths.size() == 2);
   CHECK_EQ(s.includePaths[0], "inc");
   CHECK_EQ(s.includePaths[1], "lib/x");
   CHECK(!s.diagnosticsOn);
   CHECK(!s.semanticTokensOn);
   CHECK(!s.inlayHintsOn);
+  CHECK(!s.codeLensOn);
 }
 
 static void TestUnknownKeysIgnored() {

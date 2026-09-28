@@ -7,14 +7,15 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-09-25 13:56-0500\n"
-"PO-Revision-Date: 2026-09-25 13:56-0500\n"
+"POT-Creation-Date: 2026-09-27 20:01-0500\n"
+"PO-Revision-Date: 2026-09-27 20:01-0500\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
 
 #. TRANSLATORS: %s is a FreeBASIC block closer written verbatim
 #. (END SUB, NEXT, WEND, #ENDIF, ...); it is never translated.
@@ -25,17 +26,28 @@ msgstr ""
 
 #. TRANSLATORS: %s is an include path the fix would write (e.g.
 #. inc/config.bi), quoted; it is never translated.
-#: src/code_actions.cpp:233
+#: src/code_actions.cpp:231
 #, c-format
 msgid "Change include to \"%s\""
 msgstr ""
 
-#: src/code_actions.cpp:283
+#: src/code_actions.cpp:281
 #, c-format
 msgid "include file not found: \"%s\""
 msgstr ""
 
-#: src/parser.cpp:95
+#. TRANSLATORS: the count of places that reference this declaration, e.g.
+#. "3 references". Keep the %s where the number goes; the plural form is
+#. selected by the catalog's plural rule, so do not merge the two forms
+#. into one.
+#: src/code_lens.cpp:80
+#, c-format
+msgid "%s reference"
+msgid_plural "%s references"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/parser.cpp:96
 #, c-format
 msgid "/// is not a %s comment; use '' for doc comments"
 msgstr ""
@@ -43,77 +55,77 @@ msgstr ""
 #. TRANSLATORS: %s = the proper noun "FreeBASIC" (never
 #. translated); the second %s is an example directive kept
 #. verbatim.
-#: src/parser.cpp:110
+#: src/parser.cpp:111
 #, c-format
 msgid ""
 "bare '$' is not a valid metacommand; %s metacommands are written as "
 "comments, e.g. %s"
 msgstr ""
 
-#: src/parser.cpp:132 src/parser.cpp:1066 src/parser.cpp:1097
-#: src/parser.cpp:1127
+#: src/parser.cpp:133 src/parser.cpp:1067 src/parser.cpp:1098
+#: src/parser.cpp:1128
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
 
-#: src/parser.cpp:158
+#: src/parser.cpp:159
 msgid "unterminated string literal"
 msgstr ""
 
-#: src/parser.cpp:177
+#: src/parser.cpp:178
 #, c-format
 msgid "dialect '%s' is not supported yet; parsing in '%s' mode"
 msgstr ""
 
-#: src/parser.cpp:337
+#: src/parser.cpp:338
 #, c-format
 msgid "duplicate definition: '%s'"
 msgstr ""
 
-#: src/parser.cpp:393
+#: src/parser.cpp:394
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:561 src/parser.cpp:570 src/parser.cpp:1081
-#: src/parser.cpp:1113 src/parser.cpp:1155 src/parser.cpp:1162
+#: src/parser.cpp:562 src/parser.cpp:571 src/parser.cpp:1082
+#: src/parser.cpp:1114 src/parser.cpp:1156 src/parser.cpp:1163
 #, c-format
 msgid "%s without %s"
 msgstr ""
 
-#: src/session.cpp:736
+#: src/session.cpp:871
 #, c-format
 msgid "%s/freebasicd.toml is not valid TOML; keeping defaults"
 msgstr ""
 
-#: src/session.cpp:749
+#: src/session.cpp:884
 #, c-format
 msgid "workspace root: %s"
 msgstr ""
 
-#: src/session.cpp:770
+#: src/session.cpp:905
 msgid "version-control marker"
 msgstr ""
 
-#: src/session.cpp:773
+#: src/session.cpp:908
 #, c-format
 msgid "config file %s"
 msgstr ""
 
-#: src/session.cpp:776
+#: src/session.cpp:911
 msgid "source/include directory"
 msgstr ""
 
-#: src/session.cpp:785
+#: src/session.cpp:920
 #, c-format
 msgid "workspace root %s (detected via %s; no client root)"
 msgstr ""
 
-#: src/session.cpp:792
+#: src/session.cpp:927
 #, c-format
 msgid "workspace root %s (detected via %s; client root %s)"
 msgstr ""
 
-#: src/session.cpp:1141
+#: src/session.cpp:1320
 #, c-format
 msgid ""
 "workspace root %s has no version-control marker or config file; index scope "

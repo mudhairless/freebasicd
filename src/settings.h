@@ -33,12 +33,13 @@ struct Settings {
   bool diagnosticsOn = true;
   bool semanticTokensOn = true;
   bool inlayHintsOn = true;
+  bool codeLensOn = true;
 
   bool operator==(Settings const &other) const {
     return includePaths == other.includePaths &&
            diagnosticsOn == other.diagnosticsOn &&
            semanticTokensOn == other.semanticTokensOn &&
-           inlayHintsOn == other.inlayHintsOn;
+           inlayHintsOn == other.inlayHintsOn && codeLensOn == other.codeLensOn;
   }
 };
 

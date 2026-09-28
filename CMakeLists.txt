@@ -56,6 +56,7 @@ add_library(freebasicd_lang STATIC
     src/analysis_cache.cpp
     src/call_hierarchy.cpp
     src/code_actions.cpp
+    src/code_lens.cpp
     src/i18n.cpp
     src/index.cpp
     src/inlay_hints.cpp
@@ -153,6 +154,8 @@ if(GETTEXT_FOUND)
                 --keyword=tr
                 --keyword=trf:1
                 --flag=trf:1:c-format
+                --keyword=trn:1,2
+                --flag=trn:1:c-format
                 --add-comments=TRANSLATORS:
                 --package-name=${PROJECT_NAME}
                 "--copyright-holder=Ebben Feagan"
@@ -315,6 +318,16 @@ add_executable(code_actions_checks
 target_include_directories(code_actions_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(code_actions_checks PRIVATE freebasicd_lang)
 add_test(NAME code_actions_checks COMMAND code_actions_checks)
+
+# M13 code lens: which declarations carry a lens, and the localized count, over a
+# fake counter — the count itself is a session-side walk, so this suite pins the
+# anchors and the title and the integration driver pins the walk.
+add_executable(code_lens_checks
+    tests/code_lens_checks.cpp
+)
+target_include_directories(code_lens_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(code_lens_checks PRIVATE freebasicd_lang)
+add_test(NAME code_lens_checks COMMAND code_lens_checks)
 
 # M9 editor grammars: a deterministic emitter shared by the writer tool and the
 # freshness test. RapidJSON is compile-time only (the emitter parses its own

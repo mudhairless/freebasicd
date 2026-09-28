@@ -33,7 +33,7 @@ architecture, and the remaining work.
 | M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
 | M11 — configuration + workspace folders | done (2026-09: `freebasicd.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), where both unbounded walks stop at the home folder, decided by `std::filesystem::equivalent` rather than a path compare because one directory routinely has two spellings (Windows' 8.3 `%TEMP%` against a long `%USERPROFILE%` is how the Windows CI leg found it), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
 | M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree; fixes answer as LSP `CodeAction`s carrying `kind` + the diagnostic + an `edit` keyed by the request's URI, not as empty-id `Command`s — the first cut shipped the `Command` shape and the actions listed but did nothing) |
-| M13 — editor extras: selectionRange, callHierarchy, codeLens | in progress (2026-09-27: aspect 1 `selectionRange` shipped — `src/selection.{h,cpp}` derives the expand-selection chain from `(tokens, blockRanges, content)` alone (token → `:`-separated statement → enclosing blocks → file), keeping a level only when it strictly contains the one below *and* adds non-blank text; `src/selection_lsp.{h,cpp}` parks the chain in a `thread_local` arena because LspCpp's `SelectionRange::parent` is a non-owning pointer, and the integration test asserts the nested chain on the wire. 2026-09-27: aspect 2 `callHierarchy` shipped — `src/call_hierarchy.{h,cpp}` scans a body for the three call shapes fbc 1.10.2 accepts (`name(`, after `.`/`->`, and a bare statement-head name) and resolves each through one `CalleeResolver` seam, matching by `DeclIdentity` (file + name-token range) rather than by name, so a shadowing local is excluded by resolving the site and `foo`/`foo$` stay one symbol; nodes are procedures, properties are never callees, module-level call sites are dropped; `src/call_hierarchy_lsp.h` defines the outgoing-call request type locally because LspCpp registers it under the wrong wire name; the 17th suite `call_hierarchy_checks` plus a two-file integration test. Aspect 3 (codeLens) planned, with its decisions recorded under the heading) |
+| M13 — editor extras: selectionRange, callHierarchy, codeLens | done (2026-09-27: aspect 1 `selectionRange` shipped — `src/selection.{h,cpp}` derives the expand-selection chain from `(tokens, blockRanges, content)` alone (token → `:`-separated statement → enclosing blocks → file), keeping a level only when it strictly contains the one below *and* adds non-blank text; `src/selection_lsp.{h,cpp}` parks the chain in a `thread_local` arena because LspCpp's `SelectionRange::parent` is a non-owning pointer, and the integration test asserts the nested chain on the wire. 2026-09-27: aspect 2 `callHierarchy` shipped — `src/call_hierarchy.{h,cpp}` scans a body for the three call shapes fbc 1.10.2 accepts (`name(`, after `.`/`->`, and a bare statement-head name) and resolves each through one `CalleeResolver` seam, matching by `DeclIdentity` (file + name-token range) rather than by name, so a shadowing local is excluded by resolving the site and `foo`/`foo$` stay one symbol; nodes are procedures, properties are never callees, module-level call sites are dropped; `src/call_hierarchy_lsp.h` defines the outgoing-call request type locally because LspCpp registers it under the wrong wire name; the 17th suite `call_hierarchy_checks` plus a two-file integration test. 2026-09-27: aspect 3 `codeLens` shipped — `src/code_lens.{h,cpp}` owns which declarations carry a lens (the procedure-like kinds and the type-ish roots, nesting flattened) and the localized title, and takes the count through one `ReferenceCounter` seam so the module itself has no workspace knowledge; the session answers the count and the click from one `referenceSites` walk, so the number a lens shows and the list `freebasicd.showReferences` returns cannot drift; the lens is a `Command` (the protocol's CodeLens has no edit field) with `codeLensProvider = { resolveProvider: false }` + `executeCommandProvider`; the count crosses the include boundary in both directions, which required making the walk match by `DeclIdentity` instead of by `Symbol` pointer; a `trn` ngettext wrapper for the plural (`trf` cannot express one); a `codeLensOn` settings key; the 18th suite `code_lens_checks` plus a two-file integration test that also drives the command) |
 | M14 — pull diagnostics (backlog) | next |
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
@@ -155,6 +155,14 @@ stable shape:
   `td_callHierarchyOutgoingCalls`, registered under the protocol method name
   `callHierarchy/outgoingCalls` (LspCpp own is `callHierarchy/
   CallHierarchyOutgoingCall`) — the same precedent as `semantic_tokens_lsp.h`.
+- `src/code_lens.{h,cpp}` — code lens (M13), LSP-agnostic and in byte offsets:
+  `carriesLens` picks the kinds that get a lens (procedure-like plus the
+  type-ish roots, nesting flattened); `collectAnchors` walks the symbol tree in
+  source order (`std::stable_sort` on the name token start, skipping zero-width
+  selections); `codeLenses` pairs each anchor with the count the
+  `ReferenceCounter` seam returns and the `trn` title built from it. The
+  `LensAnchor` carries no pointer — selection, name, kind — so the module never
+  pins a snapshot and its suite needs no index.
 - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
   `WorkingFiles` + the per-workspace `WorkspaceIndex` map (`indexes_`, keyed
   by normalized root under `indexesMutex_`; registered client folders with a
@@ -205,6 +213,9 @@ file, one chain per requested position),
 `prepareCallHierarchy` + `callHierarchy/outgoingCalls` + `callHierarchy/
 incomingCalls` (M13 call hierarchy: nodes are procedures, edges are resolved
 call sites merged per callee and per caller),
+`codeLens` + `workspace/executeCommand` (M13: a "N references" lens per
+declaration, counting the includers, whose click sends
+`freebasicd.showReferences` and gets the location list back),
 `workspace/didChangeWatchedFiles` (per-index routing),
 `workspace/didChangeWorkspaceFolders` (per-root index add/remove),
 `workspace/didChangeConfiguration` (per-root `freebasicd.toml` re-read +
@@ -305,9 +316,10 @@ plan engineers around:
    vendoring the DLL, static-linking libintl, or dropping gettext on Windows
    (all 29 catalogs are empty today, so an English-only Windows build loses
    nothing yet).
-7. Feasible 3.17 features are unimplemented and unadvertised: `codeLens` (the
-   rest of M13) and pull diagnostics (M14). None is required by the target
-   editors; each ships as its own milestone.
+7. Pull diagnostics (M14) is unimplemented and unadvertised. None of it is
+   required by the target editors; it ships as its own milestone. (The other
+   feasible 3.17 extras are not: `codeLens` landed with M13, and
+   `completionItem/resolve` waits on the M10 catalog making items heavy.)
 
 ## 5. Forward plan
 
@@ -827,9 +839,9 @@ primitives, none touches the language model.
   two-file fixture shows outgoing and incoming calls; a referenced procedure
   carries a "2 references" lens.
 
-> Status: aspects 1 and 2 (selectionRange, callHierarchy) done; aspect 3
-> (codeLens) planned. One aspect per wave, as the milestones before it: each
-> touches the wire shapes above and wants their own acceptance run.
+> Status: all three aspects done (2026-09-27). One aspect per wave, as the
+> milestones before it: each touches the wire shapes above and wants its own
+> acceptance run.
 >
 > **Landed (aspect 1, 2026-09-27).** `src/selection.{h,cpp}` +
 > `src/selection_lsp.{h,cpp}`, handler, `selectionRangeProvider = true`, the
@@ -931,12 +943,66 @@ primitives, none touches the language model.
 > walked into with `off()`, and the reason each anchor in
 > `call_hierarchy_checks` is a needle plus the snippet it sits after.
 >
-> **Next: aspect 3 (codeLens).** Needs the M12 Command-honesty decision: a lens
-> cannot carry an edit, so it must be a `command` the client executes, which
-> means advertising `executeCommandProvider` and implementing
-> `freebasicd.showReferences`; plus a `codeLensOn` settings key and an i18n
-> `trf` for the title. Both are decisions, not plumbing — land them with the
-> aspect, not ahead of it.
+> **Landed (aspect 3, 2026-09-27).** `src/code_lens.{h,cpp}`, two handlers
+> (`textDocument/codeLens`, `workspace/executeCommand`), `codeLensProvider =
+> { resolveProvider: false }` + `executeCommandProvider`, a `codeLensOn`
+> settings key, the 18th suite `code_lens_checks`, and a two-file
+> `session_integration` test that also drives the command.
+>
+> The module owns two things and reaches for nothing else: *which* declarations
+> carry a lens (the procedure-like kinds — Sub, Function, Property,
+> Constructor, Destructor, Operator — plus the type-ish roots Type, Union,
+> Enum, Namespace, with nesting flattened so a member procedure gets its own
+> lens; Dims, Parameters and labels do not) and the localized title. The count
+> comes in through one `ReferenceCounter` seam, a `size_t(LensAnchor const&)`,
+> so the module has no workspace knowledge and its suite needs no index: one
+> test counts the calls through a recording counter and pins that the anchors
+> arrive in source order and that each is asked exactly once.
+>
+> The anchor is the declaration's **name token**, and that is also the `range`.
+> A lens cannot carry an edit, so the click is a `Command` whose arguments are
+> `[uri, position]` — the position being the anchor's own start, which is what
+> identifies the declaration now that `resolveProvider` is false and there is no
+> `data` blob for it. The uri is the request's own `raw_uri_` echoed verbatim,
+> so the client can ask about a document it has since closed. The count is
+> deliberately *not* carried: it is recomputed from the same walk the click
+> answers, which is why the number on the lens and the list the command returns
+> cannot drift.
+>
+> That made the reference walk's scope a decision rather than a default. It now
+> takes an explicit `enum class ReferenceScope`: `Closure` is the request file
+> plus its transitive includes — what `textDocument/references` answers, and
+> unchanged, because that request is about the document the editor is in — and
+> `Workspace` adds every indexed file that reaches the declaration's own file
+> through the M6 reverse-reachability graph, which is what a lens should count
+> (and what makes the count worth drawing: `hubProc` in a header reports the
+> includer's call sites). `referenceSites` therefore had to stop comparing
+> `Symbol` pointers: every candidate is parsed into its own analysis, so one
+> declaration is a *different* object in each of them, and the `ownerFile` /
+> `ownerLocal` re-resolution hack existed only to paper over that. Matching is
+> by `DeclIdentity` (file + name-token range), which also gets shadowing right
+> for free — a same-named local in a candidate file resolves to its own identity
+> and is simply not a match. The count convention is fixed too: references
+> *exclude* the declaration's own name token, which is what `references`
+> reports with `includeDeclaration` false; a lens cannot ask for the other
+> convention, and a lens that disagreed with the command it opens would be a bug
+> report.
+>
+> The plural is the catalog's decision, not a two-msgid guess: `fblang::trn`
+> wraps `ngettext`, because only the catalog's plural rule can serve a language
+> with three or four forms, and `%s`-substitution is now shared with `trf`
+> through `detail::substitutePercentS` (verbatim, no printf — the argument is a
+> count rendered by `to_string`). The `po-template` target learned the `trn`
+> keyword, and `i18n_checks` collects only its first argument, so the singular
+> stays freshness-checked and the plural rides along in the same entry.
+>
+> The command answers `std::vector<lsLocation>` through `lsp::Any`, which is the
+> one place this server parses JSON itself (LspCpp hands the arguments over
+> untyped), so `GetType()` is checked before each read and an unknown command
+> or a payload that is not a lens's answers `null` rather than reading a
+> position out of a number. The list itself is the whole feature: drawing the
+> panel stays client-side, and the shape here is the one a first-party editor
+> extension consumes.
 
 
 ### M14 — Pull diagnostics (backlog)

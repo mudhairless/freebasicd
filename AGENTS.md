@@ -172,8 +172,8 @@ must stay there. Encoding directives that the lexer/parser must honor:
   (`reindexIncludeEdges`, no re-parse), reconciles the root's open buffers
   (diagnostics off ⇒ one empty publish then silence, on ⇒ re-publish; an
   `includePaths` change re-resolves the buffers' include edges), and the
-  diagnostics / semantic-tokens / inlay-hints / code-action handlers gate on
-  `settingsForDocument` with empty-result semantics when a flag is off.
+  diagnostics / semantic-tokens / inlay-hints / code-lens / code-action handlers
+  gate on `settingsForDocument` with empty-result semantics when a flag is off.
 - **Quick fixes (M12)**: `src/code_actions.{h,cpp}` is the LSP-agnostic,
   byte-offset fix layer, registered as a `{diagnostic code, provider}` table
   (`quickFixProviders()`, looked up with `quickFixProviderFor`). A provider is
@@ -190,15 +190,46 @@ must stay there. Encoding directives that the lexer/parser must honor:
   server-side. Diagnostics a fix keys on must be built by the same function the
   publish path uses (`unresolvedIncludeDiagnostics`), or the published range and
   the fix's range drift apart.
+- **Code lens (M13)**: `src/code_lens.{h,cpp}` is the LSP-agnostic, byte-offset
+  layer — it owns *which* declarations get a lens (`carriesLens`: the
+  procedure-like kinds plus Type/Union/Enum/Namespace, nesting flattened) and
+  the title, and takes the count through one `ReferenceCounter` seam
+  (`size_t(LensAnchor const&)`), so adding a lens kind touches this module and
+  nothing else. `LensAnchor` is pointer-free, so a lens pins no snapshot.
+  `resolveProvider` is false and there is no `data` blob: the lens's `range` is
+  the declaration's name token, and the click sends that same position back.
+  A lens carries **no** edit field in the protocol, so the click is a `Command`
+  (`freebasicd.showReferences`, advertised through `executeCommandProvider`) —
+  same honesty rule as M12 quick fixes, one layer up. Its result is the
+  location list, so the "show references" panel itself stays client-side. Count
+  and list come from one walk with one scope: `referenceSites(..., scope)` with
+  `Closure` (the request file + its transitive includes — what
+  `textDocument/references` answers) or `Workspace` (that plus the includers,
+  found through the M6 reverse-reachability graph — what a lens should count).
+  Sites are matched by `DeclIdentity`, **never** by `Symbol` pointer: each
+  candidate is parsed into its own analysis, so one declaration is a different
+  object in every one of them. A lens cannot ask for `includeDeclaration`, so
+  the count excludes the declaration's own name token — the same convention
+  `references` reports with it false.
+- **Message catalogs**: `fblang::trf` for a message, `fblang::trn(msgid,
+  plural, n)` when the count changes the form — `ngettext`, because only the
+  catalog's plural rule can serve a language with three or four forms, which two
+  hand-written msgids cannot. Both share `detail::substitutePercentS` (`%s`
+  only, verbatim, no printf — every argument is already a `std::string`). Editor
+  UI strings (a lens title) are messages too, so they go through the same
+  functions. After a new or changed message, regenerate `po/freebasicd.pot`
+  (`po-template` target) — `i18n_checks` fails on a literal missing from it.
+  `po/*.po` are deliberately not regenerated in the same wave; they lag the pot.
 - Capabilities advertise only implemented features; `positionEncoding: "utf-16"`.
 
 ## Verification
 
-- Unit drivers in `tests/` via ctest (17 suites: `lexer_checks`,
+- Unit drivers in `tests/` via ctest (18 suites: `lexer_checks`,
   `analysis_cache_checks`, `language_checks`, `parser_checks`,
   `resolve_checks`, `corpus_checks`, `utf16_checks`,
   `semantic_tokens_checks`, `inlay_hints_checks`, `selection_checks`,
-  `call_hierarchy_checks`, `code_actions_checks`, `grammar_checks`,
+  `call_hierarchy_checks`, `code_actions_checks`, `code_lens_checks`,
+  `grammar_checks`,
   `index_checks`, `settings_checks`,
   `i18n_checks`, and `session_integration`, which drives `LanguageSession` with
   in-memory streams — LspCpp `tests/test_helpers.h`).

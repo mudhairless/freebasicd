@@ -811,6 +811,44 @@ calleeResolver(std::shared_ptr<fblang::WorkspaceIndex> const &index,
   };
 }
 
+// The command a code lens sends when it is clicked. A lens has no edit field in
+// the protocol, so a command id is the only thing it can carry; the handler
+// that answers it is `onExecuteCommand`, and the capability that advertises it
+// is `executeCommandProvider`.
+constexpr char const *kShowReferencesCommand = "freebasicd.showReferences";
+
+// One code lens on the wire. `range` is the declaration's name token: the
+// protocol wants a single line, and the token is both the line a reader
+// recognizes and the position the click carries back to identify the
+// declaration (`uri` + position, no `data` blob to read back). `data` stays
+// unset — `resolveProvider` is false, so nothing would ever send it.
+lsCodeLens codeLensItem(std::string_view content, lsDocumentUri const &uri,
+                        fblang::CodeLens const &lens) {
+  lsCodeLens out;
+  out.range = fblang::utf16Range(content, lens.anchor.selection.beg,
+                                 lens.anchor.selection.end);
+  lsCommandWithAny cmd;
+  cmd.title = lens.title;
+  cmd.command = kShowReferencesCommand;
+  // The click payload: this document's own uri string, echoed verbatim (a uri
+  // the client cannot match to a document is one it will drop), plus the
+  // anchor's position. The count is deliberately not carried — the command
+  // answers from the same walk the count came from, so a stale number cannot be
+  // replayed into an answer.
+  std::string uriString = uri.raw_uri_;
+  lsp::Any uriArg;
+  uriArg.Set(uriString);
+  lsPosition pos = fblang::utf16Position(content, lens.anchor.selection.beg);
+  lsp::Any posArg;
+  posArg.Set(pos);
+  std::vector<lsp::Any> args;
+  args.push_back(std::move(uriArg));
+  args.push_back(std::move(posArg));
+  cmd.arguments.emplace(std::move(args));
+  out.command.emplace(std::move(cmd));
+  return out;
+}
+
 } // namespace
 
 FreeBasicServer::FreeBasicServer(lsp::LanguageSession &session)
@@ -1071,6 +1109,11 @@ void FreeBasicServer::registerHandlers() {
   session_.on([this](td_incomingCalls::request const &req) {
     return onIncomingCalls(req);
   });
+  session_.on(
+      [this](td_codeLens::request const &req) { return onCodeLens(req); });
+  session_.on([this](wp_executeCommand::request const &req) {
+    return onExecuteCommand(req);
+  });
 
   // The server->client client/registerCapability request is sent from the
   // `initialized` handler, after the parse/notification pools are running;
@@ -1179,6 +1222,21 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   // methods, no options and no resolve.
   rsp.result.capabilities.callHierarchyProvider.emplace();
   rsp.result.capabilities.callHierarchyProvider->first.emplace(true);
+
+  // Code lens (M13): the "N references" annotation, with resolveProvider off —
+  // the count is one walk over the same closure `textDocument/references`
+  // answers from, and a client that wants it lazy can re-request the document
+  // rather than round-trip per lens.
+  rsp.result.capabilities.codeLensProvider.emplace();
+  rsp.result.capabilities.codeLensProvider->resolveProvider.emplace(false);
+
+  // A lens cannot carry an edit, so the click is a command the client sends
+  // back: advertising the one command this build answers is what makes the
+  // lightbulb on a lens do anything. The alternative — a lens whose click dies
+  // in the client — is the M12 Command-honesty rule a second time.
+  rsp.result.capabilities.executeCommandProvider.emplace();
+  rsp.result.capabilities.executeCommandProvider->commands.push_back(
+      kShowReferencesCommand);
 
   // Workspace-level capabilities: folder support + change notifications are
   // advertised unconditionally, so a multi-folder client gets one index per
@@ -1977,6 +2035,83 @@ FreeBasicServer::onDefinition(td_definition::request const &req) {
   return rsp;
 }
 
+std::vector<fblang::OccurrenceSite> FreeBasicServer::referenceSites(
+    fblang::AnalyzedDoc const &doc, std::string const &docPath,
+    fblang::CrossDecl const &target,
+    std::shared_ptr<fblang::WorkspaceIndex> const &index,
+    ReferenceScope scope) {
+  std::vector<fblang::OccurrenceSite> sites;
+  if (target.decl == nullptr) {
+    return sites;
+  }
+  fblang::SourceRange const sel = target.decl->selection;
+  fblang::DeclIdentity const wanted = fblang::identityOf(target, docPath);
+
+  // A usage is a reference when re-resolving it (shadowing-aware) lands on the
+  // target declaration, matched by *identity* — owning file plus name-token
+  // range. A pointer comparison cannot work here: every candidate is parsed
+  // into its own analysis (its own open buffer or its own bytes from disk), so
+  // one declaration is a different Symbol object in each of them. Identity also
+  // gets the shadowing case right for free — a same-named local in a candidate
+  // file resolves to that local's own identity and is simply not a match.
+  auto collect = [&](fblang::AnalyzedDoc const &d, std::string const &fpath) {
+    for (fblang::Token const &t : d.tokens) {
+      if (t.kind != fblang::TokenKind::Identifier ||
+          fblang::toLowerChars(t.text()) != target.decl->key) {
+        continue;
+      }
+      if (fpath == wanted.path && t.beg == sel.beg && t.end == sel.end) {
+        continue; // the declaration name token itself
+      }
+      fblang::CrossDecl const hit = resolveAtOrAcross(d, fpath, t.beg);
+      if (hit.decl != nullptr && fblang::identityOf(hit, fpath) == wanted) {
+        sites.push_back(fblang::OccurrenceSite{fpath, {t.beg, t.end}});
+      }
+    }
+  };
+
+  // A document opened from outside the workspace root has no scanned entry, so
+  // the closure this walks is built on demand (resolution-only, the same seam
+  // hover and completion use). Doing it here rather than per caller is what
+  // lets textDocument/references, the code lens count, and the lens's own
+  // command answer the same set for the same declaration.
+  ensureRequestClosure(docPath, index);
+  if (index) {
+    // The candidate set, which is the whole difference between the two scopes:
+    // the request document's own include closure, or that plus every indexed
+    // file that reaches the declaration's file (`declPath` is the target's
+    // owner, which is another file entirely when a request in a client file
+    // asks about a declaration the index owns).
+    std::string const declPath = target.file ? target.file->path : docPath;
+    for (std::string const &candidate :
+         scope == ReferenceScope::Closure
+             ? index->transitiveIncludes(docPath)
+             : fblang::referencingFiles(docPath, declPath, index.get())) {
+      std::filesystem::path const path(candidate);
+      if (fblang::normalizePath(path) == docPath) {
+        continue; // the request document is swept below, from its own analysis
+      }
+      std::shared_ptr<fblang::DocumentContent const> const remote =
+          contentForPathAnalysis(candidate);
+      if (!remote) {
+        continue;
+      }
+      collect(remote->analysis, fblang::normalizePath(path));
+    }
+  }
+  collect(doc, docPath);
+
+  std::sort(
+      sites.begin(), sites.end(),
+      [](fblang::OccurrenceSite const &a, fblang::OccurrenceSite const &b) {
+        if (a.file != b.file) {
+          return a.file < b.file;
+        }
+        return a.range.beg < b.range.beg;
+      });
+  return sites;
+}
+
 td_references::response
 FreeBasicServer::onReferences(td_references::request const &req) {
   td_references::response rsp;
@@ -2001,79 +2136,36 @@ FreeBasicServer::onReferences(td_references::request const &req) {
 
   bool const includeDecl = !req.params.context.includeDeclaration ||
                            *req.params.context.includeDeclaration;
-  fblang::SourceRange const sel = target.decl->selection;
-
-  // Closed (M7) file closure only: the requesting file plus every file in its
-  // transitive include closure, one textual module. A usage is a reference
-  // when re-resolving it (shadowing-aware) lands on the target declaration;
-  // same-named locals elsewhere never match. Out-of-closure byKey hits are
-  // excluded by construction.
-  struct Site {
-    std::string path;
-    fblang::SourceRange range;
-  };
-  std::vector<Site> sites;
-  if (includeDecl) {
-    sites.push_back(Site{target.file ? target.file->path : normPath, sel});
-  }
-
-  auto collect = [&](fblang::AnalyzedDoc const &d, std::string const &fpath) {
-    // The decl's own file is parsed afresh here, so its module root is a
-    // different Symbol object than the index entry the cross-file requests
-    // compare against. Re-resolve the decl to that local identity (tier 1)
-    // and compare pointer-wise; shadowing locals in the owner file correctly
-    // fail the match.
-    bool const ownerFile =
-        fpath == (target.file ? target.file->path : normPath);
-    fblang::Symbol const *const ownerLocal =
-        ownerFile && target.file ? fblang::resolveAt(d, sel.beg) : nullptr;
-    for (fblang::Token const &t : d.tokens) {
-      if (t.kind != fblang::TokenKind::Identifier ||
-          fblang::toLowerChars(t.text()) != target.decl->key) {
-        continue;
-      }
-      if (t.beg == sel.beg && t.end == sel.end) {
-        continue; // the declaration name token itself
-      }
-      bool const match = ownerLocal
-                             ? fblang::resolveAt(d, t.beg) == ownerLocal
-                             : resolveAtOrAcross(d, fpath, t.beg) == target;
-      if (match) {
-        sites.push_back(Site{fpath, {t.beg, t.end}});
-      }
-    }
-  };
-
-  // The cross-file re-resolutions below only work while the index that owns
-  // `target` (via `target.file`) stays alive; pin the serving snapshot for the
-  // whole walk so a concurrent folder change cannot free it.
+  // The cross-file re-resolutions in referenceSites only work while the index
+  // that owns `target` (via `target.file`) stays alive; pin the serving
+  // snapshot for the whole walk so a concurrent folder change cannot free it.
+  // The Closure scope: this request is about the document the editor is in, so
+  // the answer is the references that document's own textual module can see.
   std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
-  collect(doc, normPath);
-  if (index) {
-    for (std::string const &closurePath : index->transitiveIncludes(normPath)) {
-      std::shared_ptr<fblang::DocumentContent const> const remote =
-          contentForPathAnalysis(closurePath);
-      if (!remote) {
-        continue;
-      }
-      collect(remote->analysis,
-              fblang::normalizePath(std::filesystem::path(closurePath)));
-    }
+  std::vector<fblang::OccurrenceSite> sites =
+      referenceSites(doc, normPath, target, index, ReferenceScope::Closure);
+  if (includeDecl) {
+    // The declaration itself, in the file that declares it — then re-sorted
+    // with the rest, since a byKey hit can live outside the request's closure.
+    sites.push_back(fblang::OccurrenceSite{
+        target.file ? target.file->path : normPath, target.decl->selection});
+    std::sort(
+        sites.begin(), sites.end(),
+        [](fblang::OccurrenceSite const &a, fblang::OccurrenceSite const &b) {
+          if (a.file != b.file) {
+            return a.file < b.file;
+          }
+          return a.range.beg < b.range.beg;
+        });
   }
 
-  std::sort(sites.begin(), sites.end(), [](Site const &a, Site const &b) {
-    if (a.path != b.path) {
-      return a.path < b.path;
-    }
-    return a.range.beg < b.range.beg;
-  });
-  for (Site const &s : sites) {
-    std::optional<std::string> const source = contentForPath(s.path);
+  for (fblang::OccurrenceSite const &s : sites) {
+    std::optional<std::string> const source = contentForPath(s.file);
     if (!source) {
       continue;
     }
     rsp.result.push_back(
-        lsLocation(lsDocumentUri(AbsolutePath(s.path)),
+        lsLocation(lsDocumentUri(AbsolutePath(s.file)),
                    fblang::utf16Range(*source, s.range.beg, s.range.end)));
   }
   return rsp;
@@ -3142,6 +3234,126 @@ FreeBasicServer::onIncomingCalls(td_incomingCalls::request const &req) {
     }
   }
   rsp.result.emplace(std::move(result));
+  return rsp;
+}
+
+td_codeLens::response
+FreeBasicServer::onCodeLens(td_codeLens::request const &req) {
+  td_codeLens::response rsp;
+  rsp.id = req.id;
+
+  std::string const normPath = fblang::normalizePath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  if (!settingsForDocument(normPath).codeLensOn) {
+    return rsp; // feature gate (M11): advertised but off — no lenses at all
+  }
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
+    return rsp;
+  }
+  std::string_view const content = cached->content;
+  fblang::AnalyzedDoc const &doc = cached->analysis;
+
+  // The serving index is snapshotted for the whole reply: every count is a walk
+  // over it, and a background scan may replace entries while this runs.
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  std::vector<fblang::CodeLens> const lenses = fblang::codeLenses(
+      doc, [&](fblang::LensAnchor const &anchor) -> std::size_t {
+        // The anchor is a declaration's own name token, so the in-file
+        // resolution lands on that declaration (tier 1) — the same identity
+        // the click's position will resolve to.
+        fblang::Symbol const *const decl =
+            fblang::resolveAt(doc, anchor.selection.beg);
+        if (decl == nullptr) {
+          return 0;
+        }
+        // The Workspace scope: a lens is an annotation about the declaration,
+        // so it counts the includers too — the same sites its click then
+        // lists, and the same sites `freebasicd.showReferences` answers with.
+        return referenceSites(doc, normPath, fblang::CrossDecl{nullptr, decl},
+                              index, ReferenceScope::Workspace)
+            .size();
+      });
+
+  for (fblang::CodeLens const &lens : lenses) {
+    rsp.result.push_back(
+        codeLensItem(content, req.params.textDocument.uri, lens));
+  }
+  return rsp;
+}
+
+wp_executeCommand::response
+FreeBasicServer::onExecuteCommand(wp_executeCommand::request const &req) {
+  wp_executeCommand::response rsp;
+  rsp.id = req.id;
+  rsp.result.SetJsonString("null", lsp::Any::kNullType);
+
+  if (req.params.command != kShowReferencesCommand) {
+    return rsp; // not ours: null, never a wrong answer
+  }
+  // The payload is a lens's own click arguments, which are `lsp::Any` — the one
+  // place in a request where this server is the boundary rather than LspCpp's
+  // typed reflect, so the JSON shape is checked before anything is read out of
+  // it. (The members of the position are then trusted exactly as a typed
+  // request's params are.)
+  if (!req.params.arguments || req.params.arguments->size() != 2) {
+    return rsp;
+  }
+  // Copies, because `Any`'s readers are non-const (they build a Reader over the
+  // stored text) and the request is const.
+  lsp::Any uriArg = (*req.params.arguments)[0];
+  lsp::Any posArg = (*req.params.arguments)[1];
+  if (uriArg.GetType() != lsp::Any::kStringType ||
+      posArg.GetType() != lsp::Any::kObjectType) {
+    return rsp;
+  }
+  std::string uriString;
+  lsPosition pos;
+  uriArg.Get(uriString);
+  posArg.Get(pos);
+
+  // The uri is the client's own string, parsed by LspCpp's URI layer rather
+  // than by string surgery, so the locations the answer carries are keyed by
+  // exactly the uri that was asked about.
+  lsDocumentUri docUri;
+  docUri.raw_uri_ = uriString;
+  std::filesystem::path const path = docUri.GetAbsolutePath().path();
+  if (path.empty()) {
+    return rsp; // not a file uri: GetAbsolutePath yields an empty path
+  }
+  std::shared_ptr<fblang::DocumentContent const> const dc =
+      contentForPathAnalysis(path);
+  if (!dc) {
+    return rsp;
+  }
+  std::string const normPath = fblang::normalizePath(path);
+  fblang::CrossDecl const target =
+      resolveAtOrAcross(dc->analysis, normPath,
+                        fblang::byteOffsetForUtf16Position(dc->content, pos));
+  if (target.decl == nullptr) {
+    return rsp;
+  }
+
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  std::vector<lsLocation> locations;
+  // The Workspace scope, the same one the lens counted with: the answer a click
+  // gets is the answer the number on the lens promised, and neither can drift
+  // from the other because both name this one walk.
+  for (fblang::OccurrenceSite const &s : referenceSites(
+           dc->analysis, normPath, target, index, ReferenceScope::Workspace)) {
+    std::optional<std::string> const source = contentForPath(s.file);
+    if (!source) {
+      continue;
+    }
+    locations.push_back(
+        lsLocation(lsDocumentUri(AbsolutePath(s.file)),
+                   fblang::utf16Range(*source, s.range.beg, s.range.end)));
+  }
+  // The result is the location list, in the shape `textDocument/references`
+  // returns: a client that implements the command shows these, and a client
+  // that does not is no worse off than before (the protocol expects null here).
+  rsp.result.Set(locations);
   return rsp;
 }
 

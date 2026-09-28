@@ -138,6 +138,7 @@ includePaths = ["inc", "vendor/fbinc"]   # like fbc's -i, relative to this file
 diagnosticsOn = true
 semanticTokensOn = true
 inlayHintsOn = true
+codeLensOn = true
 ```
 
 Each key has a default, unknown keys are ignored, and a malformed file keeps
@@ -155,6 +156,9 @@ src/resolve.cpp      same-file and cross-file name and member resolution
 src/index.cpp        in-memory workspace index, include resolution
 src/session.cpp      LSP handlers, capabilities, diagnostics
 src/code_actions.cpp quick fixes as pure functions of a diagnostic
+src/selection.cpp    expand-selection chains
+src/call_hierarchy.cpp  call hierarchy over a scanned body
+src/code_lens.cpp    "N references" lens anchors and titles
 src/settings.cpp     freebasicd.toml
 src/i18n.cpp         gettext message catalogs
 ```
