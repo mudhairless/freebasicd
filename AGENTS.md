@@ -280,6 +280,26 @@ must stay there. Encoding directives that the lexer/parser must honor:
   `index_checks`, `settings_checks`,
   `i18n_checks`, and `session_integration`, which drives `LanguageSession` with
   in-memory streams — LspCpp `tests/test_helpers.h`).
+- **`session_integration` is one executable, one file per feature.** The shared
+  harness is `tests/session_support.{h,cpp}` (`namespace fbtest`); each feature
+  is one translation unit (`tests/session_hover_checks.cpp`,
+  `tests/session_pull_diagnostics_checks.cpp`, …) that `using namespace fbtest;`
+  and exposes `void Run<Feature>Tests()`; `tests/session_integration.cpp` holds
+  `main()` alone and calls each runner in a fixed order. Two rules keep the split
+  from eroding, and both are enforced by reading the tree rather than by a
+  script: a **wire frame or helper only one feature file's tests send stays in
+  that file**, declared just above them (what is in `session_support.h` is
+  shared by more than one file, or is machinery every test needs), and **adding
+  a test touches exactly one file** — the function plus one `RUN_TEST` line in
+  that file's runner. A new feature file adds a line to the
+  `session_integration` target in `CMakeLists.txt`; a missing one is a link
+  error, never a silently skipped test.
+- **Keep it one ctest suite.** The `[ RUN ]` / `[ DONE ]` markers and the final
+  "all tests ran" line are properties of the *process*, and `ctest --timeout`
+  prints one captured stream per test, so splitting the suite into fifteen
+  executables would trade a readable crash log for a per-file timeout budget
+  nobody can act on. One file per feature is a source-layout choice; one
+  executable is a diagnostics choice, and the second is deliberate.
 - The system `fbc` compiler (1.10.2) is available for ground-truthing ambiguous
   FreeBASIC constructs.
 - Hosted CI (`.github/workflows/ci.yml`): the `build-test` job configures,

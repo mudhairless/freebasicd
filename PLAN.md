@@ -237,6 +237,16 @@ config change, an edit, or a close),
 `workspace/didChangeConfiguration` (per-root `freebasicd.toml` re-read +
 `Settings` re-apply, feature-gate and include-seam behavior), and the
 `workspaceFolders` capability (`supported` + `changeNotifications`).
+- `tests/session_support.{h,cpp}` — the integration harness in `namespace
+  fbtest`: the reporters, `RUN_TEST`, the `file://` encoder, `ScopedEnv`,
+  `TwoFileFixture` + its six documents, `StartIndexedSession`, `PollRequest`,
+  and the waiters. One translation unit per LSP feature
+  (`tests/session_hover_checks.cpp`, `tests/session_pull_diagnostics_checks.cpp`,
+  …) holds that feature's tests plus the wire frames only it sends, and exposes
+  `void Run<Feature>Tests()`; `tests/session_integration.cpp` holds `main()`
+  alone and calls each runner in a fixed order. One ctest suite, one process —
+  the `[ RUN ]` / `[ DONE ]` markers that name a crashed test are a property of
+  the process, and `ctest --timeout` prints one stream per test.
 
 ## 3. FreeBASIC semantics that gate the remaining work
 

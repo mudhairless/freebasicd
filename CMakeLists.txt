@@ -376,8 +376,32 @@ target_include_directories(settings_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(settings_checks PRIVATE freebasicd_lang)
 add_test(NAME settings_checks COMMAND settings_checks)
 
+# The integration driver is one executable built from the shared harness
+# (tests/session_support.{h,cpp}) plus one translation unit per LSP feature, so
+# a failure names a file that holds only that feature's tests.
+# tests/session_integration.cpp holds main() alone: it calls each feature file's
+# Run<Feature>Tests() in a fixed order, and the suite stays one process because
+# its `[ RUN ]` / `[ DONE ]` markers are how a crash names the test it died in
+# (see AGENTS.md, ThreadSanitizer). A new feature file needs a line here and a
+# call in main; a missing line is a link error, never a silently skipped test.
 add_executable(session_integration
     tests/session_integration.cpp
+    tests/session_support.cpp
+    tests/session_analysis_checks.cpp
+    tests/session_call_hierarchy_checks.cpp
+    tests/session_code_actions_checks.cpp
+    tests/session_code_lens_checks.cpp
+    tests/session_completion_checks.cpp
+    tests/session_core_checks.cpp
+    tests/session_crossfile_checks.cpp
+    tests/session_hover_checks.cpp
+    tests/session_indexes_checks.cpp
+    tests/session_navigation_checks.cpp
+    tests/session_pull_diagnostics_checks.cpp
+    tests/session_rename_checks.cpp
+    tests/session_semantic_tokens_checks.cpp
+    tests/session_settings_checks.cpp
+    tests/session_workspace_checks.cpp
 )
 target_include_directories(session_integration PRIVATE
     ${CMAKE_SOURCE_DIR}
