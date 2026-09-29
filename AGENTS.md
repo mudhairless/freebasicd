@@ -291,9 +291,17 @@ must stay there. Encoding directives that the lexer/parser must honor:
   that file**, declared just above them (what is in `session_support.h` is
   shared by more than one file, or is machinery every test needs), and **adding
   a test touches exactly one file** — the function plus one `RUN_TEST` line in
-  that file's runner. A new feature file adds a line to the
-  `session_integration` target in `CMakeLists.txt`; a missing one is a link
-  error, never a silently skipped test.
+  that file's runner.
+- **A new feature file is registered in two places, and only one of them fails
+  loudly.** Add the source to the `session_integration` target in
+  `CMakeLists.txt`, and declare + call its `Run<Feature>Tests()` in
+  `tests/session_integration.cpp`. Miss the first and the link fails with
+  `undefined reference to fbtest::Run<Feature>Tests()` — the error names the
+  step. **Miss the second and nothing says anything**: the file compiles, links,
+  and its tests never run, so the suite prints `0 failure(s)` having tested
+  less than it did the day before. When adding a feature file, grep the driver
+  for the runner name, and check the new tests appear in the `[ RUN ]` output;
+  a green run is not evidence that a new file is wired in.
 - **Keep it one ctest suite.** The `[ RUN ]` / `[ DONE ]` markers and the final
   "all tests ran" line are properties of the *process*, and `ctest --timeout`
   prints one captured stream per test, so splitting the suite into fifteen
