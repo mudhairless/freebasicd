@@ -2,12 +2,12 @@
 
 ## 1. State summary
 
-Repository `main`, clean working tree, `ctest` 15/15 green. The project is
+Repository `main`, clean working tree, `ctest` 18/18 green. The project is
 `freebasicd` (renamed from `freebasiclsp` 2026-09-25), version 0.7.0 under
 semantic versioning: the number is bumped only when a release ships, never in
 an ordinary feature or fix commit. LspCpp (vendored from our fork
-`mudhairless/LspCpp` at `8a67671`, i.e. upstream `19150d12` plus
-eight local commits) supplies
+`mudhairless/LspCpp` at `9b7257f`, i.e. upstream `19150d12` plus
+ten local commits) supplies
 framing/JSON-RPC/typed 3.17 messages,
 tomlplusplus (vendored, pinned `30172438` v3.4.0) parses the server's config
 file, and GNU gettext (system libintl, never vendored; `cmake/FindIntl.cmake`
@@ -34,7 +34,7 @@ architecture, and the remaining work.
 | M11 — configuration + workspace folders | done (2026-09: `freebasicd.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), where both unbounded walks stop at the home folder, decided by `std::filesystem::equivalent` rather than a path compare because one directory routinely has two spellings (Windows' 8.3 `%TEMP%` against a long `%USERPROFILE%` is how the Windows CI leg found it), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
 | M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree; fixes answer as LSP `CodeAction`s carrying `kind` + the diagnostic + an `edit` keyed by the request's URI, not as empty-id `Command`s — the first cut shipped the `Command` shape and the actions listed but did nothing) |
 | M13 — editor extras: selectionRange, callHierarchy, codeLens | done (2026-09-27: aspect 1 `selectionRange` shipped — `src/selection.{h,cpp}` derives the expand-selection chain from `(tokens, blockRanges, content)` alone (token → `:`-separated statement → enclosing blocks → file), keeping a level only when it strictly contains the one below *and* adds non-blank text; `src/selection_lsp.{h,cpp}` parks the chain in a `thread_local` arena because LspCpp's `SelectionRange::parent` is a non-owning pointer, and the integration test asserts the nested chain on the wire. 2026-09-27: aspect 2 `callHierarchy` shipped — `src/call_hierarchy.{h,cpp}` scans a body for the three call shapes fbc 1.10.2 accepts (`name(`, after `.`/`->`, and a bare statement-head name) and resolves each through one `CalleeResolver` seam, matching by `DeclIdentity` (file + name-token range) rather than by name, so a shadowing local is excluded by resolving the site and `foo`/`foo$` stay one symbol; nodes are procedures, properties are never callees, module-level call sites are dropped; `src/call_hierarchy_lsp.h` defines the outgoing-call request type locally because LspCpp registers it under the wrong wire name; the 17th suite `call_hierarchy_checks` plus a two-file integration test. 2026-09-27: aspect 3 `codeLens` shipped — `src/code_lens.{h,cpp}` owns which declarations carry a lens (the procedure-like kinds and the type-ish roots, nesting flattened) and the localized title, and takes the count through one `ReferenceCounter` seam so the module itself has no workspace knowledge; the session answers the count and the click from one `referenceSites` walk, so the number a lens shows and the list `freebasicd.showReferences` returns cannot drift; the lens is a `Command` (the protocol's CodeLens has no edit field) with `codeLensProvider = { resolveProvider: false }` + `executeCommandProvider`; the count crosses the include boundary in both directions, which required making the walk match by `DeclIdentity` instead of by `Symbol` pointer; a `trn` ngettext wrapper for the plural (`trf` cannot express one); a `codeLensOn` settings key; the 18th suite `code_lens_checks` plus a two-file integration test that also drives the command) |
-| M14 — pull diagnostics (backlog) | next |
+| M14 — pull diagnostics | done (2026-09-29: `textDocument/diagnostic` + `workspace/diagnostic` + `workspace/diagnostic/refresh` (LSP 3.17) as a client-negotiated alternative to push — `capabilities.textDocument.diagnostic` present ⇒ advertise `diagnosticProvider` (`interFileDependencies` + `workspaceDiagnostics`) and disable `publishDiagnostics` for the whole session, absent ⇒ the push path unchanged, so one build serves both client generations; `documentDiagnostics` is the one payload definition shared by push and both pull handlers, so the two deliveries cannot disagree; a report's `resultId` is `AnalysisCache::hashContent` folded with the include edges and the diagnostics gate, computed fresh, and `unchanged` answers only against a matching `previousResultId`; `relatedDocuments` carries the M6 transitive include closure one level deep; `WorkspaceIndex::onRescanCompleted` hands the session a callback (copied out under `rescanMu_`, invoked after) so an external edit to an indexed file hints a re-pull. Two fork commits: `0865f2a` adds the report-union types and both request types (a `td_diagnostic` response typed as a bare full report could never answer `unchanged`), `9b7257f` fixes `WorkingFiles::OnOpen`, which recorded the document version only for an already-open document, leaving `version = 0` — indistinguishable from "unknown" — for the first `didOpen` of every session) |
 | M15 — type/go-to + type hierarchy (backlog) | next |
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
@@ -194,6 +194,15 @@ stable shape:
   include edges re-resolved on an `includePaths` change. Feature handlers gate
   on `settingsForDocument` (semantic tokens / inlay hints / code actions → empty
   results when off; diagnostics → empty publish per open buffer then silence).
+  The session also owns both diagnostics deliveries (M14): `documentDiagnostics`
+  is the single definition of a document's payload (parse diagnostics plus its
+  own unresolved include edges) that the push path and both pull handlers share,
+  and `diagnosticsResultId` is that payload's identity — the content hash folded
+  with the include edges and the diagnostics gate, so a changed id means the
+  report changed. `pullDiagnostics_` (negotiated at initialize) picks the
+  delivery, and `notifyDiagnosticsRefresh` is the server hint a pull client
+  receives wherever the push path would have published — from the notification
+  FIFO thread and from `WorkspaceIndex::onRescanCompleted`.
 - `src/main.cpp` — stdio entry; `LanguageSession` + exit condition.
 
 Implemented LSP methods: `initialize`/`shutdown`/`exit`, `didOpen`/`didChange`/
@@ -216,6 +225,13 @@ call sites merged per callee and per caller),
 `codeLens` + `workspace/executeCommand` (M13: a "N references" lens per
 declaration, counting the includers, whose click sends
 `freebasicd.showReferences` and gets the location list back),
+`textDocument/diagnostic` + `workspace/diagnostic` + `workspace/diagnostic/refresh`
+(M14 pull diagnostics: negotiated via `textDocument.diagnostic` and
+advertised as `diagnosticProvider`; a client without it keeps the push path,
+and negotiating pull disables push for the session; `full` | `unchanged`
+against the client's `previousResultId`, with the include closure as
+`relatedDocuments` and a refresh hint fired on a watched-files rescan, a
+config change, an edit, or a close),
 `workspace/didChangeWatchedFiles` (per-index routing),
 `workspace/didChangeWorkspaceFolders` (per-root index add/remove),
 `workspace/didChangeConfiguration` (per-root `freebasicd.toml` re-read +
@@ -316,10 +332,16 @@ plan engineers around:
    vendoring the DLL, static-linking libintl, or dropping gettext on Windows
    (all 29 catalogs are empty today, so an English-only Windows build loses
    nothing yet).
-7. Pull diagnostics (M14) is unimplemented and unadvertised. None of it is
-   required by the target editors; it ships as its own milestone. (The other
-   feasible 3.17 extras are not: `codeLens` landed with M13, and
-   `completionItem/resolve` waits on the M10 catalog making items heavy.)
+7. Pull diagnostics (M14) shipped 2026-09-29 and is advertised to clients that
+   negotiate it (`capabilities.textDocument.diagnostic`); a client that does
+   not is served by the unchanged push path. What remains open is the *delta*
+   form: LSP 3.17 defines a `DocumentDiagnosticReport` with `kind: "unchanged"`
+   and an optional `relatedDocuments`, and the server answers `full` |
+   `unchanged` — the per-item delta (`textDocument/diagnostic` with
+   `previousResultId` and no item list) is not implemented, and no target editor
+   asks for it. (The other feasible 3.17 extras are not: `codeLens` landed with
+   M13, and `completionItem/resolve` waits on the M10 catalog making items
+   heavy.)
 
 ## 5. Forward plan
 
@@ -399,12 +421,16 @@ deviations rather than reworked.
   (Windows `<exeDir>/inc`, POSIX `<exeDir>/../include/freebasic`). fbc `-i`
   dirs landed as `Settings.includePaths` (M11 step ②, config-relative);
   force-disabling the system search (step ⑥) remains open (§4).
-- **Include-not-found diagnostics (pushed, open files only):** the open-buffer
+- **Include-not-found diagnostics (own edges, both deliveries):** the open-buffer
   publish path builds the `IndexedFile` once, reads back its resolved include
   edges, and emits an `include-not-found` `Error` covering the filename
   literal for every own `#include`/`#include once` whose literal resolved to
   nothing — one analysis, one resolution, one publish, merged with the parse
-  diagnostics. Inter-file closure diagnostics wait for pull diagnostics (M14).
+  diagnostics. The include *closure* landed with M14: a pull on one document
+  carries the included files' own reports as `relatedDocuments`, which is the
+  field `interFileDependencies` advertises. The payload is built by one
+  `documentDiagnostics`, so the push and pull answers for the same bytes cannot
+  disagree.
 - **Watched-files convergence:** the session registers the vendored
   `Notify_WorkspaceDidChangeWatchedFiles` and fans every event into a new
   `WorkspaceIndex::watchedFilesChanged()`. A dedicated debounce thread (300ms
@@ -1007,7 +1033,7 @@ primitives, none touches the language model.
 > extension consumes.
 
 
-### M14 — Pull diagnostics (backlog)
+### M14 — Pull diagnostics
 
 `textDocument/diagnostic` + `workspace/diagnostic` + `workspace/diagnostic/refresh`
 (3.17) as a client-negotiated alternative to pushed `publishDiagnostics`
@@ -1015,6 +1041,76 @@ primitives, none touches the language model.
 — driven by the M6 include-edge graph — so pull diagnostics can surface
 `relatedDocument` reports. Push stays the default; only worth building if a
 target editor prefers pull.
+
+- **Negotiated, never assumed**: `capabilities.textDocument.diagnostic` present
+  ⇒ advertise `diagnosticProvider` and disable push for the whole session (a
+  client that supports both must never see the same diagnostics twice); absent
+  ⇒ the push path is exactly what it was. One build, both client generations.
+- **The report union**: LSP 3.17's answer is `full | unchanged`, so
+  `td_diagnostic`/`workspace_diagnostic` return the discriminated union (the
+  same precedent as M12's code actions — a response type the protocol defines
+  must be the type on the wire).
+- **resultId** = `AnalysisCache::hashContent` folded with the include edges and
+  the diagnostics gate, computed fresh per request; `unchanged` only when the
+  client's `previousResultId` matches. Equal ids promise equal payloads.
+- **relatedDocuments** = the M6 transitive include closure, one level deep
+  (a related report is never itself related), gated on
+  `relatedDocumentSupport`.
+- Files: `src/session.{h,cpp}` (negotiation, both handlers, the refresh hint),
+  `src/index.{h,cpp}` (a rescan-completed seam so an external edit hints a
+  re-pull), and `session_integration`.
+- Acceptance: a pull client gets no publish; a push client is untouched; a
+  matching `previousResultId` answers `unchanged`; a `relatedDocuments` pull
+  carries the header's own problems; `workspace/diagnostic` answers full /
+  unchanged / empty-under-the-gate per listed file and carries the open
+  buffer's wire version; the refresh hint fires on a rescan.
+
+> Status: done (2026-09-29).
+>
+> **Landed (2026-09-29).** `pullDiagnostics_` /
+> `diagnosticsRefreshSupported_` / `relatedDocumentSupport_` are read once on
+> the notification FIFO thread at initialize and read lock-free afterwards;
+> `documentDiagnostics` is the one definition of a document's payload, shared
+> by the push path and both pull handlers, so a client can never see two
+> answers for the same bytes. `documentDiagnostics` / `diagnosticsResultId` are
+> file-local to `session.cpp` (not a new module) because the payload is a
+> parse result plus index edges and nothing else — a module would only add a
+> seam with one caller.
+>
+> **The refresh hint is a real seam, not a flag.** A watched-files rescan
+> changes disk-backed diagnostics from outside every notification the session
+> can see, so `WorkspaceIndex::onRescanCompleted` hands the session a callback
+> that fires when the loop's `scan(true)` returns — copied out under
+> `rescanMu_` and invoked with no lock held, the AGENTS.md "copy out, call
+> after" rule. Without it an external edit to an indexed header would leave
+> every cached report stale with no signal to the client.
+>
+> **Two fork commits were needed.** `0865f2a` adds the report union types
+> upstream lacks (`FullDocumentDiagnosticReport` with `relatedDocuments`,
+> `RelatedDocumentDiagnosticReport`, `UnchangedDocumentDiagnosticReport`,
+> `PreviousResultId`, `WorkspaceDiagnosticParams`, the `Either` with a
+> hand-written `kind`-discriminating `Reflect`, and both request types) —
+> mirroring the M12 `codeAction` precedent, since a `td_diagnostic` response
+> typed as a bare `FullDocumentDiagnosticReport` could never answer `unchanged`.
+> `9b7257f` fixes `WorkingFiles::OnOpen`, which copied `open.version` only when
+> the document was *already* open: a first `didOpen` took the constructor path
+> and left `version = 0`, so `WorkspaceDocumentDiagnosticReport.version` — which
+> has no other source — was absent for exactly the documents a client opened
+> first. 0 is not a distinguishable "version 0", and the fix belongs upstream
+> because every consumer of `WorkingFile::version` is wrong without it.
+>
+> **The bytes the test sends are the specification.** Three separate test
+> failures here were malformed frames, not server bugs: a `previousResultId`
+> nested *inside* `textDocument` instead of beside it, and three
+> `R"(","value":"")"` raw strings whose `)"` terminator cut the literal in two
+> and left a stray `"` on the wire. Each produced a frame the JSON parser
+> rejected, so the handler never ran and the poll timed out — a malformed input
+> wearing a wrong answer's clothes. The lesson is the AGENTS.md one again (a
+> frame built by string surgery fails as malformed input, and a poll turns
+> that into a timeout), now with a new shape: **a raw string ending in a JSON
+> quote is a silent truncation.** `R"(","value":")"` ends in `:"` and is fine;
+> `R"(","value":"")"` looks equivalent and yields `"value":""` followed by
+> whatever came next.
 
 ### M15 — Type/go-to + type hierarchy (backlog)
 
@@ -1115,7 +1211,10 @@ implementation.
       as function-like macros from that file's `<Windows.h>`. Only MSVC pulls
       in `Windows.h`, so no local platform can show it. Fixed in the fork
       (`8a67671`, the eighth local commit: `#define NOMINMAX` before the
-      include, which is what `lsp.cpp` already does for its own).
+      include, which is what `lsp.cpp` already does for its own). Two more
+      local commits have landed since — `0865f2a` (the M14 diagnostic-report
+      types) and `9b7257f` (`WorkingFiles::OnOpen` recording a first
+      `didOpen`'s document version) — see §5 M14.
     - **macOS** was green on four runs and then took `session_integration`
       with a segfault, in `TestSourceLayoutRootRecognizesCatalogNames` — the
       one test that hammers `workspace/symbol` while a background scan
@@ -1501,10 +1600,11 @@ implementation.
 - **Recorded non-starters** (never scheduled): `moniker`, `linkedEditingRange`,
   `documentColor`/`colorPresentation`, the deprecated `declaration` alias —
   exercises for editors we do not target.
-- **Scheduled but deferred** (each lives in §5 as a backlog milestone, M14–M17):
-  pull diagnostics, type/go-to + type hierarchy, document links + completion
-  resolve + protocol polish, and the FreeBASIC formatter (M17; high-payback —
-  sets the de-facto standard, scope TBD by a dedicated design pass).
+- **Scheduled but deferred** (each lives in §5 as a backlog milestone, M15–M17):
+  type/go-to + type hierarchy, document links + completion resolve + protocol
+  polish, and the FreeBASIC formatter (M17; high-payback — sets the de-facto
+  standard, scope TBD by a dedicated design pass). Pull diagnostics (M14) left
+  this list on 2026-09-29.
 
 ## 7. Cross-cutting engineering notes
 

@@ -112,6 +112,14 @@ public:
   // thread.
   void watchedFilesChanged();
 
+  // Install a callback invoked on the rescan thread once a watched-files
+  // rescan completes (never for the initial scan or an explicit scan(false)):
+  // disk edits to an indexed file land from the outside, and whoever owns the
+  // diagnostics channel wants to know when the results they answer from have
+  // been refreshed. The callback runs outside every index lock. Safe to call
+  // from any thread; the last call wins.
+  void onRescanCompleted(std::function<void()> callback);
+
   // Feed a file parsed from a live buffer or scan.
   void upsert(IndexedFile entry);
   void remove(std::string const &path);
@@ -249,6 +257,10 @@ private:
   std::mutex rescanMu_;
   std::condition_variable rescanCv_;
   bool rescanQueued_ = false;
+  // The session's rescan-completed callback (onRescanCompleted). Guarded by
+  // rescanMu_ like rescanQueued_; read once per completed rescan, copied out
+  // of the lock, and invoked after the scan with no lock held.
+  std::function<void()> rescanCompleted_;
 };
 
 // Free functions, exposed for tests.

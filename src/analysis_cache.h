@@ -75,6 +75,11 @@ public:
   Stats stats() const;
   std::size_t size() const;
 
+  // FNV-1a-64 over the content bytes: the cache key's freshness half (the
+  // base for the pull-diagnostics resultId, so the id of a report is decided
+  // by the same byte identity a cache hit was).
+  static std::uint64_t hashContent(std::string_view content);
+
 private:
   struct Key {
     std::string path;
@@ -83,8 +88,6 @@ private:
       return path < other.path || (path == other.path && hash < other.hash);
     }
   };
-
-  static std::uint64_t hashContent(std::string_view content);
 
   mutable std::mutex mu_;
   std::map<Key, std::shared_ptr<Entry const>> entries_;

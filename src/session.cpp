@@ -370,11 +370,11 @@ std::vector<lsDiagnostic> convertDiagnostics(std::string_view content,
 }
 
 // Unresolved `#include`/`#include once` literals of an indexed entry become
-// `include-not-found` Errors at the literal's own range. Only the open
-// buffer's own edges are diagnosed (M6); inter-file closure diagnostics wait
-// for pull diagnostics (M14). The diagnostics are built by the code-action
-// module (M12) so a quick fix keyed on the code addresses exactly the range
-// the publish reported.
+// `include-not-found` Errors at the literal's own range. Only the document's
+// own edges are diagnosed here; the pull path surfaces the included files'
+// own problems through `relatedDocuments` (the include closure, M14). The
+// diagnostics are built by the code-action module (M12) so a quick fix keyed
+// on the code addresses exactly the range the publish reported.
 void appendIncludeDiagnostics(std::string_view content,
                               fblang::IndexedFile const &entry,
                               std::vector<lsDiagnostic> *out) {
@@ -382,6 +382,56 @@ void appendIncludeDiagnostics(std::string_view content,
        fblang::unresolvedIncludeDiagnostics(entry.includes, content.size())) {
     out->push_back(toLsDiagnostic(content, d));
   }
+}
+
+// The diagnostics payload one document carries: the parse diagnostics plus the
+// unresolved include edges of the index entry that describes it (M6's
+// include-not-found). One definition shared by the push path and both pull
+// handlers, so a client that negotiated either delivery can never see a
+// different answer for the same bytes — the M12 rule ("the fix keys on the
+// range the publish reports") extended to the pull model.
+std::vector<lsDiagnostic>
+documentDiagnostics(std::string_view content, fblang::ParseResult const &parse,
+                    fblang::IndexedFile const *entry) {
+  std::vector<lsDiagnostic> diags = convertDiagnostics(content, parse);
+  if (entry) {
+    appendIncludeDiagnostics(content, *entry, &diags);
+  }
+  return diags;
+}
+
+// The identity of the diagnostics payload of one document: the content bytes
+// (parse diagnostics), the resolved include-edge targets (include-not-found
+// answers from disk/config state, not just bytes), and the diagnostics gate —
+// a gate flip must change the id, or a client caching by resultId would be
+// told "unchanged" the moment the report was emptied. Equal ids promise equal
+// payloads; nothing else is folded in, so a re-request with a matching
+// previousResultId never recomputes the report (the client keeps its copy).
+std::uint64_t diagnosticsFnv(std::string_view bytes, std::uint64_t hash) {
+  for (char c : bytes) {
+    hash ^= static_cast<unsigned char>(c);
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+std::string diagnosticsResultId(std::string_view content,
+                                fblang::IndexedFile const *entry, bool on) {
+  std::uint64_t hash = fblang::AnalysisCache::hashContent(content);
+  if (entry) {
+    for (fblang::IncludeEdge const &edge : entry->includes) {
+      hash = diagnosticsFnv(edge.literal, hash);
+      hash = diagnosticsFnv(edge.target, hash);
+      hash ^= edge.once ? 0x9e : 0x00;
+    }
+  }
+  if (!on) {
+    hash ^= 0x55;
+  }
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "pd%016llx",
+                static_cast<unsigned long long>(hash));
+  return buf;
 }
 
 // LSP 3.17 CodeActionKind matching: a `context.only` entry selects actions of
@@ -889,6 +939,11 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
   auto index = std::make_shared<fblang::WorkspaceIndex>(root);
   index->open();
   index->applySettings(settingsForDirLogged(root));
+  // A watched-files rescan can change disk-backed diagnostics (an external
+  // edit to an indexed header); its completion is when a pull-mode client's
+  // cached reports can be honored again, so that is when the refresh hint
+  // fires. Never fires for the initial scan (nothing to refresh yet).
+  index->onRescanCompleted([this] { notifyDiagnosticsRefresh(); });
   index->scan(true);
   indexes_[normRoot] = std::move(index);
 }
@@ -1114,6 +1169,16 @@ void FreeBasicServer::registerHandlers() {
   session_.on([this](wp_executeCommand::request const &req) {
     return onExecuteCommand(req);
   });
+  // Pull diagnostics (M14): the two pull requests a pull-negotiated client
+  // sends, plus the server->client refresh request whose response parser must
+  // be registered before startProcessingMessages() (same rule as
+  // client/registerCapability below).
+  session_.on([this](td_diagnostic::request const &req) {
+    return onDocumentDiagnostic(req);
+  });
+  session_.on([this](workspace_diagnostic::request const &req) {
+    return onWorkspaceDiagnostic(req);
+  });
 
   // The server->client client/registerCapability request is sent from the
   // `initialized` handler, after the parse/notification pools are running;
@@ -1121,6 +1186,8 @@ void FreeBasicServer::registerHandlers() {
   // startProcessingMessages().
   session_.endpoint()
       .registerResponseParser<Req_ClientRegisterCapability::request>();
+  session_.endpoint()
+      .registerResponseParser<workspace_diagnostic_refresh::request>();
 }
 
 td_initialize::response
@@ -1237,6 +1304,38 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   rsp.result.capabilities.executeCommandProvider.emplace();
   rsp.result.capabilities.executeCommandProvider->commands.push_back(
       kShowReferencesCommand);
+
+  // Pull diagnostics (M14): negotiated, never assumed. A client that
+  // advertises `textDocument.diagnostic` (a 3.17+ pull client) gets the
+  // diagnosticProvider capability and the push path is disabled for the whole
+  // session — the spec asks a server to stop publishing once pull is
+  // negotiated, and a client that supports both must never see the same
+  // diagnostics twice. A pre-3.17 client (no diagnostic capability) keeps the
+  // push path exactly as before, so one server build serves both client
+  // generations. `interFileDependencies` is the pull model's promise that the
+  // answer for a document can carry its include closure's reports
+  // (`relatedDocuments`), which is exactly what the M6 include-edge graph
+  // provides; `workspaceDiagnostics` offers the workspace-level pull.
+  pullDiagnostics_ = req.params.capabilities.textDocument &&
+                     req.params.capabilities.textDocument->diagnostic;
+  if (pullDiagnostics_) {
+    rsp.result.capabilities.diagnosticProvider.emplace();
+    rsp.result.capabilities.diagnosticProvider->interFileDependencies.emplace(
+        true);
+    rsp.result.capabilities.diagnosticProvider->workspaceDiagnostics.emplace(
+        true);
+    if (req.params.capabilities.textDocument->diagnostic
+            ->relatedDocumentSupport) {
+      relatedDocumentSupport_ = *req.params.capabilities.textDocument
+                                     ->diagnostic->relatedDocumentSupport;
+    }
+    if (req.params.capabilities.workspace &&
+        req.params.capabilities.workspace->diagnostics &&
+        req.params.capabilities.workspace->diagnostics->refreshSupport) {
+      diagnosticsRefreshSupported_ =
+          *req.params.capabilities.workspace->diagnostics->refreshSupport;
+    }
+  }
 
   // Workspace-level capabilities: folder support + change notifications are
   // advertised unconditionally, so a multi-folder client gets one index per
@@ -1575,6 +1674,16 @@ void FreeBasicServer::onDidChangeConfiguration(
     bool const flippedOn = fresh.diagnosticsOn && !old.diagnosticsOn;
     // Adopt the new settings for the whole root...
     index->applySettings(fresh);
+    if (pullDiagnostics_) {
+      // Pull mode: applySettings already re-resolved every indexed entry's
+      // include edges — including the open buffers' — which is the whole
+      // reconciliation the pull answers need. The empty-publish / re-publish
+      // dance below is push-only; one refresh hint tells the client its
+      // cached reports are stale (a gate flip or an include-path change both
+      // change the reports the pull would return).
+      notifyDiagnosticsRefresh();
+      continue;
+    }
     // ...and reconcile the root's open buffers with the gates. Private state
     // diffs drive only the work that matters: turning diagnostics off
     // publishes a single empty result per open buffer (publishDiagnostics has
@@ -1691,7 +1800,14 @@ void FreeBasicServer::onDidClose(
   // drop them so a later didOpen of the same file starts fresh (the disk is
   // master for closed files).
   analysisCache_.removePath(normPath);
-  publishDiagnostics(notify.params.textDocument.uri, {});
+  if (pullDiagnostics_) {
+    // Pull mode: publishDiagnostics has no tombstones, so the close is told
+    // to the client by invalidating its cached report (a pull then answers
+    // from the disk entry, or nothing when the file was never indexed).
+    notifyDiagnosticsRefresh();
+  } else {
+    publishDiagnostics(notify.params.textDocument.uri, {});
+  }
 }
 
 void FreeBasicServer::reparseAndPublish(
@@ -1728,7 +1844,13 @@ void FreeBasicServer::reparseAndPublish(
     }
   }
 
-  if (settingsForDocument(normPath).diagnosticsOn) {
+  if (pullDiagnostics_) {
+    // Pull mode: the client owns the publish schedule — the index entry just
+    // went fresh, so hint a re-pull instead of pushing. Sent even when the
+    // diagnostics gate is off: the report the client holds is now void, and
+    // merely not publishing would leave its stale copy visible.
+    notifyDiagnosticsRefresh();
+  } else if (settingsForDocument(normPath).diagnosticsOn) {
     publishDiagnostics(uri, std::move(diags));
   }
 }
@@ -3377,6 +3499,175 @@ void FreeBasicServer::publishDiagnostics(
   publish.params.uri = uri;
   publish.params.diagnostics = std::move(diagnostics);
   session_.endpoint().send(publish);
+}
+
+void FreeBasicServer::notifyDiagnosticsRefresh() {
+  // The server-hint half of the pull model: tell a pull client its cached
+  // diagnostic reports are stale so it re-requests them. Only worth sending
+  // when the client negotiated pull AND can receive the request
+  // (workspace.diagnostic.refreshSupport); a client without refresh support
+  // re-pulls on its own schedule and a push client is served by
+  // publishDiagnostics, so this is a no-op for both.
+  if (!pullDiagnostics_ || !diagnosticsRefreshSupported_) {
+    return;
+  }
+  workspace_diagnostic_refresh::request request =
+      session_.endpoint()
+          .createRequest<workspace_diagnostic_refresh::request>();
+  session_.endpoint().send(request);
+}
+
+td_diagnostic::response
+FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
+  td_diagnostic::response rsp;
+  rsp.id = req.id;
+
+  // Every valid request answers one arm of the report union; the full arm is
+  // engaged up front so an early return (a bad uri, an unreadable file) still
+  // writes a well-formed empty report rather than a malformed one.
+  rsp.result.first.emplace();
+
+  std::filesystem::path const path =
+      req.params.textDocument.uri.GetAbsolutePath().path();
+  if (path.empty()) {
+    return rsp;
+  }
+  std::shared_ptr<fblang::DocumentContent const> const dc =
+      contentForPathAnalysis(path);
+  if (!dc) {
+    return rsp;
+  }
+  std::string const normPath = fblang::normalizePath(path);
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  std::shared_ptr<fblang::IndexedFile const> const entry =
+      index ? index->fileAt(normPath) : nullptr;
+  bool const on = settingsForDocument(normPath).diagnosticsOn;
+  std::string const resultId =
+      diagnosticsResultId(dc->content, entry.get(), on);
+
+  // The client's previousResultId names the report it already holds: when it
+  // still matches the current one, answer `unchanged` (kind + resultId only)
+  // and let the client keep its cached items instead of resending them.
+  if (req.params.previousResultId && *req.params.previousResultId == resultId) {
+    rsp.result.first.reset();
+    rsp.result.second.emplace();
+    rsp.result.second->resultId.emplace(resultId);
+    return rsp;
+  }
+
+  rsp.result.first->resultId.emplace(resultId);
+  if (on) {
+    rsp.result.first->items =
+        documentDiagnostics(dc->content, dc->analysis.parse, entry.get());
+  }
+
+  // relatedDocuments: the include closure, what `interFileDependencies`
+  // advertised. A document's problems can depend on — and surface alongside
+  // — the files it pulls in, so each closed-over file is answered with a full
+  // report computed fresh against its own index entry and gate. Only when the
+  // client said it accepts the field (relatedDocumentSupport), and only for a
+  // request the index can answer the closure of.
+  if (relatedDocumentSupport_ && index) {
+    for (std::string const &relatedPath : index->transitiveIncludes(normPath)) {
+      std::shared_ptr<fblang::DocumentContent const> const related =
+          contentForPathAnalysis(relatedPath);
+      if (!related) {
+        continue; // deleted between the include resolve and the pull
+      }
+      std::shared_ptr<fblang::IndexedFile const> const relatedEntry =
+          index->fileAt(relatedPath);
+      bool const relatedOn = settingsForDocument(relatedPath).diagnosticsOn;
+      RelatedDocumentDiagnosticReport report;
+      report.resultId.emplace(
+          diagnosticsResultId(related->content, relatedEntry.get(), relatedOn));
+      if (relatedOn) {
+        report.items = documentDiagnostics(
+            related->content, related->analysis.parse, relatedEntry.get());
+      }
+      if (!rsp.result.first->relatedDocuments) {
+        rsp.result.first->relatedDocuments.emplace();
+      }
+      rsp.result.first->relatedDocuments->emplace(
+          lsDocumentUri(AbsolutePath(relatedPath)).raw_uri_, std::move(report));
+    }
+  }
+  return rsp;
+}
+
+workspace_diagnostic::response FreeBasicServer::onWorkspaceDiagnostic(
+    workspace_diagnostic::request const &req) {
+  workspace_diagnostic::response rsp;
+  rsp.id = req.id;
+
+  // The client names the documents it already holds reports for (uri ->
+  // resultId). A listed document is answered: `unchanged` when its id still
+  // matches, `full` when it changed. An unlisted document is answered only
+  // when it carries diagnostics — problems in files the client never knew to
+  // ask about must still surface, and a clean unlisted file has nothing to
+  // add to the client's view.
+  std::map<std::string, std::string> previous;
+  if (req.params.previousResultIds) {
+    for (PreviousResultId const &id : *req.params.previousResultIds) {
+      previous[id.uri.raw_uri_] = id.value;
+    }
+  }
+
+  for (std::shared_ptr<fblang::WorkspaceIndex> const &index : allIndexes()) {
+    for (std::shared_ptr<fblang::IndexedFile const> const &entry :
+         index->snapshot()) {
+      std::filesystem::path const path(entry->path);
+      std::shared_ptr<fblang::DocumentContent const> const dc =
+          contentForPathAnalysis(path);
+      if (!dc) {
+        continue; // vanished between the scan and the pull
+      }
+      bool const on = settingsForDocument(entry->path).diagnosticsOn;
+      std::string const resultId =
+          diagnosticsResultId(dc->content, entry.get(), on);
+      lsDocumentUri const uri(AbsolutePath(entry->path));
+      auto const known = previous.find(uri.raw_uri_);
+      if (known == previous.end()) {
+        if (!on) {
+          continue; // gate off: the empty report has nothing to say
+        }
+        std::vector<lsDiagnostic> items =
+            documentDiagnostics(dc->content, dc->analysis.parse, entry.get());
+        if (items.empty()) {
+          continue; // nothing new to surface for a file never reported
+        }
+        rsp.result.items.push_back({});
+        WorkspaceDocumentDiagnosticReport &doc = rsp.result.items.back();
+        doc.uri = uri;
+        doc.report.first.emplace();
+        doc.report.first->resultId.emplace(resultId);
+        doc.report.first->items = std::move(items);
+        continue;
+      }
+      rsp.result.items.push_back({});
+      WorkspaceDocumentDiagnosticReport &doc = rsp.result.items.back();
+      doc.uri = uri;
+      if (known->second == resultId) {
+        doc.report.second.emplace();
+        doc.report.second->resultId.emplace(resultId);
+        continue;
+      }
+      doc.report.first.emplace();
+      doc.report.first->resultId.emplace(resultId);
+      if (on) {
+        doc.report.first->items =
+            documentDiagnostics(dc->content, dc->analysis.parse, entry.get());
+      }
+      // Open buffers carry the wire version so the client can correlate the
+      // report with the document generation it displayed; disk files have
+      // none. contentForPathAnalysis always returns an AnalysisCache entry.
+      std::uint64_t const version =
+          static_cast<fblang::AnalysisCache::Entry const &>(*dc).version;
+      if (version > 0) {
+        doc.version.emplace(static_cast<int>(version));
+      }
+    }
+  }
+  return rsp;
 }
 
 std::optional<std::string>

@@ -619,6 +619,11 @@ void WorkspaceIndex::watchedFilesChanged() {
   rescanCv_.notify_all();
 }
 
+void WorkspaceIndex::onRescanCompleted(std::function<void()> callback) {
+  std::lock_guard<std::mutex> const lk(rescanMu_);
+  rescanCompleted_ = std::move(callback);
+}
+
 void WorkspaceIndex::rescanLoop() {
   std::unique_lock<std::mutex> lk(rescanMu_);
   while (running_.load()) {
@@ -637,6 +642,19 @@ void WorkspaceIndex::rescanLoop() {
     rescanQueued_ = false;
     lk.unlock();
     scan(true);
+    // The rescan completed: copy the callback out under the lock (never
+    // invoke user code under it) and run it after, so the session can hint
+    // pull-diagnostics clients that disk-backed results changed. Called for
+    // watched-files rescans only — the initial scan and explicit scan(false)
+    // callers never go through the loop.
+    std::function<void()> completed;
+    {
+      std::lock_guard<std::mutex> const lock(rescanMu_);
+      completed = rescanCompleted_;
+    }
+    if (completed) {
+      completed();
+    }
     lk.lock();
   }
 }

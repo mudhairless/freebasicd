@@ -118,6 +118,25 @@ private:
   // the initialize reply.
   bool watchedFilesDynamic_ = false;
 
+  // Pull diagnostics (M14): the client advertised `textDocument.diagnostic`
+  // (LSP 3.17), so the server advertises `diagnosticProvider`, answers
+  // `textDocument/diagnostic` and `workspace/diagnostic`, and stops pushing
+  // `publishDiagnostics` — the spec asks a server to prefer pull once it is
+  // negotiated, and a client that supports both must never see the same
+  // diagnostics twice. A client without the capability keeps the push path
+  // exactly as before. Only touched on the notification FIFO thread at
+  // initialize; request handlers read it lock-free.
+  bool pullDiagnostics_ = false;
+  // The client can receive the `workspace/diagnostic/refresh` hint
+  // (workspace.diagnostic.refreshSupport): the server asks it to re-pull
+  // when diagnostics changed out-of-band of a pull. Without it the client
+  // re-pulls on its own schedule.
+  bool diagnosticsRefreshSupported_ = false;
+  // The client accepts `relatedDocuments` on a full report
+  // (textDocument.diagnostic.relatedDocumentSupport): the include closure a
+  // pull on one document can surface alongside its own problems.
+  bool relatedDocumentSupport_ = false;
+
   // In-memory per-workspace symbol indexes (M11): one index per workspace
   // root, keyed by normalized root. Registered client workspace folders that
   // bear a root marker (a version-control marker or freebasicd.toml) are
@@ -257,6 +276,23 @@ private:
   td_codeLens::response onCodeLens(td_codeLens::request const &req);
   wp_executeCommand::response
   onExecuteCommand(wp_executeCommand::request const &req);
+
+  // Pull diagnostics (M14): `textDocument/diagnostic` answers one document's
+  // report (full, or unchanged against the client's previousResultId, with
+  // the include closure's reports as relatedDocuments), and
+  // `workspace/diagnostic` answers a report per workspace document the client
+  // holds or that newly carries diagnostics. `workspace/diagnostic/refresh`
+  // is the server->client hint that cached reports are stale.
+  td_diagnostic::response
+  onDocumentDiagnostic(td_diagnostic::request const &req);
+  workspace_diagnostic::response
+  onWorkspaceDiagnostic(workspace_diagnostic::request const &req);
+
+  // The `workspace/diagnostic/refresh` hint, sent when pull mode is
+  // negotiated, refresh support exists, and a diagnostic-relevant change
+  // landed (a buffer edit, a close, a config change, or a watched-files
+  // rescan completing). Safe from any thread: the endpoint send is locked.
+  void notifyDiagnosticsRefresh();
 
   // Allocate a fresh resultId ("st<counter>") and record `data` under it as
   // the current delta baseline, evicting the oldest entry past a fixed cap.

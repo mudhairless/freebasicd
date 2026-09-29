@@ -10,11 +10,11 @@ repository (default branch `main`).
   `third_party/LspCpp` from **our fork,
   [github.com/mudhairless/LspCpp](https://github.com/mudhairless/LspCpp)**
   (`.gitmodules` points there; the submodule is pinned to
-  `8a67671effacc574b285bee22b4fc0450d3393f6` on the fork's
+  `9b7257fc9bf3ad31e840d0d57572a314d1aa44de` on the fork's
   `lsp-3.17-completions` branch (named for what it carries: the LSP 3.17 types
   and serialization upstream still lacks), which is **upstream
   `19150d12c4ae26239d75258ed598ba8ea3587cb7`**
-  (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus eight
+  (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus ten
   commits of ours**: `310e1e6` adding the watched-files registration types
   upstream lacks —
   `lsFileSystemWatcher`/`lsDidChangeWatchedFilesOptions`
@@ -53,9 +53,21 @@ repository (default branch `main`).
   '(': illegal token on right side of '::'" (`utils.cpp:594`), which no Linux or
   macOS build can show because neither pulls in `Windows.h`. `lsp.cpp` already
   guards its own `<Windows.h>` this way; the fork commit makes `utils.cpp`
-  match. Only the Visual Studio generator reaches the boost-nuget branch, and
-  no local platform can configure it, so a change to LspCpp's CMake has to be
-  checked by reading it, not by building it.
+  match, and `0865f2a` adds the LSP 3.17 diagnostic-report types M14 needs
+  (`FullDocumentDiagnosticReport` with `relatedDocuments`,
+  `RelatedDocumentDiagnosticReport`, `UnchangedDocumentDiagnosticReport`,
+  `PreviousResultId`, `WorkspaceDiagnosticParams`, the `DocumentDiagnosticReport`
+  `Either` with a hand-written `kind`-discriminating `Reflect`, and the
+  `td_diagnostic` / `workspace_diagnostic` request types — the same precedent
+  as `50be209` for code actions: a response typed as a bare full report can
+  never answer the `unchanged` arm the protocol defines), while `9b7257f` fixes
+  `WorkingFiles::OnOpen`, which copied `open.version` only when the document was
+  *already* open, so a first `didOpen` left `WorkingFile::version` at 0 —
+  indistinguishable from "unknown", and the only source
+  `WorkspaceDocumentDiagnosticReport.version` has. Only the Visual Studio
+  generator reaches the boost-nuget branch, and no local platform can configure
+  it, so a change to LspCpp's CMake has to be checked by reading it, not by
+  building it.
   Restore with `git submodule update --init`. Consumed
   via `add_subdirectory(third_party/LspCpp)` and linked as the `lspcpp`
   target. No Boost is required (`LSPCPP_STANDALONE_ASIO` is the default);
@@ -218,6 +230,34 @@ must stay there. Encoding directives that the lexer/parser must honor:
   object in every one of them. A lens cannot ask for `includeDeclaration`, so
   the count excludes the declaration's own name token — the same convention
   `references` reports with it false.
+- **Pull diagnostics (M14)**: the LSP 3.17 alternative to push, **negotiated
+  and never assumed**. `capabilities.textDocument.diagnostic` present ⇒
+  advertise `diagnosticProvider` and disable `publishDiagnostics` for the whole
+  session; absent ⇒ the push path is exactly what it was, so one build serves
+  both client generations. The rule is not politeness: a client supporting both
+  must never see the same diagnostic twice, and the spec has the server stop
+  publishing once pull is negotiated.
+  - **One payload, two deliveries.** `documentDiagnostics(content, parse,
+    entry)` is the single definition of a document's diagnostics (parse
+    diagnostics plus its own unresolved include edges) that the push path and
+    both pull handlers call, so a client cannot be shown two answers for the
+    same bytes. This is the M12 rule ("the fix keys on the range the publish
+    reports") generalized to the delivery itself.
+  - **resultId** = `AnalysisCache::hashContent(content)` folded with the
+    include edges and the diagnostics gate, computed fresh per request. Equal
+    ids promise equal payloads, and nothing else is folded in — so a request
+    naming a matching `previousResultId` can answer `unchanged` without
+    recomputing. The gate has to be in the id: a config flip empties the report,
+    and a client caching by id would otherwise keep the old one.
+  - **relatedDocuments** is the M6 transitive include closure, one level deep
+    (a related report is never itself related — the value type stays
+    non-recursive), gated on `relatedDocumentSupport`.
+  - **`workspace/diagnostic/refresh`** is the server hint that stands where a
+    push would have been: an edit, a close, a config change, and a
+    watched-files rescan all fire it. The rescan is the one that needs a seam
+    (`WorkspaceIndex::onRescanCompleted`) because an external edit arrives
+    outside every notification the session can see; the callback is copied out
+    under `rescanMu_` and invoked with no lock held.
 - **Message catalogs**: `fblang::trf` for a message, `fblang::trn(msgid,
   plural, n)` when the count changes the form — `ngettext`, because only the
   catalog's plural rule can serve a language with three or four forms, which two
@@ -386,6 +426,19 @@ applies to a *hardcoded* URI: `file:///tmp/x.bas` is not a Windows URI at all
 generalizes: a test fixture that builds a wire-format string by string surgery
 fails as *malformed input*, not as a wrong answer, and a poll-based wait turns
 that into a timeout instead of a failure.
+
+**A raw string that ends in a JSON quote is a silent truncation.** The same
+class of defect, twice over in one milestone: `R"(","value":"")"` *looks* like
+a fragment ending in a closing quote, but the `)"` is the raw string's own
+terminator, so the literal ends at `:"` and the stray `"` that follows starts
+an empty C string — the frame goes out as `"value":""` followed by whatever
+came next. Likewise a `previousResultId` nested inside `textDocument` instead
+of beside it parses as valid JSON and is simply not a member of `params`. Both
+produced a frame the JSON parser rejected, so the handler never ran and the
+poll reported a timeout — a malformed input wearing a wrong answer's clothes,
+three times, in a milestone whose server code was correct throughout. When a
+poll times out with an *empty* newest reply, the frame never parsed; print the
+frame and read it before reading the server.
 
 **A poll's needle must be scoped to the reply it returns.** `PollRequest`
 resends a request until the answer contains a needle, because the index behind a

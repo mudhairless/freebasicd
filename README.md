@@ -40,7 +40,7 @@ Implemented and advertised in the `initialize` reply:
 
 | Feature | Notes |
 |---|---|
-| Diagnostics | Parse errors, unterminated blocks, unresolved `#include` |
+| Diagnostics | Parse errors, unterminated blocks, unresolved `#include`; pushed by default, or pulled on request (see below) |
 | Hover | Types and signatures; resolves member access through the base variable's declared type, including cross-file and `with`-implicit chains |
 | Go to definition | Same-file and cross-file, gated on FreeBASIC's `Shared` visibility rules |
 | Find references | Workspace-wide, following includes |
@@ -53,12 +53,28 @@ Implemented and advertised in the `initialize` reply:
 | Semantic tokens | Full, delta, and range requests; drives client-side highlighting |
 | Inlay hints | Inferred types and block closers |
 | Code actions | Quick fixes for a missing `#include` target and for an unclosed block |
+| Selection ranges | Token → statement → enclosing blocks → file |
+| Call hierarchy | Outgoing calls and incoming call sites, through the include closure |
+| Code lens | A reference count per declaration, whose click lists the sites |
+| Pull diagnostics | `textDocument/diagnostic` and `workspace/diagnostic`, negotiated |
 | Workspace symbols | Aggregated from every workspace root, one index per root |
 | Workspace folders | Multi-root sessions, with watched files and per-root config |
 
-Not implemented, and therefore not advertised: `selectionRange`,
-`callHierarchy`, `codeLens`, pull diagnostics, document links, and completion
-item resolve.
+Not implemented, and therefore not advertised: document links, type
+definition, type hierarchy, and completion item resolve.
+
+### Push or pull
+
+Diagnostics are pushed with `textDocument/publishDiagnostics` unless the client
+advertises the LSP 3.17 pull capability `textDocument.diagnostic`, in which case
+the server advertises `diagnosticProvider` and switches to answering
+`textDocument/diagnostic` and `workspace/diagnostic` for the rest of the
+session — a client that supports both is never sent the same diagnostic twice.
+A pull answer is `full` or `unchanged` (the latter when the client names the
+`resultId` it already holds and nothing changed), and a report about one
+document can carry the problems of the files it includes in
+`relatedDocuments`. The server sends `workspace/diagnostic/refresh` when a
+change invalidates a report the client has already pulled.
 
 ## Requirements
 
