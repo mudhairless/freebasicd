@@ -1057,11 +1057,9 @@ bool completionInsideOwnerType(ParseResult const &parse, std::uint32_t off,
     case SymbolKind::Constructor:
     case SymbolKind::Destructor:
     case SymbolKind::Operator:
-      if (cur->key != ownerKey) {
-        return false;
-      }
-      return toLowerChars(std::string(cur->signature)).find(ownerKey + ".") !=
-             std::string::npos;
+      // The *first* procedure around the site decides: an outer member
+      // procedure must not open the gate for a nested one.
+      return cur->ownerKey == ownerKey;
     default:
       break;
     }

@@ -254,6 +254,61 @@ operator is applied" `(wiki)`. Whether a *derived* type's ordinary code (as
 opposed to its member procedures) may read an inherited `Protected` member was
 not probed here; treat the wiki sentence as the source until it is.
 
+### Inheritance (`Extends`) and member-procedure implementation
+
+Documentation: https://www.freebasic.net/wiki/KeyPgExtends
+
+`Extends` on the opener line is FreeBASIC's **only** inheritance form, and that
+is worth stating because the obvious alternatives are not FreeBASIC at all
+`(fbc 1.10.2, all probed)`:
+
+| construct | fbc |
+|---|---|
+| `type b Extends a` | compiles |
+| `union u Extends a` | compiles |
+| `type b : a` | `error 17: Syntax error in 'type b : a'` — and the same under `-lang qb` |
+| `interface i … End Interface` | `error 42: Variable not declared, interface` — **there is no `interface` keyword in the language** |
+
+So a type has **at most one base**, and there are no interfaces to model: no
+multiple inheritance to reconcile, and nothing that is not a single parent chain
+per type. Chains can be arbitrarily deep (`type c Extends b` where `b Extends
+a`), and an inherited field and an inherited member call both resolve through
+any number of levels `(fbc)`. `Extends object` is the same edge — `Object` is a
+keyword and this is how a UDT gets a VMT. **There are no forward base
+references**: the base must already be declared, exactly like a field's declared
+type (see the record bodies section above), so a base that fails to resolve is
+a defect rather than a form to answer for.
+
+A **member procedure is declared inside the type and defined at module level,
+qualified by the type name**. A definition inside the type body is a hard
+error — `type t / n As Integer / Sub go() / End Sub / End Type` is `error 17:
+Syntax error, found 'go' in 'sub go()'` plus `error 33: Illegal 'END'` `(fbc)`
+— so `Type.name` at module level is not a stylistic choice but the only
+spelling. It may sit in the includer `.bas` or in a sibling header of the same
+`#include` closure, both probed `(fbc)`:
+
+```fb
+type t
+  n as integer
+  declare sub go()
+end type
+sub t.go()     ' module level, qualified — in the includer .bas or a sibling
+end sub        ' header of the same #include closure
+```
+
+A derived type may **not** re-implement an inherited member: `type d Extends t`
+followed by `sub d.go()` is `error 158: Declaration outside the original
+namespace or class in 'sub d.go()'` `(fbc)`. The declared→implemented edge is
+therefore a **function, never a fan-out** — at most one implementation answers
+for one declaration, which is a far smaller thing to answer than an override
+graph. UDTs additionally cannot have member operators: `operator + (o as t) as
+t` inside a `TYPE` body is `error 17: Syntax error, found '+'` `(fbc)`.
+
+Constructor and destructor are the one place the qualifier is **not** a dot:
+`declare constructor()` in the type pairs with `constructor t()` at module
+level, and both spellings compile `(fbc)`. See §12.16 for why the parser does
+not act on that.
+
 ## 8. Scope and visibility
 
 Documentation: https://www.freebasic.net/wiki/ProPgVariableScope
@@ -497,3 +552,18 @@ to "the language is what the lexer does":
     insertion point the parse exposes. Fixed by adding the member-grammar
     predicate to `language.cpp` and having the parser record each block's
     logical end; until then, treat a record-body boundary as unmodelled.
+16. **A constructor/destructor's type owner is unmodelled** (§7, Inheritance).
+    The member-procedure implementation edge is recorded for the three forms
+    that carry an unambiguous `Type.name` qualifier — `sub t.go()`,
+    `function t.val()`, `property t.p` — and the parser keys those roots by the
+    *member*, so `sub t.go()` no longer claims the type's key. A
+    constructor/destructor is deliberately **not** re-keyed: its implementation
+    is spelled `constructor t()` with no dot, and `constructor name()` at module
+    level is also how a *module* constructor is declared (fbc accepts both
+    `(fbc)`), so the two are indistinguishable in the parser without resolving
+    the name against a type. A wrong guess would rewrite a real module-level
+    declaration's key, which is worse than having no edge, so `constructor t()`
+    stays a root named `t` — meaning it still collides with `type t` in the
+    same way `sub t.go()` used to. Cost: no go-to-implementation for a UDT
+    constructor or destructor, and a phantom `documentSymbol`/code-lens entry
+    for that one form.

@@ -114,6 +114,32 @@ struct Symbol {
   // procedure of the same type, and `resolveMemberAccess` still resolves them
   // (hover/references do not gate) — fbc reports error 202 on outside access.
   Access access = Access::Public;
+
+  // M15 type graph. Two edges, both of which the parser had no room for, and
+  // both of which a type hierarchy and a go-to-implementation need.
+
+  // The type this one extends: `type derived extends base` records base's
+  // lookup key here. `Extends` is FreeBASIC's *only* inheritance form — there
+  // is no `Type : base` (fbc rejects it even under `-lang qb`) and no
+  // `interface` keyword, so a type has at most one base and there are no
+  // interfaces to model. `union u extends a` is the same edge. Empty for a
+  // type that extends nothing, for every other kind, and for a malformed
+  // opener line. fbc has no forward base references, so a base that does not
+  // resolve is a real defect rather than a form to answer for.
+  std::string extendsKey;
+
+  // The type whose member procedure this declaration implements:
+  // `sub t.go()` records owner `t` and takes `go` as its own name and key.
+  // FreeBASIC declares a member procedure inside the type and *defines* it at
+  // module level, qualified by the type name — fbc error 17 rejects a
+  // definition inside the type body. Empty for a module-level declaration
+  // that is not dot-qualified, and for the `declare` side, which is a plain
+  // child of the type. The *member's* key, not the type's, is this symbol's
+  // `key`, so `sub t.go()` no longer claims the key `t` and collides with
+  // `type t`. Constructor/Destructor are deliberately excluded: their
+  // implementation is spelled `constructor t()` with no dot, which a parser
+  // cannot tell from a module constructor (FreeBASIC.md §12).
+  std::string ownerKey;
 };
 
 enum class Severity { Error = 1, Warning = 2, Information = 3, Hint = 4 };

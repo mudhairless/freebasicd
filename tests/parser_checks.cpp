@@ -751,6 +751,139 @@ int main() {
     CHECK(q != nullptr);
   }
 
+  {
+    // M15: the two type-graph edges. `Extends` is FreeBASIC's only inheritance
+    // form (fbc rejects `type b : a`, and there is no `interface` keyword), and
+    // a member procedure is declared inside the type and defined at module
+    // level qualified by the type name (fbc error 17 rejects a definition in
+    // the type body).
+    std::string const src = "type t extends object\n"
+                            "  declare sub go()\n"
+                            "  n as integer\n"
+                            "end type\n"
+                            "sub t.go()\n"
+                            "end sub\n";
+    ParseResult r = parseDocument(src);
+    const Symbol *t = find(r.roots, "t", SymbolKind::Type);
+    CHECK(t != nullptr);
+    // The `extends` keyword was a bare keyword token on the type's opener line,
+    // and the TYPE-body member-capture path used to register it as a Variable
+    // field. Two fields is the correct count; three was the bug.
+    CHECK(t->children.size() == 2);
+    CHECK(find(t->children, "extends", SymbolKind::Variable) == nullptr);
+    CHECK(find(t->children, "go", SymbolKind::Sub) != nullptr);
+    CHECK(find(t->children, "n", SymbolKind::Variable) != nullptr);
+    CHECK(t->extendsKey == "object");
+    // `sub t.go()` used to be a module root named and keyed `t` — the same key
+    // as the type it implements a member of, so documentSymbol listed `t` twice
+    // and codeLens drew a "0 references" lens for the phantom. It is now keyed
+    // by the member and carries the owner as the other half of the edge.
+    const Symbol *impl = find(r.roots, "go", SymbolKind::Sub);
+    CHECK(impl != nullptr);
+    CHECK(impl->ownerKey == "t");
+    CHECK(impl->name == "go");
+    // The selection is the *member* token, not the `t` qualifier. That is what
+    // leaves the `t` token free to resolve to the type, so a rename of the type
+    // still updates `sub t.go()` — there was never a rename bug here, only a
+    // display and addressability one.
+    CHECK(impl->selection.beg == src.rfind("sub t.go()") + 6); // the member
+    CHECK(impl->selection.end - impl->selection.beg == 2);     // token, not
+                                                               // the type
+  }
+  {
+    // A user-defined base, and a Union: the same edge on both openers.
+    std::string const src = "union u extends a\n"
+                            "  x as integer\n"
+                            "end union\n"
+                            "type b extends u\n"
+                            "  y as integer\n"
+                            "end type\n"
+                            "type plain\n"
+                            "  z as integer\n"
+                            "end type\n";
+    ParseResult r = parseDocument(src);
+    const Symbol *u = find(r.roots, "u", SymbolKind::Union);
+    CHECK(u != nullptr);
+    CHECK(u->extendsKey == "a");
+    CHECK(u->children.size() == 1);
+    const Symbol *b = find(r.roots, "b", SymbolKind::Type);
+    CHECK(b != nullptr);
+    CHECK(b->extendsKey == "u");
+    const Symbol *p = find(r.roots, "plain", SymbolKind::Type);
+    CHECK(p != nullptr);
+    CHECK(p->extendsKey.empty());
+  }
+  {
+    // The qualifier form is the same for all three member-procedure kinds, and
+    // a plain module-level procedure keeps its own name and no owner.
+    std::string const src = "type s\n"
+                            "  declare function val() as integer\n"
+                            "end type\n"
+                            "function s.val() as integer\n"
+                            "end function\n"
+                            "property s.p as integer\n"
+                            "end property\n"
+                            "sub plain()\n"
+                            "end sub\n";
+    ParseResult r = parseDocument(src);
+    const Symbol *v = find(r.roots, "val", SymbolKind::Function);
+    CHECK(v != nullptr);
+    CHECK(v != nullptr && v->ownerKey == "s");
+    const Symbol *p = find(r.roots, "p", SymbolKind::Property);
+    CHECK(p != nullptr);
+    CHECK(p != nullptr && p->ownerKey == "s");
+    const Symbol *plain = find(r.roots, "plain", SymbolKind::Sub);
+    CHECK(plain != nullptr);
+    CHECK(plain != nullptr && plain->ownerKey.empty());
+    // No root claims the key `s` twice any more.
+    int keyedS = 0;
+    for (const auto &s : r.roots) {
+      if (s.key == "s") {
+        ++keyedS;
+      }
+    }
+    CHECK(keyedS == 1);
+  }
+  {
+    // Deliberate limit (FreeBASIC.md §12): a Constructor/Destructor member's
+    // implementation is spelled `constructor t()` with no dot, which the parser
+    // cannot tell from a module constructor — fbc accepts both, and guessing
+    // wrong would rewrite a real declaration. Left exactly as before: a root
+    // named after the type.
+    std::string const src = "type t\n"
+                            "  n as integer\n"
+                            "end type\n"
+                            "constructor t()\n"
+                            "end constructor\n";
+    ParseResult r = parseDocument(src);
+    const Symbol *c = find(r.roots, "t", SymbolKind::Constructor);
+    CHECK(c != nullptr);
+    CHECK(c != nullptr && c->ownerKey.empty());
+  }
+  {
+    // A malformed `extends` clause invents no edge and no diagnostic here, and
+    // does not swallow the body's first field: `extends` is consumed, the
+    // missing base is simply not recorded.
+    std::string const src = "type w extends\n"
+                            "  n as integer\n"
+                            "end type\n";
+    ParseResult r = parseDocument(src);
+    const Symbol *w = find(r.roots, "w", SymbolKind::Type);
+    CHECK(w != nullptr);
+    CHECK(w != nullptr && w->extendsKey.empty());
+    CHECK(w != nullptr && w->children.size() == 1);
+    CHECK(w != nullptr && w->children[0].name == "n");
+  }
+  {
+    // The one-line form still parses, qualifier and all.
+    std::string const src = "type q extends p : n as integer : end type\n";
+    ParseResult r = parseDocument(src);
+    const Symbol *q = find(r.roots, "q", SymbolKind::Type);
+    CHECK(q != nullptr);
+    CHECK(q != nullptr && q->extendsKey == "p");
+    CHECK(q != nullptr && q->children.size() == 1);
+  }
+
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");
     return 0;

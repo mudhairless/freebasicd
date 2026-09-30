@@ -35,7 +35,7 @@ architecture, and the remaining work.
 | M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree; fixes answer as LSP `CodeAction`s carrying `kind` + the diagnostic + an `edit` keyed by the request's URI, not as empty-id `Command`s — the first cut shipped the `Command` shape and the actions listed but did nothing) |
 | M13 — editor extras: selectionRange, callHierarchy, codeLens | done (2026-09-27: aspect 1 `selectionRange` shipped — `src/selection.{h,cpp}` derives the expand-selection chain from `(tokens, blockRanges, content)` alone (token → `:`-separated statement → enclosing blocks → file), keeping a level only when it strictly contains the one below *and* adds non-blank text; `src/selection_lsp.{h,cpp}` parks the chain in a `thread_local` arena because LspCpp's `SelectionRange::parent` is a non-owning pointer, and the integration test asserts the nested chain on the wire. 2026-09-27: aspect 2 `callHierarchy` shipped — `src/call_hierarchy.{h,cpp}` scans a body for the three call shapes fbc 1.10.2 accepts (`name(`, after `.`/`->`, and a bare statement-head name) and resolves each through one `CalleeResolver` seam, matching by `DeclIdentity` (file + name-token range) rather than by name, so a shadowing local is excluded by resolving the site and `foo`/`foo$` stay one symbol; nodes are procedures, properties are never callees, module-level call sites are dropped; `src/call_hierarchy_lsp.h` defines the outgoing-call request type locally because LspCpp registers it under the wrong wire name; the 17th suite `call_hierarchy_checks` plus a two-file integration test. 2026-09-27: aspect 3 `codeLens` shipped — `src/code_lens.{h,cpp}` owns which declarations carry a lens (the procedure-like kinds and the type-ish roots, nesting flattened) and the localized title, and takes the count through one `ReferenceCounter` seam so the module itself has no workspace knowledge; the session answers the count and the click from one `referenceSites` walk, so the number a lens shows and the list `freebasicd.showReferences` returns cannot drift; the lens is a `Command` (the protocol's CodeLens has no edit field) with `codeLensProvider = { resolveProvider: false }` + `executeCommandProvider`; the count crosses the include boundary in both directions, which required making the walk match by `DeclIdentity` instead of by `Symbol` pointer; a `trn` ngettext wrapper for the plural (`trf` cannot express one); a `codeLensOn` settings key; the 18th suite `code_lens_checks` plus a two-file integration test that also drives the command) |
 | M14 — pull diagnostics | done (2026-09-29: `textDocument/diagnostic` + `workspace/diagnostic` + `workspace/diagnostic/refresh` (LSP 3.17) as a client-negotiated alternative to push — `capabilities.textDocument.diagnostic` present ⇒ advertise `diagnosticProvider` (`interFileDependencies` + `workspaceDiagnostics`) and disable `publishDiagnostics` for the whole session, absent ⇒ the push path unchanged, so one build serves both client generations; `documentDiagnostics` is the one payload definition shared by push and both pull handlers, so the two deliveries cannot disagree; a report's `resultId` is `AnalysisCache::hashContent` folded with the include edges and the diagnostics gate, computed fresh, and `unchanged` answers only against a matching `previousResultId`; `relatedDocuments` carries the M6 transitive include closure one level deep; `WorkspaceIndex::onRescanCompleted` hands the session a callback (copied out under `rescanMu_`, invoked after) so an external edit to an indexed file hints a re-pull. Two fork commits: `0865f2a` adds the report-union types and both request types (a `td_diagnostic` response typed as a bare full report could never answer `unchanged`), `9b7257f` fixes `WorkingFiles::OnOpen`, which recorded the document version only for an already-open document, leaving `version = 0` — indistinguishable from "unknown" — for the first `didOpen` of every session) |
-| M15 — type/go-to + type hierarchy (backlog) | next |
+| M15 — type/go-to + type hierarchy (backlog) | in progress (2026-09-30: planned in three aspects — the parser's two missing edges first (`extends` captured as a spurious field, and `sub t.go()` captured as a root keyed `t` so it collides with the type it implements a member of), then the type-graph queries in `resolve.{h,cpp}` plus a reverse-`extends` index projection, then the wire. The plan sketch's `Type ... : base` and `Interface` are not FreeBASIC — `fbc 1.10.2` rejects the colon form and there is no `interface` keyword, so `Extends` is the only inheritance form and there is no `TypeItem` hierarchy of interfaces to model) |
 | M16 — document links + completion resolve + polish (backlog) | next |
 | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
 | M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers), `clang-format`, and macOS are green and holding; each platform leg failed first for a reason only that platform could show, and every cause found so far is fixed (Windows: an MSVC `min`/`max` macro collision in vendored LspCpp, a CRLF checkout breaking the byte-exact `grammar_checks`, a *test-harness* defect — the fixtures built `file://` URIs by string concatenation, which is malformed JSON on Windows, so eleven tests never got an answer and burned their poll budgets, which is what looked like a hang — and, once that was gone, a *server* defect the harness had been hiding: the home-folder guard that ends root selection's two unbounded walks compared path objects, and Windows spells the profile two ways (`%USERPROFILE%` long, `%TEMP%` 8.3-short), so the walk left the temp tree and every test's index rooted at the profile — 5 assertions across 3 tests, fixed with `std::filesystem::equivalent` and covered by a test that reproduces the spelling mismatch on any platform, which left exactly one failure: the suite's `PollRequest` helper matched its needle against the cumulative output stream rather than the reply, and every `didOpen` publishes diagnostics, so a needle naming a document was already there and the poll returned the first reply whatever it said — a premature answer read as a wrong one (proved on Linux with a probe whose reply can never name the header, and fixed by scoping the match to the reply, which also removes an `out_of_range` on a dead server); macOS: a use-after-free in the `workspace/symbol` reply build, found with TSan). 2026-09-27: with that fixed, the Windows leg's one remaining failure is *silent* — 70 tests start, not one assertion reports, and ctest still says `***Failed`, which can only mean the process never returned (MSVC is mute on a crash, a `std::terminate` and an unhandled exception alike). The suite now brackets each test with `[ DONE ]`, catches and attributes an escaping exception, prints a final line that splits a death inside a test from one in teardown, and on Windows prints the exception code and address, so the next run names the cause instead of leaving it to guesswork, and on the next run named it: the fixtures write CRLF to disk under an LF `didOpen` (a text-mode `ofstream`), and the scan was re-parsing the disk copy over the live buffer's entry, so cross-file ranges were measured against different bytes than the index described — `dim localOnly` at 1:5 instead of 1:4. The scan now skips open buffers; the condition is reproduced on Linux and both checks are verified non-vacuous. Two real latent index defects found while chasing the apparent hang (a lost wakeup in rescan shutdown, and a `std::thread` reachable from two threads) are fixed on their own merits, not as the cause. All five legs are green as of run `36293790173` (2026-09-27), the first run nothing failed on. Left: per-editor wiring docs, the first tag) |
@@ -155,6 +155,24 @@ stable shape:
   `td_callHierarchyOutgoingCalls`, registered under the protocol method name
   `callHierarchy/outgoingCalls` (LspCpp own is `callHierarchy/
   CallHierarchyOutgoingCall`) — the same precedent as `semantic_tokens_lsp.h`.
+- Type graph (M15) lives in `src/resolve.{h,cpp}` beside its siblings rather
+  than in a module of its own: `TypeItem` is a type copied out of the symbol
+  tree by value (the `CallItem` contract, so nothing hands out a pointer into a
+  snapshot); `typeOf` answers which type a symbol at an offset has; `supertypes`
+  follows the `extendsKey` edge nearest-first through the request's include
+  closure, revisiting no key; `subtypes` is the workspace-wide half and answers
+  from `WorkspaceIndex::extendingTypes`, a second projection maintained beside
+  `byKey_`; `memberImplementation` / `memberDeclaration` are the two ends of a
+  member procedure's `declare`↔defined edge, separate names rather than one
+  function with a direction flag; `findVisibleMember` is `findMember` plus the
+  `extends` walk, so an inherited field resolves and appears in completion.
+- `src/type_hierarchy_lsp.h` — the three type-hierarchy request types this
+  feature needs locally: `td_typeHierarchyPrepare` (the vendored
+  `td_typeHierarchy` is typed as a bare `TypeHierarchyItem` where the protocol
+  says `TypeHierarchyItem[] | null`) and `td_typeHierarchySupertypes` /
+  `td_typeHierarchySubtypes` (absent from the vendored tree entirely, and their
+  params embed the client's `TypeHierarchyItem` rather than a document and
+  position) — the same precedent as `call_hierarchy_lsp.h`.
 - `src/code_lens.{h,cpp}` — code lens (M13), LSP-agnostic and in byte offsets:
   `carriesLens` picks the kinds that get a lens (procedure-like plus the
   type-ish roots, nesting flattened); `collectAnchors` walks the symbol tree in
@@ -350,8 +368,9 @@ plan engineers around:
    `unchanged` — the per-item delta (`textDocument/diagnostic` with
    `previousResultId` and no item list) is not implemented, and no target editor
    asks for it. (The other feasible 3.17 extras are not: `codeLens` landed with
-   M13, and `completionItem/resolve` waits on the M10 catalog making items
-   heavy.)
+   M13, `typeDefinition` / `implementation` / `typeHierarchy` land with M15
+   (2026-09-30, in progress), and `completionItem/resolve` waits on the M10
+   catalog making items heavy.)
 
 ## 5. Forward plan
 
@@ -1122,12 +1141,126 @@ target editor prefers pull.
 > `R"(","value":"")"` looks equivalent and yields `"value":""` followed by
 > whatever came next.
 
-### M15 — Type/go-to + type hierarchy (backlog)
+### M15 — Type/go-to + type hierarchy
 
-`typeDefinition`, `implementation`, and typeHierarchy need inheritance facts
-(`Type ... : base`, `Interface`, `Extends`) the parser does not emit yet. Land
-the parser edges first, then reuse `byKey` + closure — otherwise identical in
-shape and plumbing to M7.
+Three unadvertised LSP features — `textDocument/typeDefinition`,
+`textDocument/implementation`, and `textDocument/typeHierarchy` with its
+`typeHierarchy/supertypes` and `typeHierarchy/subtypes` follow-ups — that all
+need one fact the parser does not emit: what a type extends, and which
+module-level procedure implements a member procedure `declare`d inside a type.
+Land those two edges first, then answer the three features from `byKey` + the
+include closure, which is exactly M7's plumbing.
+
+**The previous sketch was not FreeBASIC, and `fbc` says so.** The backlog line
+named `Type ... : base` and `Interface`. `fbc 1.10.2` rejects `type b : a` even
+under `-lang qb`, and the language has **no `interface` keyword** — so there
+are no interfaces to model, no colon syntax, and the hierarchy is a
+single-parent-per-type graph. The one real inheritance form is `Extends` on the
+opener line (`type derived extends base`, `union u extends a`; `extends object`
+is how a UDT gets a VMT), with no forward base references, so a base must
+already be declared and a broken chain is a defect rather than a form to answer
+for.
+
+`implementation` is likewise not the Java/C# "the overriding member". Three
+fbc-probed facts set its shape: a UDT cannot have member operators (error 17,
+syntax error, on every dialect tried), a member procedure cannot be *defined*
+inside a type body (error 17) — it is `declare`d in the type and implemented at
+module level as `Type.name` — and a derived type may not re-implement an
+inherited member (error 158). So the declared→implemented edge is a
+**function, never a fan-out**, its far end is always a module-level root, and
+that root may live in the includer `.bas` or a sibling header of the same
+include closure. Which is why the lookup is a closure search, like
+`findTypeDecl`.
+
+**Three measured parser defects** (`analyze()` of a `type t extends object` with
+a `declare sub go()` and a module-level `sub t.go()` — measured by running the
+parser, not by reading it):
+
+1. `extends` is captured as a **spurious Variable field** of the type. The
+   lexer makes `extends` a Keyword, and the TYPE-body member-capture path in
+   `skipStatement` takes a bare keyword token as a field name.
+2. `sub t.go()` is captured as a module root **named and keyed `t`** — the same
+   key as the type. Consequences: `documentSymbol` lists `t` twice, `codeLens`
+   draws a "0 references" lens for the bogus root, and the implementation is
+   unaddressable by name, so `implementation` cannot find it. There is *no*
+   rename bug: `attachOccurrences` skips the token equal to the resolved
+   declaration's own `selection`, which is the `t` here, so `declAt` already
+   returns the Type and a rename does update it. The damage is display and
+   addressability.
+3. No `Extends` edge is recorded at all, so nothing can walk the hierarchy.
+
+- **Aspect 1 — the two edges** (`src/symbols.h`, `src/parser.cpp`,
+  `FreeBASIC.md` §7, `tests/corpus/type_extends.bas`, `parser_checks`).
+  `Symbol` gains exactly two fields, `extendsKey` and `ownerKey` (deliberately
+  *not* selection ranges: the occurrence sweep already resolves the `base` and
+  `Type` name tokens through ordinary scope lookup, so a range nothing reads
+  would be dead weight). `handleType` and `handleDeclBlock`'s Union path consume
+  the `extends` clause instead of letting `skipStatement` capture it — the same
+  shape as the existing `Enum … explicit` special case one screen up.
+  `handleDeclBlock` recognizes `sub|function|property <Type>.<member>` for
+  exactly those three kinds, records the owner, and keys the symbol by the
+  *member*. Constructor/destructor are deliberately excluded: `constructor t()`
+  at module level is spelled with no dot and is indistinguishable from a module
+  constructor by the parser alone, and guessing wrong in the parser is worse
+  than not having the edge. That limit is recorded in `FreeBASIC.md` §12.
+- **Aspect 2 — the type graph** (`src/resolve.{h,cpp}`, `src/index.{h,cpp}`,
+  `resolve_checks`, `index_checks`). The queries live in `resolve` beside their
+  siblings (`findTypeDecl`, `resolveMemberAccess`, `referencingFiles`) rather
+  than in a fourth feature module: they take the same
+  `(AnalyzedDoc, normalizedPath, WorkspaceIndex const*)` and answer the same
+  species of question, and a new module whose every function is a loop over
+  `findTypeDecl` would be the shallow-module red flag. Seven additions:
+  `TypeItem` (a type copied out of the tree by value — the `CallItem` contract,
+  so the TSan pin is satisfied by construction and a wire item is a plain
+  value), `typeOf`, `supertypes`, `subtypes`, `memberImplementation`,
+  `memberDeclaration`, and `findVisibleMember`. The two implementation
+  functions are separate names rather than one function with a direction flag,
+  because they are two facts. `supertypes` is closure-scoped (it follows
+  `extendsKey` from a starting declaration) while `subtypes` is
+  workspace-wide, so the latter answers from a second index projection,
+  `byBaseKey_`, maintained in `addToProjections`/`subtractFromProjections`
+  beside `byKey_` — the cost is a dozen lines of the shape the maps already
+  have, against an O(workspace) sweep on every request. `findVisibleMember` is
+  the payoff of aspect 1 for features that already exist: a member lookup that
+  walks `extends` when the type's own children do not hold the name, which is
+  what makes an inherited field resolve on hover/definition and appear in
+  `derived.` completion.
+- **Aspect 3 — the wire** (`src/type_hierarchy_lsp.h`, `src/session.{h,cpp}`,
+  `session_integration`, `README.md`). `typeDefinition` and `implementation`
+  use LspCpp's `td_typeDefinition`/`td_implementation` as shipped
+  (`LocationListEither::Either`, `.first`). Type hierarchy needs a local
+  header for the `call_hierarchy_lsp.h` / `semantic_tokens_lsp.h` reason: the
+  vendored `td_typeHierarchy` is typed as a bare `TypeHierarchyItem` where the
+  protocol says `TypeHierarchyItem[] | null` — a single-item server can never
+  answer a hierarchy — and the vendored tree ships **no** request type at all
+  for `typeHierarchy/supertypes` or `typeHierarchy/subtypes`, whose params
+  embed the client's `TypeHierarchyItem` instead of a document and position.
+  `LanguageSession::on` installs the handler and its JSON parser keyed on the
+  *method string*, so defining the corrected types locally under distinct
+  namespaces leaves the vendored ones unregistered and costs no 11th commit on
+  the fork. `typeHierarchyProvider` advertises `resolveProvider: false` and
+  `prepare` fills `parents`/`children` eagerly, so `typeHierarchy/resolve` is
+  not implemented — the same call M13's code lens made. `TypeHierarchyItem::data`
+  stays unset: `uri` + `selectionRange` already identify the item, the same
+  argument `callHierarchyIdentity` is built on.
+- Acceptance: `typeDefinition` on a `dim v as base_t` in a `.bas` lands on the
+  `type base_t` name token in a header, and on a field inside a type body lands
+  on that type; `implementation` crosses from a `declare sub go()` in a header
+  to the `sub t.go()` in the includer `.bas` **and** back; `prepare` on a
+  derived type returns one item carrying both its base and its children, and
+  `supertypes`/`subtypes` answer from the item the client echoes back;
+  `subtypes` finds a derived type declared in a file the request never opened.
+  A type with no base still gets a navigable item with empty `parents`/
+  `children`. `documentSymbol` no longer lists `t` twice, and no type has a
+  field named `extends`.
+
+> Status: planned 2026-09-30. Three aspects, one commit each, as M13 shipped.
+> No `freebasicd.toml` gate: only diagnostics, semantic tokens, inlay hints,
+> and code lens have a `*On` key, and a navigation feature is not something a
+> project turns off. No new translatable strings (an item's `detail` is its
+> own source text), so `po/freebasicd.pot` should not need regenerating —
+> verify rather than assume, since `i18n_checks` fails on a literal missing
+> from it.
 
 ### M16 — Document links + completion resolve + polish (backlog)
 
@@ -1610,11 +1743,11 @@ implementation.
 - **Recorded non-starters** (never scheduled): `moniker`, `linkedEditingRange`,
   `documentColor`/`colorPresentation`, the deprecated `declaration` alias —
   exercises for editors we do not target.
-- **Scheduled but deferred** (each lives in §5 as a backlog milestone, M15–M17):
-  type/go-to + type hierarchy, document links + completion resolve + protocol
-  polish, and the FreeBASIC formatter (M17; high-payback — sets the de-facto
-  standard, scope TBD by a dedicated design pass). Pull diagnostics (M14) left
-  this list on 2026-09-29.
+- **Scheduled but deferred** (each lives in §5 as a milestone, M16–M17):
+  document links + completion resolve + protocol polish, and the FreeBASIC
+  formatter (M17; high-payback — sets the de-facto standard, scope TBD by a
+  dedicated design pass). Type/go-to + type hierarchy (M15) and pull
+  diagnostics (M14) left this list on 2026-09-30 and 2026-09-29.
 
 ## 7. Cross-cutting engineering notes
 

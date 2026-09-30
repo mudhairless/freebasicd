@@ -674,6 +674,62 @@ private:
     addSymbol(std::move(s));
   }
 
+  // `type derived extends base` / `union u extends a`: record the base's lookup
+  // key and consume both tokens, so skipStatement does not capture the
+  // `extends` keyword as a spurious Variable field of the type (it is a
+  // Keyword, and the TYPE/UNION member-capture path takes a bare keyword token
+  // as a field name). `extends object` is the same edge — `Object` is a
+  // keyword, and that is how a UDT gets a VMT — so the base is accepted as an
+  // Identifier *or* a Keyword. Extends is FreeBASIC's only inheritance form:
+  // there is no `Type : base` and no `interface`. A malformed clause (no name
+  // after `extends`) is left for skipStatement to run over, which keeps the
+  // existing behavior rather than inventing a diagnostic here.
+  void takeExtendsClause(Symbol &s) {
+    if (s.kind != SymbolKind::Type && s.kind != SymbolKind::Union) {
+      return;
+    }
+    if (cur_.kind != TokenKind::Keyword ||
+        toLowerChars(cur_.text()) != "extends") {
+      return;
+    }
+    advance();
+    if (cur_.kind != TokenKind::Identifier && cur_.kind != TokenKind::Keyword) {
+      return;
+    }
+    s.extendsKey = toLowerChars(cur_.text());
+    advance();
+  }
+
+  // `sub t.go()` / `function t.val()` / `property Screen.w()` at module level
+  // is the *implementation* of a member procedure `declare`d inside `type t`
+  // (FreeBASIC.md §7: fbc error 17 rejects a definition inside the type body).
+  // Re-key the symbol by the member so it stops claiming the type's key, and
+  // record the owner as the other half of that edge. Only these three kinds
+  // take the form: a Constructor/Destructor implementation is spelled
+  // `constructor t()` with no dot, indistinguishable here from a module
+  // constructor, so it is left alone rather than guessed at.
+  void takeMemberImplementation(Symbol &s) {
+    if (s.kind != SymbolKind::Sub && s.kind != SymbolKind::Function &&
+        s.kind != SymbolKind::Property) {
+      return;
+    }
+    if (s.name.empty() || cur_.kind != TokenKind::Symbol ||
+        cur_.text() != ".") {
+      return;
+    }
+    Token const nxt = lex_.peek(0);
+    if (nxt.kind != TokenKind::Identifier && nxt.kind != TokenKind::Keyword) {
+      return;
+    }
+    s.ownerKey = s.key;
+    advance(); // '.'
+    s.name = std::string(cur_.text());
+    s.key = toLowerChars(s.name);
+    s.selection.beg = cur_.beg;
+    s.selection.end = cur_.end;
+    advance();
+  }
+
   void handleDeclBlock(const std::string &openWord, SymbolKind k) {
     Token const openTok = cur_;
     BlockCloser closer;
@@ -700,6 +756,8 @@ private:
       s.explicitEnum = true;
       advance();
     }
+    takeMemberImplementation(s);
+    takeExtendsClause(s);
     s.signature = headerText(openTok);
     s.doc = takeDoc();
 
@@ -806,6 +864,12 @@ private:
       s.selection.end = cur_.end;
       advance();
     }
+    // Before the alias lookahead: `type derived extends base` has neither a
+    // `:` nor an `as` on the line, so the scan below would leave alias false
+    // anyway — but consuming the clause here is what keeps `extends` out of the
+    // member list, and it has to happen before signature/doc are read so they
+    // still cover the whole opener line.
+    takeExtendsClause(s);
     s.signature = headerText(openTok);
     s.doc = takeDoc();
 
