@@ -777,6 +777,117 @@ int main() {
     }
   }
 
+  // The reverse `extends` projection (M15). `byBaseKey_` answers "which types
+  // extend this one" from a map, so every write path has to keep it honest the
+  // same way it keeps `byKey_` honest — a projection that only grows answers a
+  // deleted type as if it were still there, which is worse than not answering.
+  {
+    fs::path const typeSandbox = makeTmpDir();
+    fs::path const tws = typeSandbox / "types";
+    fs::create_directories(tws);
+    writeFile(tws / "base.bi",
+              "type base_t\n    dim id as integer\nend type\n");
+    writeFile(tws / "mid.bas",
+              "type mid_t extends base_t\n    dim m as integer\nend type\n");
+    writeFile(tws / "leaf.bas",
+              "type leaf_t extends mid_t\n    dim l as integer\nend type\n");
+    // A type that extends nothing is nobody's answer, in either direction.
+    writeFile(tws / "solo.bas",
+              "type solo_t\n    dim s as integer\nend type\n");
+
+    fs::path const basePath = tws / "base.bi";
+    fs::path const midPath = tws / "mid.bas";
+    fs::path const leafPath = tws / "leaf.bas";
+    std::string const baseNorm = normalizePath(basePath);
+    std::string const midNorm = normalizePath(midPath);
+    std::string const leafNorm = normalizePath(leafPath);
+
+    WorkspaceIndex idx(tws);
+    idx.open();
+    idx.scan(false);
+
+    CHECK_MSG(idx.extendingTypes("base_t").size() == 1,
+              "base_t has one direct extender");
+    CHECK_MSG(idx.extendingTypes("base_t").size() == 1 &&
+                  idx.extendingTypes("base_t")[0].decl->name == "mid_t" &&
+                  idx.extendingTypes("base_t")[0].file->path == midNorm,
+              "and it names the type and the file that declare it");
+    CHECK(idx.extendingTypes("mid_t").size() == 1);
+    CHECK_MSG(idx.extendingTypes("leaf_t").empty(),
+              "the leaf of the hierarchy extends nothing");
+    CHECK_MSG(idx.extendingTypes("solo_t").empty(),
+              "a type that extends nothing extends nothing");
+    CHECK(idx.extendingTypes("never_declared").empty());
+    // byKey_ is unaffected: the two projections are independent, and a base
+    // type is still a module-scope declaration.
+    CHECK(idx.byKey("base_t").size() == 1);
+
+    // The transitive walk the resolver layers on top of it sees all three.
+    CHECK_MSG(subtypes("base_t", &idx).size() == 2,
+              "base_t's subtree is mid_t then leaf_t");
+    CHECK(subtypes("solo_t", &idx).empty());
+
+    // remove() drops the reverse entry with the same call that drops the
+    // forward one — the shared helper exists so the two cannot drift.
+    idx.remove(midNorm);
+    CHECK_MSG(idx.extendingTypes("base_t").empty(),
+              "removing the extender removes the reverse entry");
+    CHECK(idx.extendingTypes("mid_t").size() == 1);
+    CHECK_MSG(idx.byKey("mid_t").empty(), "and the forward entry too");
+    CHECK_MSG(subtypes("base_t", &idx).empty(),
+              "the chain is broken, so nothing is below base_t");
+    CHECK_MSG(subtypes("mid_t", &idx).size() == 1,
+              "leaf_t is still below the removed mid_t");
+
+    // A re-scan that puts it back restores both, so the projection is not a
+    // one-way door.
+    idx.scan(false);
+    CHECK(idx.extendingTypes("base_t").size() == 1);
+    CHECK(idx.byKey("mid_t").size() == 1);
+
+    // An external edit that drops the `extends` clause retires the entry
+    // rather than leaving the old edge behind: a stale `extendsKey` would have
+    // the hierarchy report a base the file no longer declares.
+    writeFile(midPath, "type mid_t\n    dim m as integer\nend type\n");
+    idx.scan(false);
+    CHECK_MSG(idx.extendingTypes("base_t").empty(),
+              "dropping the extends clause drops the reverse entry");
+    CHECK(idx.extendingTypes("mid_t").size() == 1);
+    CHECK(subtypes("base_t", &idx).empty());
+
+    // An open buffer outranks disk for the projection too, since the index's
+    // copy of the file is what the reply's offsets are measured against.
+    {
+      AnalyzedDoc const buf = analyze("type mid_t extends base_t\n"
+                                      "    dim m2 as integer\nend type\n");
+      idx.upsert(indexedFileFromAnalysis(midNorm, 4242, 4096, buf, tws,
+                                         /*fromDisk=*/false));
+      CHECK_MSG(idx.extendingTypes("base_t").size() == 1,
+                "an open buffer restores the edge");
+      CHECK(subtypes("base_t", &idx).size() == 2);
+    }
+
+    // A type declared in a *closure* entry (not a scan) contributes too:
+    // byBaseKey_ is filled wherever an IndexedFile enters the index.
+    {
+      std::string const hdr = "type hdr_t extends base_t\n"
+                              "    dim h as integer\nend type\n";
+      AnalyzedDoc const buf = analyze(hdr);
+      std::string const hdrNorm = normalizePath(tws / "hdr.bi");
+      idx.upsert(indexedFileFromAnalysis(hdrNorm, 1, 10, buf, tws,
+                                         /*fromDisk=*/false));
+      CHECK(idx.extendingTypes("base_t").size() == 2);
+      idx.remove(hdrNorm);
+      CHECK(idx.extendingTypes("base_t").size() == 1);
+    }
+
+    (void)basePath;
+    (void)leafPath;
+    (void)leafNorm;
+    idx.close();
+    fs::remove_all(typeSandbox);
+  }
+
   fs::remove_all(sandbox);
 
   if (failures == 0) {

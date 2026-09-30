@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -609,57 +610,66 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
   return out;
 }
 
+namespace {
+
+bool isSigWordChar(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+         (c >= '0' && c <= '9') || c == '_';
+}
+
+// The next identifier in a declaration signature, with `i` left just past it.
+//
+// `i` always moves. A signature is not a sequence of identifiers — it is the
+// opener line as written, so it carries `(`, `)`, `,` and `.` (`dim
+// arr(10) as integer`, `sub s()`, `type t extends a`) — and a word scan that
+// stopped on the first non-word character without stepping over it left the
+// caller exactly where it started, so the surrounding `while` spun forever on
+// any signature holding a parenthesis. Punctuation is skipped by the caller's
+// loop, not here: returning an empty word and advancing is what makes the
+// empty word a terminator rather than a stall.
+std::string_view nextSigWord(std::string_view sig, size_t &i) {
+  while (i < sig.size() && (sig[i] == ' ' || sig[i] == '\t')) {
+    ++i;
+  }
+  size_t const wb = i;
+  while (i < sig.size() && isSigWordChar(sig[i])) {
+    ++i;
+  }
+  if (i == wb && i < sig.size()) {
+    ++i; // a non-word character: step over it so the scan cannot stall
+  }
+  return sig.substr(wb, i - wb);
+}
+
+} // namespace
+
 std::string declaredTypeName(Symbol const &decl) {
   std::string_view const sig = decl.signature;
   size_t i = 0;
   while (i < sig.size()) {
-    while (i < sig.size() && (sig[i] == ' ' || sig[i] == '\t')) {
-      ++i;
+    std::string_view const w = nextSigWord(sig, i);
+    if (w.empty()) {
+      return {}; // end of the line: no `as` in it
     }
-    size_t const wb = i;
-    while (i < sig.size() &&
-           ((sig[i] >= 'a' && sig[i] <= 'z') ||
-            (sig[i] >= 'A' && sig[i] <= 'Z') || sig[i] == '_' ||
-            (sig[i] >= '0' && sig[i] <= '9'))) {
-      ++i;
+    if (toLowerChars(w) != "as") {
+      continue;
     }
-    std::string_view const w = sig.substr(wb, i - wb);
-    if (toLowerChars(w) == "as") {
-      while (i < sig.size() && (sig[i] == ' ' || sig[i] == '\t')) {
-        ++i;
+    std::string const t{nextSigWord(sig, i)};
+    std::string const tl = toLowerChars(t);
+    // `as const integer x`, `as byref UDT x`: drop a leading type modifier
+    // so the type name itself is returned.
+    if (tl == "const" || tl == "byref" || tl == "byval" || tl == "shared" ||
+        tl == "static" || tl == "export") {
+      std::string const t2{nextSigWord(sig, i)};
+      if (t2.empty()) {
+        return {};
       }
-      size_t const tb = i;
-      while (i < sig.size() &&
-             ((sig[i] >= 'a' && sig[i] <= 'z') ||
-              (sig[i] >= 'A' && sig[i] <= 'Z') || sig[i] == '_' ||
-              (sig[i] >= '0' && sig[i] <= '9'))) {
-        ++i;
-      }
-      std::string_view const t = sig.substr(tb, i - tb);
-      std::string const tl = toLowerChars(t);
-      // `as const integer x`, `as byref UDT x`: drop a leading type modifier
-      // so the type name itself is returned.
-      if (tl == "const" || tl == "byref" || tl == "byval" || tl == "shared" ||
-          tl == "static" || tl == "export") {
-        while (i < sig.size() && (sig[i] == ' ' || sig[i] == '\t')) {
-          ++i;
-        }
-        size_t const tb2 = i;
-        while (i < sig.size() &&
-               ((sig[i] >= 'a' && sig[i] <= 'z') ||
-                (sig[i] >= 'A' && sig[i] <= 'Z') || sig[i] == '_' ||
-                (sig[i] >= '0' && sig[i] <= '9'))) {
-          ++i;
-        }
-        if (tb2 < i) {
-          return std::string(sig.substr(tb2, i - tb2));
-        }
-      }
-      if (tb < i) {
-        return std::string(sig.substr(tb, i - tb));
-      }
+      return t2;
+    }
+    if (t.empty()) {
       return {};
     }
+    return t;
   }
   return {};
 }
@@ -1223,6 +1233,291 @@ MemberCompletion resolveMemberCompletion(AnalyzedDoc const &doc,
     mc.members.push_back(&m);
   }
   return mc;
+}
+
+// ---------------------------------------------------------------------------
+// Type graph and member implementation (M15)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+TypeItem typeItemOf(Symbol const &decl, std::string const &file) {
+  TypeItem item;
+  item.file = file;
+  item.name = decl.name;
+  item.detail = decl.signature;
+  item.range = decl.range;
+  item.selection = decl.selection;
+  item.kind = decl.kind;
+  return item;
+}
+
+// The declaring file of a resolved declaration: the snapshot it was found in,
+// or the requesting document when it resolved in-file. One name for it because
+// every reply below needs the same answer, and "which file do these offsets
+// belong to" is the question that must not be asked twice (AGENTS.md: an
+// offset is meaningless without the content it is relative to).
+std::string fileOfDecl(CrossDecl const &c, std::string const &requestPath) {
+  return c.file ? c.file->path : requestPath;
+}
+
+} // namespace
+
+CrossDecl findVisibleMember(AnalyzedDoc const &doc,
+                            std::string const &normalizedPath,
+                            std::string const &typeKey,
+                            std::string const &memberKey,
+                            WorkspaceIndex const *index) {
+  if (typeKey.empty() || memberKey.empty()) {
+    return {};
+  }
+  // `seen` is the cycle guard and doubles as the visited set: a type already
+  // asked cannot hold a member the walk has not already considered.
+  std::set<std::string> seen;
+  std::string key = typeKey;
+  for (;;) {
+    if (!seen.insert(key).second) {
+      return {};
+    }
+    CrossDecl const type = findTypeDecl(doc, normalizedPath, key, index);
+    if (type.decl == nullptr) {
+      return {};
+    }
+    if (Symbol const *const own = findMember(*type.decl, memberKey)) {
+      return CrossDecl{type.file, own};
+    }
+    if (type.decl->extendsKey.empty()) {
+      return {};
+    }
+    key = type.decl->extendsKey;
+  }
+}
+
+namespace {
+
+// The member-procedure implementation edge, one direction. `wantOwner` says
+// which side of the edge the caller is standing on: a root qualifies an
+// implementation when it carries `typeKey` as its owner, and a type's child
+// declares a member by its own key. Both sides are searched the same way —
+// the requesting document's roots, then the include closure — because a
+// `declare` in a header and its `sub t.go()` in the includer .bas are usually
+// in *different* files, and `transitiveIncludes` does not contain the
+// requesting document itself.
+CrossDecl memberEdge(AnalyzedDoc const &doc, std::string const &normalizedPath,
+                     std::string const &typeKey, std::string const &memberKey,
+                     WorkspaceIndex const *index, bool wantOwner) {
+  if (typeKey.empty() || memberKey.empty()) {
+    return {};
+  }
+  auto matches = [&](Symbol const &s) {
+    if (s.key != memberKey) {
+      return false;
+    }
+    if (wantOwner) {
+      // A module-level root: `sub t.go()`. Only the procedure kinds take the
+      // qualifier (Symbol::ownerKey), so a `dim t.go` cannot answer.
+      return s.ownerKey == typeKey;
+    }
+    // A type's child: the `declare` side. A field is not a member procedure,
+    // and neither is an undeclared nested block.
+    return (s.kind == SymbolKind::Sub || s.kind == SymbolKind::Function ||
+            s.kind == SymbolKind::Property) &&
+           s.ownerKey.empty();
+  };
+  auto scan = [&](std::vector<Symbol> const &roots,
+                  std::shared_ptr<IndexedFile const> const &file) -> CrossDecl {
+    if (wantOwner) {
+      for (Symbol const &root : roots) {
+        if (matches(root)) {
+          return CrossDecl{file, &root};
+        }
+      }
+      return {};
+    }
+    for (Symbol const &root : roots) {
+      if ((root.kind != SymbolKind::Type && root.kind != SymbolKind::Union) ||
+          root.key != typeKey) {
+        continue;
+      }
+      for (Symbol const &child : root.children) {
+        if (matches(child)) {
+          return CrossDecl{file, &child};
+        }
+      }
+    }
+    return {};
+  };
+  if (CrossDecl const own = scan(doc.parse.roots, nullptr);
+      own.decl != nullptr) {
+    return own;
+  }
+  if (index == nullptr) {
+    return {};
+  }
+  for (std::string const &p : index->transitiveIncludes(normalizedPath)) {
+    std::shared_ptr<IndexedFile const> const file = index->fileAt(p);
+    if (!file) {
+      continue;
+    }
+    if (CrossDecl const hit = scan(file->roots, file); hit.decl != nullptr) {
+      return hit;
+    }
+  }
+  return {};
+}
+
+} // namespace
+
+CrossDecl memberImplementation(AnalyzedDoc const &doc,
+                               std::string const &normalizedPath,
+                               std::string const &typeKey,
+                               std::string const &memberKey,
+                               WorkspaceIndex const *index) {
+  return memberEdge(doc, normalizedPath, typeKey, memberKey, index,
+                    /*wantOwner=*/true);
+}
+
+CrossDecl memberDeclaration(AnalyzedDoc const &doc,
+                            std::string const &normalizedPath,
+                            std::string const &typeKey,
+                            std::string const &memberKey,
+                            WorkspaceIndex const *index) {
+  return memberEdge(doc, normalizedPath, typeKey, memberKey, index,
+                    /*wantOwner=*/false);
+}
+
+namespace {
+
+// The four cases `typeOf` answers, in order. Split out so the shape is stated
+// once: the caller is a *declaration*, and what its type is depends on which of
+// these four roles it plays.
+//
+//   1. a type or union root — it is its own type;
+//   2. a member of a type body (`declare sub go()`, or a field in the body) —
+//      the type that owns it;
+//   3. the member of a module-level implementation (`sub t.go()`) — the type it
+//      implements a member of;
+//   4. an ordinary declaration carrying an explicit `as <type>` — that type.
+//
+// `tree` is the symbol tree `target.decl` lives in, which is not always
+// `doc.parse.roots`: a cross-file resolution lands in a snapshot's roots, and
+// reading the wrong tree would answer with a parent that does not exist there.
+std::optional<TypeItem>
+typeOfDecl(std::vector<Symbol> const &tree, CrossDecl const &target,
+           std::string const &requestPath, AnalyzedDoc const &doc,
+           std::string const &normalizedPath, WorkspaceIndex const *index) {
+  if (target.decl == nullptr) {
+    return std::nullopt;
+  }
+  if (target.decl->kind == SymbolKind::Type ||
+      target.decl->kind == SymbolKind::Union) {
+    return typeItemOf(*target.decl, fileOfDecl(target, requestPath));
+  }
+  if (Symbol const *const owner = parentOf(tree, target.decl);
+      owner != nullptr &&
+      (owner->kind == SymbolKind::Type || owner->kind == SymbolKind::Union)) {
+    return typeItemOf(*owner, fileOfDecl(target, requestPath));
+  }
+  if (!target.decl->ownerKey.empty()) {
+    CrossDecl const ownerType =
+        findTypeDecl(doc, normalizedPath, target.decl->ownerKey, index);
+    if (ownerType.decl != nullptr) {
+      return typeItemOf(*ownerType.decl, fileOfDecl(ownerType, requestPath));
+    }
+  }
+  std::string const declared = declaredTypeName(*target.decl);
+  if (declared.empty()) {
+    return std::nullopt;
+  }
+  CrossDecl const type =
+      findTypeDecl(doc, normalizedPath, toLowerChars(declared), index);
+  if (type.decl == nullptr) {
+    return std::nullopt;
+  }
+  return typeItemOf(*type.decl, fileOfDecl(type, requestPath));
+}
+
+} // namespace
+
+std::optional<TypeItem> typeOf(AnalyzedDoc const &doc,
+                               std::string const &normalizedPath,
+                               std::uint32_t off, WorkspaceIndex const *index) {
+  if (index == nullptr) {
+    // No workspace: in-file only, which is also the tier-1 half of the
+    // three-tier lookup and the contract every sibling function here keeps.
+    return typeOfDecl(doc.parse.roots, CrossDecl{nullptr, resolveAt(doc, off)},
+                      normalizedPath, doc, normalizedPath, nullptr);
+  }
+  CrossDecl const target = resolveAcross(doc, normalizedPath, off, *index);
+  return typeOfDecl(target.file ? target.file->roots : doc.parse.roots, target,
+                    normalizedPath, doc, normalizedPath, index);
+}
+
+std::vector<TypeItem> supertypes(AnalyzedDoc const &doc,
+                                 std::string const &normalizedPath,
+                                 std::string const &typeKey,
+                                 WorkspaceIndex const *index) {
+  std::vector<TypeItem> out;
+  if (typeKey.empty()) {
+    return out;
+  }
+  // `seen` starts with the type the caller asked about, so a cycle back to it
+  // stops the walk instead of looping.
+  std::set<std::string> seen{typeKey};
+  std::string key = typeKey;
+  for (;;) {
+    CrossDecl const type = findTypeDecl(doc, normalizedPath, key, index);
+    if (type.decl == nullptr) {
+      return out;
+    }
+    std::string const next = type.decl->extendsKey;
+    if (next.empty() || !seen.insert(next).second) {
+      return out;
+    }
+    CrossDecl const base = findTypeDecl(doc, normalizedPath, next, index);
+    if (base.decl == nullptr) {
+      return out;
+    }
+    out.push_back(typeItemOf(*base.decl, fileOfDecl(base, normalizedPath)));
+    key = next;
+  }
+}
+
+// The types below `typeKey`, breadth-first from the reverse `extends`
+// projection, so the answer is direct *and* indirect subtypes the way the
+// protocol asks — a `typeHierarchy/subtypes` reply is the whole subtree, and a
+// direct-only answer would send a client up one level at a time to reach a
+// subtype two levels down.
+//
+// Breadth-first rather than the chain `supertypes` walks because this direction
+// fans out: each level is the concatenation of the previous one's answers, in
+// the projection's scan order, which keeps a `TypeHierarchyItem.children` list
+// deterministic. A cycle a lenient parse let through (`type a extends b` /
+// `type b extends a`) terminates because `seen` never revisits a key, and such
+// a pair is not a shape fbc accepts anyway.
+std::vector<TypeItem> subtypes(std::string const &typeKey,
+                               WorkspaceIndex const *index) {
+  std::vector<TypeItem> out;
+  if (typeKey.empty() || index == nullptr) {
+    return out;
+  }
+  std::set<std::string> seen{typeKey};
+  std::vector<std::string> frontier{typeKey};
+  while (!frontier.empty()) {
+    std::vector<std::string> next;
+    for (std::string const &base : frontier) {
+      for (KeyedDecl const &kd : index->extendingTypes(base)) {
+        if (kd.decl == nullptr || kd.file == nullptr ||
+            !seen.insert(kd.decl->key).second) {
+          continue;
+        }
+        out.push_back(typeItemOf(*kd.decl, kd.file->path));
+        next.push_back(kd.decl->key);
+      }
+    }
+    frontier = std::move(next);
+  }
+  return out;
 }
 
 } // namespace fblang

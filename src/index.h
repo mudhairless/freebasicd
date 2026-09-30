@@ -133,6 +133,22 @@ public:
   // references through the #include closure.
   std::vector<KeyedDecl> byKey(std::string const &key) const;
 
+  // The indexed types that extend the type whose key is `typeKey` — the
+  // reverse of the `extends` edge, so the subtypes half of a type hierarchy
+  // answers from a map instead of a workspace sweep. Includes open-buffer
+  // entries; one entry per declaring type, in scan order. `typeKey` is a
+  // *base's* key, so a type that extends nothing is never anyone's answer.
+  // Only *direct* extenders: the walk to indirect subtypes is the caller's,
+  // because only the caller knows whether it wants the subtree.
+  //
+  // Deliberately workspace-wide, unlike the closure-scoped lookups beside it:
+  // a derived type is a fact about the whole project, and a request that only
+  // searched the requesting file's include closure would miss a subtype
+  // declared in a sibling .bas. A key may list more than one type, and a
+  // cycle a lenient parse let through lists an ancestor of itself — the caller
+  // (`fblang::subtypes`) stops at a repeated key.
+  std::vector<KeyedDecl> extendingTypes(std::string const &typeKey) const;
+
   // Transitively included normalized paths of `normalizedPath` (itself
   // excluded), textual include pre-order, each file once even through a
   // diamond; cycles (a.bi <-> b.bi) terminate. Answers from the workspace
@@ -209,6 +225,8 @@ private:
   std::map<std::string, std::shared_ptr<IndexedFile const>> files_;
   std::map<std::string, std::vector<KeyedDecl>>
       byKey_; // key -> module-scope decls
+  std::map<std::string, std::vector<KeyedDecl>>
+      byBaseKey_; // base type key -> the Type/Union roots that extend it
   std::map<std::string, std::vector<IncludeEdge>>
       outInc_; // path -> include edges
 

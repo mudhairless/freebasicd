@@ -78,7 +78,10 @@ stable shape:
   owner type's members filtered by the `Access` gate + owner-context). Enum
   members of plain enums join the module name space via
   `moduleLevelCandidates` (explicit-enum members stay gated behind
-  `Name.member`, §8 Enums).
+  `Name.member`, §8 Enums). The M15 type graph joins them here rather than in a
+  module of its own: `TypeItem`, `typeOf`, `supertypes`, `subtypes`,
+  `findVisibleMember` (own members, then each base in turn), and the
+  `memberImplementation` / `memberDeclaration` pair.
 - `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index, purely
   in memory (nothing is ever written to disk), background scan + debounced
   watched-files rescan threads, immutable `IndexedFile` entries + snapshot
@@ -161,8 +164,8 @@ stable shape:
   snapshot); `typeOf` answers which type a symbol at an offset has; `supertypes`
   follows the `extendsKey` edge nearest-first through the request's include
   closure, revisiting no key; `subtypes` is the workspace-wide half and answers
-  from `WorkspaceIndex::extendingTypes`, a second projection maintained beside
-  `byKey_`; `memberImplementation` / `memberDeclaration` are the two ends of a
+  from `WorkspaceIndex::extendingTypes` (the direct extenders), which it walks
+  breadth-first into the whole subtree the protocol asks for; `memberImplementation` / `memberDeclaration` are the two ends of a
   member procedure's `declare`↔defined edge, separate names rather than one
   function with a direction flag; `findVisibleMember` is `findMember` plus the
   `extends` walk, so an inherited field resolves and appears in completion.
@@ -1224,7 +1227,9 @@ parser, not by reading it):
   the payoff of aspect 1 for features that already exist: a member lookup that
   walks `extends` when the type's own children do not hold the name, which is
   what makes an inherited field resolve on hover/definition and appear in
-  `derived.` completion.
+  `derived.` completion. The `subtypes` walk is the resolver's, not the index's:
+  `extendingTypes` is direct-only, and `subtypes` does the breadth-first
+  subtree walk over it — see the status block below for why.
 - **Aspect 3 — the wire** (`src/type_hierarchy_lsp.h`, `src/session.{h,cpp}`,
   `session_integration`, `README.md`). `typeDefinition` and `implementation`
   use LspCpp's `td_typeDefinition`/`td_implementation` as shipped
@@ -1245,8 +1250,10 @@ parser, not by reading it):
   argument `callHierarchyIdentity` is built on.
 - Acceptance: `typeDefinition` on a `dim v as base_t` in a `.bas` lands on the
   `type base_t` name token in a header, and on a field inside a type body lands
-  on that type; `implementation` crosses from a `declare sub go()` in a header
-  to the `sub t.go()` in the includer `.bas` **and** back; `prepare` on a
+  on that type; `implementation` crosses from the includer `.bas`'s
+  `sub t.go()` to the `declare` in the header, and — in the other layout, a
+  header that includes the implementing header — from a `declare` to the
+  implementation across a file; `prepare` on a
   derived type returns one item carrying both its base and its children, and
   `supertypes`/`subtypes` answer from the item the client echoes back;
   `subtypes` finds a derived type declared in a file the request never opened.
@@ -1261,6 +1268,51 @@ parser, not by reading it):
 > own source text), so `po/freebasicd.pot` should not need regenerating —
 > verify rather than assume, since `i18n_checks` fails on a literal missing
 > from it.
+>
+> Status: aspects 1–2 landed 2026-09-30 (`1d4c117`, `feat(resolve): query the
+> type graph and the member-implementation edge`). `subtypes` came out as the
+> whole subtree, breadth-first, not the direct extenders: `typeHierarchy/
+> subtypes` is defined as direct *and* indirect, and a direct-only answer would
+> send a client up one level at a time to reach a subtype two levels down. The
+> breadth-first order is what makes a `TypeHierarchyItem.children` list
+> deterministic, which is why the walk is a queue rather than `supertypes`'s
+> chain. `extendingTypes` on the index therefore stays direct-only — the walk
+> is the caller's, because only the caller knows whether it wants the subtree.
+>
+> Two things the plan did not predict, both found by running the code:
+>
+> 1. **`transitiveIncludes` does not contain the requesting document.** The
+>    member-edge search originally started there and so could not see the
+>    requesting file at all — the common FreeBASIC layout (a header declares,
+>    the includer `.bas` implements) is in-file on both sides. It now searches
+>    `doc.parse.roots` first, exactly as `findTypeDecl` does, and an in-file
+>    answer carries a null file, which reads as "the requesting document".
+> 2. **Only one direction of the member edge can cross a file boundary**, and
+>    which one depends on where the `#include` points: a request stands on one
+>    half and reaches the other through *its own* closure, so a header that
+>    declares and includes the implementing header crosses forward, while the
+>    ordinary layout (the includer `.bas` implements) crosses backward. Both
+>    shapes are in `TestMemberImplementationAndDeclaration` — one function, two
+>    layouts — because a single fixture would have made the other direction look
+>    unreachable when it is merely differently shaped. A request from the
+>    *declaring* header in the ordinary layout is a legitimate empty answer:
+>    the implementing `.bas` is not in the header's closure, and a workspace
+>    sweep would be a lie.
+>
+> **`declaredTypeName` had an unbounded loop, and the M15 type query reached
+> it.** It scans the declaration's signature — the opener line as written — for
+> the word `as`, and its inner word loop stopped at the first non-word
+> character without stepping over it, so the enclosing `while` made no progress
+> on any signature holding a parenthesis. `dim arr(10) as integer` is an
+> ordinary FreeBASIC line, so this was a hang waiting for a caller that asks a
+> variable's type; `typeOf` is that caller (case 4, an ordinary `as <type>`),
+> and it is the first to pass a symbol whose signature holds punctuation. Fixed
+> by extracting `nextSigWord`, whose contract is that `i` always moves —
+> blanks, word, or the one punctuation character that ended it — with
+> `TestDeclaredTypeNameScansPastPunctuation` pinning the nine shapes. Worth
+> remembering as a class: *a word scan inside a `while` over the same buffer
+> needs a stated progress invariant*, because a parser that mostly sees
+> identifiers never exercises the other branch until a new caller does.
 
 ### M16 — Document links + completion resolve + polish (backlog)
 

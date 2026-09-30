@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -569,6 +570,517 @@ static void TestOccurrencesAcrossSingleFile() {
 // Cross-file workspace rename: a shared module dim is renamed from a client
 // file; candidates are the closure plus reverse reachability, and every site
 // is re-resolved so a shadowing or gated same-named local is untouched.
+// --- M15: the type graph --------------------------------------------------
+//
+// One fixture for every query here, because the questions are only
+// interesting against a real graph: a three-level extends chain declared in a
+// header, member procedures whose two halves sit in *different* files, and a
+// grandchild type in a third file the requesting document never includes — so
+// `subtypes` can be shown to see past the request's own closure.
+//
+// The member edge gets two shapes, because only one direction can cross a file
+// boundary and which one depends on where the include points. A request stands
+// on one half and reaches the other through *its own* closure, so:
+//
+//   - `types.bi` includes `impl.bi`, and holds the `declare sub go()`. Asking
+//     from types.bi reaches the `sub leaf_t.go()` in impl.bi — the forward
+//     direction, across a file.
+//   - `lib2.bi` holds the `declare sub run()` and includes nothing, while
+//     `main.bas` includes it and holds the `sub other_t.run()`. Asking from
+//     main.bas reaches the declaration in lib2.bi — the backward direction,
+//     across a file — and asking from lib2.bi reaches nothing, which is the
+//     honest answer: main.bas is not in lib2.bi's closure.
+//
+// The mirror of the second shape is the most common FreeBASIC layout of all
+// (a header declares, the includer .bas implements), and there both halves are
+// in the requesting document's own text — covered in-file below.
+struct TypeGraphFixture {
+  std::filesystem::path ws;
+  std::string implBi;  // the module-level implementation of leaf_t.go
+  std::string typesBi; // includes impl.bi; the base chain + the declared member
+  std::string lib2Bi;  // the declared member of other_t, including nothing
+  std::string mainBas; // includes types.bi and lib2.bi, and uses the types
+  std::string otherBas; // unrelated file, still in the workspace
+
+  std::string const implNorm;
+  std::string const typesNorm;
+  std::string const lib2Norm;
+  std::string const mainNorm;
+  std::string const otherNorm;
+
+  TypeGraphFixture()
+      : ws(MakeTmpDir() / "ws"), implBi("sub leaf_t.go()\n"
+                                        "    print \"go\"\n"
+                                        "end sub\n"),
+        typesBi("#include \"impl.bi\"\n"
+                "\n"
+                "type base_t\n"
+                "    dim id as integer\n"
+                "end type\n"
+                "\n"
+                "type mid_t extends base_t\n"
+                "    dim midField as string\n"
+                "end type\n"
+                "\n"
+                "type leaf_t extends mid_t\n"
+                "    declare sub go()\n"
+                "end type\n"
+                "\n"
+                "union box\n"
+                "    dim w as double\n"
+                "end union\n"),
+        lib2Bi("type other_t\n"
+               "    declare sub run()\n"
+               "end type\n"),
+        mainBas("#include \"types.bi\"\n"
+                "#include \"lib2.bi\"\n"
+                "\n"
+                "sub other_t.run()\n"
+                "    print \"run\"\n"
+                "end sub\n"
+                "\n"
+                "dim v as base_t\n"
+                "dim w as mid_t\n"),
+        otherBas("type grand_t extends leaf_t\n"
+                 "    dim deep as integer\n"
+                 "end type\n"),
+        implNorm(normalizePath(ws / "impl.bi")),
+        typesNorm(normalizePath(ws / "types.bi")),
+        lib2Norm(normalizePath(ws / "lib2.bi")),
+        mainNorm(normalizePath(ws / "main.bas")),
+        otherNorm(normalizePath(ws / "other.bas")) {
+    std::filesystem::create_directories(ws);
+    WriteFile(ws / "impl.bi", implBi);
+    WriteFile(ws / "types.bi", typesBi);
+    WriteFile(ws / "lib2.bi", lib2Bi);
+    WriteFile(ws / "main.bas", mainBas);
+    WriteFile(ws / "other.bas", otherBas);
+  }
+
+  std::unique_ptr<WorkspaceIndex> open() const {
+    auto idx = std::make_unique<WorkspaceIndex>(ws);
+    idx->open();
+    idx->scan(false);
+    return idx;
+  }
+};
+
+// `supertypes` walks up the chain from a declaration, nearest first, and stops
+// where the chain does — the header declares all three, so the whole walk is
+// in-file and needs no index at all.
+static void TestSupertypesWalkTheExtendsChain() {
+  std::string const src = "type base_t\n"
+                          "    dim id as integer\n"
+                          "end type\n"
+                          "type mid_t extends base_t\n"
+                          "end type\n"
+                          "type leaf_t extends mid_t\n"
+                          "end type\n";
+  AnalyzedDoc const doc = analyze(src);
+  std::string const path = "/virtual/chain.bas";
+
+  std::vector<TypeItem> const leaf = supertypes(doc, path, "leaf_t", nullptr);
+  CHECK_MSG(leaf.size() == 2, "leaf_t's ancestors are mid_t then base_t");
+  if (leaf.size() == 2) {
+    CHECK(leaf[0].name == "mid_t" && leaf[1].name == "base_t");
+    CHECK(leaf[0].file == path);
+    // The whole TYPE ... END TYPE, so a client can highlight the declaration.
+    CHECK(leaf[1].range.beg == 0);
+    CHECK(leaf[1].selection.beg ==
+          static_cast<std::uint32_t>(src.find("base_t")));
+  }
+
+  CHECK(supertypes(doc, path, "base_t", nullptr).empty());
+  CHECK(supertypes(doc, path, "", nullptr).empty());
+
+  // A base that is not declared stops the walk rather than inventing an
+  // ancestor: fbc has no forward base references, so this is a defect, not a
+  // form to answer for.
+  {
+    std::string const broken =
+        "type derived extends never_declared\nend type\n";
+    AnalyzedDoc const docBroken = analyze(broken);
+    CHECK(supertypes(docBroken, path, "derived", nullptr).empty());
+  }
+
+  // A union is a type in the graph, in both directions: `u extends shape` puts
+  // it in the hierarchy, and a `type` may extend it.
+  {
+    std::string const src2 = "type shape\nend type\n"
+                             "union u extends shape\nend union\n"
+                             "type d extends u\nend type\n";
+    AnalyzedDoc const doc2 = analyze(src2);
+    std::vector<TypeItem> const su = supertypes(doc2, path, "d", nullptr);
+    CHECK_MSG(su.size() == 2 && su[0].name == "u" && su[1].name == "shape",
+              "type d extends u extends shape reports both ancestors");
+    CHECK_MSG(su.size() == 2 && su[0].kind == SymbolKind::Union,
+              "the union is reported as a Union, not as a Type");
+  }
+
+  // A cycle a lenient parse let through terminates instead of looping. fbc
+  // rejects it, so the shape only has to not hang — and the type the walk
+  // started from is not its own ancestor.
+  {
+    std::string const cyc = "type a extends b\nend type\n"
+                            "type b extends a\nend type\n";
+    AnalyzedDoc const docCyc = analyze(cyc);
+    std::vector<TypeItem> const sup = supertypes(docCyc, path, "a", nullptr);
+    CHECK_MSG(sup.size() == 1 && sup[0].name == "b",
+              "a cycle yields the other type once, not forever");
+  }
+}
+
+// `subtypes` is the other half: it starts from a type and has to see the whole
+// workspace, so it answers from the reverse projection rather than the
+// requesting document's closure. `grand_t` lives in a file `main.bas` never
+// includes — that is the whole reason the reverse half is workspace-wide.
+static void TestSubtypesSeePastTheRequestClosure() {
+  TypeGraphFixture const fx;
+  std::unique_ptr<WorkspaceIndex> const idx = fx.open();
+  AnalyzedDoc const doc = analyze(fx.mainBas);
+
+  std::vector<TypeItem> const subs = subtypes("base_t", idx.get());
+  CHECK_MSG(subs.size() == 3, "base_t's subtree is mid_t, leaf_t, grand_t");
+  if (subs.size() == 3) {
+    // Breadth-first: direct subtypes before indirect ones.
+    CHECK(subs[0].name == "mid_t" && subs[1].name == "leaf_t" &&
+          subs[2].name == "grand_t");
+    // Declared in the closure, then in a file the request never opened.
+    CHECK(subs[0].file == fx.typesNorm);
+    CHECK(subs[2].file == fx.otherNorm);
+  }
+
+  CHECK(subtypes("leaf_t", idx.get()).size() == 1);
+  CHECK_MSG(subtypes("grand_t", idx.get()).empty(),
+            "a leaf of the hierarchy extends nothing");
+  CHECK(subtypes("mid_t", nullptr).empty());
+  CHECK(subtypes("", idx.get()).empty());
+  // A key nobody extends, and a key that is not a type at all.
+  CHECK(subtypes("never_declared", idx.get()).empty());
+  CHECK(subtypes("go", idx.get()).empty());
+}
+
+// The two halves of the member-procedure edge, crossed both ways and both in
+// one file. A `declare` lives inside the type; its implementation is a
+// module-level root qualified by the type name (fbc error 17: a member
+// procedure cannot be defined in a type body), and here the two are in
+// different files, so this is a closure search.
+static void TestMemberImplementationAndDeclaration() {
+  TypeGraphFixture const fx;
+  std::unique_ptr<WorkspaceIndex> const idx = fx.open();
+
+  // Forward: standing on the `declare sub go()` in types.bi, the far end is
+  // the module-level root in impl.bi — reached through types.bi's own include
+  // closure, so the answer carries a file that is not the request's own.
+  AnalyzedDoc const typesDoc = analyze(fx.typesBi);
+  CrossDecl const impl =
+      memberImplementation(typesDoc, fx.typesNorm, "leaf_t", "go", idx.get());
+  CHECK_MSG(impl.decl != nullptr, "the declared member has an implementation");
+  if (impl.decl != nullptr) {
+    CHECK(impl.decl->name == "go" && impl.decl->ownerKey == "leaf_t");
+    CHECK_MSG(impl.file && impl.file->path == fx.implNorm,
+              "the implementation is found in another file of the closure");
+    CHECK(impl.decl->range.beg ==
+          static_cast<std::uint32_t>(fx.implBi.find("sub leaf_t.go")));
+  }
+
+  // Backward, across a file: standing on the `sub other_t.run()` in main.bas,
+  // the far end is the `declare` in lib2.bi.
+  AnalyzedDoc const mainDoc = analyze(fx.mainBas);
+  CrossDecl const decl =
+      memberDeclaration(mainDoc, fx.mainNorm, "other_t", "run", idx.get());
+  CHECK_MSG(decl.decl != nullptr, "the implementation has a declaration");
+  if (decl.decl != nullptr) {
+    CHECK(decl.decl->kind == SymbolKind::Sub && decl.decl->name == "run");
+    CHECK(decl.decl->ownerKey.empty());
+    CHECK(decl.file && decl.file->path == fx.lib2Norm);
+    CHECK(decl.decl->range.beg ==
+          static_cast<std::uint32_t>(fx.lib2Bi.find("declare sub run")));
+  }
+  // The same layout, forward, with no index: both halves are in the requesting
+  // document's own text, which is the common case (a header declares, the
+  // includer .bas implements). An in-file answer carries a null file, which
+  // reads as "the requesting document" exactly as findTypeDecl reports it, so
+  // the session never has to know how the answer was found.
+  {
+    CrossDecl const own =
+        memberImplementation(mainDoc, fx.mainNorm, "other_t", "run", idx.get());
+    CHECK_MSG(own.decl != nullptr && own.decl->ownerKey == "other_t" &&
+                  own.file == nullptr,
+              "the includer .bas's own implementation is an in-file answer");
+  }
+  // The key that is asked for is the member's, not the type's: a request
+  // standing on the `other_t` qualifier of `sub other_t.run()` is about the
+  // type.
+  CHECK(memberDeclaration(mainDoc, fx.mainNorm, "other_t", "other_t", idx.get())
+            .decl == nullptr);
+
+  // A field is not a member procedure, in either direction: a `dim` inside a
+  // type is a field, and a module-level `dim t.go` is not an implementation.
+  // A Function *is* one — only Sub/Function/Property take the qualifier.
+  {
+    std::string const src = "type t\n"
+                            "    dim go as integer\n"
+                            "    declare function val() as integer\n"
+                            "end type\n"
+                            "dim t.go as integer\n"
+                            "function t.val() as integer\n"
+                            "    return 1\n"
+                            "end function\n"
+                            "type u\n"
+                            "    declare sub never()\n"
+                            "end type\n";
+    AnalyzedDoc const d = analyze(src);
+    std::string const path = "/virtual/field.bas";
+    CHECK(memberDeclaration(d, path, "t", "go", nullptr).decl == nullptr);
+    CHECK(memberImplementation(d, path, "t", "go", nullptr).decl == nullptr);
+    CHECK(memberDeclaration(d, path, "t", "val", nullptr).decl != nullptr);
+    CHECK(memberImplementation(d, path, "t", "val", nullptr).decl != nullptr);
+    // A declared member with no implementation has no far end, in either
+    // direction.
+    CHECK(memberImplementation(d, path, "u", "never", nullptr).decl == nullptr);
+    CHECK(memberDeclaration(d, path, "t", "never", nullptr).decl == nullptr);
+  }
+  // The wrong owner is a different type's member, not this one's.
+  CHECK(memberImplementation(typesDoc, fx.typesNorm, "mid_t", "go", idx.get())
+            .decl == nullptr);
+  CHECK(
+      memberImplementation(typesDoc, fx.typesNorm, "", "go", idx.get()).decl ==
+      nullptr);
+  // The edge is a closure search, not a workspace sweep. lib2.bi holds the
+  // `declare sub run()` and includes nothing, so main.bas's implementation of
+  // it is outside its closure; other.bas declares grand_t, which extends
+  // leaf_t, and reaches neither file. Both are the honest empty answer, and
+  // both would be wrong if the search were a workspace sweep.
+  {
+    AnalyzedDoc const lib2Doc = analyze(fx.lib2Bi);
+    CHECK(
+        memberImplementation(lib2Doc, fx.lib2Norm, "other_t", "run", idx.get())
+            .decl == nullptr);
+    AnalyzedDoc const otherDoc = analyze(fx.otherBas);
+    CHECK(
+        memberImplementation(otherDoc, fx.otherNorm, "grand_t", "go", idx.get())
+            .decl == nullptr);
+  }
+}
+
+// The payoff of the extends edge for the features that already exist: a
+// member lookup that falls through to the base types, so an inherited field
+// resolves instead of being reported missing.
+static void TestFindVisibleMemberInheritsFields() {
+  std::string const src = "type base_t\n"
+                          "    dim id as integer\n"
+                          "end type\n"
+                          "type mid_t extends base_t\n"
+                          "    dim midField as string\n"
+                          "end type\n"
+                          "type leaf_t extends mid_t\n"
+                          "    dim own as double\n"
+                          "end type\n";
+  AnalyzedDoc const doc = analyze(src);
+  std::string const path = "/virtual/inherit.bas";
+
+  // Own member wins, and the base is not consulted.
+  CrossDecl const own = findVisibleMember(doc, path, "leaf_t", "own", nullptr);
+  CHECK(own.decl != nullptr && own.decl->name == "own");
+
+  // Inherited one level up, and two. Keys are lowercase (symbols.h: the
+  // canonical key is the lowercased name), so a lookup takes the key, not the
+  // name as written.
+  CrossDecl const one =
+      findVisibleMember(doc, path, "leaf_t", "midfield", nullptr);
+  CHECK_MSG(one.decl != nullptr && one.decl->name == "midField",
+            "a base's own member is visible on the derived type");
+  CrossDecl const two = findVisibleMember(doc, path, "leaf_t", "id", nullptr);
+  CHECK_MSG(two.decl != nullptr && two.decl->name == "id",
+            "an inherited field resolves through two levels");
+  CHECK_MSG(two.decl->ownerKey.empty() && two.decl->key == "id",
+            "a field carries no owner: the key is the member's own");
+  CHECK(findVisibleMember(doc, path, "leaf_t", "nope", nullptr).decl ==
+        nullptr);
+  CHECK(findVisibleMember(doc, path, "", "id", nullptr).decl == nullptr);
+  CHECK(findVisibleMember(doc, path, "leaf_t", "", nullptr).decl == nullptr);
+  // A derived type may redeclare a base member's name (only a member
+  // *procedure* is barred from re-implementing, fbc error 158), and the
+  // nearest declaration is the one that answers.
+  {
+    std::string const shadow = "type b\n"
+                               "    dim v as integer\n"
+                               "end type\n"
+                               "type d extends b\n"
+                               "    dim v as string\n"
+                               "end type\n";
+    AnalyzedDoc const d = analyze(shadow);
+    CrossDecl const v = findVisibleMember(d, path, "d", "v", nullptr);
+    CHECK_MSG(v.decl != nullptr &&
+                  v.decl->signature.find("string") != std::string::npos,
+              "the derived type's own member shadows the base's");
+  }
+  // A base that is not declared stops the walk instead of reporting a miss as
+  // a miss, which is the same answer here but for a different reason.
+  {
+    std::string const broken = "type derived extends nowhere\n"
+                               "    dim own as integer\n"
+                               "end type\n";
+    AnalyzedDoc const d = analyze(broken);
+    CHECK(findVisibleMember(d, path, "derived", "id", nullptr).decl == nullptr);
+  }
+  // A cycle terminates: a lenient parse can let one through, and the walk must
+  // not hang on it.
+  {
+    std::string const cyc = "type a extends b\nend type\n"
+                            "type b extends a\nend type\n";
+    AnalyzedDoc const d = analyze(cyc);
+    CHECK(findVisibleMember(d, path, "a", "x", nullptr).decl == nullptr);
+  }
+  // The field that the base's *base* holds is still visible: the walk is on
+  // keys, so it does not matter how deep the file is.
+  {
+    std::string const deep = "type root_t\n"
+                             "    dim r as integer\n"
+                             "end type\n"
+                             "type a extends root_t\n"
+                             "end type\n"
+                             "type b extends a\n"
+                             "end type\n"
+                             "type c extends b\n"
+                             "end type\n";
+    AnalyzedDoc const d = analyze(deep);
+    CHECK(findVisibleMember(d, path, "c", "r", nullptr).decl != nullptr);
+  }
+}
+
+// `typeOf` answers four cases from one resolved declaration: a type is its own
+// type, a member of a type body takes its owner, a dot-qualified member
+// implementation takes the type it qualifies, and an ordinary `as <type>`
+// takes that type.
+static void TestTypeOfResolvesTheTypeOfAUsage() {
+  std::string const src = "type base_t\n"
+                          "    dim id as integer\n"
+                          "end type\n"
+                          "type leaf_t\n"
+                          "    declare sub go()\n"
+                          "end type\n"
+                          "sub leaf_t.go()\n"
+                          "    print \"\"\n"
+                          "end sub\n"
+                          "dim v as base_t\n"
+                          "sub take(n as base_t)\n"
+                          "    dim w as base_t\n"
+                          "end sub\n";
+  AnalyzedDoc const doc = analyze(src);
+  std::string const path = "/virtual/typeof.bas";
+  auto typeAt = [&](std::string const &needle, size_t past) {
+    return typeOf(doc, path,
+                  static_cast<std::uint32_t>(src.find(needle) + past), nullptr);
+  };
+
+  // 1 + 2: a usage of a field of a type body, and the `as` of a variable.
+  {
+    std::optional<TypeItem> const f = typeAt("dim id", 4);
+    CHECK_MSG(f.has_value() && f->name == "base_t",
+              "a field inside a type body is of that type");
+    if (f) {
+      CHECK(f->file == path && f->kind == SymbolKind::Type);
+      CHECK(f->detail.find("type base_t") == 0);
+    }
+    std::optional<TypeItem> const v = typeAt("dim v as base_t", 4);
+    CHECK_MSG(v.has_value() && v->name == "base_t",
+              "a variable's `as` type is its type");
+  }
+  // 3: the module-level implementation is typed by the type it qualifies.
+  {
+    std::optional<TypeItem> const impl = typeAt("sub leaf_t.go()", 11);
+    CHECK_MSG(impl.has_value() && impl->name == "leaf_t",
+              "a member implementation is of the type it qualifies");
+  }
+  // 1: the cursor already on a type name — the type is its own type.
+  {
+    std::optional<TypeItem> const self = typeAt("type base_t", 6);
+    CHECK_MSG(self.has_value() && self->name == "base_t",
+              "a type root is its own type");
+  }
+  // A parameter carries its type too.
+  {
+    std::optional<TypeItem> const p = typeAt("(n as base_t)", 2);
+    CHECK_MSG(p.has_value() && p->name == "base_t",
+              "a parameter's `as` type is its type");
+  }
+  // A symbol with no type: a plain `dim`, a sub, an integer literal.
+  {
+    std::string const plain = "dim n as integer\nsub s()\nend sub\n";
+    AnalyzedDoc const d = analyze(plain);
+    std::string const ppath = "/virtual/plain.bas";
+    auto t = [&](std::string const &needle, size_t past) {
+      return typeOf(d, ppath,
+                    static_cast<std::uint32_t>(plain.find(needle) + past),
+                    nullptr);
+    };
+    std::optional<TypeItem> const builtin = t("as integer", 4);
+    CHECK_MSG(!builtin.has_value(),
+              "a builtin type is not a UDT declaration, so there is no "
+              "typeDefinition target for it");
+    CHECK(!t("sub s()", 4).has_value());
+    CHECK(!t("dim n", 4).has_value());
+  }
+  // Not on an identifier at all.
+  CHECK(!typeOf(doc, path, 3, nullptr).has_value());
+
+  // The cross-file case, which is the one a request actually arrives as: the
+  // `as base_t` is in a .bas, the type is in a header it includes, and the
+  // answer's offsets describe the header — so the file has to travel with it.
+  {
+    TypeGraphFixture const fx;
+    std::unique_ptr<WorkspaceIndex> const idx = fx.open();
+    AnalyzedDoc const main = analyze(fx.mainBas);
+    std::uint32_t const off =
+        static_cast<std::uint32_t>(fx.mainBas.find("dim v as base_t") + 4);
+    std::optional<TypeItem> const t = typeOf(main, fx.mainNorm, off, idx.get());
+    CHECK_MSG(t.has_value() && t->name == "base_t", "the type is resolved");
+    CHECK_MSG(t.has_value() && t->file == fx.typesNorm,
+              "and it is reported in the file that declares it");
+    // The offsets are the header's, not the .bas's.
+    CHECK(t.has_value() && t->selection.beg == static_cast<std::uint32_t>(
+                                                   fx.typesBi.find("base_t")));
+  }
+}
+
+// `declaredTypeName` reads the opener line as written, so its scanner meets
+// `(`, `)` and `,` — `dim arr(10) as integer` is an ordinary line, and a scan
+// that stopped on the first non-word character without stepping over it spun
+// forever on any signature holding a parenthesis. Every case here has an
+// answer, and the point of the block is that each one returns.
+static void TestDeclaredTypeNameScansPastPunctuation() {
+  struct Case {
+    char const *src;
+    char const *at;
+    char const *want;
+  };
+  Case const cases[] = {
+      {"dim v as base_t\n", "v", "base_t"},
+      {"dim arr(10) as base_t\n", "arr", "base_t"},
+      {"dim m(2, 3) as byref base_t\n", "m", "base_t"},
+      {"dim x as const integer = 0\n", "x", "integer"},
+      {"type b extends a\n", "b", ""},
+      {"sub s()\n", "s", ""},
+      {"sub take(n as base_t)\nend sub\n", "take", "base_t"},
+      {"type t\n    dim go as base_t\nend type\n", "t", ""},
+  };
+  for (Case const &c : cases) {
+    AnalyzedDoc const doc = analyze(c.src);
+    if (doc.parse.roots.empty()) {
+      CHECK_MSG(false, c.src);
+      continue;
+    }
+    Symbol const *const sym = resolveAt(
+        doc, static_cast<std::uint32_t>(doc.parse.roots[0].selection.beg));
+    CHECK_MSG(sym != nullptr, c.src);
+    std::string const got =
+        sym ? declaredTypeName(*sym) : std::string("<none>");
+    CHECK_MSG(got == c.want, c.src);
+  }
+}
+
 static void TestOccurrencesAcrossCrossFile() {
   std::string const libContent = "dim shared globalCount as integer\n"
                                  "dim localOnly as integer\n"
@@ -1241,6 +1753,12 @@ int main() {
   TestMemberCompletionContexts();
   TestStorageGateInControlBlocks();
   TestOccurrencesAcrossSingleFile();
+  TestSupertypesWalkTheExtendsChain();
+  TestSubtypesSeePastTheRequestClosure();
+  TestMemberImplementationAndDeclaration();
+  TestFindVisibleMemberInheritsFields();
+  TestTypeOfResolvesTheTypeOfAUsage();
+  TestDeclaredTypeNameScansPastPunctuation();
   TestOccurrencesAcrossCrossFile();
   std::printf("resolve_checks: %s\n", failures == 0 ? "PASS" : "FAIL");
   return failures == 0 ? 0 : 1;

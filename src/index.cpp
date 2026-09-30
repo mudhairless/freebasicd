@@ -381,6 +381,33 @@ IndexedFile indexedFileFromAnalysis(
 // Projection helpers (called under mu_ by upsert / remove / scan)
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Drop every entry of `map[key]` owned by `file`, erasing the key when nothing
+// is left. Shared by byKey_ and byBaseKey_ so the two projections cannot drift
+// on the remove path — the bug this shape exists to prevent is one map
+// forgetting an entry the other dropped. Returns true when the key is gone,
+// which is the only thing the callers need to know.
+bool dropKeyedFrom(std::map<std::string, std::vector<KeyedDecl>> &map,
+                   std::string const &key, IndexedFile const *const file) {
+  auto it = map.find(key);
+  if (it == map.end()) {
+    return true;
+  }
+  auto &vec = it->second;
+  vec.erase(std::remove_if(
+                vec.begin(), vec.end(),
+                [p = file](KeyedDecl const &kd) { return kd.file.get() == p; }),
+            vec.end());
+  if (!vec.empty()) {
+    return false;
+  }
+  map.erase(it);
+  return true;
+}
+
+} // namespace
+
 void WorkspaceIndex::addToProjections(
     std::shared_ptr<IndexedFile const> const &f) {
   outInc_[f->path] = f->includes;
@@ -389,6 +416,15 @@ void WorkspaceIndex::addToProjections(
       continue;
     }
     byKey_[root.key].push_back(KeyedDecl{f, &root});
+    // The reverse of the `extends` edge, so the subtypes half of a type
+    // hierarchy answers from a map instead of a workspace sweep. One entry per
+    // declaring type, in scan order; a key with several derived types is the
+    // normal case, and a cycle a lenient parse let through is simply a key
+    // that lists one of its own ancestors (the caller stops at a repeat).
+    if ((root.kind == SymbolKind::Type || root.kind == SymbolKind::Union) &&
+        !root.extendsKey.empty()) {
+      byBaseKey_[root.extendsKey].push_back(KeyedDecl{f, &root});
+    }
   }
 }
 
@@ -399,18 +435,9 @@ void WorkspaceIndex::subtractFromProjections(
     if (root.key.empty()) {
       continue;
     }
-    auto it = byKey_.find(root.key);
-    if (it == byKey_.end()) {
-      continue;
-    }
-    auto &vec = it->second;
-    vec.erase(std::remove_if(vec.begin(), vec.end(),
-                             [p = f.get()](KeyedDecl const &kd) {
-                               return kd.file.get() == p;
-                             }),
-              vec.end());
-    if (vec.empty()) {
-      byKey_.erase(it);
+    dropKeyedFrom(byKey_, root.key, f.get());
+    if (!root.extendsKey.empty()) {
+      dropKeyedFrom(byBaseKey_, root.extendsKey, f.get());
     }
   }
 }
@@ -791,6 +818,16 @@ std::vector<KeyedDecl> WorkspaceIndex::byKey(std::string const &key) const {
   std::lock_guard<std::mutex> const lk(mu_);
   auto it = byKey_.find(key);
   if (it == byKey_.end()) {
+    return {};
+  }
+  return it->second;
+}
+
+std::vector<KeyedDecl>
+WorkspaceIndex::extendingTypes(std::string const &typeKey) const {
+  std::lock_guard<std::mutex> const lk(mu_);
+  auto it = byBaseKey_.find(typeKey);
+  if (it == byBaseKey_.end()) {
     return {};
   }
   return it->second;

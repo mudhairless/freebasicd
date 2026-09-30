@@ -276,4 +276,106 @@ std::vector<std::string> referencingFiles(std::string const &normalizedPath,
                                           std::string const &declPath,
                                           WorkspaceIndex const *index);
 
+// --- Type graph and member implementation (M15) ---
+//
+// FreeBASIC's type graph is a single parent per type: `type d extends b` on
+// the opener line is the only inheritance form there is (no `Type : base`, and
+// no `interface` keyword at all — FreeBASIC.md §7), so a hierarchy walk is a
+// chain, never a reconciliation. A member procedure is `declare`d inside the
+// type and defined at module level as `Type.name`, and a derived type may not
+// re-implement an inherited member, so the declared<->implemented edge is a
+// function and never a fan-out. Both facts are recorded by the parser on
+// `Symbol::extendsKey` / `Symbol::ownerKey`; everything here reads them.
+
+// One type as a type-hierarchy node. Copied out of the symbol tree by value —
+// the CallItem contract — so an item stays readable after the snapshot it was
+// built from has been replaced, and a wire item is a plain value anyway. The
+// declaring file travels with it because that is what a node is on the wire:
+// `uri`, `range`, and `selectionRange` all describe one file. Carrying the
+// file by value also means this type hands out no pointer into a snapshot, so
+// it needs no pin of its own.
+struct TypeItem {
+  std::string file;      // normalized path of the file declaring the type
+  std::string name;      // display name, original case
+  std::string detail;    // the opener line, e.g. "type derived extends base"
+  SourceRange range;     // the whole construct (TYPE ... END TYPE)
+  SourceRange selection; // the name token
+  SymbolKind kind = SymbolKind::Type;
+};
+
+// The type that *is* the type of the symbol the usage at `off` resolves to:
+// the owner of a member the cursor names, the `as <type>` of a resolved
+// variable/parameter/constant, the type a dot-qualified member implementation
+// qualifies, or the type/union root itself when the cursor is already on one.
+// Nullopt when the symbol carries no type (a Sub, a label, a constant without
+// `as`) or when the type cannot be resolved. `index == nullptr` resolves
+// in-file only.
+std::optional<TypeItem> typeOf(AnalyzedDoc const &doc,
+                               std::string const &normalizedPath,
+                               std::uint32_t off, WorkspaceIndex const *index);
+
+// The member `memberKey` visible on an instance of `typeKey`: the type's own
+// members first, then each type it extends, nearest first (FreeBASIC.md §7 —
+// an inherited field and an inherited member call both resolve through any
+// number of levels). `findMember` is the own-members-only half and stays that
+// way, because this walk needs the cross-file lookup and `findMember` is a
+// pure in-tree one.
+//
+// The walk stops at the first base that cannot be resolved — fbc has no
+// forward base references, so a broken chain is a defect, not a form to
+// answer for — and never revisits a key, so a cycle a lenient parse let
+// through terminates. `index == nullptr` restricts the walk to the requesting
+// document.
+CrossDecl findVisibleMember(AnalyzedDoc const &doc,
+                            std::string const &normalizedPath,
+                            std::string const &typeKey,
+                            std::string const &memberKey,
+                            WorkspaceIndex const *index);
+
+// The module-level implementation of a member procedure declared inside a
+// type: `sub t.go()` for `declare sub go()` in `type t`. FreeBASIC.md §7: a
+// member procedure cannot be *defined* inside a type body (fbc error 17), so
+// the implementation is always a module-level root qualified by the type name,
+// and it may live in the includer .bas or a sibling header of the same
+// include closure — which is why this is a closure search, like findTypeDecl.
+// `index == nullptr` restricts the search to the requesting document. Empty
+// when the member is not a procedure declaration, or has no implementation.
+CrossDecl memberImplementation(AnalyzedDoc const &doc,
+                               std::string const &normalizedPath,
+                               std::string const &typeKey,
+                               std::string const &memberKey,
+                               WorkspaceIndex const *index);
+
+// The other end of that edge: the `declare sub go()` inside `type t` for a
+// module-level `sub t.go()`. Separate from memberImplementation rather than
+// one function with a direction flag, because the two are two facts. A derived
+// type cannot re-implement an inherited member (fbc error 158), so the edge is
+// a function and this returns at most one declaration. Same closure and
+// `index == nullptr` contract.
+CrossDecl memberDeclaration(AnalyzedDoc const &doc,
+                            std::string const &normalizedPath,
+                            std::string const &typeKey,
+                            std::string const &memberKey,
+                            WorkspaceIndex const *index);
+
+// The types `typeKey` extends, nearest first, following `Symbol::extendsKey`.
+// Closure-scoped, because it starts from a declaration in the requesting
+// document and walks up through that document's include closure — the
+// opposite half from `subtypes`, which starts from a type and has to see the
+// whole workspace. No key is visited twice, so a cycle terminates.
+// `index == nullptr` restricts the walk to the requesting document.
+std::vector<TypeItem> supertypes(AnalyzedDoc const &doc,
+                                 std::string const &normalizedPath,
+                                 std::string const &typeKey,
+                                 WorkspaceIndex const *index);
+
+// The types below `typeKey`, breadth-first: direct subtypes first, then their
+// subtypes, which is the whole subtree a `typeHierarchy/subtypes` reply is.
+// The workspace-wide half of the hierarchy, so a subtype declared in a file
+// this request never loads is still found. No key is listed twice, so a cycle a
+// lenient parse let through terminates. Empty when `index == nullptr` (no
+// workspace to ask).
+std::vector<TypeItem> subtypes(std::string const &typeKey,
+                               WorkspaceIndex const *index);
+
 } // namespace fblang
