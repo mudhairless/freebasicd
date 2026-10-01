@@ -1,457 +1,668 @@
-# FreeBASIC LSP Server — Implementation Plan
+#FreeBASIC LSP Server — Implementation Plan
 
-## 1. State summary
+##1. State summary
 
-Repository `main`, clean working tree, `ctest` 18/18 green. The project is
-`freebasicd` (renamed from `freebasiclsp` 2026-09-25), version 0.7.0 under
-semantic versioning: the number is bumped only when a release ships, never in
-an ordinary feature or fix commit. LspCpp (vendored from our fork
-`mudhairless/LspCpp` at `9b7257f`, i.e. upstream `19150d12` plus
-ten local commits) supplies
-framing/JSON-RPC/typed 3.17 messages,
-tomlplusplus (vendored, pinned `30172438` v3.4.0) parses the server's config
-file, and GNU gettext (system libintl, never vendored; `cmake/FindIntl.cmake`
-+ `FindGettext`) localizes log and diagnostic messages from committed
-`po/*.po` catalogs; the language layer is LSP-agnostic and byte-offset based.
-Full language
-reference (keyword catalog, block closers verified against fbc 1.10.2, dialect
-and scope rules) lives in `FreeBASIC.md`; this plan covers roadmap,
-architecture, and the remaining work.
+    Repository `main`,
+    clean working tree, `ctest` 18 / 18 green.The project is
+`freebasicd` (renamed from `freebasiclsp` 2026 - 09 - 25),
+    version 0.7.0 under semantic versioning
+    : the number is bumped only when a release ships,
+      never in an ordinary feature
+          or fix commit.LspCpp(vendored from our fork
+`mudhairless / LspCpp` at `9b7257f`, i.e.upstream `19150d12` plus ten local
+                                          commits) supplies framing
+                     / JSON
+                 - RPC / typed 3.17 messages,
+      tomlplusplus(vendored,
+                   pinned `30172438` v3.4.0) parses the server's config file,
+      and GNU gettext(
+              system libintl, never vendored; `cmake /
+                                                  FindIntl
+                                                      .cmake` + `FindGettext`)
+              localizes log and diagnostic messages from committed
+`po /*.po` catalogs; the language layer is LSP-agnostic and byte-offset based.
+  Full language
+  reference (keyword catalog, block closers verified against fbc 1.10.2, dialect
+  and scope rules) lives in `FreeBASIC.md`; this plan covers roadmap,
+  architecture, and the remaining work.
 
-| Milestone | Status |
-|-----------|--------|
-| M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
-| M2 — Lexer + parser language layer, dialects, fbc corpus | done |
-| M3 — documentSymbol, hover, folding, definition, references, highlight, completion, signatureHelp | done (2026-09: hover resolves member access `.`/`->` through the base variable's declared type — cross-file, `with`-implicit, and indexed/chained — instead of falling back to the enclosing routine; a follow-up bugfix serves documents opened from a sibling project *outside* the workspace root via an on-demand include closure; a second bugfix adds a soft fallback: when the declared type is unknown or the member missing, `.walls` inside `with map` still reads "Member of `map`." instead of a colliding identifier or the sub signature; a final conformance pass makes enum members resolve and hover — qualified `Name.member` for explicit and plain enums, bare `member` for plain ones only, reserved-word enum names like `enum color` working, all cross-file) |
-| M4 — persistent workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an **in-memory-only** index — no on-disk cache; workspace-root fallback detection: when the client root (or single-file mode) has no version-control marker, the root is narrowed from the opened document by walking up to the drive root / `$HOME` for a parent holding a catalogued `source`/`include` directory — e.g. `/tmp/test/inner/src/file.bas` roots at `/tmp/test/inner`; the detected root (and its signal: VCS marker vs source/include directory) is logged to stderr) |
-| M5 — workspace spine: occurrence projection + include graph | done |
-| M5.5 — lifecycle: `initialized` + dynamic capability registration | done (2026-09: static/dynamic negotiated, registerCapability frame verified) |
-| M6 — include resolution + watched files + missing-include diagnostics | done (2026-09: missing-include diagnostics, debounced watched-files rescan, `#pragma once` metadata; the include search gained the project-dir (`-i inc`) step and the index an on-demand, resolution-only closure for out-of-root documents) |
-| M7 — cross-file definition / references / highlight / completion | done (2026-09: `resolveAcross` tiers, `Shared` storage gate, four cross-file handlers, two-file tests) |
-| M8 — `prepareRename` + `rename` (workspace) | done |
-| M9 — semantic tokens + inlay hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens, block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with a freshness gate) |
-| M10 — intrinsic catalog + request-side parse cache | done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider` seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp) |
-| M11 — configuration + workspace folders | done (2026-09: `freebasicd.toml` settings (`src/settings.{h,cpp}`) + config-file root detection; the single session index became one in-memory `WorkspaceIndex` per workspace root — `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is → VCS marker / config file / source-layout walk → single-file), where both unbounded walks stop at the home folder, decided by `std::filesystem::equivalent` rather than a path compare because one directory routinely has two spellings (Windows' 8.3 `%TEMP%` against a long `%USERPROFILE%` is how the Windows CI leg found it), `workspaceFolders` capability, `workspace/didChangeWorkspaceFolders` handler, per-index watched-file routing, workspace/symbol aggregation; `workspace/didChangeConfiguration` re-reads each root's toml on the notification (payload ignored, idempotent), applies `Settings` per root — `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve empty-result + clear semantics with per-root isolation tests) |
-| M12 — code actions: quick fixes for missing includes + block closers | done (2026-09: `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row plus one function; two fixes shipped — `unterminated-block` appends the closer the opener expects (one fix per block, re-parse nests them) and `include-not-found` retargets the existing directive at a workspace file the document's own include-resolution seam accepts, never a guess; the publish path and the fix key now build the include diagnostic from one shared function, so they cannot disagree; fixes answer as LSP `CodeAction`s carrying `kind` + the diagnostic + an `edit` keyed by the request's URI, not as empty-id `Command`s — the first cut shipped the `Command` shape and the actions listed but did nothing) |
-| M13 — editor extras: selectionRange, callHierarchy, codeLens | done (2026-09-27: aspect 1 `selectionRange` shipped — `src/selection.{h,cpp}` derives the expand-selection chain from `(tokens, blockRanges, content)` alone (token → `:`-separated statement → enclosing blocks → file), keeping a level only when it strictly contains the one below *and* adds non-blank text; `src/selection_lsp.{h,cpp}` parks the chain in a `thread_local` arena because LspCpp's `SelectionRange::parent` is a non-owning pointer, and the integration test asserts the nested chain on the wire. 2026-09-27: aspect 2 `callHierarchy` shipped — `src/call_hierarchy.{h,cpp}` scans a body for the three call shapes fbc 1.10.2 accepts (`name(`, after `.`/`->`, and a bare statement-head name) and resolves each through one `CalleeResolver` seam, matching by `DeclIdentity` (file + name-token range) rather than by name, so a shadowing local is excluded by resolving the site and `foo`/`foo$` stay one symbol; nodes are procedures, properties are never callees, module-level call sites are dropped; `src/call_hierarchy_lsp.h` defines the outgoing-call request type locally because LspCpp registers it under the wrong wire name; the 17th suite `call_hierarchy_checks` plus a two-file integration test. 2026-09-27: aspect 3 `codeLens` shipped — `src/code_lens.{h,cpp}` owns which declarations carry a lens (the procedure-like kinds and the type-ish roots, nesting flattened) and the localized title, and takes the count through one `ReferenceCounter` seam so the module itself has no workspace knowledge; the session answers the count and the click from one `referenceSites` walk, so the number a lens shows and the list `freebasicd.showReferences` returns cannot drift; the lens is a `Command` (the protocol's CodeLens has no edit field) with `codeLensProvider = { resolveProvider: false }` + `executeCommandProvider`; the count crosses the include boundary in both directions, which required making the walk match by `DeclIdentity` instead of by `Symbol` pointer; a `trn` ngettext wrapper for the plural (`trf` cannot express one); a `codeLensOn` settings key; the 18th suite `code_lens_checks` plus a two-file integration test that also drives the command) |
-| M14 — pull diagnostics | done (2026-09-29: `textDocument/diagnostic` + `workspace/diagnostic` + `workspace/diagnostic/refresh` (LSP 3.17) as a client-negotiated alternative to push — `capabilities.textDocument.diagnostic` present ⇒ advertise `diagnosticProvider` (`interFileDependencies` + `workspaceDiagnostics`) and disable `publishDiagnostics` for the whole session, absent ⇒ the push path unchanged, so one build serves both client generations; `documentDiagnostics` is the one payload definition shared by push and both pull handlers, so the two deliveries cannot disagree; a report's `resultId` is `AnalysisCache::hashContent` folded with the include edges and the diagnostics gate, computed fresh, and `unchanged` answers only against a matching `previousResultId`; `relatedDocuments` carries the M6 transitive include closure one level deep; `WorkspaceIndex::onRescanCompleted` hands the session a callback (copied out under `rescanMu_`, invoked after) so an external edit to an indexed file hints a re-pull. Two fork commits: `0865f2a` adds the report-union types and both request types (a `td_diagnostic` response typed as a bare full report could never answer `unchanged`), `9b7257f` fixes `WorkingFiles::OnOpen`, which recorded the document version only for an already-open document, leaving `version = 0` — indistinguishable from "unknown" — for the first `didOpen` of every session) |
-| M15 — type/go-to + type hierarchy (backlog) | in progress (2026-09-30: planned in three aspects — the parser's two missing edges first (`extends` captured as a spurious field, and `sub t.go()` captured as a root keyed `t` so it collides with the type it implements a member of), then the type-graph queries in `resolve.{h,cpp}` plus a reverse-`extends` index projection, then the wire. The plan sketch's `Type ... : base` and `Interface` are not FreeBASIC — `fbc 1.10.2` rejects the colon form and there is no `interface` keyword, so `Extends` is the only inheritance form and there is no `TypeItem` hierarchy of interfaces to model) |
-| M16 — document links + completion resolve + polish (backlog) | next |
-| M17 — FreeBASIC formatter (backlog, scope TBD) | next |
-| M18 — public release: install + version, editor setup docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in progress (2026-09-25: `README.md` shipped, the project was renamed to `freebasicd`, `cmake --install` now installs the binary + catalogs + `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang), macOS, and Windows while a Linux job enforces the `clang-format` gate. 2026-09-26: the matrix has run — Linux (both compilers), `clang-format`, and macOS are green and holding; each platform leg failed first for a reason only that platform could show, and every cause found so far is fixed (Windows: an MSVC `min`/`max` macro collision in vendored LspCpp, a CRLF checkout breaking the byte-exact `grammar_checks`, a *test-harness* defect — the fixtures built `file://` URIs by string concatenation, which is malformed JSON on Windows, so eleven tests never got an answer and burned their poll budgets, which is what looked like a hang — and, once that was gone, a *server* defect the harness had been hiding: the home-folder guard that ends root selection's two unbounded walks compared path objects, and Windows spells the profile two ways (`%USERPROFILE%` long, `%TEMP%` 8.3-short), so the walk left the temp tree and every test's index rooted at the profile — 5 assertions across 3 tests, fixed with `std::filesystem::equivalent` and covered by a test that reproduces the spelling mismatch on any platform, which left exactly one failure: the suite's `PollRequest` helper matched its needle against the cumulative output stream rather than the reply, and every `didOpen` publishes diagnostics, so a needle naming a document was already there and the poll returned the first reply whatever it said — a premature answer read as a wrong one (proved on Linux with a probe whose reply can never name the header, and fixed by scoping the match to the reply, which also removes an `out_of_range` on a dead server); macOS: a use-after-free in the `workspace/symbol` reply build, found with TSan). 2026-09-27: with that fixed, the Windows leg's one remaining failure is *silent* — 70 tests start, not one assertion reports, and ctest still says `***Failed`, which can only mean the process never returned (MSVC is mute on a crash, a `std::terminate` and an unhandled exception alike). The suite now brackets each test with `[ DONE ]`, catches and attributes an escaping exception, prints a final line that splits a death inside a test from one in teardown, and on Windows prints the exception code and address, so the next run names the cause instead of leaving it to guesswork, and on the next run named it: the fixtures write CRLF to disk under an LF `didOpen` (a text-mode `ofstream`), and the scan was re-parsing the disk copy over the live buffer's entry, so cross-file ranges were measured against different bytes than the index described — `dim localOnly` at 1:5 instead of 1:4. The scan now skips open buffers; the condition is reproduced on Linux and both checks are verified non-vacuous. Two real latent index defects found while chasing the apparent hang (a lost wakeup in rescan shutdown, and a `std::thread` reachable from two threads) are fixed on their own merits, not as the cause. All five legs are green as of run `36293790173` (2026-09-27), the first run nothing failed on. Left: per-editor wiring docs, the first tag) |
-| M19 — context-aware member completion (UDT members only) | done (2026-09: `p.` after a UDT variable completes only the owner type's accessible members — Public always, `Private:`/`Protected:` only inside the type's own member procedures (fbc's error-202 gate), qualified `EnumName.` members ungated; `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks are closed at EOF so completion keeps working while a procedure is half-typed) |
-| M20 — gettext localization of log + diagnostic messages | done (2026-09: system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext` tools; new `src/i18n.{h,cpp}` — `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasicd`, UTF-8 catalogs, `InitializeParams.locale` honored best-effort); CMake `po-template`/`translations`(`ALL`)/`update-po` targets, committed `po/freebasicd.pot` + 29 msginit-generated `po/<lang>.po` (English is the msgid language — no en.po), install tree under `<prefix>/share/locale`; a `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated" (structural scan of src/) + pot freshness + a CMake-built `de` catalog round-trip; all 14 suites green) |
+  | Milestone | Status |
+  |-----------|--------|
+  | M1 — LspCpp bring-up (sync, capabilities, diagnostics push) | done |
+  | M2 — Lexer + parser language layer, dialects, fbc corpus | done |
+  | M3 — documentSymbol, hover, folding, definition, references, highlight,
+  completion, signatureHelp | done (2026-09: hover resolves member access
+  `.`/`->` through the base variable's declared type — cross-file,
+  `with`-implicit, and indexed/chained — instead of falling back to the
+  enclosing routine; a follow-up bugfix serves documents opened from a sibling
+  project *outside* the workspace root via an on-demand include closure; a
+  second bugfix adds a soft fallback: when the declared type is unknown or the
+  member missing, `.walls` inside `with map` still reads "Member of `map`."
+  instead of a colliding identifier or the sub signature; a final conformance
+  pass makes enum members resolve and hover — qualified `Name.member` for
+  explicit and plain enums, bare `member` for plain ones only, reserved-word
+  enum names like `enum color` working, all cross-file) | | M4 — persistent
+  workspace symbol index + `workspace/symbol` | done (2026-09: rev'd to an
+  **in-memory-only** index — no on-disk cache; workspace-root fallback
+  detection: when the client root (or single-file mode) has no version-control
+  marker, the root is narrowed from the opened document by walking up to the
+  drive root / `$HOME` for a parent holding a catalogued `source`/`include`
+  directory — e.g. `/tmp/test/inner/src/file.bas` roots at `/tmp/test/inner`;
+  the detected root (and its signal: VCS marker vs source/include directory) is
+  logged to stderr) | | M5 — workspace spine: occurrence projection + include
+  graph | done | | M5.5 — lifecycle: `initialized` + dynamic capability
+  registration | done (2026-09: static/dynamic negotiated, registerCapability
+  frame verified) | | M6 — include resolution + watched files + missing-include
+  diagnostics | done (2026-09: missing-include diagnostics, debounced
+  watched-files rescan, `#pragma once` metadata; the include search gained the
+  project-dir (`-i inc`) step and the index an on-demand, resolution-only
+  closure for out-of-root documents) | | M7 — cross-file definition / references
+  / highlight / completion | done (2026-09: `resolveAcross` tiers, `Shared`
+  storage gate, four cross-file handlers, two-file tests) | | M8 —
+  `prepareRename` + `rename` (workspace) | done | | M9 — semantic tokens + inlay
+  hints + highlight grammar | done (2026-09: full/delta + opt-in range tokens,
+  block-closer/inferred-type hints, catalog-derived TextMate + vim grammars with
+  a freshness gate) | | M10 — intrinsic catalog + request-side parse cache |
+  done (2026-09: content-addressed `AnalysisCache` behind a `ContentProvider`
+  seam, plus a 247-row intrinsic catalog feeding completion/hover/signatureHelp)
+  | | M11 — configuration + workspace folders | done (2026-09: `freebasicd.toml`
+  settings (`src/settings.{h,cpp}`) + config-file root detection; the single
+  session index became one in-memory `WorkspaceIndex` per workspace root —
+  `chooseIndexRoot` priority 0–5 (registered marker root → client root as-is →
+  VCS marker / config file / source-layout walk → single-file), where both
+  unbounded walks stop at the home folder, decided by
+  `std::filesystem::equivalent` rather than a path compare because one directory
+  routinely has two spellings (Windows' 8.3 `%TEMP%` against a long
+  `%USERPROFILE%` is how the Windows CI leg found it), `workspaceFolders`
+  capability, `workspace/didChangeWorkspaceFolders` handler, per-index
+  watched-file routing, workspace/symbol aggregation;
+  `workspace/didChangeConfiguration` re-reads each root's toml on the
+  notification (payload ignored, idempotent), applies `Settings` per root —
+  `includePaths` joins include resolution as step ② (`reindexIncludeEdges`, no
+  re-parse) and the diagnostics / semantic-tokens / inlay-hints gates serve
+  empty-result + clear semantics with per-root isolation tests) | | M12 — code
+  actions: quick fixes for missing includes + block closers | done (2026-09:
+  `textDocument/codeAction` with `codeActionKinds: ["quickfix"]`; a registry
+  keyed on diagnostic code (`src/code_actions.{h,cpp}`) so a new fix is one row
+  plus one function; two fixes shipped — `unterminated-block` appends the closer
+  the opener expects (one fix per block, re-parse nests them) and
+  `include-not-found` retargets the existing directive at a workspace file the
+  document's own include-resolution seam accepts, never a guess; the publish
+  path and the fix key now build the include diagnostic from one shared
+  function, so they cannot disagree; fixes answer as LSP `CodeAction`s carrying
+  `kind` + the diagnostic + an `edit` keyed by the request's URI, not as
+  empty-id `Command`s — the first cut shipped the `Command` shape and the
+  actions listed but did nothing) | | M13 — editor extras: selectionRange,
+  callHierarchy, codeLens | done (2026-09-27: aspect 1 `selectionRange` shipped
+  — `src/selection.{h,cpp}` derives the expand-selection chain from `(tokens,
+  blockRanges, content)` alone (token → `:`-separated statement → enclosing
+  blocks → file), keeping a level only when it strictly contains the one below
+  *and* adds non-blank text; `src/selection_lsp.{h,cpp}` parks the chain in a
+  `thread_local` arena because LspCpp's `SelectionRange::parent` is a non-owning
+  pointer, and the integration test asserts the nested chain on the wire.
+  2026-09-27: aspect 2 `callHierarchy` shipped — `src/call_hierarchy.{h,cpp}`
+  scans a body for the three call shapes fbc 1.10.2 accepts (`name(`, after
+  `.`/`->`, and a bare statement-head name) and resolves each through one
+  `CalleeResolver` seam, matching by `DeclIdentity` (file + name-token range)
+  rather than by name, so a shadowing local is excluded by resolving the site
+  and `foo`/`foo$` stay one symbol; nodes are procedures, properties are never
+  callees, module-level call sites are dropped; `src/call_hierarchy_lsp.h`
+  defines the outgoing-call request type locally because LspCpp registers it
+  under the wrong wire name; the 17th suite `call_hierarchy_checks` plus a
+  two-file integration test. 2026-09-27: aspect 3 `codeLens` shipped —
+  `src/code_lens.{h,cpp}` owns which declarations carry a lens (the
+  procedure-like kinds and the type-ish roots, nesting flattened) and the
+  localized title, and takes the count through one `ReferenceCounter` seam so
+  the module itself has no workspace knowledge; the session answers the count
+  and the click from one `referenceSites` walk, so the number a lens shows and
+  the list `freebasicd.showReferences` returns cannot drift; the lens is a
+  `Command` (the protocol's CodeLens has no edit field) with `codeLensProvider =
+  { resolveProvider: false }` + `executeCommandProvider`; the count crosses the
+  include boundary in both directions, which required making the walk match by
+  `DeclIdentity` instead of by `Symbol` pointer; a `trn` ngettext wrapper for
+  the plural (`trf` cannot express one); a `codeLensOn` settings key; the 18th
+  suite `code_lens_checks` plus a two-file integration test that also drives the
+  command) | | M14 — pull diagnostics | done (2026-09-29:
+  `textDocument/diagnostic` + `workspace/diagnostic` +
+  `workspace/diagnostic/refresh` (LSP 3.17) as a client-negotiated alternative
+  to push — `capabilities.textDocument.diagnostic` present ⇒ advertise
+  `diagnosticProvider` (`interFileDependencies` + `workspaceDiagnostics`) and
+  disable `publishDiagnostics` for the whole session, absent ⇒ the push path
+  unchanged, so one build serves both client generations; `documentDiagnostics`
+  is the one payload definition shared by push and both pull handlers, so the
+  two deliveries cannot disagree; a report's `resultId` is
+  `AnalysisCache::hashContent` folded with the include edges and the diagnostics
+  gate, computed fresh, and `unchanged` answers only against a matching
+  `previousResultId`; `relatedDocuments` carries the M6 transitive include
+  closure one level deep; `WorkspaceIndex::onRescanCompleted` hands the session
+  a callback (copied out under `rescanMu_`, invoked after) so an external edit
+  to an indexed file hints a re-pull. Two fork commits: `0865f2a` adds the
+  report-union types and both request types (a `td_diagnostic` response typed as
+  a bare full report could never answer `unchanged`), `9b7257f` fixes
+  `WorkingFiles::OnOpen`, which recorded the document version only for an
+  already-open document, leaving `version = 0` — indistinguishable from
+  "unknown" — for the first `didOpen` of every session) | | M15 — type/go-to +
+  type hierarchy | done (2026-09-30: aspect 1 — the parser's two missing edges,
+  `Symbol::extendsKey` and `ownerKey`, taken off the TYPE opener and off the
+  module-level qualifier rather than left as a field named `extends` and a root
+  keyed after the type it qualifies; aspect 2 — the type graph in
+  `src/resolve.{h,cpp}` (`typeOf`, `supertypes`, `subtypes`,
+  `memberImplementation`/`memberDeclaration`, `findVisibleMember`) plus
+  `WorkspaceIndex::extendingTypes` off a new `byBaseKey_` projection, so a
+  subtype answer is the workspace subtree rather than an O(workspace) sweep per
+  request; aspect 3 — the wire: `typeDefinition`, `implementation`, and the
+  three type-hierarchy requests, the latter typed locally in
+  `src/type_hierarchy_lsp.h` because the vendored `td_typeHierarchy` answers one
+  item where the protocol says an array and ships no type at all for the two
+  follow-ups. `Extends` is the only inheritance form (`fbc 1.10.2` rejects `type
+  b : a` and there is no `interface` keyword), so the graph is single-parent
+  with no interfaces, and `implementation` is a `declare`↔defined edge that is a
+  function and never a fan-out, because a derived type may not re-implement an
+  inherited member (error 158). `typeHierarchy/resolve` is not implemented: the
+  capability advertises the bare bool, so the field stays absent, and prepare
+  fills `parents`/`children` eagerly) | | M16 — document links + completion
+  resolve + polish (backlog) | next | | M17 — FreeBASIC formatter (backlog,
+  scope TBD) | next | | M18 — public release: install + version, editor setup
+  docs, CI (moved from M11; README landed 2026-09-25 with the rename) | in
+  progress (2026-09-25: `README.md` shipped, the project was renamed to
+  `freebasicd`, `cmake --install` now installs the binary + catalogs +
+  `LICENSE.md`, the version is pinned at 0.7.0, the hygiene files
+  (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) and the issue forms
+  are in, and `.github/workflows/ci.yml` builds and tests on Linux (gcc, clang),
+  macOS, and Windows while a Linux job enforces the `clang-format` gate.
+  2026-09-26: the matrix has run — Linux (both compilers), `clang-format`, and
+  macOS are green and holding; each platform leg failed first for a reason only
+  that platform could show, and every cause found so far is fixed (Windows: an
+  MSVC `min`/`max` macro collision in vendored LspCpp, a CRLF checkout breaking
+  the byte-exact `grammar_checks`, a *test-harness* defect — the fixtures built
+  `file://` URIs by string concatenation, which is malformed JSON on Windows, so
+  eleven tests never got an answer and burned their poll budgets, which is what
+  looked like a hang — and, once that was gone, a *server* defect the harness
+  had been hiding: the home-folder guard that ends root selection's two
+  unbounded walks compared path objects, and Windows spells the profile two ways
+  (`%USERPROFILE%` long, `%TEMP%` 8.3-short), so the walk left the temp tree and
+  every test's index rooted at the profile — 5 assertions across 3 tests, fixed
+  with `std::filesystem::equivalent` and covered by a test that reproduces the
+  spelling mismatch on any platform, which left exactly one failure: the suite's
+  `PollRequest` helper matched its needle against the cumulative output stream
+  rather than the reply, and every `didOpen` publishes diagnostics, so a needle
+  naming a document was already there and the poll returned the first reply
+  whatever it said — a premature answer read as a wrong one (proved on Linux
+  with a probe whose reply can never name the header, and fixed by scoping the
+  match to the reply, which also removes an `out_of_range` on a dead server);
+  macOS: a use-after-free in the `workspace/symbol` reply build, found with
+  TSan). 2026-09-27: with that fixed, the Windows leg's one remaining failure is
+  *silent* — 70 tests start, not one assertion reports, and ctest still says
+  `***Failed`, which can only mean the process never returned (MSVC is mute on a
+  crash, a `std::terminate` and an unhandled exception alike). The suite now
+  brackets each test with `[ DONE ]`, catches and attributes an escaping
+  exception, prints a final line that splits a death inside a test from one in
+  teardown, and on Windows prints the exception code and address, so the next
+  run names the cause instead of leaving it to guesswork, and on the next run
+  named it: the fixtures write CRLF to disk under an LF `didOpen` (a text-mode
+  `ofstream`), and the scan was re-parsing the disk copy over the live buffer's
+  entry, so cross-file ranges were measured against different bytes than the
+  index described — `dim localOnly` at 1:5 instead of 1:4. The scan now skips
+  open buffers; the condition is reproduced on Linux and both checks are
+  verified non-vacuous. Two real latent index defects found while chasing the
+  apparent hang (a lost wakeup in rescan shutdown, and a `std::thread` reachable
+  from two threads) are fixed on their own merits, not as the cause. All five
+  legs are green as of run `36293790173` (2026-09-27), the first run nothing
+  failed on. Left: per-editor wiring docs, the first tag) | | M19 —
+  context-aware member completion (UDT members only) | done (2026-09: `p.` after
+  a UDT variable completes only the owner type's accessible members — Public
+  always, `Private:`/`Protected:` only inside the type's own member procedures
+  (fbc's error-202 gate), qualified `EnumName.` members ungated;
+  `.`/`->`/`with`-implicit/chained chains share the hover walk; unclosed blocks
+  are closed at EOF so completion keeps working while a procedure is half-typed)
+  | | M20 — gettext localization of log + diagnostic messages | done (2026-09:
+  system GNU gettext via `cmake/FindIntl.cmake` (`Intl::Intl`) + `FindGettext`
+  tools; new `src/i18n.{h,cpp}` —
+  `fblang::tr`/`trf`/`initI18n`/`setClientLocale` (domain `freebasicd`, UTF-8
+  catalogs, `InitializeParams.locale` honored best-effort); CMake
+  `po-template`/`translations`(`ALL`)/`update-po` targets, committed
+  `po/freebasicd.pot` + 29 msginit-generated `po/<lang>.po` (English is the
+  msgid language — no en.po), install tree under `<prefix>/share/locale`; a
+  `tests/i18n_checks` gate enforces "FreeBASIC/keywords are never translated"
+  (structural scan of src/) + pot freshness + a CMake-built `de` catalog
+  round-trip; all 14 suites green) |
 
-## 2. What exists (condensed)
+  ## 2. What exists (condensed)
 
-Module map — only new/modified modules are called out in §5; this is the
-stable shape:
+  Module map — only new/modified modules are called out in §5; this is the
+  stable shape:
 
-- `src/lexer.{h,cpp}` — tokenizer over the full FB surface (byte offsets,
-  continuation-aware logical lines). `Token`, `TokenKind`, `Lexer`.
-- `src/parser.{h,cpp}` — `parseDocument(src) -> ParseResult`
-  (`roots`, `diagnostics`, `blockRanges`, `lang`); decl extraction, block
-  matching, dialect detection, doc comments.
-- `src/language.{h,cpp}` — reserved-word catalog, block-closer facts, wiki doc
-  URLs, dialect detection helpers, `isSuffixChar`, and the 247-row `Intrinsic`
-  catalog (`intrinsicFor`, `intrinsics`, `intrinsicDocsUrl`,
-  `signatureParamLabels`, `statementPosition`, `expectedCloserAt` — the one
-  answer for "which closer does the block opened here expect", shared by the
-  inlay-hint labels and the M12 quick fix); the project-layout folder-name
-  catalog (`isSourceDirName`/`isIncludeDirName` — a static 48+68 table of
-  source/include directory names across ~30 languages, matched ASCII-
-  case-insensitively) that names project roots for workspace detection.
-  `isReservedWord` matches the keyword catalog case-insensitively, as fbc
-  does.
-- `src/analysis_cache.{h,cpp}` — `AnalysisCache`: content-addressed
-  `ParseResult` + token vector per path (FNV-1a content hash as the identity),
-  open-buffer entries exempt from FIFO eviction, `removePath` on close.
-- `src/symbols.h` — shared model: `Symbol`, `SymbolKind`, `Diagnostic`,
-  `ParseResult`, `SourceRange` (byte offsets), `toLowerChars`, and the
-  `Access` visibility gate (`Public`/`Private`/`Protected`, stamped by the
-  parser from a TYPE body's access sections).
-- `src/resolve.{h,cpp}` — same-file resolution: `resolveAt`, `occurrencesOf`,
-  `visibleSymbols`, `innermostScope`, `parentOf`, and the cross-file member
-  chain: `declaredTypeName`, `findMember`, `findTypeDecl`,
-  `resolveMemberAccess` (`.`/`->`, `with`-implicit, indexed/chained) and its
-  completion twin `resolveMemberCompletion` (same chain walk, returns the
-  owner type's members filtered by the `Access` gate + owner-context). Enum
-  members of plain enums join the module name space via
-  `moduleLevelCandidates` (explicit-enum members stay gated behind
-  `Name.member`, §8 Enums). The M15 type graph joins them here rather than in a
-  module of its own: `TypeItem`, `typeOf`, `supertypes`, `subtypes`,
-  `findVisibleMember` (own members, then each base in turn), and the
-  `memberImplementation` / `memberDeclaration` pair.
-- `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index, purely
-  in memory (nothing is ever written to disk), background scan + debounced
-  watched-files rescan threads, immutable `IndexedFile` entries + snapshot
-  reads. Helpers: `normalizePath`, `statFile`, `resolveIncludeTarget` (six
-  steps: including file's dir → config include dirs (step ②) → workspace root
-  → the including file's project dir for out-of-root documents → immediate
-  root subdirs → the fbc system folder).
-  Each root stores its `Settings` snapshot (`applySettings` re-resolves every
-  indexed entry's include edges against the configured dirs, no re-parse) and
-  `ensureClosure` + the `FileResolver` alias build the transitive `#include`
-  closure of an out-of-root requesting document on demand into a
-  resolution-only store consulted by `fileAt`/`transitiveIncludes` but never
-  by `snapshot`/`byKey` (workspace/symbol stays strictly workspace-scoped).
-- `src/utf16.{h,cpp}` — byte ↔ UTF-16 position conversion (session boundary).
-- `src/i18n.{h,cpp}` — GNU gettext wrapper: `tr(msgid)` (plain lookup),
-  `trf(msgid, a0..a2)` (translates the template, inserts `%s` arguments —
-  keywords, identifiers, file names, the proper noun `FreeBASIC` — verbatim so
-  they never enter a translatable literal), `initI18n()` (domain
-  `freebasicd`, UTF-8 output, environment message locale), and
-  `setClientLocale(IETF tag)` wired to `InitializeParams.locale` (best-effort;
-  only tags the OS can install switch the catalog). Translational invariants
-  ("never translate FreeBASIC or keywords") are enforced as code by
-  `tests/i18n_checks`; catalogs build from committed `po/*.po` via the
-  `translations` target.
-- `src/settings.{h,cpp}` — server configuration from a `freebasicd.toml` at a
-  workspace root: `Settings{ includePaths, diagnosticsOn, semanticTokensOn,
-  inlayHintsOn }` with fixed defaults, unknown keys ignored, malformed values
-  never degrading a session. `hasConfigFile` marks a directory a workspace
-  root (joins the VCS marker and source/include-layout signals); parsed with
-  the vendored tomlplusplus. Consulted by `chooseIndexRoot` when narrowing a
-  broad root or in single-file mode, by `ensureWorkspaceIndex` (each root
-  adopts its file at construction), and by `workspace/didChangeConfiguration`
-  (re-read on notification).
-- `src/code_actions.{h,cpp}` — quick fixes (M12), LSP-agnostic and in byte
-  offsets: `QuickFix`/`TextEditBytes` plus the `quickFixProviders()` registry
-  keyed on diagnostic code, so a new fix is one row and one function and a code
-  with no row offers nothing. Providers are pure functions of (diagnostic,
-  `QuickFixContext`), which carries the document bytes, its analysis, an index
-  snapshot, and the document's own `resolveInclude` seam — the last is what
-  makes an include fix correct by construction (a candidate is offered only
-  when the next publish would resolve it). Also owns
-  `unresolvedIncludeDiagnostics`, shared with the publish path.
-- `src/selection.{h,cpp}` — expand-selection chains (M13), LSP-agnostic and in
-  byte offsets: `selectionChain(analysis, content, off)` returns the levels
-  around one offset, innermost first — the token the cursor is in (or the one
-  ending exactly at it), the `:`-separated statement segment, every enclosing
-  `parse.blockRanges` entry sorted by size, and the whole file. A level is kept
-  only when it strictly contains the level below it *and* adds some non-blank
-  text, so an expansion is always a visible change (a block's range stops at the
-  newline after its closer, so the file level would otherwise add one newline
-  and nothing else). `:` is never a level, a blank line seeds the block walk at
-  the cursor so the enclosing procedure survives, and an unterminated block has
-  no range at all, so its level is absent rather than wrong.
-- `src/selection_lsp.{h,cpp}` — the LSP seam for the above: `selectionRanges`
-  converts a whole batch of chains (one per requested position, in order) and
-  parks the nodes in a `thread_local` `std::deque` arena, because LspCpp links
-  `SelectionRange::parent` as a *non-owning* pointer and the response vector
-  owns only the innermost node. Safe because the reply is serialized inline on
-  the handler thread; the integration test asserts the nested chain reaches the
-  wire, which is what proves the lifetime.
-- `src/call_hierarchy.{h,cpp}` — call hierarchy (M13), LSP-agnostic and in byte
-  offsets: `callItemOf` copies a declaration into a `CallItem`; `procedureAt`
-  answers which procedure an offset belongs to (innermost node, then out to the
-  enclosing Sub/Function/Property/Constructor/Destructor — the analyzer own
-  containment rule, reused); `outgoingCalls` scans the caller body for
-  call-*shaped* tokens and resolves each through the `CalleeResolver` seam,
-  merging by `DeclIdentity`; `incomingCallsIn` is the per-file half over the
-  whole document, dropping module-level call sites (no enclosing declaration to
-  be the `from` node). Three call shapes, all fbc 1.10.2 ground truth: `name(`
-  (Name), after `.`/`->` (Member, parens optional), and a bare statement-head
-  name (Statement). Callable kinds are Sub/Function/Constructor/Destructor — a
-  property read is not a call and an operator is not reached as `name(`.
-- `src/call_hierarchy_lsp.h` — the one type this feature needs locally:
-  `td_callHierarchyOutgoingCalls`, registered under the protocol method name
-  `callHierarchy/outgoingCalls` (LspCpp own is `callHierarchy/
-  CallHierarchyOutgoingCall`) — the same precedent as `semantic_tokens_lsp.h`.
-- Type graph (M15) lives in `src/resolve.{h,cpp}` beside its siblings rather
-  than in a module of its own: `TypeItem` is a type copied out of the symbol
-  tree by value (the `CallItem` contract, so nothing hands out a pointer into a
-  snapshot); `typeOf` answers which type a symbol at an offset has; `supertypes`
-  follows the `extendsKey` edge nearest-first through the request's include
-  closure, revisiting no key; `subtypes` is the workspace-wide half and answers
-  from `WorkspaceIndex::extendingTypes` (the direct extenders), which it walks
-  breadth-first into the whole subtree the protocol asks for; `memberImplementation` / `memberDeclaration` are the two ends of a
-  member procedure's `declare`↔defined edge, separate names rather than one
-  function with a direction flag; `findVisibleMember` is `findMember` plus the
-  `extends` walk, so an inherited field resolves and appears in completion.
-- `src/type_hierarchy_lsp.h` — the three type-hierarchy request types this
-  feature needs locally: `td_typeHierarchyPrepare` (the vendored
-  `td_typeHierarchy` is typed as a bare `TypeHierarchyItem` where the protocol
-  says `TypeHierarchyItem[] | null`) and `td_typeHierarchySupertypes` /
-  `td_typeHierarchySubtypes` (absent from the vendored tree entirely, and their
-  params embed the client's `TypeHierarchyItem` rather than a document and
-  position) — the same precedent as `call_hierarchy_lsp.h`.
-- `src/code_lens.{h,cpp}` — code lens (M13), LSP-agnostic and in byte offsets:
-  `carriesLens` picks the kinds that get a lens (procedure-like plus the
-  type-ish roots, nesting flattened); `collectAnchors` walks the symbol tree in
-  source order (`std::stable_sort` on the name token start, skipping zero-width
-  selections); `codeLenses` pairs each anchor with the count the
-  `ReferenceCounter` seam returns and the `trn` title built from it. The
-  `LensAnchor` carries no pointer — selection, name, kind — so the module never
-  pins a snapshot and its suite needs no index.
-- `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
-  `WorkingFiles` + the per-workspace `WorkspaceIndex` map (`indexes_`, keyed
-  by normalized root under `indexesMutex_`; registered client folders with a
-  root marker, detected roots, and single-file roots each index independently),
-  serves a content-addressed `AnalysisCache` (replacing per-request reparse),
-  pushes diagnostics.
-  Index-root selection (`chooseIndexRoot`, priority 0–5) uses a registered
-  marker-root containing the file first; a client root that is itself a
-  workspace root is used as-is; a *broad* client root is narrowed to the
-  opened document's project — nearest VCS marker, then nearest config file,
-  then the source/include layout walk (`findSourceLayoutRoot`, up to the drive
-  root / `$HOME`) — and single-file mode roots at marker/config/layout or the
-  file's directory; the two unbounded walks end at the home folder, which
-  `isHomeFolder` identifies with `std::filesystem::equivalent` rather than a
-  path compare (Windows spells `%USERPROFILE%` long and `%TEMP%` 8.3-short, so
-  a compare misses the guard and the walk roots the index at the profile); a
-  detected root that replaces the client's is logged to stderr with the
-  signal. Watched-file events route to the owning root's index
-  (`indexFor`); `workspace/symbol` aggregates the live indexes. A file outside
-  every index root is served resolution-only through the session-root index's
-  on-demand closure — never its own index or the single-file branch.
-  `ensureRequestClosure` wraps the index walk with a resolver over the live
-  open buffer (else disk) and runs before cross-file resolution, member hover,
-  and completion.
-  `workspace/didChangeConfiguration` re-reads every index root's config file
-  (payload ignored, idempotent) and re-applies per-root `Settings`
-  (`index->applySettings`, which re-resolves include edges); the root's open
-  buffers are cleared/re-published to match the diagnostics flag and their
-  include edges re-resolved on an `includePaths` change. Feature handlers gate
-  on `settingsForDocument` (semantic tokens / inlay hints / code actions → empty
-  results when off; diagnostics → empty publish per open buffer then silence).
-  The session also owns both diagnostics deliveries (M14): `documentDiagnostics`
-  is the single definition of a document's payload (parse diagnostics plus its
-  own unresolved include edges) that the push path and both pull handlers share,
-  and `diagnosticsResultId` is that payload's identity — the content hash folded
-  with the include edges and the diagnostics gate, so a changed id means the
-  report changed. `pullDiagnostics_` (negotiated at initialize) picks the
-  delivery, and `notifyDiagnosticsRefresh` is the server hint a pull client
-  receives wherever the push path would have published — from the notification
-  FIFO thread and from `WorkspaceIndex::onRescanCompleted`.
-- `src/main.cpp` — stdio entry; `LanguageSession` + exit condition.
+  - `src/lexer.{h,cpp}` — tokenizer over the full FB surface (byte offsets,
+    continuation-aware logical lines). `Token`, `TokenKind`, `Lexer`.
+  - `src/parser.{h,cpp}` — `parseDocument(src) -> ParseResult`
+    (`roots`, `diagnostics`, `blockRanges`, `lang`); decl extraction, block
+    matching, dialect detection, doc comments.
+  - `src/language.{h,cpp}` — reserved-word catalog, block-closer facts, wiki doc
+    URLs, dialect detection helpers, `isSuffixChar`, and the 247-row `Intrinsic`
+    catalog (`intrinsicFor`, `intrinsics`, `intrinsicDocsUrl`,
+    `signatureParamLabels`, `statementPosition`, `expectedCloserAt` — the one
+    answer for "which closer does the block opened here expect", shared by the
+    inlay-hint labels and the M12 quick fix); the project-layout folder-name
+    catalog (`isSourceDirName`/`isIncludeDirName` — a static 48+68 table of
+    source/include directory names across ~30 languages, matched ASCII-
+    case-insensitively) that names project roots for workspace detection.
+    `isReservedWord` matches the keyword catalog case-insensitively, as fbc
+    does.
+  - `src/analysis_cache.{h,cpp}` — `AnalysisCache`: content-addressed
+    `ParseResult` + token vector per path (FNV-1a content hash as the identity),
+    open-buffer entries exempt from FIFO eviction, `removePath` on close.
+  - `src/symbols.h` — shared model: `Symbol`, `SymbolKind`, `Diagnostic`,
+    `ParseResult`, `SourceRange` (byte offsets), `toLowerChars`, and the
+    `Access` visibility gate (`Public`/`Private`/`Protected`, stamped by the
+    parser from a TYPE body's access sections).
+  - `src/resolve.{h,cpp}` — same-file resolution: `resolveAt`, `occurrencesOf`,
+    `visibleSymbols`, `innermostScope`, `parentOf`, and the cross-file member
+    chain: `declaredTypeName`, `findMember`, `findTypeDecl`,
+    `resolveMemberAccess` (`.`/`->`, `with`-implicit, indexed/chained) and its
+    completion twin `resolveMemberCompletion` (same chain walk, returns the
+    owner type's members filtered by the `Access` gate + owner-context). Enum
+    members of plain enums join the module name space via
+    `moduleLevelCandidates` (explicit-enum members stay gated behind
+    `Name.member`, §8 Enums). The M15 type graph joins them here rather than in
+  a module of its own: `TypeItem`, `typeOf`, `supertypes`, `subtypes`,
+    `findVisibleMember` (own members, then each base in turn), and the
+    `memberImplementation` / `memberDeclaration` pair.
+  - `src/index.{h,cpp}` — `WorkspaceIndex`: per-workspace symbol index, purely
+    in memory (nothing is ever written to disk), background scan + debounced
+    watched-files rescan threads, immutable `IndexedFile` entries + snapshot
+    reads. Helpers: `normalizePath`, `statFile`, `resolveIncludeTarget` (six
+    steps: including file's dir → config include dirs (step ②) → workspace root
+    → the including file's project dir for out-of-root documents → immediate
+    root subdirs → the fbc system folder).
+    Each root stores its `Settings` snapshot (`applySettings` re-resolves every
+    indexed entry's include edges against the configured dirs, no re-parse) and
+    `ensureClosure` + the `FileResolver` alias build the transitive `#include`
+    closure of an out-of-root requesting document on demand into a
+    resolution-only store consulted by `fileAt`/`transitiveIncludes` but never
+    by `snapshot`/`byKey` (workspace/symbol stays strictly workspace-scoped).
+  - `src/utf16.{h,cpp}` — byte ↔ UTF-16 position conversion (session boundary).
+  - `src/i18n.{h,cpp}` — GNU gettext wrapper: `tr(msgid)` (plain lookup),
+    `trf(msgid, a0..a2)` (translates the template, inserts `%s` arguments —
+    keywords, identifiers, file names, the proper noun `FreeBASIC` — verbatim so
+    they never enter a translatable literal), `initI18n()` (domain
+    `freebasicd`, UTF-8 output, environment message locale), and
+    `setClientLocale(IETF tag)` wired to `InitializeParams.locale` (best-effort;
+    only tags the OS can install switch the catalog). Translational invariants
+    ("never translate FreeBASIC or keywords") are enforced as code by
+    `tests/i18n_checks`; catalogs build from committed `po/*.po` via the
+    `translations` target.
+  - `src/settings.{h,cpp}` — server configuration from a `freebasicd.toml` at a
+    workspace root: `Settings{ includePaths, diagnosticsOn, semanticTokensOn,
+    inlayHintsOn }` with fixed defaults, unknown keys ignored, malformed values
+    never degrading a session. `hasConfigFile` marks a directory a workspace
+    root (joins the VCS marker and source/include-layout signals); parsed with
+    the vendored tomlplusplus. Consulted by `chooseIndexRoot` when narrowing a
+    broad root or in single-file mode, by `ensureWorkspaceIndex` (each root
+    adopts its file at construction), and by `workspace/didChangeConfiguration`
+    (re-read on notification).
+  - `src/code_actions.{h,cpp}` — quick fixes (M12), LSP-agnostic and in byte
+    offsets: `QuickFix`/`TextEditBytes` plus the `quickFixProviders()` registry
+    keyed on diagnostic code, so a new fix is one row and one function and a
+  code with no row offers nothing. Providers are pure functions of (diagnostic,
+    `QuickFixContext`), which carries the document bytes, its analysis, an index
+    snapshot, and the document's own `resolveInclude` seam — the last is what
+    makes an include fix correct by construction (a candidate is offered only
+    when the next publish would resolve it). Also owns
+    `unresolvedIncludeDiagnostics`, shared with the publish path.
+  - `src/selection.{h,cpp}` — expand-selection chains (M13), LSP-agnostic and in
+    byte offsets: `selectionChain(analysis, content, off)` returns the levels
+    around one offset, innermost first — the token the cursor is in (or the one
+    ending exactly at it), the `:`-separated statement segment, every enclosing
+    `parse.blockRanges` entry sorted by size, and the whole file. A level is
+  kept only when it strictly contains the level below it *and* adds some
+  non-blank text, so an expansion is always a visible change (a block's range
+  stops at the newline after its closer, so the file level would otherwise add
+  one newline and nothing else). `:` is never a level, a blank line seeds the
+  block walk at the cursor so the enclosing procedure survives, and an
+  unterminated block has no range at all, so its level is absent rather than
+  wrong.
+  - `src/selection_lsp.{h,cpp}` — the LSP seam for the above: `selectionRanges`
+    converts a whole batch of chains (one per requested position, in order) and
+    parks the nodes in a `thread_local` `std::deque` arena, because LspCpp links
+    `SelectionRange::parent` as a *non-owning* pointer and the response vector
+    owns only the innermost node. Safe because the reply is serialized inline on
+    the handler thread; the integration test asserts the nested chain reaches
+  the wire, which is what proves the lifetime.
+  - `src/call_hierarchy.{h,cpp}` — call hierarchy (M13), LSP-agnostic and in
+  byte offsets: `callItemOf` copies a declaration into a `CallItem`;
+  `procedureAt` answers which procedure an offset belongs to (innermost node,
+  then out to the enclosing Sub/Function/Property/Constructor/Destructor — the
+  analyzer own containment rule, reused); `outgoingCalls` scans the caller body
+  for call-*shaped* tokens and resolves each through the `CalleeResolver` seam,
+    merging by `DeclIdentity`; `incomingCallsIn` is the per-file half over the
+    whole document, dropping module-level call sites (no enclosing declaration
+  to be the `from` node). Three call shapes, all fbc 1.10.2 ground truth:
+  `name(` (Name), after `.`/`->` (Member, parens optional), and a bare
+  statement-head name (Statement). Callable kinds are
+  Sub/Function/Constructor/Destructor — a property read is not a call and an
+  operator is not reached as `name(`.
+  - `src/call_hierarchy_lsp.h` — the one type this feature needs locally:
+    `td_callHierarchyOutgoingCalls`, registered under the protocol method name
+    `callHierarchy/outgoingCalls` (LspCpp own is `callHierarchy/
+    CallHierarchyOutgoingCall`) — the same precedent as `semantic_tokens_lsp.h`.
+  - Type graph (M15) lives in `src/resolve.{h,cpp}` beside its siblings rather
+    than in a module of its own: `TypeItem` is a type copied out of the symbol
+    tree by value (the `CallItem` contract, so nothing hands out a pointer into
+  a snapshot); `typeOf` answers which type a symbol at an offset has;
+  `supertypes` follows the `extendsKey` edge nearest-first through the request's
+  include closure, revisiting no key; `subtypes` is the workspace-wide half and
+  answers from `WorkspaceIndex::extendingTypes` (the direct extenders), which it
+  walks breadth-first into the whole subtree the protocol asks for;
+  `memberImplementation` / `memberDeclaration` are the two ends of a member
+  procedure's `declare`↔defined edge, separate names rather than one function
+  with a direction flag; `findVisibleMember` is `findMember` plus the `extends`
+  walk, so an inherited field resolves and appears in completion.
+  - `src/type_hierarchy_lsp.h` — the three type-hierarchy request types this
+    feature needs locally: `td_typeHierarchyPrepare` (the vendored
+    `td_typeHierarchy` is typed as a bare `TypeHierarchyItem` where the protocol
+    says `TypeHierarchyItem[] | null`) and `td_typeHierarchySupertypes` /
+    `td_typeHierarchySubtypes` (absent from the vendored tree entirely, and
+  their params embed the client's `TypeHierarchyItem` rather than a document and
+    position) — the same precedent as `call_hierarchy_lsp.h`.
+  - `src/code_lens.{h,cpp}` — code lens (M13), LSP-agnostic and in byte offsets:
+    `carriesLens` picks the kinds that get a lens (procedure-like plus the
+    type-ish roots, nesting flattened); `collectAnchors` walks the symbol tree
+  in source order (`std::stable_sort` on the name token start, skipping
+  zero-width selections); `codeLenses` pairs each anchor with the count the
+    `ReferenceCounter` seam returns and the `trn` title built from it. The
+    `LensAnchor` carries no pointer — selection, name, kind — so the module
+  never pins a snapshot and its suite needs no index.
+  - `src/session.{h,cpp}` — `FreeBasicServer` registers every handler, owns
+    `WorkingFiles` + the per-workspace `WorkspaceIndex` map (`indexes_`, keyed
+    by normalized root under `indexesMutex_`; registered client folders with a
+    root marker, detected roots, and single-file roots each index
+  independently), serves a content-addressed `AnalysisCache` (replacing
+  per-request reparse), pushes diagnostics. Index-root selection
+  (`chooseIndexRoot`, priority 0–5) uses a registered marker-root containing the
+  file first; a client root that is itself a workspace root is used as-is; a
+  *broad* client root is narrowed to the opened document's project — nearest VCS
+  marker, then nearest config file, then the source/include layout walk
+  (`findSourceLayoutRoot`, up to the drive root / `$HOME`) — and single-file
+  mode roots at marker/config/layout or the file's directory; the two unbounded
+  walks end at the home folder, which `isHomeFolder` identifies with
+  `std::filesystem::equivalent` rather than a path compare (Windows spells
+  `%USERPROFILE%` long and `%TEMP%` 8.3-short, so a compare misses the guard and
+  the walk roots the index at the profile); a detected root that replaces the
+  client's is logged to stderr with the signal. Watched-file events route to the
+  owning root's index
+    (`indexFor`); `workspace/symbol` aggregates the live indexes. A file outside
+    every index root is served resolution-only through the session-root index's
+    on-demand closure — never its own index or the single-file branch.
+    `ensureRequestClosure` wraps the index walk with a resolver over the live
+    open buffer (else disk) and runs before cross-file resolution, member hover,
+    and completion.
+    `workspace/didChangeConfiguration` re-reads every index root's config file
+    (payload ignored, idempotent) and re-applies per-root `Settings`
+    (`index->applySettings`, which re-resolves include edges); the root's open
+    buffers are cleared/re-published to match the diagnostics flag and their
+    include edges re-resolved on an `includePaths` change. Feature handlers gate
+    on `settingsForDocument` (semantic tokens / inlay hints / code actions →
+  empty results when off; diagnostics → empty publish per open buffer then
+  silence). The session also owns both diagnostics deliveries (M14):
+  `documentDiagnostics` is the single definition of a document's payload (parse
+  diagnostics plus its own unresolved include edges) that the push path and both
+  pull handlers share, and `diagnosticsResultId` is that payload's identity —
+  the content hash folded with the include edges and the diagnostics gate, so a
+  changed id means the report changed. `pullDiagnostics_` (negotiated at
+  initialize) picks the delivery, and `notifyDiagnosticsRefresh` is the server
+  hint a pull client receives wherever the push path would have published — from
+  the notification FIFO thread and from `WorkspaceIndex::onRescanCompleted`.
+  - `src/main.cpp` — stdio entry; `LanguageSession` + exit condition.
 
-Implemented LSP methods: `initialize`/`shutdown`/`exit`, `didOpen`/`didChange`/
-`didSave`/`didClose`, `publishDiagnostics`, `documentSymbol`, `hover` (symbols +
-member access + intrinsic signatures + keyword wiki links), `foldingRange`,
-`definition`,
-`references`, `documentHighlight`, `completion` (keywords + `END`-block
-snippets + in-scope symbols + intrinsic catalog + context-aware UDT member
-filtering after `.`/`->`), `signatureHelp` (user
-declarations and built-in functions), `workspace/symbol` (aggregated across
-per-root indexes), `prepareRename`,
-`rename` (resolution-based workspace edits),
-`codeAction` (M12 quick fixes: missing-include retarget + missing block closer,
-answering from the diagnostics the next publish would carry),
-`selectionRange` (M13 expand selection: token → statement → enclosing blocks →
-file, one chain per requested position),
-`prepareCallHierarchy` + `callHierarchy/outgoingCalls` + `callHierarchy/
-incomingCalls` (M13 call hierarchy: nodes are procedures, edges are resolved
-call sites merged per callee and per caller),
-`codeLens` + `workspace/executeCommand` (M13: a "N references" lens per
-declaration, counting the includers, whose click sends
-`freebasicd.showReferences` and gets the location list back),
-`textDocument/diagnostic` + `workspace/diagnostic` + `workspace/diagnostic/refresh`
-(M14 pull diagnostics: negotiated via `textDocument.diagnostic` and
-advertised as `diagnosticProvider`; a client without it keeps the push path,
-and negotiating pull disables push for the session; `full` | `unchanged`
-against the client's `previousResultId`, with the include closure as
-`relatedDocuments` and a refresh hint fired on a watched-files rescan, a
-config change, an edit, or a close),
-`workspace/didChangeWatchedFiles` (per-index routing),
-`workspace/didChangeWorkspaceFolders` (per-root index add/remove),
-`workspace/didChangeConfiguration` (per-root `freebasicd.toml` re-read +
-`Settings` re-apply, feature-gate and include-seam behavior), and the
-`workspaceFolders` capability (`supported` + `changeNotifications`).
-- `tests/session_support.{h,cpp}` — the integration harness in `namespace
-  fbtest`: the reporters, `RUN_TEST`, the `file://` encoder, `ScopedEnv`,
-  `TwoFileFixture` + its six documents, `StartIndexedSession`, `PollRequest`,
-  and the waiters. One translation unit per LSP feature
-  (`tests/session_hover_checks.cpp`, `tests/session_pull_diagnostics_checks.cpp`,
-  …) holds that feature's tests plus the wire frames only it sends, and exposes
-  `void Run<Feature>Tests()`; `tests/session_integration.cpp` holds `main()`
-  alone and calls each runner in a fixed order. One ctest suite, one process —
-  the `[ RUN ]` / `[ DONE ]` markers that name a crashed test are a property of
-  the process, and `ctest --timeout` prints one stream per test.
+  Implemented LSP methods: `initialize`/`shutdown`/`exit`,
+  `didOpen`/`didChange`/ `didSave`/`didClose`, `publishDiagnostics`,
+  `documentSymbol`, `hover` (symbols + member access + intrinsic signatures +
+  keyword wiki links), `foldingRange`, `definition`, `references`,
+  `documentHighlight`, `completion` (keywords + `END`-block snippets + in-scope
+  symbols + intrinsic catalog + context-aware UDT member filtering after
+  `.`/`->`), `signatureHelp` (user declarations and built-in functions),
+  `workspace/symbol` (aggregated across per-root indexes), `prepareRename`,
+  `rename` (resolution-based workspace edits),
+  `codeAction` (M12 quick fixes: missing-include retarget + missing block
+  closer, answering from the diagnostics the next publish would carry),
+  `selectionRange` (M13 expand selection: token → statement → enclosing blocks →
+  file, one chain per requested position),
+  `prepareCallHierarchy` + `callHierarchy/outgoingCalls` + `callHierarchy/
+  incomingCalls` (M13 call hierarchy: nodes are procedures, edges are resolved
+  call sites merged per callee and per caller),
+  `codeLens` + `workspace/executeCommand` (M13: a "N references" lens per
+  declaration, counting the includers, whose click sends
+  `freebasicd.showReferences` and gets the location list back),
+  `textDocument/diagnostic` + `workspace/diagnostic` +
+  `workspace/diagnostic/refresh` (M14 pull diagnostics: negotiated via
+  `textDocument.diagnostic` and advertised as `diagnosticProvider`; a client
+  without it keeps the push path, and negotiating pull disables push for the
+  session; `full` | `unchanged` against the client's `previousResultId`, with
+  the include closure as `relatedDocuments` and a refresh hint fired on a
+  watched-files rescan, a config change, an edit, or a close),
+  `workspace/didChangeWatchedFiles` (per-index routing),
+  `workspace/didChangeWorkspaceFolders` (per-root index add/remove),
+  `workspace/didChangeConfiguration` (per-root `freebasicd.toml` re-read +
+  `Settings` re-apply, feature-gate and include-seam behavior), and the
+  `workspaceFolders` capability (`supported` + `changeNotifications`).
+  - `tests/session_support.{h,cpp}` — the integration harness in `namespace
+    fbtest`: the reporters, `RUN_TEST`, the `file://` encoder, `ScopedEnv`,
+    `TwoFileFixture` + its six documents, `StartIndexedSession`, `PollRequest`,
+    and the waiters. One translation unit per LSP feature
+    (`tests/session_hover_checks.cpp`,
+  `tests/session_pull_diagnostics_checks.cpp`, …) holds that feature's tests
+  plus the wire frames only it sends, and exposes `void Run<Feature>Tests()`;
+  `tests/session_integration.cpp` holds `main()` alone and calls each runner in
+  a fixed order. One ctest suite, one process — the `[ RUN ]` / `[ DONE ]`
+  markers that name a crashed test are a property of the process, and `ctest
+  --timeout` prints one stream per test.
 
-## 3. FreeBASIC semantics that gate the remaining work
+  ## 3. FreeBASIC semantics that gate the remaining work
 
-The full reference lives in `FreeBASIC.md`. These are the rules the forward
-plan engineers around:
+  The full reference lives in `FreeBASIC.md`. These are the rules the forward
+  plan engineers around:
 
-- **Module model.** A `.bas` file is one program; `.bi` files are shared
-  headers. Cross-file visibility is **module-scope only** (top-level
-  `shared`/`common`/`const`/`type`/`sub`/`function` facts) and exists **only
-  through the `#include closure`** of a document. Procedure bodies see module
-  names only if they are `Shared`/`Common Shared` — plain module-level `Dim`/
-  `Common` is not visible in procedures even in-file (FreeBASIC.md §8,
-  fbc-verified). Procedure-local names never cross a file boundary; a header
-  never sees the `.bas` that included it.
-- **Case-insensitive identity.** Canonical `key` = lowercase name including
-  any type-suffix char (`foo$`, `i%`, …). The suffix is part of the token:
-  lexers tie it to the identifier for resolution and edits.
-- **Byte-offset core.** Lexer/parser/resolve work in byte offsets; UTF-16
-  conversion happens only at the session boundary per file buffer. Any
-  cross-file reply must convert against the *target* file's content.
-- **Blocks close exactly** (`END SUB`, `NEXT`, `WEND`, `END IF`, …) as
-  verified against fbc 1.10.2 — enforced by `language.cpp` closer facts.
+  - **Module model.** A `.bas` file is one program; `.bi` files are shared
+    headers. Cross-file visibility is **module-scope only** (top-level
+    `shared`/`common`/`const`/`type`/`sub`/`function` facts) and exists **only
+    through the `#include closure`** of a document. Procedure bodies see module
+    names only if they are `Shared`/`Common Shared` — plain module-level `Dim`/
+    `Common` is not visible in procedures even in-file (FreeBASIC.md §8,
+    fbc-verified). Procedure-local names never cross a file boundary; a header
+    never sees the `.bas` that included it.
+  - **Case-insensitive identity.** Canonical `key` = lowercase name including
+    any type-suffix char (`foo$`, `i%`, …). The suffix is part of the token:
+    lexers tie it to the identifier for resolution and edits.
+  - **Byte-offset core.** Lexer/parser/resolve work in byte offsets; UTF-16
+    conversion happens only at the session boundary per file buffer. Any
+    cross-file reply must convert against the *target* file's content.
+  - **Blocks close exactly** (`END SUB`, `NEXT`, `WEND`, `END IF`, …) as
+    verified against fbc 1.10.2 — enforced by `language.cpp` closer facts.
 
-## 4. Gaps — what is yet needed
+  ## 4. Gaps — what is yet needed
 
-1. Include edges and missing-include diagnostics are live (M6), but include-once
-   *guard states* are not evaluated — `#include once` / `#pragma once` / `#ifndef`
-   are processed as recorded metadata, not macros (FreeBASIC.md §12.6) — and
-   `#inclib` is not treated as a source include.
-2. Watched files and workspace folders are handled end-to-end (M5.5/M6/M11):
-   a dynamic client is registered for `workspace/didChangeWatchedFiles` on
-   `initialized` via `client/registerCapability`, a static one is served the
-   watchers in the `initialize` reply, events fan into the owning root's
-   `WorkspaceIndex::watchedFilesChanged`, and folder add/remove re-key the
-   per-root indexes. `workspace/didChangeConfiguration` re-reads each root's
-   `freebasicd.toml` (payload ignored) and re-applies `Settings` per root
-   (include seam + feature gates). Force-disabling the fbc system include
-   search (step ⑥) remains open.
-3. No per-editor wiring docs yet. `README.md`, `cmake --install`, and the
-   0.7.0 version landed 2026-09-25; so did `.github/workflows/ci.yml` — four
-   `build-test` legs (Linux gcc and clang, macOS AppleClang, Windows MSVC), a
-   Linux-only `clang-format` job pinned to 22.1.8, and an install-tree check
-   (`tools/check_install_tree.cmake`) that asserts the binary, `LICENSE.md`,
-   and all 29 catalogs. The matrix has now run on GitHub, and the three
-   platform legs each failed first for a reason only that platform can show,
-   which is the argument for having them at all:
-   - **macOS** died at `#include <libintl.h>` in `src/main.cpp`. The header was
-     found and the gettext include directory did reach `freebasicd_lang`; it
-     never reached the executable, because `freebasicd_core` linked
-     `freebasicd_lang` PRIVATE and a static library hands its private
-     dependencies to consumers as `$<LINK_ONLY:...>` — on the link line,
-     without the usage requirements. Linux hid it: glibc's `libintl.h` is in
-     `/usr/include`, a default search directory. `freebasicd_lang` is PUBLIC
-     now; the executable's flags gained `-I src`, which it had never had.
-   - **Windows** died in its gettext step, then in configure three times over:
-     mlocati splits the release and the `-dev-msvc` bundle has `libintl.h` and
-     the import library but *no* tools (both bundles now go into one prefix);
-     a `$root:` in a `throw` string, which PowerShell reads as a drive-qualified
-     variable, so the script never parsed (actionlint and shellcheck only lint
-     bash, so the pwsh blocks are now parse-checked locally with the real
-     parser); a missing zlib that only ixwebsocket's unused websocket path
-     wants (`USE_ZLIB=OFF`); and LspCpp asking a Visual Studio generator for
-     seven boost nuget packages the build does not have (fork commits
-     `a98ddce` + `9feb484`).
-   - Two latent `cmake/FindIntl.cmake` defects surfaced with them and are
-     fixed: its not-found branch could never be fatal (CMake does not turn a
-     module's `<Name>_FOUND FALSE` into a configure error, which is *why* the
-     macOS leg died in the compiler), and the `-DGETTEXT_ROOT` its header
-     documented was never read.
-   The editors' setup recipes are still open.
-4. The install tree is **not relocatable**: `FBLANG_LOCALEDIR_INSTALL` is
-   `${CMAKE_INSTALL_PREFIX}/share/locale` baked in at configure time
-   (`src/i18n.cpp`'s probe order: `FBLANG_LOCALEDIR` env override, then the
-   build tree, then that path). `cmake --install --prefix /somewhere/else`
-   therefore leaves the binary unable to find its own catalogs unless the env
-   override is set, which the README documents. The fix is to resolve
-   `share/locale` relative to the executable's own path
-   (`/proc/self/exe`, `_NSGetExecutablePath`, `GetModuleFileName`), or to drop
-   `CMAKE_INSTALL_PREFIX` in favor of a relative lookup. Not done in the 0.7.0
-   wave because it is platform code that only a real multi-platform CI run can
-   verify.
-5. The version reaches users only through a startup stderr line. The protocol
-   has a place for it, `initialize`'s `serverInfo`, but LspCpp's
-   `InitializeResult` models `capabilities` alone, so reporting it means a
-   sixth commit on the fork branch (`lsp-3.17-completions`) plus a pin bump.
-6. Windows localization is borrowed, not shipped. `cmake/FindIntl.cmake` needs
-   a real libintl on Windows, and CI gets one from a downloaded
-   `mlocati/gettext-iconv-windows` bundle (tools + MSVC import library +
-   `intl-8.dll` in `bin`). So a Windows build links a DLL from outside the
-   repo: an installed tree would start with the DLL beside the binary or not at
-   all. `install(TARGETS ...)` does not install DLLs, so this is packaging
-   work for the first release that ships a Windows binary — deciding between
-   vendoring the DLL, static-linking libintl, or dropping gettext on Windows
-   (all 29 catalogs are empty today, so an English-only Windows build loses
-   nothing yet).
-7. Pull diagnostics (M14) shipped 2026-09-29 and is advertised to clients that
-   negotiate it (`capabilities.textDocument.diagnostic`); a client that does
-   not is served by the unchanged push path. What remains open is the *delta*
-   form: LSP 3.17 defines a `DocumentDiagnosticReport` with `kind: "unchanged"`
-   and an optional `relatedDocuments`, and the server answers `full` |
-   `unchanged` — the per-item delta (`textDocument/diagnostic` with
-   `previousResultId` and no item list) is not implemented, and no target editor
-   asks for it. (The other feasible 3.17 extras are not: `codeLens` landed with
-   M13, `typeDefinition` / `implementation` / `typeHierarchy` land with M15
-   (2026-09-30, in progress), and `completionItem/resolve` waits on the M10
-   catalog making items heavy.)
+  1. Include edges and missing-include diagnostics are live (M6), but
+  include-once *guard states* are not evaluated — `#include once` / `#pragma
+  once` / `#ifndef` are processed as recorded metadata, not macros (FreeBASIC.md
+  §12.6) — and
+     `#inclib` is not treated as a source include.
+  2. Watched files and workspace folders are handled end-to-end (M5.5/M6/M11):
+     a dynamic client is registered for `workspace/didChangeWatchedFiles` on
+     `initialized` via `client/registerCapability`, a static one is served the
+     watchers in the `initialize` reply, events fan into the owning root's
+     `WorkspaceIndex::watchedFilesChanged`, and folder add/remove re-key the
+     per-root indexes. `workspace/didChangeConfiguration` re-reads each root's
+     `freebasicd.toml` (payload ignored) and re-applies `Settings` per root
+     (include seam + feature gates). Force-disabling the fbc system include
+     search (step ⑥) remains open.
+  3. No per-editor wiring docs yet. `README.md`, `cmake --install`, and the
+     0.7.0 version landed 2026-09-25; so did `.github/workflows/ci.yml` — four
+     `build-test` legs (Linux gcc and clang, macOS AppleClang, Windows MSVC), a
+     Linux-only `clang-format` job pinned to 22.1.8, and an install-tree check
+     (`tools/check_install_tree.cmake`) that asserts the binary, `LICENSE.md`,
+     and all 29 catalogs. The matrix has now run on GitHub, and the three
+     platform legs each failed first for a reason only that platform can show,
+     which is the argument for having them at all:
+     - **macOS** died at `#include <libintl.h>` in `src/main.cpp`. The header
+  was found and the gettext include directory did reach `freebasicd_lang`; it
+       never reached the executable, because `freebasicd_core` linked
+       `freebasicd_lang` PRIVATE and a static library hands its private
+       dependencies to consumers as `$<LINK_ONLY:...>` — on the link line,
+       without the usage requirements. Linux hid it: glibc's `libintl.h` is in
+       `/usr/include`, a default search directory. `freebasicd_lang` is PUBLIC
+       now; the executable's flags gained `-I src`, which it had never had.
+     - **Windows** died in its gettext step, then in configure three times over:
+       mlocati splits the release and the `-dev-msvc` bundle has `libintl.h` and
+       the import library but *no* tools (both bundles now go into one prefix);
+       a `$root:` in a `throw` string, which PowerShell reads as a
+  drive-qualified variable, so the script never parsed (actionlint and
+  shellcheck only lint bash, so the pwsh blocks are now parse-checked locally
+  with the real parser); a missing zlib that only ixwebsocket's unused websocket
+  path wants (`USE_ZLIB=OFF`); and LspCpp asking a Visual Studio generator for
+       seven boost nuget packages the build does not have (fork commits
+       `a98ddce` + `9feb484`).
+     - Two latent `cmake/FindIntl.cmake` defects surfaced with them and are
+       fixed: its not-found branch could never be fatal (CMake does not turn a
+       module's `<Name>_FOUND FALSE` into a configure error, which is *why* the
+       macOS leg died in the compiler), and the `-DGETTEXT_ROOT` its header
+       documented was never read.
+     The editors' setup recipes are still open.
+  4. The install tree is **not relocatable**: `FBLANG_LOCALEDIR_INSTALL` is
+     `${CMAKE_INSTALL_PREFIX}/share/locale` baked in at configure time
+     (`src/i18n.cpp`'s probe order: `FBLANG_LOCALEDIR` env override, then the
+     build tree, then that path). `cmake --install --prefix /somewhere/else`
+     therefore leaves the binary unable to find its own catalogs unless the env
+     override is set, which the README documents. The fix is to resolve
+     `share/locale` relative to the executable's own path
+     (`/proc/self/exe`, `_NSGetExecutablePath`, `GetModuleFileName`), or to drop
+     `CMAKE_INSTALL_PREFIX` in favor of a relative lookup. Not done in the 0.7.0
+     wave because it is platform code that only a real multi-platform CI run can
+     verify.
+  5. The version reaches users only through a startup stderr line. The protocol
+     has a place for it, `initialize`'s `serverInfo`, but LspCpp's
+     `InitializeResult` models `capabilities` alone, so reporting it means a
+     sixth commit on the fork branch (`lsp-3.17-completions`) plus a pin bump.
+  6. Windows localization is borrowed, not shipped. `cmake/FindIntl.cmake` needs
+     a real libintl on Windows, and CI gets one from a downloaded
+     `mlocati/gettext-iconv-windows` bundle (tools + MSVC import library +
+     `intl-8.dll` in `bin`). So a Windows build links a DLL from outside the
+     repo: an installed tree would start with the DLL beside the binary or not
+  at all. `install(TARGETS ...)` does not install DLLs, so this is packaging
+     work for the first release that ships a Windows binary — deciding between
+     vendoring the DLL, static-linking libintl, or dropping gettext on Windows
+     (all 29 catalogs are empty today, so an English-only Windows build loses
+     nothing yet).
+  7. Pull diagnostics (M14) shipped 2026-09-29 and is advertised to clients that
+     negotiate it (`capabilities.textDocument.diagnostic`); a client that does
+     not is served by the unchanged push path. What remains open is the *delta*
+     form: LSP 3.17 defines a `DocumentDiagnosticReport` with `kind:
+  "unchanged"` and an optional `relatedDocuments`, and the server answers `full`
+  | `unchanged` — the per-item delta (`textDocument/diagnostic` with
+     `previousResultId` and no item list) is not implemented, and no target
+  editor asks for it. (The other feasible 3.17 extras are not: `codeLens` landed
+  with M13, `typeDefinition` / `implementation` / `typeHierarchy` landed with
+  M15 (2026-09-30, `typeHierarchy/resolve` excepted — prepare fills both lists
+     instead), and `completionItem/resolve` waits on the M10 catalog making
+  items heavy.)
 
-## 5. Forward plan
+  ## 5. Forward plan
 
-Milestones are independently shippable: each leaves `ctest` green and carries
-its own acceptance tests. Commits happen per milestone (AGENTS.md).
+  Milestones are independently shippable: each leaves `ctest` green and carries
+  its own acceptance tests. Commits happen per milestone (AGENTS.md).
 
-### M5 — Workspace spine: occurrence projection + include graph
+  ### M5 — Workspace spine: occurrence projection + include graph
 
-The one structural investment everything cross-file derives from. Reshape the
-index **before** building features on it.
+  The one structural investment everything cross-file derives from. Reshape the
+  index **before** building features on it.
 
-- **Shared analysis.** One `analyze(source) -> AnalyzedDoc` (parse + token
-  vector + includes + per-symbol occurrence sites), reused by the background
-  scan, the open-buffer `upsert`, and request-side resolution so no layer
-  diverges on what a document contains.
-- **`IndexedFile` additions:** `includes` (resolved include targets + their
-  source ranges + `once` flag), `occurrences` (def + resolved usage sites with
-  a `moduleScope` flag), `fromDisk` flag.
-- **Inverted projections** under the index mutex, maintained incrementally by
-  `upsert`/`remove`: `byKey_` (lowercase key → sites across files) and
-  `outInc_` (file → direct includes), plus `transitiveIncludes(file)` with a
-  cycle guard.
-- **In-memory only** (2026-09 revision): the M4 disk cache is removed — the
-  index never writes to disk. The `persisted` flag narrows to `fromDisk`:
-  false for open-buffer entries, and scan's mtime/size cache-hit never accepts
-  one, so scan stays disk truth and buffers stay live truth.
-- Files: `symbols.h`, `resolve.{h,cpp}` (shared `analyze` + occurrence sweep,
-  legacy ParseResult wrappers internally analyze-backed), `index.{h,cpp}`,
-  `session.cpp` (open-buffer upserts go through `analyze`, `fromDisk=false`),
-  `resolve_checks` + `index_checks` cases. **Delivery deviation:** `parser.cpp`
-  untouched (include extraction uses the public `preprocessorWord()` seam);
-  `Storage`/`Shared` tagging deferred to M7 (`moduleScope` = "is a file root").
-- Acceptance: `byKey_`/`outInc_` projections and the closure (diamond + cycle
-  `a.bi`↔`b.bi`) hold in memory across scans/upserts; `fromDisk=false` entries
-  never shadow scan hits — including when the scan's write lands *after* the
-  buffer arrived, which is the half `upsert` now refuses itself; all 7 suites
-  green.
-- Risk: occurrence-vector memory for large workspaces (mitigate: sites only,
-  no payload text; FB files are tiny). Residual: request-side re-analyze per
-  call — removed by M10's content-addressed analysis cache.
+  - **Shared analysis.** One `analyze(source) -> AnalyzedDoc` (parse + token
+    vector + includes + per-symbol occurrence sites), reused by the background
+    scan, the open-buffer `upsert`, and request-side resolution so no layer
+    diverges on what a document contains.
+  - **`IndexedFile` additions:** `includes` (resolved include targets + their
+    source ranges + `once` flag), `occurrences` (def + resolved usage sites with
+    a `moduleScope` flag), `fromDisk` flag.
+  - **Inverted projections** under the index mutex, maintained incrementally by
+    `upsert`/`remove`: `byKey_` (lowercase key → sites across files) and
+    `outInc_` (file → direct includes), plus `transitiveIncludes(file)` with a
+    cycle guard.
+  - **In-memory only** (2026-09 revision): the M4 disk cache is removed — the
+    index never writes to disk. The `persisted` flag narrows to `fromDisk`:
+    false for open-buffer entries, and scan's mtime/size cache-hit never accepts
+    one, so scan stays disk truth and buffers stay live truth.
+  - Files: `symbols.h`, `resolve.{h,cpp}` (shared `analyze` + occurrence sweep,
+    legacy ParseResult wrappers internally analyze-backed), `index.{h,cpp}`,
+    `session.cpp` (open-buffer upserts go through `analyze`, `fromDisk=false`),
+    `resolve_checks` + `index_checks` cases. **Delivery deviation:**
+  `parser.cpp` untouched (include extraction uses the public
+  `preprocessorWord()` seam); `Storage`/`Shared` tagging deferred to M7
+  (`moduleScope` = "is a file root").
+  - Acceptance: `byKey_`/`outInc_` projections and the closure (diamond + cycle
+    `a.bi`↔`b.bi`) hold in memory across scans/upserts; `fromDisk=false` entries
+    never shadow scan hits — including when the scan's write lands *after* the
+    buffer arrived, which is the half `upsert` now refuses itself; all 7 suites
+    green.
+  - Risk: occurrence-vector memory for large workspaces (mitigate: sites only,
+    no payload text; FB files are tiny). Residual: request-side re-analyze per
+    call — removed by M10's content-addressed analysis cache.
 
-### M5.5 — Lifecycle: `initialized` + dynamic capability registration
+  ### M5.5 — Lifecycle: `initialized` + dynamic capability registration
 
-The transport the watched-file feature (M6) and config-driven watcher changes
-(M11) need, and the first server→client request the server issues.
+  The transport the watched-file feature (M6) and config-driven watcher changes
+  (M11) need, and the first server→client request the server issues.
 
-- Handle `initialized` (the client's first notification after `initialize`):
-  read client capability `workspace.didChangeWatchedFiles.dynamicRegistration`.
-  When true, send `client/registerCapability` for `workspace/didChangeWatchedFiles`
-  (WatchKind create/change/delete, globs `**/*.{bas,bi}`); when false, carry
-  static watchers in the `initialize` reply's `workspace.didChangeWatchedFiles`.
-- Wire the LspCpp plumbing only (`initialized.h`, `registerCapability.h`,
-  `did_change_watched_files.h` — all vendored). No watcher *logic* in M5.5:
-  the registration target exists; M6 fills in the notification handler and the
-  debounced rescan.
-- Files: `session.{h,cpp}`, `session_integration` (init → `initialized` →
+  - Handle `initialized` (the client's first notification after `initialize`):
+    read client capability
+  `workspace.didChangeWatchedFiles.dynamicRegistration`. When true, send
+  `client/registerCapability` for `workspace/didChangeWatchedFiles` (WatchKind
+  create/change/delete, globs `**/
+              *.{
+  bas, bi
+}`);
+when false,
+    carry static watchers
+            in the `initialize` reply's `workspace.didChangeWatchedFiles`. -
+        Wire the LspCpp plumbing only(`initialized.h`, `registerCapability.h`,
+  `did_change_watched_files.h` — all vendored).No watcher * logic
+            * in M5.5 : the registration target exists;
+M6 fills in the notification handler and the debounced rescan.- Files
+    : `session.{
+  h, cpp
+}`, `session_integration` (init → `initialized` →
   observed registerCapability frame, plus a non-dynamic-client variant).
 - Acceptance: after `initialized`, a dynamic client receives exactly one
-  registerCapability request for watched files; a non-dynamic client sees the
-  static watchers in the initialize reply.
-- Risk: send-registration before the reply matters to some clients — sequence
-  the registerCapability send as part of the `initialized` queue.
+  registerCapability request for watched files;
+a non - dynamic client sees the static watchers in the initialize reply.-
+    Risk : send -
+           registration before the reply matters to some clients — sequence
+               the registerCapability send as part of the `initialized` queue.
 
-### M6 — Include resolution + convergence
+           ## #M6 — Include resolution +
+           convergence
 
-Closed includes end-to-end and made the index converge on disk edits. Two
-M6-plan bullets had effectively shipped early and are recorded here as
-deviations rather than reworked.
+               Closed includes end -
+           to - end and made the index converge on disk edits.Two M6 -
+           plan bullets had effectively shipped early and
+               are recorded here as deviations rather than reworked.
 
-- **Search policy shipped in M5 + amended** (deviation): `resolveIncludeTarget` — the
-  including file's dir first, then workspace-root fallback — landed inside
-  `index.{h,cpp}` during M5, so no `src/includes.{h,cpp}` was created; M6
-  consumes it. Later amended (post-M6 bugfix) to widen the workspace search to
-  every immediate child dir of the root (`inc`/`include`/`src` etc., so
-  `#include "folder/file.bi"` matches under any of them) and to fall back to
-  the FreeBASIC installation's own header folder found via `fbc` on PATH
-  (Windows `<exeDir>/inc`, POSIX `<exeDir>/../include/freebasic`). fbc `-i`
-  dirs landed as `Settings.includePaths` (M11 step ②, config-relative);
+           -
+           **Search policy shipped in M5 +
+           amended **(deviation)
+    : `resolveIncludeTarget` — the including file's dir first, then workspace-root fallback — landed inside
+  `index.{
+  h, cpp
+}
+` during M5, so no `src / includes.{ h, cpp }
+` was created;
+M6 consumes it.Later amended(post - M6 bugfix) to widen the workspace search to
+    every immediate child dir of the root(`inc`/`include `/`src` etc., so
+  `#include "folder/file.bi"` matches under any of them) and
+    to fall back to the FreeBASIC
+        installation's own header folder found via `fbc` on PATH (
+            Windows `<exeDir> / inc`, POSIX `<exeDir> /../ include / freebasic`)
+            .fbc `-
+        i` dirs landed as `Settings.includePaths` (M11 step ②,
+                                                   config - relative);
   force-disabling the system search (step ⑥) remains open (§4).
 - **Include-not-found diagnostics (own edges, both deliveries):** the open-buffer
   publish path builds the `IndexedFile` once, reads back its resolved include
@@ -1289,9 +1500,11 @@ parser, not by reading it):
 >    answer carries a null file, which reads as "the requesting document".
 > 2. **Only one direction of the member edge can cross a file boundary**, and
 >    which one depends on where the `#include` points: a request stands on one
->    half and reaches the other through *its own* closure, so a header that
->    declares and includes the implementing header crosses forward, while the
->    ordinary layout (the includer `.bas` implements) crosses backward. Both
+>    half and reaches the other through *its own* closure, so the ordinary
+>    layout (a header declares, the includer `.bas` implements) crosses
+>    backward, and crossing forward needs the other layout — the type declared
+>    first, the implementing header included *after* it, which is also the only
+>    order `fbc` accepts (the include first is error 3 on the dot). Both
 >    shapes are in `TestMemberImplementationAndDeclaration` — one function, two
 >    layouts — because a single fixture would have made the other direction look
 >    unreachable when it is merely differently shaped. A request from the
@@ -1313,6 +1526,45 @@ parser, not by reading it):
 > remembering as a class: *a word scan inside a `while` over the same buffer
 > needs a stated progress invariant*, because a parser that mostly sees
 > identifiers never exercises the other branch until a new caller does.
+>
+> **Done 2026-09-30**, all three aspects: `1d4c117` (aspect 1), `d63f54d`
+> (aspect 2), `c937189` (aspect 3, `feat(session): answer type go-to and the
+> type hierarchy`). `i18n_checks` confirms the no-new-strings claim above
+> rather than assuming it. Three things the milestone settled that are worth
+> more than the feature:
+>
+> 1. **`typeHierarchy/resolve` is not implemented, and the capability says
+>    so.** The vendored `typeHierarchyProvider` is the bare-bool arm, which
+>    carries no `resolveProvider`, so the field is *absent* — and an absent
+>    `resolveProvider` is what tells a client not to send the request.
+>    `prepare` fills `parents` and `children` eagerly so there is nothing to
+>    resolve lazily, and README lists the exception next to the features that
+>    are there rather than leaving a client to discover it.
+> 2. **A reply whose optional result is absent carries no `result` key at
+>    all.** LspCpp's `ReflectMember(Writer&, name, optional<T>&)` omits both
+>    the key and the value for a `nullopt` in JSON, so a prepare with no type
+>    under the cursor goes out as `{"jsonrpc":"2.0","id":N}` where the
+>    protocol says `TypeHierarchyItem[] | null`; strictly, JSON-RPC 2.0 wants
+>    `result` present. Left alone deliberately: it is the vendored library's
+>    behaviour for *every* optional-result request this server answers
+>    (`prepareCallHierarchy` included, whose integration test asserts the same
+>    tolerance), fixing it only for M15 would make the server inconsistent,
+>    and fixing it everywhere means either an eleventh fork commit or
+>    hand-rolling every response type. Every client that speaks this feature
+>    reads `result` as `undefined`, which its own types admit. The lesson is
+>    one AGENTS.md keeps earning: **a test on the wire has to assert what the
+>    server sends, not what the protocol says it could send** — the first
+>    version of this test asserted `"result":null` and failed, which is how
+>    the gap was found at all.
+> 3. **The fixture had to be fbc-checked, and two of its shapes were
+>    wrong.** A UDT holding nothing but `declare sub go()` is error 256 ("a
+>    TYPE cannot be empty"), so every fixture type carries a field; and the
+>    forward member-edge layout only compiles when the type is declared
+>    *before* the `#include` that brings in the implementing header — putting
+>    the include first is error 3 on the dot of `sub base_t.go()`. Both were
+>    found by compiling the fixture, which is why
+>    `TestImplementationCrossesBothWays` can assert a cross-file answer in
+>    both directions rather than only the direction that happens to parse.
 
 ### M16 — Document links + completion resolve + polish (backlog)
 
