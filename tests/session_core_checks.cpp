@@ -122,6 +122,38 @@ void TestInitializeReportsSyncCapabilities() {
   session.stop();
 }
 
+// The version reaches users through the protocol, not only through the
+// startup stderr line: `serverInfo` is where the spec puts it, and the client
+// that asked for nothing in particular still gets it (the field is
+// unconditional — gating it on a capability would only hide it). The asserted
+// version is the compile definition itself, so a stale hand-written number
+// here fails rather than agreeing with itself.
+void TestInitializeReportsServerInfo() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kInitializeFrame));
+  std::string const response =
+      WaitForOutputContaining(output, "\"id\":\"init\"");
+
+  Expect(response.find("\"serverInfo\"") != std::string::npos,
+         "initialize response must carry serverInfo");
+  Expect(response.find("\"name\":\"" + std::string(kServerName) + "\"") !=
+             std::string::npos,
+         "serverInfo must name the server");
+  Expect(response.find("\"version\":\"" + std::string(FBLANG_VERSION) + "\"") !=
+             std::string::npos,
+         "serverInfo must carry the build's version");
+
+  session.stop();
+}
+
 void TestDidOpenPublishesDiagnostics() {
   lsp::NullLog log;
   lsp::LanguageSession session(log);
@@ -461,6 +493,7 @@ namespace fbtest {
 
 void RunCoreTests() {
   RUN_TEST(TestInitializeReportsSyncCapabilities);
+  RUN_TEST(TestInitializeReportsServerInfo);
   RUN_TEST(TestDidOpenPublishesDiagnostics);
   RUN_TEST(TestDiagnosticsReflectParseErrors);
   RUN_TEST(TestDiagnosticsRespectDeclarationScopes);

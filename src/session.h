@@ -80,6 +80,17 @@
 #include <unordered_map>
 #include <vector>
 
+#ifndef FBLANG_VERSION
+// A build that forgets the definition (an out-of-tree consumer of the
+// sources) still runs; it just cannot name its own version.
+#define FBLANG_VERSION "unknown"
+#endif
+
+// The server's own name, as the protocol defines it (`InitializeResult.
+// serverInfo.name`, and the `source` every diagnostic carries). Defined once
+// so the handshake and the diagnostics cannot drift apart.
+inline constexpr char const *kServerName = "freebasicd";
+
 class FreeBasicServer {
 public:
   explicit FreeBasicServer(lsp::LanguageSession &session);

@@ -100,10 +100,13 @@ add_executable(freebasicd
 )
 target_link_libraries(freebasicd PRIVATE freebasicd_core lspcpp)
 # The version is a compile definition rather than a runtime lookup: the server
-# has no CLI flags and reads nothing from disk at startup, so this is the only
-# place the number surfaces. LspCpp's InitializeResult has no `serverInfo`
-# field, so the protocol cannot carry it without a fork change.
-target_compile_definitions(freebasicd PRIVATE
+# has no CLI flags and reads nothing from disk at startup. It lives on
+# freebasicd_core (not the executable) because both surfaces of it are below
+# there — `InitializeResult.serverInfo` in src/session.cpp, which reports it
+# through the protocol, and the startup stderr line in src/main.cpp — and
+# PUBLIC so the integration driver, which links the same static library, can
+# assert against the very number the server sends.
+target_compile_definitions(freebasicd_core PUBLIC
     FBLANG_VERSION="${PROJECT_VERSION}"
 )
 

@@ -354,7 +354,7 @@ lsDiagnostic toLsDiagnostic(std::string_view content,
     diag.code.emplace(
         std::make_pair<optional<std::string>, optional<int>>(d.code, {}));
   }
-  diag.source.emplace("freebasicd");
+  diag.source.emplace(kServerName);
   diag.message = d.message;
   return diag;
 }
@@ -1224,6 +1224,15 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
       rsp.result.capabilities.textDocumentSync.emplace().second.emplace();
   sync.openClose = true;
   sync.change = lsTextDocumentSyncKind::Incremental;
+
+  // `serverInfo` (LSP 3.15+): the server's name and version, which is where a
+  // client is meant to learn who it is talking to — so the version reaches
+  // users through the protocol and not only through the startup stderr line.
+  // Unconditional: the protocol lets any client read it, and the alternative
+  // (hiding it from a client that does not ask) buys nothing.
+  rsp.result.serverInfo.emplace();
+  rsp.result.serverInfo->name = kServerName;
+  rsp.result.serverInfo->version = FBLANG_VERSION;
 
   rsp.result.capabilities.documentSymbolProvider.emplace();
   rsp.result.capabilities.documentSymbolProvider->first.emplace(true);
