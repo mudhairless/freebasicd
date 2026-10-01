@@ -170,7 +170,9 @@ variables are created normally, except that the Dim keyword is optional"
 `(wiki)`. Both spellings declare a field fbc resolves through `p.member`
 `(fbc)`.
 
-Legal `ENUM` body members: `name`, `name = expr`, `name(…) = expr`.
+Legal `ENUM` body members: `name`, `name = expr` — and nothing else `(fbc)`. The
+array-shaped form is not one of them: `a(1) = 1` is `error 3: Expected
+End-of-Line`, so an enumerator cannot carry a subscript.
 
 Anything else in the body is a hard error, and fbc anchors the missing closer
 on the offending statement `(fbc)`:
@@ -213,6 +215,7 @@ and `Dim p As Point(10)` both give `error 88`, while `Dim p As Point Ptr`
 compiles. Note the corollary, because it matters for error recovery: since
 `Dim p As Point` inside `type point` can never be a field, a buffer that
 contains one cannot be read as an unclosed record whose body continues past it.
+§12.15 records what this parser does with that statement.
 
 #### Where a missing closer belongs
 
@@ -535,23 +538,29 @@ to "the language is what the lexer does":
     collision with a distinct variable name (`dim p as Position`), and
     static-member completion (`T.counter`) is out of scope entirely — type
     names never complete their members today.
-15. **A record body swallows the rest of the file until its `END` is typed.**
-    §7 (Record and enum bodies) records that a record body is a member list,
-    not a statement list, and that fbc ends the body at the first statement it
-    cannot accept — naming that statement in `error 19` / `error 74`. This
-    parser has no member-grammar check: while a `Type`/`Union`/`Enum` block is
-    open it treats *every* line as a potential member, so after a deleted
-    `End Type` the rest of the file is parsed inside the record. The visible
-    damage is not just a missing closer: module-level code after the record is
-    captured as its fields, so a later use of the same name raises a spurious
-    `duplicate-definition`, and the record's `blockRanges` entry (folding) runs
-    to end-of-source. For `blocks_type.bas` with `end type` deleted, `dim p as
-    point` is captured as a field of `point` and `duplicate-definition: 'p'`
-    is published on the following line. It also makes the `unterminated-block`
-    quick fix append its closer at end-of-buffer, since that is the only
-    insertion point the parse exposes. Fixed by adding the member-grammar
-    predicate to `language.cpp` and having the parser record each block's
-    logical end; until then, treat a record-body boundary as unmodelled.
+15. **A record body's closer is placed from a member-grammar check; two
+    statements fbc refuses are still read as members.** §7 (Record and enum
+    bodies) records that a record body is a member list, not a statement list,
+    and that fbc ends the body at the first statement it cannot accept — naming
+    that statement in `error 19` / `error 74`. The parser asks
+    `acceptsBodyMember` (`language.cpp`) and closes the body at the first
+    statement the record/enum grammar refuses, then re-parses that statement in
+    the enclosing scope, so the rest of the file is no longer captured as fields
+    and the `unterminated-block` diagnostic carries the offset its quick fix
+    inserts at. A closer that does not match is the same evidence from the other
+    side, and is treated the same way. Two statements fbc refuses are still
+    accepted, both on purpose:
+    - A member procedure spelled **with its body** inside the record body
+      (`type t` / `sub go()` / … / `end sub` / `end type`), where fbc wants
+      `Declare Sub go()` plus a module-level definition and answers `error 17:
+      found 'go'`. Hover, call hierarchy and code lens resolve inside such a
+      member, so a boundary there would close a body the author plainly means and
+      re-attribute that member's own members to the record. The cost: a record
+      left unclosed before one is still reported at end-of-buffer.
+    - A by-value self-reference (`Dim p As Point` inside `type point`), which
+      is `error 88` and can never be a field. Only a boundary in a longer buffer
+      is at stake, so this parser reads it as a field and the unclosed record is
+      reported at end-of-buffer.
 16. **A constructor/destructor's type owner is unmodelled** (§7, Inheritance).
     The member-procedure implementation edge is recorded for the three forms
     that carry an unambiguous `Type.name` qualifier — `sub t.go()`,

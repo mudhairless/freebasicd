@@ -139,4 +139,16 @@ bool statementPosition(std::vector<Token> const &tokens, std::uint32_t off);
 std::string expectedCloserAt(std::vector<Token> const &tokens,
                              std::uint32_t openerBeg);
 
+// Can the statement spelled by `stmt` (one logical line's tokens, first token
+// first) appear in the body of a block of `kind`? A record or enum body is a
+// member list rather than a statement list (FreeBASIC.md §7), so a statement it
+// cannot accept is where the missing closer belongs (fbc anchors `error 19` /
+// `error 74` on exactly that statement); every other kind accepts any
+// statement, so this is true for all of them. Conservative by construction:
+// anything the tables below are not sure about counts as a member, so a false
+// positive here can only delay a boundary, never invent one. Closer tokens
+// answer true — a matching closer closes the block and a mismatching one is the
+// parser's separate evidence for the same boundary.
+bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt);
+
 } // namespace fblang

@@ -213,6 +213,14 @@ private:
     }
   }
 
+  // A record/enum body: a member list rather than a statement list
+  // (FreeBASIC.md §7), which is why it is the one block kind with a boundary
+  // the *content* decides rather than a closer.
+  static bool isMemberBodyKind(BlockKind k) {
+    return k == BlockKind::Type || k == BlockKind::Union ||
+           k == BlockKind::Enum;
+  }
+
   static SymbolKind declKindFor(const std::string &w) {
     if (w == "sub") {
       return SymbolKind::Sub;
@@ -364,6 +372,72 @@ private:
     }
   }
 
+  // Close the innermost block at `end` because the source says it ends there,
+  // not because the buffer ran out, and report the missing closer. The report
+  // stays anchored at the opener (the squiggle means "you forgot to close
+  // this"), while `closerAt` carries the offset the closer belongs at — the
+  // `unterminated-block` fix inserts there. Distinct from the EOF path in
+  // run(), which has no evidence and so sets no `closerAt`.
+  void closeBlockUnterminated(uint32_t end) {
+    Block const b = blocks_.back();
+    closeBlock(end);
+    Diagnostic d;
+    d.range = SourceRange{b.begOpen, b.endOpen};
+    d.severity = Severity::Error;
+    d.code = "unterminated-block";
+    d.message = trf("Expected '%s'", displayFor(b));
+    d.closerAt = end;
+    out_.diagnostics.push_back(std::move(d));
+  }
+
+  // Close the innermost block because the statement at `cur_` cannot belong to
+  // its body, and hand the statement back for parsing in the enclosing scope.
+  // This is the evidence fbc anchors `error 19` / `error 74` on (FreeBASIC.md
+  // §7): a record or enum body is a member list, so the first statement its
+  // grammar rejects is where the closer belongs. Loop, because nested records
+  // nest the failure — `type a / type b / <statement>` needs both `END TYPE`s,
+  // and the outer one is just as unterminated as the inner.
+  bool closeBodyAtBoundary() {
+    if (blocks_.empty()) {
+      return false;
+    }
+    BlockKind const kind = blocks_.back().kind;
+    if (kind != BlockKind::Type && kind != BlockKind::Union &&
+        kind != BlockKind::Enum) {
+      return false;
+    }
+    if (acceptsBodyMember(kind, statementTokens())) {
+      return false;
+    }
+    closeBlockUnterminated(cur_.beg);
+    return true;
+  }
+
+  // The tokens of the statement starting at `cur_`, up to its statement end.
+  // Same stop set as skipStatement — a newline, a comment, or a `:` separator —
+  // so a `:`-separated statement is judged on its own tokens, and the lexer has
+  // already merged `_` continuation lines into one logical line.
+  std::vector<Token> statementTokens() {
+    std::vector<Token> out;
+    auto endsStatement = [](Token const &t) {
+      return t.kind == TokenKind::Newline || t.kind == TokenKind::Eof ||
+             t.kind == TokenKind::Comment || t.kind == TokenKind::DocComment ||
+             (t.kind == TokenKind::Symbol && t.text() == ":");
+    };
+    if (endsStatement(cur_)) {
+      return out;
+    }
+    out.push_back(cur_);
+    for (int i = 0; i < MAX_LINE_PEEK && out.size() < MAX_LINE_PEEK; ++i) {
+      Token const t = lex_.peek(i);
+      if (endsStatement(t)) {
+        break;
+      }
+      out.push_back(t);
+    }
+    return out;
+  }
+
   void skipStatement(bool suppressMemberCapture = false) {
     bool captureMember = false;
     bool inRecord = false; // inside a TYPE/UNION body: capture field members
@@ -454,6 +528,15 @@ private:
   }
 
   void handleStatement() {
+    // A record/enum body is a member list, not a statement list: close it at
+    // the first statement its grammar cannot accept, before anything below
+    // reads it as a field or a member. Re-enter so the statement is parsed in
+    // the enclosing scope, and keep going while records nest the failure.
+    while (closeBodyAtBoundary()) {
+      // One pass closes one body and re-judges the same statement against the
+      // one now on top, which is what makes nested records nest the failure.
+    }
+
     // Line label: Identifier directly followed by ':'.
     if (cur_.kind == TokenKind::Identifier) {
       Token const nxt = lex_.peek(0);
@@ -1129,6 +1212,14 @@ private:
       std::string const expected = w == "for" ? "NEXT" : "WEND";
       addDiagnostic(cur_.beg, cur_.end, Severity::Error, "invalid-end",
                     trf("Expected '%s'", expected));
+      // No block can be closed by `END FOR` / `END WHILE` (fbc rejects both
+      // with `error 33: Illegal 'END'`), so this token is itself the evidence
+      // that the innermost block ends before it — fbc's `error 13: Expected
+      // 'NEXT' in 'end for'`. Close it there, then consume: an illegal closer
+      // has no closer of its own to match.
+      if (!blocks_.empty()) {
+        closeBlockUnterminated(endTok.beg);
+      }
       resetDoc();
       skipStatement();
       return;
@@ -1158,10 +1249,47 @@ private:
       return;
     }
 
-    addDiagnostic(endTok.beg, cur_.end, Severity::Error, "closer-mismatch",
-                  trf("Expected '%s'", displayFor(top)));
+    closeBeforeMismatchedCloser(endTok.beg, top, c);
+    if (!topClosesWith(c)) {
+      resetDoc();
+      skipStatement();
+      return;
+    }
+    closeBlock(cur_.end);
+    advance();
     resetDoc();
     skipStatement();
+  }
+
+  // The innermost block does not match this closer, so it ends *before* it —
+  // the evidence a missing closer needs, and exactly where fbc puts its own
+  // ("error 13: Expected 'NEXT', found 'end' in 'end sub'"). Closing it there
+  // is what fixes the quick fix's insertion point, so the caller must then
+  // re-try the closer against the block now on top.
+  //
+  // A record/enum body reports no separate `closer-mismatch`: a stray `END SUB`
+  // in a `TYPE` body is just a statement that body cannot accept, which is
+  // fbc's `error 19`, and the `unterminated-block` already names the expected
+  // closer.
+  void closeBeforeMismatchedCloser(uint32_t at, Block const &top,
+                                   BlockCloser const &c) {
+    if (!isMemberBodyKind(top.kind)) {
+      addDiagnostic(at, cur_.end, Severity::Error, "closer-mismatch",
+                    trf("Expected '%s'", displayFor(top)));
+    }
+    closeBlockUnterminated(at);
+  }
+
+  // Does the innermost block take this closer? The caller's mismatch path has
+  // just closed one block, so this answers for the one below it: `end sub`
+  // closing the `SUB` under a `FOR` it does not belong to is how a nested
+  // unterminated block still nests correctly after the fix is applied.
+  bool topClosesWith(BlockCloser const &c) {
+    if (blocks_.empty()) {
+      return false;
+    }
+    Block const &top = blocks_.back();
+    return top.kind == c.kind && top.needsEnd == c.needsEnd;
   }
 
   void handlePlainCloser(const BlockCloser &c) {
@@ -1188,8 +1316,14 @@ private:
       skipStatement();
       return;
     }
-    addDiagnostic(closerTok.beg, closerTok.end, Severity::Error,
-                  "closer-mismatch", trf("Expected '%s'", displayFor(top)));
+    closeBeforeMismatchedCloser(closerTok.beg, top, c);
+    if (!topClosesWith(c)) {
+      resetDoc();
+      skipStatement();
+      return;
+    }
+    closeBlock(closerTok.end);
+    advance();
     resetDoc();
     skipStatement();
   }

@@ -71,21 +71,35 @@ std::string indentAt(std::string_view content, std::uint32_t off) {
   return std::string(content.substr(lineStart, indent));
 }
 
-// Where a closer goes, and what must precede it. Two shapes, decided by the
-// buffer's last line:
-//  - last line carries text -> append after it, opening a fresh line (the
-//    prefix is that newline, and `at` is the buffer end, which is not a line
-//    start);
-//  - last line is blank -> land on the first of the trailing blank lines, so
-//    the closer sits right below the last statement and keeps the blank lines
-//    below it. `at` is then a line start and needs no prefix.
+// Where a closer goes, and what must precede it.
+//  - `knownAt` is set -> the parse recorded where the closer belongs (the
+//    statement the block's grammar could not accept, or the closer that did not
+//    match), so the insertion lands there and needs no prefix: it is a
+//    statement's own first token, and everything after it stays put.
+//  - otherwise there was no evidence, and the buffer's last line decides:
+//      * last line carries text -> append after it, opening a fresh line (the
+//        prefix is that newline, and `at` is the buffer end, which is not a
+//        line start);
+//      * last line is blank -> land on the first of the trailing blank lines,
+//      so
+//        the closer sits right below the last statement and keeps the blank
+//        lines below it. `at` is then a line start and needs no prefix.
+//
+// The no-evidence case is not a fallback for a procedure body: that body
+// accepts every statement, so end-of-buffer is its real answer (FreeBASIC.md
+// §7).
 struct Insertion {
   std::uint32_t at = 0;
   std::string prefix;
 };
 
-Insertion closerInsertion(std::string_view content) {
+Insertion closerInsertion(std::string_view content,
+                          std::optional<std::uint32_t> knownAt) {
   Insertion in;
+  if (knownAt && *knownAt <= content.size()) {
+    in.at = *knownAt;
+    return in;
+  }
   std::size_t lineStart = content.rfind('\n');
   lineStart = (lineStart == std::string_view::npos) ? 0 : lineStart + 1;
   if (!isBlankLine(content.substr(lineStart))) {
@@ -108,16 +122,19 @@ Insertion closerInsertion(std::string_view content) {
   return in;
 }
 
-// `unterminated-block` -> append the closer this opener expects.
+// `unterminated-block` -> insert the closer this opener expects.
 //
-// The parser closes an unterminated block at EOF, so the block's own range
-// says nothing about where its closer belongs: every still-open block ends at
-// the buffer end, and inserting an *outer* block's closer there would invert
-// the nesting. One fix therefore closes exactly one block — the innermost,
-// which is the one the parser reports first — at the end of the buffer. The
-// re-parse that follows makes the next enclosing block the innermost, and its
-// fix appends its closer after this one, so applying the fixes in turn nests
-// them correctly.
+// Where it goes is the parse's answer, never a guess made here: when the parser
+// recorded the block's logical end (a statement a record/enum body's grammar
+// could not accept, or a closer that did not match) the fix writes the closer
+// *there* — before the offending statement, which is where fbc says it belongs
+// (FreeBASIC.md §7). With no evidence, the buffer's end is the best available
+// guess, and that is the procedure body's real answer: its grammar accepts
+// every statement, so nothing in the source marks where the body ends.
+//
+// One fix still closes exactly one block — the innermost, which the parser
+// reports first — so applying fixes in turn nests them correctly: the re-parse
+// after the first makes the next enclosing block the innermost.
 std::vector<QuickFix> insertBlockCloser(Diagnostic const &d,
                                         QuickFixContext const &ctx) {
   if (ctx.doc == nullptr) {
@@ -127,7 +144,7 @@ std::vector<QuickFix> insertBlockCloser(Diagnostic const &d,
   if (closer.empty()) {
     return {}; // an opener with no closer in the language tables: offer nothing
   }
-  Insertion const in = closerInsertion(ctx.content);
+  Insertion const in = closerInsertion(ctx.content, d.closerAt);
   QuickFix fix;
   // TRANSLATORS: %s is a FreeBASIC block closer written verbatim
   // (END SUB, NEXT, WEND, #ENDIF, ...); it is never translated.

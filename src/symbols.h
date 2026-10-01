@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -149,6 +150,16 @@ struct Diagnostic {
   Severity severity = Severity::Error;
   std::string code;
   std::string message;
+
+  // Where a *missing closer* belongs, when the parse knows: the parser records
+  // the block's logical end — the statement its grammar could not accept, or
+  // the closer that did not match — and the `unterminated-block` fix writes its
+  // `END TYPE` there instead of at end-of-buffer (`range` deliberately stays on
+  // the opener: the squiggle means "you forgot to close this", and the fix
+  // needs the opener to name the closer). Unset means there was no evidence,
+  // and the end of the buffer is the best available guess — a procedure body
+  // accepts every statement, so EOF really is its answer.
+  std::optional<std::uint32_t> closerAt;
 };
 
 // Block kinds used for block matching and block-based folding.

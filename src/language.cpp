@@ -1481,6 +1481,122 @@ std::string closerDisplay(const BlockCloser &closer) {
   return s;
 }
 
+namespace {
+
+// A closer statement — `END <x>`, `NEXT`, `WEND`, `LOOP` — is never a member,
+// but it is not a boundary either: handleEnd/handlePlainCloser own it, and a
+// mismatching one is the parser's separate evidence for the same boundary (the
+// block should have closed before it). Deliberately *not* `blockForCloser`:
+// that table also answers true for an opener word (`SUB`, `TYPE`, ...), which
+// inside a record body is `error 17`.
+bool startsCloserStatement(Token const &first) {
+  if (first.kind != TokenKind::Keyword) {
+    return false;
+  }
+  std::string const w = toLowerChars(std::string(first.text()));
+  return w == "end" || w == "next" || w == "wend" || w == "loop";
+}
+
+// Does the statement carry a field's `As` clause? That is what makes a
+// `Dim`-optional field declaration (`x As Single`, `b(3) As Byte`,
+// `As Integer x`) — and a reserved word is a legal field name, so the test is
+// the clause rather than the leading token. A bare `x` in a record body is
+// `error 17`, and so is `Field = 4` (an opener-line modifier, never a member).
+bool hasAsClause(std::vector<Token> const &stmt) {
+  for (Token const &t : stmt) {
+    if (t.kind == TokenKind::Keyword &&
+        toLowerChars(std::string(t.text())) == "as") {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The keywords that open a legal `TYPE`/`UNION` body member. Every entry was
+// probed against fbc 1.10.2 (FreeBASIC.md §7); a body starting with any other
+// keyword is `error 17`, which is the boundary this predicate exists to find.
+// `Dim` is optional in front of a field (wiki KeyPgUserDefTypes), so the bare
+// form is answered by `hasAsClause` instead of being listed.
+bool isRecordMemberOpener(std::vector<Token> const &stmt, BlockKind kind) {
+  std::string const w = toLowerChars(std::string(stmt.front().text()));
+  auto nextIsKeyword = [&stmt](std::size_t i, char const *want) {
+    return i < stmt.size() && stmt[i].kind == TokenKind::Keyword &&
+           toLowerChars(std::string(stmt[i].text())) == want;
+  };
+  if (w == "as" || w == "static" || w == "const" || w == "declare" ||
+      w == "type" || w == "union" || w == "enum") {
+    return true;
+  }
+  if (w == "rem") {
+    return true; // fbc accepts a `REM` comment line anywhere, bodies included
+  }
+  if (w == "dim") {
+    // `dim shared g as integer` is `error 17: found 'g'` in a record body.
+    return !nextIsKeyword(1, "shared");
+  }
+  if (w == "redim") {
+    // Only the field spelling (`redim q(3) as byte`) is a member; `redim
+    // preserve q(3)` is `error 63: Expected array`, and `redim q as byte` needs
+    // the dimensions.
+    return stmt.size() > 1 && stmt[1].kind == TokenKind::Identifier;
+  }
+  if (w == "sub" || w == "function" || w == "property" || w == "operator" ||
+      w == "constructor" || w == "destructor") {
+    // A member procedure spelled *with its body* inside the record body. fbc
+    // wants `Declare Sub name` there and the definition at module level
+    // (`sub t.name`), so this is `error 17: found 'name'` — but this parser
+    // reads the body form as a member, and call hierarchy, code lens and hover
+    // all resolve inside it. A boundary here would close a body the author
+    // plainly means and re-attribute the procedure's members to the enclosing
+    // scope, which costs more than the missed boundary would gain: the record
+    // stays open and is still reported at end-of-buffer (FreeBASIC.md §12,
+    // member-procedure bodies in a UDT body).
+    return true;
+  }
+  // Access sections are TYPE-only: a `Union` body gives `error 17: found
+  // 'public'` and an `Enum` body `error 3: Expected End-of-Line`
+  // (FreeBASIC.md §7 Access sections).
+  if (w == "public" || w == "private" || w == "protected") {
+    return kind == BlockKind::Type;
+  }
+  // A keyword that opens no member at all is a reserved word used as a field
+  // name (`as string name`), which is legal, so it is judged by its `as` clause
+  // like a plain identifier. Deliberately the *last* word: a keyword the
+  // branches above have already refused is refused, not re-asked.
+  return hasAsClause(stmt);
+}
+
+} // namespace
+
+bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt) {
+  if (kind != BlockKind::Type && kind != BlockKind::Union &&
+      kind != BlockKind::Enum) {
+    // A procedure body is a statement list and accepts everything, which is
+    // exactly why end-of-buffer is the right guess for a missing `END SUB`
+    // (FreeBASIC.md §7, "Where a missing closer belongs").
+    return true;
+  }
+  if (stmt.empty()) {
+    return true; // nothing to judge: a blank or comment-only line
+  }
+  Token const &first = stmt.front();
+  if (startsCloserStatement(first)) {
+    return true;
+  }
+  if (kind == BlockKind::Enum) {
+    // An enum body is `name`, `name = expr` — an identifier, nothing else.
+    return first.kind == TokenKind::Identifier;
+  }
+  if (first.kind != TokenKind::Keyword && first.kind != TokenKind::Identifier) {
+    return false; // a number, string or punctuation starts an expression
+  }
+  if (first.kind == TokenKind::Keyword) {
+    return isRecordMemberOpener(stmt, kind);
+  }
+  // An identifier starts the field form, which `Dim` only makes optional.
+  return hasAsClause(stmt);
+}
+
 std::string_view preprocessorWord(std::string_view line) {
   // line starts at '#', skip the '#', any whitespace, then take the word.
   size_t i = 1;

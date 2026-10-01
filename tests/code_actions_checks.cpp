@@ -127,6 +127,81 @@ void CloserFixAppendsOneBlockEnd() {
   }
 }
 
+// Where the parse recorded a boundary, the closer goes *there* — not at the end
+// of the buffer. `type point` followed by statement its body cannot accept is
+// the reported case (BUGS.md B-1): that statement is fbc's `error 19` anchor,
+// so the closer belongs on the line above it and everything after stays put.
+void CloserFixInsertsAtTheRecordedBoundary() {
+  std::string const src = "type point\n"
+                          "  x as single\n"
+                          "print 1\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  CHECK(doc.parse.diagnostics.size() == 1);
+  if (doc.parse.diagnostics.size() != 1) {
+    return;
+  }
+  Diagnostic const &d = doc.parse.diagnostics.front();
+  CHECK(d.code == "unterminated-block");
+  CHECK(d.closerAt.value_or(0) ==
+        static_cast<std::uint32_t>(src.find("print")));
+
+  std::vector<QuickFix> const fixes = fixesFor("unterminated-block", d, ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() != 1) {
+    return;
+  }
+  CHECK(fixes[0].title == "Insert 'END TYPE'");
+  // A statement's own first token is a line start, so the insertion needs no
+  // leading newline — the closer lands above the statement and the
+  // end-of-buffer / blank-line logic never applies.
+  CHECK(editText(fixes[0]) == insertAt(src.find("print")) + "END TYPE\n");
+
+  // And the acceptance criterion again, at the boundary: the applied text
+  // re-parses without the diagnostic, with the field still a field.
+  TextEditBytes const &e = fixes[0].edits.front();
+  std::string const applied =
+      src.substr(0, e.range.beg) + e.newText + src.substr(e.range.end);
+  CHECK(applied == "type point\n  x as single\nEND TYPE\nprint 1\n");
+  AnalyzedDoc const after = analyze(applied);
+  CHECK(after.parse.diagnostics.empty());
+  CHECK(after.parse.roots.size() == 1);
+  CHECK(after.parse.roots.front().children.size() == 1);
+}
+
+// A procedure body accepts every statement, so nothing in the source marks
+// where it ends: the parse records no boundary and end-of-buffer is the answer,
+// not a fallback. Same for a stale `closerAt` — an offset past the buffer it
+// was computed against is evidence about different bytes, so it is ignored
+// rather than trusted.
+void CloserFixFallsBackToTheBufferEndWithoutEvidence() {
+  std::string const src = "sub main()\n  print 1\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  CHECK(doc.parse.diagnostics.size() == 1);
+  if (doc.parse.diagnostics.size() != 1) {
+    return;
+  }
+  Diagnostic const d = doc.parse.diagnostics.front();
+  CHECK(d.code == "unterminated-block");
+  CHECK(!d.closerAt.has_value());
+
+  std::vector<QuickFix> const fixes = fixesFor("unterminated-block", d, ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() == 1) {
+    CHECK(editText(fixes[0]) == insertAt(src.size()) + "END SUB\n");
+  }
+
+  Diagnostic stale = d;
+  stale.closerAt = static_cast<std::uint32_t>(src.size() + 1);
+  std::vector<QuickFix> const staleFixes =
+      fixesFor("unterminated-block", stale, ctx);
+  CHECK(staleFixes.size() == 1);
+  if (staleFixes.size() == 1) {
+    CHECK(editText(staleFixes[0]) == insertAt(src.size()) + "END SUB\n");
+  }
+}
+
 // The acceptance criterion, at the seam the fix is a pure function of: the
 // text a fix writes, spliced into the buffer the diagnostic came from, must
 // re-parse without that diagnostic.
@@ -376,6 +451,8 @@ void RegistryAnswersTheFixableCodes() {
 
 int main() {
   CloserFixAppendsOneBlockEnd();
+  CloserFixInsertsAtTheRecordedBoundary();
+  CloserFixFallsBackToTheBufferEndWithoutEvidence();
   ApplyingAFixClearsItsDiagnostic();
   CloserFixUsesTheBufferLineEnding();
   CloserFixLandsAboveTrailingBlankLines();

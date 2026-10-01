@@ -26,6 +26,32 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-01 — The `unterminated-block` fix lands where the closer belongs
+
+- A missing closer is now inserted where the parse says it belongs instead of at
+  end-of-buffer. `acceptsBodyMember` (`language.cpp`) answers whether a
+  statement may appear in a record/enum body; the parser closes a body at the
+  first statement it refuses, re-parses that statement in the enclosing scope,
+  and records the offset on the diagnostic's new `closerAt`, which
+  `insertBlockCloser` uses as its insertion point. The squiggle stays on the
+  opener — unchanged ranges, so every published diagnostic is the one it was.
+- A closer that does not match the innermost block is the same evidence from the
+  other side: `end sub` met by an open `if` ends the `if` there (with
+  `closer-mismatch` as before), and the closer then closes the block underneath,
+  so `end sub` still ends the sub. `end for` / `end while`, which can close
+  nothing, are handled the same way.
+- Two deviations, both in `FreeBASIC.md` §12.15 and both deliberate. A member
+  procedure spelled *with its body* inside a record body (`sub go()` … `end sub`)
+  is still read as a member, where fbc wants `Declare Sub go()` — hover, call
+  hierarchy and code lens resolve inside such a member, so a boundary there
+  would re-attribute its members. And a by-value self-reference
+  (`dim p as point` inside `type point`) is still read as a field, so the
+  reported case from the bug report — `blocks_type.bas` with `end type` deleted
+  — places the closer one statement late. That one is `error 88` in fbc, never a
+  field, and is a boundary in its own right.
+- `FreeBASIC.md` §7 also lost a wrong claim found while probing: `name(…) = expr`
+  is **not** a legal enum member (`a(1) = 1` is `error 3`).
+
 ### 2026-10-01 — Server version over the protocol
 
 - `initialize` now answers with `serverInfo.name` and `serverInfo.version`

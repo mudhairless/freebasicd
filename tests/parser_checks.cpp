@@ -720,17 +720,140 @@ int main() {
     CHECK(r.roots.size() == 1);
   }
   {
-    // A Union body rejects access sections, so `private:` there is just an
-    // empty statement and the following member stays Public.
-    ParseResult r = parseDocument("union u\n"
-                                  "    private:\n"
-                                  "    a as integer\n"
-                                  "end union\n");
+    // Access sections are TYPE-only, so `private:` in a Union body is a
+    // statement the body cannot accept: the missing `END UNION` belongs right
+    // above it (fbc: `error 17: found 'private'`, then `error 19: Expected
+    // 'END UNION' in 'private:'`). The squiggle stays on the opener and
+    // `closerAt` is the insertion point the M12 fix uses.
+    std::string const src = "union u\n"
+                            "    private:\n"
+                            "    a as integer\n"
+                            "end union\n";
+    ParseResult r = parseDocument(src);
     const Symbol *u = find(r.roots, "u", SymbolKind::Union);
     CHECK(u != nullptr);
-    CHECK(u->children.size() == 1);
-    CHECK(u->children[0].name == "a");
-    CHECK(u->children[0].access == Access::Public);
+    CHECK(u->children.empty()); // closed before the access section
+    CHECK(r.diagnostics.size() == 2);
+    CHECK(r.diagnostics[0].code == "unterminated-block");
+    CHECK(r.diagnostics[0].range.beg == 0); // anchored at the opener
+    CHECK(r.diagnostics[0].closerAt.value_or(0) ==
+          static_cast<std::uint32_t>(src.find("private:")));
+    CHECK(r.diagnostics[1].code == "stray-closer");
+  }
+  {
+    // A record body is a member list, so the first statement it cannot accept
+    // is where the closer belongs (fbc anchors `error 19` there). The block
+    // ends at that statement, the statement is parsed in the enclosing scope —
+    // nothing of it is captured as a member — and the report carries the offset
+    // the M12 fix inserts at, distinct from its range, which stays on the
+    // opener.
+    std::string const src = "type point\n"
+                            "  x as single\n"
+                            "  y as single\n"
+                            "print 1\n"
+                            "dim p as point\n";
+    ParseResult r = parseDocument(src);
+    const Symbol *t = find(r.roots, "point", SymbolKind::Type);
+    CHECK(t != nullptr);
+    CHECK(t->children.size() == 2); // the fields, and nothing after them
+    std::uint32_t const at = static_cast<std::uint32_t>(src.find("print 1"));
+    CHECK(t->range.end == at);
+    // `print 1` is a statement, `dim p as point` a module-level declaration:
+    // both reached the enclosing scope, so the module sees the latter and the
+    // record does not.
+    CHECK(find(r.roots, "p", SymbolKind::Dim) != nullptr);
+    CHECK(find(t->children, "p", SymbolKind::Variable) == nullptr);
+    CHECK(r.diagnostics.size() == 1);
+    CHECK(r.diagnostics[0].code == "unterminated-block");
+    CHECK(r.diagnostics[0].range.beg == 0);
+    CHECK(r.diagnostics[0].closerAt.value_or(0) == at);
+  }
+  {
+    // Nested records nest the failure: the innermost body cannot accept the
+    // statement, and neither can the one around it. Both closers belong on that
+    // same line, reported innermost first — which is the order the fixes nest
+    // in when applied one after the other.
+    std::string const src = "type outer\n"
+                            "  type inner\n"
+                            "    n as integer\n"
+                            "print 1\n";
+    ParseResult r = parseDocument(src);
+    const Symbol *outer = find(r.roots, "outer", SymbolKind::Type);
+    CHECK(outer != nullptr);
+    const Symbol *inner = find(outer->children, "inner", SymbolKind::Type);
+    CHECK(inner != nullptr);
+    std::uint32_t const at = static_cast<std::uint32_t>(src.find("print 1"));
+    CHECK(inner->range.end == at);
+    CHECK(outer->range.end == at);
+    CHECK(r.diagnostics.size() == 2);
+    if (r.diagnostics.size() == 2) {
+      CHECK(r.diagnostics[0].code == "unterminated-block");
+      CHECK(r.diagnostics[1].code == "unterminated-block");
+      CHECK(r.diagnostics[1].closerAt.value_or(0) == at);
+    }
+  }
+  {
+    // A closer that does not match the innermost block is the same evidence
+    // from the other side: the block ends *before* it, and the closer then
+    // closes the block underneath — which is how the nesting survives the fix.
+    // fbc reads it the same way (`error 13: Expected 'NEXT', found 'end' in
+    // 'end sub'`).
+    std::string const src = "sub s()\n"
+                            "  if x then\n"
+                            "    print 2\n"
+                            "end sub\n";
+    ParseResult r = parseDocument(src);
+    std::uint32_t const at = static_cast<std::uint32_t>(src.find("end sub"));
+    const Symbol *s = find(r.roots, "s", SymbolKind::Sub);
+    CHECK(s != nullptr);
+    // The `end sub` that closed it is the last thing in the buffer, so the
+    // sub's own range ends there.
+    std::uint32_t const closerEnd = at + 7; // "end sub"
+    CHECK(s->range.end == closerEnd);
+    CHECK(r.blockRanges.size() == 2);
+    if (r.blockRanges.size() == 2) {
+      // The `if` ends at the mismatching closer, not at the buffer end.
+      CHECK(r.blockRanges[0].end == at);
+      CHECK(r.blockRanges[1].end == closerEnd);
+    }
+    CHECK(r.diagnostics.size() == 2);
+    if (r.diagnostics.size() == 2) {
+      CHECK(r.diagnostics[0].code == "closer-mismatch");
+      CHECK(r.diagnostics[1].code == "unterminated-block");
+      CHECK(r.diagnostics[1].closerAt.value_or(0) == at);
+    }
+  }
+  {
+    // In a record body the same mismatch *is* the body boundary, so it is
+    // reported once: the `unterminated-block` already names the closer that was
+    // expected, and a `closer-mismatch` naming it would say the same thing
+    // twice.
+    std::string const src = "type t\n"
+                            "  n as integer\n"
+                            "end sub\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].code == "unterminated-block");
+      CHECK(r.diagnostics[0].closerAt.value_or(0) ==
+            static_cast<std::uint32_t>(src.find("end sub")));
+    }
+  }
+  {
+    // `END FOR` / `END WHILE` cannot close anything (fbc: `error 33: Illegal
+    // 'END'`), which makes them the same evidence as a mismatching closer: the
+    // block ends before the token, and no second closer is owed.
+    std::string const src = "for i = 1 to 3\n"
+                            "  print i\n"
+                            "end for\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.diagnostics.size() == 2);
+    if (r.diagnostics.size() == 2) {
+      CHECK(r.diagnostics[0].code == "invalid-end");
+      CHECK(r.diagnostics[1].code == "unterminated-block");
+      CHECK(r.diagnostics[1].closerAt.value_or(0) ==
+            static_cast<std::uint32_t>(src.find("end for")));
+    }
   }
   {
     // A block the user is still typing in (no closer yet) still gets a range
