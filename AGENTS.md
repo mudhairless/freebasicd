@@ -10,11 +10,11 @@ repository (default branch `main`).
   `third_party/LspCpp` from **our fork,
   [github.com/mudhairless/LspCpp](https://github.com/mudhairless/LspCpp)**
   (`.gitmodules` points there; the submodule is pinned to
-  `9b7257fc9bf3ad31e840d0d57572a314d1aa44de` on the fork's
+  `e4b177e8b65bf78194f53b3137362b4a11da3560` on the fork's
   `lsp-3.17-completions` branch (named for what it carries: the LSP 3.17 types
   and serialization upstream still lacks), which is **upstream
   `19150d12c4ae26239d75258ed598ba8ea3587cb7`**
-  (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus ten
+  (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus eleven
   commits of ours**: `310e1e6` adding the watched-files registration types
   upstream lacks —
   `lsFileSystemWatcher`/`lsDidChangeWatchedFilesOptions`
@@ -64,7 +64,9 @@ repository (default branch `main`).
   `WorkingFiles::OnOpen`, which copied `open.version` only when the document was
   *already* open, so a first `didOpen` left `WorkingFile::version` at 0 —
   indistinguishable from "unknown", and the only source
-  `WorkspaceDocumentDiagnosticReport.version` has. Only the Visual Studio
+  `WorkspaceDocumentDiagnosticReport.version` has, and `e4b177e` models
+  `InitializeResult::serverInfo` so the protocol's own place for the version is
+  not a sixth local invention. Only the Visual Studio
   generator reaches the boost-nuget branch, and no local platform can configure
   it, so a change to LspCpp's CMake has to be checked by reading it, not by
   building it.
@@ -561,7 +563,10 @@ it surfaces (the LSP `initialize` reply cannot carry it, LspCpp's
 
 - **Bump the version only when a release ships.** Feature commits, fix
   commits, refactors, and docs commits never touch it. A release is a version
-  bump plus a tag, and the tag is what the number is for.
+  bump plus a tag, and the tag is what the number is for. A release also
+  retitles `CHANGELOG.md`'s `## [Unreleased]` to `## [<x.y.z>] — <date>` and
+  opens a fresh empty `## [Unreleased]` above it, so the two numbers cannot
+  drift apart.
 - Pre-1.0 (anything `0.y.z`): MINOR is the feature wave, PATCH is fixes and
   docs. BREAKING in the 0.x line means "the protocol surface or the config
   file changed shape", and it takes the MINOR.
@@ -577,16 +582,28 @@ it surfaces (the LSP `initialize` reply cannot carry it, LspCpp's
   milestone deliverable (e.g. lexer/parser, an LSP feature, a docs refresh) is
   complete. Commit even if the milestone is "small"; never commit half-finished
   or failing work.
-- **Update `PLAN.md` in the same wave as the milestone.** Completing a
-  milestone means more than green tests: flip its row in the §1 table to
-  `done` (with a date + one-line summary of what shipped), add a `> Status:`
-  block under the milestone heading recording the landed shape and any
-  deviations from the sketch, and refresh the now-stale cross-references —
-  §2 module map / implemented-methods list, §4 gaps (delete resolved ones and
-  renumber), and any "until M<n>" forward notes. Commit the plan update
-  alongside the code when it is part of the same change, or as a follow-up
-  `docs(plan): mark M<n> done…` commit. Do not leave a finished milestone
-  marked `next`.
+- **A finished milestone goes in `CHANGELOG.md`, not `PLAN.md`.** The plan is
+  for work still to do; the changelog is the record of what landed, when, and
+  what it cost. So a milestone's closing wave is:
+  1. **Add a dated `CHANGELOG.md` entry** at the top of `## [Unreleased]`,
+     newest first, headed `### <date> — <what shipped>`. Keep a Changelog shape
+     (`### Added` / `### Changed` / `### Fixed` only when the entry genuinely has
+     those three kinds). Record the deviations from the sketch and the defects
+     found on the way *with their lesson* — that is the part a future reader
+     cannot reconstruct from the diff, and it is why the file exists. Point at
+     `FreeBASIC.md` for language facts and this file for the generalized
+     engineering rule; do not restate either.
+  2. **Delete the milestone's section from `PLAN.md` §5** and drop its §1 table
+     row. A completed milestone keeps at most a one-line pointer in the table if
+     that is genuinely useful context; its sketch, acceptance list, and status
+     block do not survive the wave. The plan must not accumulate history.
+  3. **Refresh the now-stale cross-references in `PLAN.md`**: §2's module map and
+     implemented-methods list, §4 gaps (delete resolved ones and renumber), and
+     any "until M<n>" forward note. Also update `README.md`'s capability table
+     when the milestone changed what the server advertises.
+- Do not leave a finished milestone marked `next`, and do not commit a milestone
+  whose changelog entry is missing — an unrecorded milestone is the failure mode
+  this rule exists to prevent.
 - Keep the working tree clean between milestones: stage only intended files,
   never build artifacts or secrets, and write a short conventional `scope:`-style
   message summarizing what the milestone delivers (see PLAN.md §5 forward plan, §7 acceptance).

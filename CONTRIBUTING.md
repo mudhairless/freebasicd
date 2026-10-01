@@ -93,7 +93,8 @@ is not formatter-clean on its own.
 touches how FreeBASIC behaves, update that file in the same pull request, and
 keep its §12 list of known divergences from real `fbc` current. `PLAN.md` holds
 the roadmap: check §4 for the open gaps before you start, so you do not
-duplicate work, and update it in the same wave as your change.
+duplicate work. It is for work still to do — a change that closes a gap deletes
+that gap and adds a dated entry to `CHANGELOG.md` instead, in the same wave.
 
 ## Adding a quick fix
 

@@ -23,9 +23,10 @@ release ships.
 
 Development is also a deliberate experiment. This server is being built in
 public as a testbed for agentic coding: an AI coding agent works through the
-roadmap in [`PLAN.md`](PLAN.md) milestone by milestone, and the commit history
-is the record. Expect churn, expect occasional rewrites of yesterday's
-structure, and treat the API as unstable until a version tag exists.
+roadmap in [`PLAN.md`](PLAN.md) milestone by milestone, and
+[`CHANGELOG.md`](CHANGELOG.md) plus the commit history are the record. Expect
+churn, expect occasional rewrites of yesterday's structure, and treat the API as
+unstable until a version tag exists.
 
 What that means in practice:
 
@@ -191,14 +192,16 @@ entirely in memory: nothing is ever written to disk.
   truth for language facts. It records where the implementation and the real
   `fbc` still disagree.
 - [`PLAN.md`](PLAN.md) holds the roadmap, the architecture notes, and the
-  remaining gaps.
+  remaining gaps — what is still to do.
+- [`CHANGELOG.md`](CHANGELOG.md) records what has shipped, when, and what it
+  cost. Nothing has been released yet, so it is all under `## [Unreleased]`.
 - [`AGENTS.md`](AGENTS.md) is the working agreement for the agent that drives
   this repo.
 - [`TIDY.md`](TIDY.md) explains every `clang-tidy` suppression, with a reason.
 
 ## Tests
 
-Fifteen CTest suites, no external test framework:
+Eighteen CTest suites, no external test framework:
 
 ```sh
 ctest --test-dir build --output-on-failure
@@ -227,8 +230,9 @@ cmake --build build --target update-po     # merge it into the po files
 
 - [LspCpp](https://github.com/kuafuwang/LspCpp), vendored as a submodule from
   our fork [mudhairless/LspCpp](https://github.com/mudhairless/LspCpp), which
-  tracks upstream plus five local commits (watched-files registration types,
-  `SemanticTokensEdit` serialization, and the `codeAction` result type).
+  tracks upstream plus eleven local commits (watched-files registration types,
+  `SemanticTokensEdit` serialization, the `codeAction` and diagnostic-report
+  result types, and `InitializeResult::serverInfo`).
 - [tomlplusplus](https://github.com/marzer/tomlplusplus) v3.4.0, vendored as a
   submodule, for the config file.
 - RapidJSON, via LspCpp, for JSON.
