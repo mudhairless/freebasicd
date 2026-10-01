@@ -169,6 +169,42 @@ void CloserFixInsertsAtTheRecordedBoundary() {
   CHECK(after.parse.roots.front().children.size() == 1);
 }
 
+// The reported buffer, verbatim, end to end: the closer is the by-value
+// self-reference rule's boundary (`dim p as point` inside `type point` is fbc's
+// `error 88`), so the applied fix must both clear the diagnostic and leave the
+// module-level `dim p as point` a module-level Dim instead of a field named
+// `p` that the record also declares.
+void CloserFixClosesTheRecordAboveASelfReferentialField() {
+  std::string const src = "type point\n"
+                          "    x as single\n"
+                          "    y as single\n"
+                          "\n"
+                          "dim p as point\n"
+                          "p.x = 1.5\n"
+                          "print p.y\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  CHECK(doc.parse.diagnostics.size() == 1);
+  if (doc.parse.diagnostics.size() != 1) {
+    return;
+  }
+  std::vector<QuickFix> const fixes =
+      fixesFor("unterminated-block", doc.parse.diagnostics.front(), ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() != 1) {
+    return;
+  }
+  CHECK(fixes[0].title == "Insert 'END TYPE'");
+  CHECK(editText(fixes[0]) == insertAt(src.find("dim p")) + "END TYPE\n");
+
+  TextEditBytes const &e = fixes[0].edits.front();
+  std::string const applied =
+      src.substr(0, e.range.beg) + e.newText + src.substr(e.range.end);
+  AnalyzedDoc const after = analyze(applied);
+  CHECK(after.parse.diagnostics.empty());
+  CHECK(after.parse.roots.size() == 2);
+}
+
 // A procedure body accepts every statement, so nothing in the source marks
 // where it ends: the parse records no boundary and end-of-buffer is the answer,
 // not a fallback. Same for a stale `closerAt` — an offset past the buffer it
@@ -452,6 +488,7 @@ void RegistryAnswersTheFixableCodes() {
 int main() {
   CloserFixAppendsOneBlockEnd();
   CloserFixInsertsAtTheRecordedBoundary();
+  CloserFixClosesTheRecordAboveASelfReferentialField();
   CloserFixFallsBackToTheBufferEndWithoutEvidence();
   ApplyingAFixClearsItsDiagnostic();
   CloserFixUsesTheBufferLineEnding();

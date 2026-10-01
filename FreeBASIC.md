@@ -186,8 +186,15 @@ on the offending statement `(fbc)`:
 | TYPE/UNION | `dim shared g As Integer` | `error 17: Syntax error, found 'g'` |
 | TYPE/UNION | `redim preserve q(3)` | `error 63: Expected array, found 'q'` |
 | TYPE/UNION | `foo()` | `error 9: Expected expression, found ')'` |
+| TYPE/UNION | `dim p As Point` in `type point` | `error 88: Recursive TYPE or UNION not allowed` |
 | ENUM | `dim c As Integer` | `error 3: Expected End-of-Line` + `error 74: Expected 'END ENUM'` |
 | ENUM | `sub foo()` | `error 3: Expected End-of-Line, found 'sub'` + `error 74: Expected 'END ENUM', found 'sub' in 'end sub'` |
+
+A field may be **named after a reserved word** (`Next As Node Ptr` — the canonical
+linked list — and `End As Integer` both compile `(fbc)`), which is why a record
+body must not read the leading word as a closer. Only when the type *also* holds
+member functions does fbc object: `error 238: Fields cannot be named as keywords
+in TYPE's that contain member functions or in CLASS'es` `(fbc)`.
 
 `Field = n` (field alignment) and `Extends t` are **opener-line** modifiers, not
 body members: `type t / Field = 4 / x As Single / End Type` is `error 17:
@@ -228,7 +235,8 @@ that is illegal inside it) `(fbc)`. So the closer belongs immediately **before**
 that statement, not at the end of the file. Procedure bodies are the exception
 that proves the rule: their grammar accepts everything, so there the end of the
 buffer really is the best available guess. See §12.15 for what this parser does
-today.
+today, and for the two exceptions it makes (a member procedure spelled with its
+body, and a keyword field name in a type holding member functions).
 
 ### Access sections
 
@@ -538,8 +546,8 @@ to "the language is what the lexer does":
     collision with a distinct variable name (`dim p as Position`), and
     static-member completion (`T.counter`) is out of scope entirely — type
     names never complete their members today.
-15. **A record body's closer is placed from a member-grammar check; two
-    statements fbc refuses are still read as members.** §7 (Record and enum
+15. **A record body's closer is placed from a member-grammar check; one
+    statement fbc refuses is still read as a member.** §7 (Record and enum
     bodies) records that a record body is a member list, not a statement list,
     and that fbc ends the body at the first statement it cannot accept — naming
     that statement in `error 19` / `error 74`. The parser asks
@@ -548,19 +556,23 @@ to "the language is what the lexer does":
     the enclosing scope, so the rest of the file is no longer captured as fields
     and the `unterminated-block` diagnostic carries the offset its quick fix
     inserts at. A closer that does not match is the same evidence from the other
-    side, and is treated the same way. Two statements fbc refuses are still
-    accepted, both on purpose:
+    side, and is treated the same way. A **by-value self-reference** (`Dim p As
+    Point` inside `type point`) is such a statement — `error 88`, and it can never
+    be a field — with two forms exempt, because they have no per-instance storage
+    of their own and fbc accepts both: `ptr` (the documented workaround, also the
+    reason `Next As Node Ptr` is a field rather than a boundary, §7) and `static`.
+    An array dimension does not exempt it (`Dim p As Point(10)` is still `error
+    88`), and neither does a type suffix, which `fb` ignores (warning 44). One
+    statement fbc refuses is still accepted, on purpose:
     - A member procedure spelled **with its body** inside the record body
       (`type t` / `sub go()` / … / `end sub` / `end type`), where fbc wants
       `Declare Sub go()` plus a module-level definition and answers `error 17:
       found 'go'`. Hover, call hierarchy and code lens resolve inside such a
       member, so a boundary there would close a body the author plainly means and
       re-attribute that member's own members to the record. The cost: a record
-      left unclosed before one is still reported at end-of-buffer.
-    - A by-value self-reference (`Dim p As Point` inside `type point`), which
-      is `error 88` and can never be a field. Only a boundary in a longer buffer
-      is at stake, so this parser reads it as a field and the unclosed record is
-      reported at end-of-buffer.
+      left unclosed before one is still reported at end-of-buffer, as is a keyword
+      field name in a type that *does* hold member functions (`error 238`, which
+      fbc only raises there).
 16. **A constructor/destructor's type owner is unmodelled** (§7, Inheritance).
     The member-procedure implementation edge is recorded for the three forms
     that carry an unambiguous `Type.name` qualifier — `sub t.go()`,

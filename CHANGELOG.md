@@ -26,6 +26,42 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-01 — A record body ends at a by-value self-reference
+
+- `dim p as point` inside `type point` is fbc's `error 88: Recursive TYPE or
+  UNION not allowed` and can never be a field, so `acceptsBodyMember` now takes
+  the enclosing record's key and refuses it. That is the reported case from the
+  bug report (`tests/corpus/blocks_type.bas` with `end type` deleted): the
+  boundary lands on the `dim p as point` line, the quick fix inserts `END TYPE`
+  directly above it, and the module-level `dim p as point` below is a
+  module-level Dim again instead of colliding with the field the body also
+  declares. Two forms are exempt because they carry no per-instance storage and
+  fbc accepts both: `ptr` (the documented workaround) and `static`. An array
+  dimension does not exempt it (`dim p as point(10)` is still `error 88`) and
+  neither does a type suffix, which `fb` ignores (warning 44).
+- No new diagnostic: this is a boundary rule, not an error of its own. The only
+  visible change is where the existing `unterminated-block` squiggle's fix
+  inserts its closer — the squiggle stays on the opener.
+- Defect found on the way, and the lesson. The first cut judged a record body's
+  boundary on the statement's **leading word** (`end`, `next`, `wend`, `loop`
+  close a block), which made `Next As Node Ptr` — the canonical FreeBASIC
+  linked list — end the record body and offer to insert `END TYPE` above it.
+  fbc accepts a keyword field name in a plain UDT (`error 238`, and only when
+  the type also holds member functions), so the predicate now reads the
+  **whole** statement: `isCloserStatement` is exported from `language.h` and
+  shared by the parser's dispatch and the body check, and a closer word followed
+  by an `as` clause is a field. Everything else those words carry belongs to
+  the closer — `NEXT i` names the loop variable, `LOOP UNTIL cond` the condition
+  — which is why the rule is one `as` check rather than a token count. **A
+  leading word is never evidence about a statement; read the statement.**
+  The suites already held the other half of that lesson: gating on a closer
+  *word* alone regressed `arrays`, `blocks_do` and `blocks_for` plus two
+  resolve checks, because `loop until` and `next i` stopped closing
+  anything.
+- `FreeBASIC.md` §7 gained the `error 88` row and the keyword-field-name
+  paragraph; §12.15 records the recursion rule and its two exemptions, and its
+  remaining divergence is the member procedure spelled with its body.
+
 ### 2026-10-01 — The `unterminated-block` fix lands where the closer belongs
 
 - A missing closer is now inserted where the parse says it belongs instead of at
@@ -45,10 +81,9 @@ history use; they are kept here so an entry can be traced back.
   is still read as a member, where fbc wants `Declare Sub go()` — hover, call
   hierarchy and code lens resolve inside such a member, so a boundary there
   would re-attribute its members. And a by-value self-reference
-  (`dim p as point` inside `type point`) is still read as a field, so the
-  reported case from the bug report — `blocks_type.bas` with `end type` deleted
-  — places the closer one statement late. That one is `error 88` in fbc, never a
-  field, and is a boundary in its own right.
+  (`dim p as point` inside `type point`) was left as a field, which put the
+  closer one statement late on the reported case (`blocks_type.bas` with `end
+  type` deleted); the next entry closes that half.
 - `FreeBASIC.md` §7 also lost a wrong claim found while probing: `name(…) = expr`
   is **not** a legal enum member (`a(1) = 1` is `error 3`).
 

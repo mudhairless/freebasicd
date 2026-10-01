@@ -769,6 +769,50 @@ int main() {
     CHECK(r.diagnostics[0].closerAt.value_or(0) == at);
   }
   {
+    // The reported case, and the one member the language cannot have at all: a
+    // field whose type is the record declaring it is fbc's `error 88`, so the
+    // body ends at `dim p as point` and not at the statement after it. The
+    // consequence worth pinning is the one the bug report is really about: the
+    // module-level `dim p as point` is no longer a field of `point`, so
+    // nothing later collides with it.
+    std::string const src = "type point\n"
+                            "    x as single\n"
+                            "    y as single\n"
+                            "\n"
+                            "dim p as point\n"
+                            "p.x = 1.5\n"
+                            "print p.y\n";
+    ParseResult r = parseDocument(src);
+    const Symbol *t = find(r.roots, "point", SymbolKind::Type);
+    std::uint32_t const at = static_cast<std::uint32_t>(src.find("dim p"));
+    CHECK(t != nullptr);
+    CHECK(t != nullptr && t->children.size() == 2);
+    CHECK(t != nullptr && t->range.end == at);
+    CHECK(find(r.roots, "p", SymbolKind::Dim) != nullptr);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].code == "unterminated-block");
+      CHECK(r.diagnostics[0].closerAt.value_or(0) == at);
+    }
+  }
+  {
+    // The two forms that escape `error 88` are the two with no per-instance
+    // storage of their own — `ptr`, the documented workaround, and `static` —
+    // and both compile in fbc, so neither may become a boundary. An array
+    // dimension does not help (`dim p as point(10)` is `error 88`), and
+    // neither does a type suffix, which `fb` ignores (warning 44).
+    std::string const src = "type node\n"
+                            "  next as node ptr\n"
+                            "  static total as node\n"
+                            "  label as string\n"
+                            "end type\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.diagnostics.empty());
+    const Symbol *n = find(r.roots, "node", SymbolKind::Type);
+    CHECK(n != nullptr);
+    CHECK(n != nullptr && n->children.size() == 3);
+  }
+  {
     // Nested records nest the failure: the innermost body cannot accept the
     // statement, and neither can the one around it. Both closers belong on that
     // same line, reported innermost first — which is the order the fixes nest

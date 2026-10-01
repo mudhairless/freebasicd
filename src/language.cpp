@@ -1483,20 +1483,6 @@ std::string closerDisplay(const BlockCloser &closer) {
 
 namespace {
 
-// A closer statement — `END <x>`, `NEXT`, `WEND`, `LOOP` — is never a member,
-// but it is not a boundary either: handleEnd/handlePlainCloser own it, and a
-// mismatching one is the parser's separate evidence for the same boundary (the
-// block should have closed before it). Deliberately *not* `blockForCloser`:
-// that table also answers true for an opener word (`SUB`, `TYPE`, ...), which
-// inside a record body is `error 17`.
-bool startsCloserStatement(Token const &first) {
-  if (first.kind != TokenKind::Keyword) {
-    return false;
-  }
-  std::string const w = toLowerChars(std::string(first.text()));
-  return w == "end" || w == "next" || w == "wend" || w == "loop";
-}
-
 // Does the statement carry a field's `As` clause? That is what makes a
 // `Dim`-optional field declaration (`x As Single`, `b(3) As Byte`,
 // `As Integer x`) — and a reserved word is a legal field name, so the test is
@@ -1566,9 +1552,74 @@ bool isRecordMemberOpener(std::vector<Token> const &stmt, BlockKind kind) {
   return hasAsClause(stmt);
 }
 
+// `Dim p As Point` inside `type point`: `error 88: Recursive TYPE or UNION not
+// allowed`. The type is the identifier right after `as`, and by value is by
+// value — an array dimension changes nothing. The forms that escape are the
+// ones with no per-instance storage of their own: `Ptr`, the documented
+// workaround, and `static`. A `Const` is a type constant rather than a field,
+// so fbc rejects it for its own reason (`error 24`) and the body does continue
+// past it. Case-insensitive like every other name here, and suffix-blind: `fb`
+// ignores a type suffix (warning 44), so `As Point$` names the same type.
+bool isSelfReferentialField(std::vector<Token> const &stmt,
+                            std::string_view enclosingKey) {
+  if (enclosingKey.empty()) {
+    return false;
+  }
+  if (isSuffixChar(enclosingKey.back())) {
+    enclosingKey.remove_suffix(1);
+  }
+  std::string const head = toLowerChars(std::string(stmt.front().text()));
+  if (head == "static" || head == "const") {
+    return false;
+  }
+  for (std::size_t i = 0; i + 1 < stmt.size(); ++i) {
+    if (stmt[i].kind != TokenKind::Keyword ||
+        toLowerChars(std::string(stmt[i].text())) != "as") {
+      continue;
+    }
+    Token const &typeTok = stmt[i + 1];
+    if (typeTok.kind != TokenKind::Identifier &&
+        typeTok.kind != TokenKind::Keyword) {
+      // `as long = 4`: a numeric type, not a type reference. A *reserved word*
+      // is a legal type name though — `Point` is a builtin, so `type point` is
+      // ordinary code and the name arrives as a keyword.
+      continue;
+    }
+    std::string type = toLowerChars(std::string(typeTok.text()));
+    if (!type.empty() && isSuffixChar(type.back())) {
+      type.pop_back();
+    }
+    if (type != enclosingKey) {
+      // Another type, or a forward reference — this layer judges neither.
+      continue;
+    }
+    return !(i + 2 < stmt.size() && stmt[i + 2].kind == TokenKind::Keyword &&
+             toLowerChars(std::string(stmt[i + 2].text())) == "ptr");
+  }
+  return false;
+}
+
 } // namespace
 
-bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt) {
+bool isCloserStatement(std::vector<Token> const &stmt) {
+  if (stmt.empty() || stmt.front().kind != TokenKind::Keyword) {
+    return false;
+  }
+  std::string const w = toLowerChars(std::string(stmt.front().text()));
+  if (w != "end" && w != "next" && w != "wend" && w != "loop") {
+    return false;
+  }
+  // The one statement that starts with a closer word and is not one: a field
+  // named after it. fbc anchors error 238 on a keyword field name only when the
+  // type also holds member functions, so a plain UDT may name a field `Next` or
+  // even `End` — and `Next As Node Ptr` is the canonical linked list.
+  // Everything else these words carry belongs to the closer: `NEXT i` names the
+  // loop variable, `LOOP UNTIL cond` the condition, `END TYPE` the block.
+  return !hasAsClause(stmt);
+}
+
+bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt,
+                       std::string_view enclosingTypeKey) {
   if (kind != BlockKind::Type && kind != BlockKind::Union &&
       kind != BlockKind::Enum) {
     // A procedure body is a statement list and accepts everything, which is
@@ -1580,7 +1631,7 @@ bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt) {
     return true; // nothing to judge: a blank or comment-only line
   }
   Token const &first = stmt.front();
-  if (startsCloserStatement(first)) {
+  if (isCloserStatement(stmt)) {
     return true;
   }
   if (kind == BlockKind::Enum) {
@@ -1590,11 +1641,13 @@ bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt) {
   if (first.kind != TokenKind::Keyword && first.kind != TokenKind::Identifier) {
     return false; // a number, string or punctuation starts an expression
   }
-  if (first.kind == TokenKind::Keyword) {
-    return isRecordMemberOpener(stmt, kind);
-  }
-  // An identifier starts the field form, which `Dim` only makes optional.
-  return hasAsClause(stmt);
+  bool const member = first.kind == TokenKind::Keyword
+                          ? isRecordMemberOpener(stmt, kind)
+                          : hasAsClause(stmt);
+  // A member the language cannot have is a boundary like any other: fbc's
+  // `error 88` names a field that can never exist, so the body it cannot belong
+  // to has to end above it.
+  return member && !isSelfReferentialField(stmt, enclosingTypeKey);
 }
 
 std::string_view preprocessorWord(std::string_view line) {

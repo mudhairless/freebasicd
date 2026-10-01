@@ -140,15 +140,27 @@ std::string expectedCloserAt(std::vector<Token> const &tokens,
                              std::uint32_t openerBeg);
 
 // Can the statement spelled by `stmt` (one logical line's tokens, first token
-// first) appear in the body of a block of `kind`? A record or enum body is a
-// member list rather than a statement list (FreeBASIC.md §7), so a statement it
-// cannot accept is where the missing closer belongs (fbc anchors `error 19` /
-// `error 74` on exactly that statement); every other kind accepts any
-// statement, so this is true for all of them. Conservative by construction:
+// first) appear in the body of a block of `kind`, whose own type is
+// `enclosingTypeKey` ("" for a record block with no name)? A record or enum
+// body is a member list rather than a statement list (FreeBASIC.md §7), so a
+// statement it cannot accept is where the missing closer belongs (fbc anchors
+// `error 19` / `error 74` on exactly that statement); every other kind accepts
+// any statement, so this is true for all of them. Conservative by construction:
 // anything the tables below are not sure about counts as a member, so a false
-// positive here can only delay a boundary, never invent one. Closer tokens
-// answer true — a matching closer closes the block and a mismatching one is the
-// parser's separate evidence for the same boundary.
-bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt);
+// positive here can only delay a boundary, never invent one. `enclosingTypeKey`
+// exists for the one member the language cannot have — a field whose type is
+// the record declaring it, fbc's `error 88` — which is a boundary for the same
+// reason. Closer tokens answer true: a matching closer closes the block, and a
+// mismatching one is the parser's separate evidence for the same boundary.
+
+// Is this whole statement a closer — `END <x>`, `NEXT`, `WEND`, `LOOP` —
+// rather than a statement that merely starts with one of those words? Those
+// words are legal field names (`Next As Node Ptr` is the canonical linked list,
+// and fbc accepts keyword field names), so the leading word alone cannot answer
+// it: the parser routes on this, and a record body must not end on `next as`
+// merely because `next` also closes a loop.
+bool isCloserStatement(std::vector<Token> const &stmt);
+bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt,
+                       std::string_view enclosingTypeKey);
 
 } // namespace fblang

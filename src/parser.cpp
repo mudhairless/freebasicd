@@ -401,12 +401,18 @@ private:
     if (blocks_.empty()) {
       return false;
     }
-    BlockKind const kind = blocks_.back().kind;
-    if (kind != BlockKind::Type && kind != BlockKind::Union &&
-        kind != BlockKind::Enum) {
+    Block const top = blocks_.back();
+    if (!isMemberBodyKind(top.kind)) {
       return false;
     }
-    if (acceptsBodyMember(kind, statementTokens())) {
+    // The record's own key, for the one member the language cannot have: a
+    // field of the record declaring it (fbc's `error 88`). "" for a record
+    // block whose name the parse has not taken yet, and then no statement can
+    // be self-referential.
+    std::string_view const key = top.sym != nullptr
+                                     ? std::string_view(top.sym->key)
+                                     : std::string_view();
+    if (acceptsBodyMember(top.kind, statementTokens(), key)) {
       return false;
     }
     closeBlockUnterminated(cur_.beg);
@@ -608,11 +614,15 @@ private:
       return;
     }
 
-    if (w == "end") {
-      handleEnd();
-      return;
-    }
-    if (w == "next" || w == "wend" || w == "loop") {
+    // A closer *word* is not a closer statement: `next as node ptr` is a
+    // field named `next` (FreeBASIC.md §7, reserved-word field names), and
+    // routing it here would skip the field and then read the line as evidence
+    // that the enclosing record ends above it.
+    if (isCloserStatement(statementTokens())) {
+      if (w == "end") {
+        handleEnd();
+        return;
+      }
       BlockCloser c;
       blockForCloser(w, &c);
       handlePlainCloser(c);

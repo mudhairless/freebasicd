@@ -201,95 +201,133 @@ static void testAcceptsBodyMember() {
     BlockKind kind;
     char const *stmt;
     bool want;
+    char const *enclosing; // the record's own key; "" = unnamed
   };
   Row const rows[] = {
       // A procedure body is a statement list: everything is a member of it, and
       // that is why end-of-buffer is its closer's home.
-      {BlockKind::Sub, "print 1", true},
-      {BlockKind::Sub, "x = 1", true},
-      {BlockKind::Function, "y", true},
+      {BlockKind::Sub, "print 1", true, ""},
+      {BlockKind::Sub, "x = 1", true, ""},
+      {BlockKind::Function, "y", true, ""},
       // Fields. `Dim` is optional, so the bare form counts, and a reserved word
       // is a legal field name — the `as` clause is what decides.
-      {BlockKind::Type, "x as single", true},
-      {BlockKind::Type, "as integer x", true},
-      {BlockKind::Type, "dim n as integer", true},
-      {BlockKind::Type, "b(3) as byte", true},
-      {BlockKind::Type, "redim q(3) as byte", true},
-      {BlockKind::Type, "static s as integer", true},
-      {BlockKind::Type, "const c = 1", true},
-      {BlockKind::Type, "declare sub go()", true},
-      {BlockKind::Type, "type inner", true},
-      {BlockKind::Type, "union u", true},
-      {BlockKind::Type, "enum e", true},
-      {BlockKind::Type, "public:", true},
-      {BlockKind::Type, "private:", true},
-      {BlockKind::Type, "protected:", true},
-      {BlockKind::Type, "rem a note", true},
-      {BlockKind::Type, "' a comment", true},
-      {BlockKind::Type, "DIM n AS INTEGER", true}, // case-insensitive
+      {BlockKind::Type, "x as single", true, ""},
+      {BlockKind::Type, "as integer x", true, ""},
+      {BlockKind::Type, "dim n as integer", true, ""},
+      {BlockKind::Type, "b(3) as byte", true, ""},
+      {BlockKind::Type, "redim q(3) as byte", true, ""},
+      {BlockKind::Type, "static s as integer", true, ""},
+      {BlockKind::Type, "const c = 1", true, ""},
+      {BlockKind::Type, "declare sub go()", true, ""},
+      {BlockKind::Type, "type inner", true, ""},
+      {BlockKind::Type, "union u", true, ""},
+      {BlockKind::Type, "enum e", true, ""},
+      {BlockKind::Type, "public:", true, ""},
+      {BlockKind::Type, "private:", true, ""},
+      {BlockKind::Type, "protected:", true, ""},
+      {BlockKind::Type, "rem a note", true, ""},
+      {BlockKind::Type, "' a comment", true, ""},
+      {BlockKind::Type, "DIM n AS INTEGER", true, ""}, // case-insensitive
       // A member procedure spelled with its body: fbc wants `Declare Sub` here
       // (`error 17`), but this parser reads it as a member (FreeBASIC.md §12),
       // so it must not become a boundary.
-      {BlockKind::Type, "sub bump()", true},
-      {BlockKind::Type, "function f() as integer", true},
+      {BlockKind::Type, "sub bump()", true, ""},
+      {BlockKind::Type, "function f() as integer", true, ""},
       // Boundaries in a TYPE/UNION body — fbc `error 17` on each.
-      {BlockKind::Type, "print 1", false},
-      {BlockKind::Type, "x", false},
-      {BlockKind::Type, "field = 4", false}, // an opener-line modifier
-      {BlockKind::Type, "x += 1", false},
-      {BlockKind::Type, "p.x = 1.5", false},
-      {BlockKind::Type, "x()", false},
-      {BlockKind::Type, "goto foo", false},
-      {BlockKind::Type, "if x then", false},
-      {BlockKind::Type, "for i = 1 to 2", false},
-      {BlockKind::Type, "with o", false},
-      {BlockKind::Type, "asm", false},
-      {BlockKind::Type, "namespace n", false},
-      {BlockKind::Type, "scope", false},
-      {BlockKind::Type, "var v", false},
-      {BlockKind::Type, "local v", false},
-      {BlockKind::Type, "common c2", false},
-      {BlockKind::Type, "export", false},
-      {BlockKind::Type, "dim shared g as integer", false},
-      {BlockKind::Type, "redim preserve q(3)", false},
-      {BlockKind::Type, "foo:", false},     // a label
-      {BlockKind::Type, "1 = 2", false},    // a number starts an expression
-      {BlockKind::Union, "public:", false}, // sections are TYPE-only
-      {BlockKind::Union, "private:", false},
-      {BlockKind::Union, "dim n as integer", true},
+      {BlockKind::Type, "print 1", false, ""},
+      {BlockKind::Type, "x", false, ""},
+      {BlockKind::Type, "field = 4", false, ""}, // an opener-line modifier
+      {BlockKind::Type, "x += 1", false, ""},
+      {BlockKind::Type, "p.x = 1.5", false, ""},
+      {BlockKind::Type, "x()", false, ""},
+      {BlockKind::Type, "goto foo", false, ""},
+      {BlockKind::Type, "if x then", false, ""},
+      {BlockKind::Type, "for i = 1 to 2", false, ""},
+      {BlockKind::Type, "with o", false, ""},
+      {BlockKind::Type, "asm", false, ""},
+      {BlockKind::Type, "namespace n", false, ""},
+      {BlockKind::Type, "scope", false, ""},
+      {BlockKind::Type, "var v", false, ""},
+      {BlockKind::Type, "local v", false, ""},
+      {BlockKind::Type, "common c2", false, ""},
+      {BlockKind::Type, "export", false, ""},
+      {BlockKind::Type, "dim shared g as integer", false, ""},
+      {BlockKind::Type, "redim preserve q(3)", false, ""},
+      {BlockKind::Type, "foo:", false, ""},     // a label
+      {BlockKind::Type, "1 = 2", false, ""},    // a number starts an expression
+      {BlockKind::Union, "public:", false, ""}, // sections are TYPE-only
+      {BlockKind::Union, "private:", false, ""},
+      {BlockKind::Union, "dim n as integer", true, ""},
       // An enum body is `name`, `name = expr`.
-      {BlockKind::Enum, "a", true},
-      {BlockKind::Enum, "red = 1", true},
-      {BlockKind::Enum, "print 1", false},
-      {BlockKind::Enum, "dim n as integer", false},
-      {BlockKind::Enum, "public:", false},
-      {BlockKind::Enum, "as integer a", false},
+      {BlockKind::Enum, "a", true, ""},
+      {BlockKind::Enum, "red = 1", true, ""},
+      {BlockKind::Enum, "print 1", false, ""},
+      {BlockKind::Enum, "dim n as integer", false, ""},
+      {BlockKind::Enum, "public:", false, ""},
+      {BlockKind::Enum, "as integer a", false, ""},
       // A closer is never a member, but it is not a boundary either: the
-      // parser's
-      // own closer path owns it, and a mismatching one is that path's evidence.
-      {BlockKind::Type, "end type", true},
-      {BlockKind::Type, "end sub", true},
-      {BlockKind::Type, "next", true},
-      {BlockKind::Type, "wend", true},
-      {BlockKind::Type, "loop", true},
-      {BlockKind::Enum, "end enum", true},
+      // parser's own closer path owns it, and a mismatching one is that path's
+      // evidence.
+      {BlockKind::Type, "end type", true, ""},
+      {BlockKind::Type, "end sub", true, ""},
+      {BlockKind::Type, "next", true, ""},
+      {BlockKind::Type, "next i", true, ""}, // names the loop variable
+      {BlockKind::Type, "loop until x = 0", true, ""},
+      {BlockKind::Type, "loop while x", true, ""},
+      {BlockKind::Type, "wend", true, ""},
+      {BlockKind::Type, "loop", true, ""},
+      {BlockKind::Enum, "end enum", true, ""},
+      // ...which is why a closer *word* is not enough to end the body: those
+      // words are legal field names, and `Next As Node Ptr` is the canonical
+      // linked list (fbc accepts keyword field names; error 238 only when the
+      // type holds member functions too).
+      {BlockKind::Type, "next as node ptr", true, ""},
+      {BlockKind::Type, "loop as integer", true, ""},
+      {BlockKind::Type, "wend as integer", true, ""},
+      {BlockKind::Type, "end as integer", true, ""},
+      {BlockKind::Type, "end(3) as integer", true, ""},
       // Nothing to judge: a blank line, or one the parser never calls a
       // statement.
-      {BlockKind::Type, "", true},
+      {BlockKind::Type, "", true, ""},
+      // The member the language cannot have: a field of the record declaring
+      // it. fbc `error 88`, and no form but `ptr` or `static` escapes it — an
+      // array dimension does not, and neither does a type suffix (`fb` ignores
+      // one, warning 44).
+      {BlockKind::Type, "dim p as point", false, "point"},
+      {BlockKind::Type, "p as point", false, "point"},
+      {BlockKind::Type, "as point p", false, "point"},
+      {BlockKind::Type, "dim p(4) as point", false, "point"},
+      {BlockKind::Type, "dim p as point(10)", false, "point"},
+      {BlockKind::Type, "redim p(3) as point", false, "point"},
+      {BlockKind::Type, "dim p as point, q as integer", false, "point"},
+      {BlockKind::Type, "dim p as POINT", false, "point"},
+      {BlockKind::Type, "dim p as point$", false, "point"},
+      {BlockKind::Union, "dim p as u", false, "u"},
+      {BlockKind::Type, "dim p as point ptr", true, "point"},
+      {BlockKind::Type, "p as point ptr", true, "point"},
+      {BlockKind::Type, "static p as point", true, "point"},
+      {BlockKind::Type, "const c as point = 0", true, "point"},
+      // Another type, an unrelated name that only looks like it, and a record
+      // with no name of its own: none is a self-reference.
+      {BlockKind::Type, "dim p as cell", true, "point"},
+      {BlockKind::Type, "dim p as points", true, "point"},
+      {BlockKind::Type, "dim p as point", true, ""},
+      {BlockKind::Type, "dim p as point", true, "other"},
   };
   for (Row const &row : rows) {
     std::vector<Token> const stmt = statementOf(row.stmt);
-    bool const got = acceptsBodyMember(row.kind, stmt);
+    bool const got = acceptsBodyMember(row.kind, stmt, row.enclosing);
     if (got != row.want) {
-      std::printf("FAIL acceptsBodyMember(kind %d, \"%s\") = %s, want %s\n",
-                  static_cast<int>(row.kind), row.stmt, got ? "true" : "false",
-                  row.want ? "true" : "false");
+      std::printf(
+          "FAIL acceptsBodyMember(kind %d, \"%s\", \"%s\") = %s, want %s\n",
+          static_cast<int>(row.kind), row.stmt, row.enclosing,
+          got ? "true" : "false", row.want ? "true" : "false");
       ++failures;
     }
   }
   // An empty statement list is not a boundary, whatever the body.
-  CHECK(acceptsBodyMember(BlockKind::Type, {}));
-  CHECK(acceptsBodyMember(BlockKind::Enum, {}));
+  CHECK(acceptsBodyMember(BlockKind::Type, {}, "point"));
+  CHECK(acceptsBodyMember(BlockKind::Enum, {}, "point"));
 }
 
 static void testFolderNameCatalog() {
