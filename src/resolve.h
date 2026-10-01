@@ -297,6 +297,7 @@ std::vector<std::string> referencingFiles(std::string const &normalizedPath,
 struct TypeItem {
   std::string file;      // normalized path of the file declaring the type
   std::string name;      // display name, original case
+  std::string key;       // lookup key, lowercased — the seed of every walk
   std::string detail;    // the opener line, e.g. "type derived extends base"
   SourceRange range;     // the whole construct (TYPE ... END TYPE)
   SourceRange selection; // the name token
@@ -357,6 +358,34 @@ CrossDecl memberDeclaration(AnalyzedDoc const &doc,
                             std::string const &typeKey,
                             std::string const &memberKey,
                             WorkspaceIndex const *index);
+
+// The far end of that edge from a cursor position, in whichever direction the
+// symbol under the cursor allows: a `declare sub go()` inside a type reaches
+// the module-level `sub t.go()` that implements it, and a `sub t.go()` reaches
+// the `declare`. One function rather than two entry points because from a
+// position there is exactly one of the two facts available, and the position is
+// what says which — and because the dispatch needs the symbol *tree* the
+// declaration lives in, which a caller holding only a cross-file `CrossDecl`
+// does not have. Empty when the cursor is not on a member procedure on either
+// side of the edge: a field has no implementation, a plain procedure belongs to
+// no type, and a `sub` with no dot is a module-level sub (constructor and
+// destructor deliberately carry no owner — FreeBASIC.md §12.16). Same closure
+// and `index == nullptr` contract.
+CrossDecl implementationTarget(AnalyzedDoc const &doc,
+                               std::string const &normalizedPath,
+                               std::uint32_t off, WorkspaceIndex const *index);
+
+// The Type/Union declaration whose name token is exactly `id` — the item a
+// client echoes back from `textDocument/typeHierarchy` is a name-token range in
+// one file, and a (path, selection) pair is the only thing that identifies a
+// declaration across parses. Answers empty when the range matches no
+// declaration or the name token is not a type, rather than falling back to "the
+// type nearest the cursor": a client that trimmed the range, or sent an item
+// from before an edit, should get nothing rather than a wrong type. The
+// declaration is taken from `doc` alone, so the caller must hand the analysis
+// of the file `id` names — an item can point at a file this request never
+// opened.
+CrossDecl typeAtIdentity(AnalyzedDoc const &doc, DeclIdentity const &id);
 
 // The types `typeKey` extends, nearest first, following `Symbol::extendsKey`.
 // Closure-scoped, because it starts from a declaration in the requesting

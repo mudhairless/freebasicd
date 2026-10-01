@@ -55,13 +55,16 @@ Implemented and advertised in the `initialize` reply:
 | Code actions | Quick fixes for a missing `#include` target and for an unclosed block |
 | Selection ranges | Token → statement → enclosing blocks → file |
 | Call hierarchy | Outgoing calls and incoming call sites, through the include closure |
+| Type definition | The type a variable, a field, or a `Type.name` member belongs to |
+| Implementation | The `declare sub` / module-level `sub Type.name` edge, across files |
+| Type hierarchy | Supertypes and subtypes of a `type` / `union`, through `Extends` |
 | Code lens | A reference count per declaration, whose click lists the sites |
 | Pull diagnostics | `textDocument/diagnostic` and `workspace/diagnostic`, negotiated |
 | Workspace symbols | Aggregated from every workspace root, one index per root |
 | Workspace folders | Multi-root sessions, with watched files and per-root config |
 
-Not implemented, and therefore not advertised: document links, type
-definition, type hierarchy, and completion item resolve.
+Not implemented, and therefore not advertised: document links, completion item
+resolve, and `typeHierarchy/resolve` (prepare fills both lists instead).
 
 ### Push or pull
 

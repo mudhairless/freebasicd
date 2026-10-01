@@ -1243,6 +1243,7 @@ namespace {
 
 TypeItem typeItemOf(Symbol const &decl, std::string const &file) {
   TypeItem item;
+  item.key = decl.key;
   item.file = file;
   item.name = decl.name;
   item.detail = decl.signature;
@@ -1384,6 +1385,55 @@ CrossDecl memberDeclaration(AnalyzedDoc const &doc,
                             WorkspaceIndex const *index) {
   return memberEdge(doc, normalizedPath, typeKey, memberKey, index,
                     /*wantOwner=*/false);
+}
+
+CrossDecl implementationTarget(AnalyzedDoc const &doc,
+                               std::string const &normalizedPath,
+                               std::uint32_t off, WorkspaceIndex const *index) {
+  // The three-tier lookup, so a member procedure reached through the include
+  // closure (the `declare` in a header, the `sub t.go()` in the includer .bas)
+  // dispatches the same way an in-file one does.
+  CrossDecl const target = index
+                               ? resolveAcross(doc, normalizedPath, off, *index)
+                               : CrossDecl{nullptr, resolveAt(doc, off)};
+  if (target.decl == nullptr) {
+    return {};
+  }
+  std::vector<Symbol> const &tree =
+      target.file ? target.file->roots : doc.parse.roots;
+  // A module-level `sub t.go()` knows its owner outright: the parser recorded
+  // it as the other half of the same edge, so the far end is the `declare`.
+  if (!target.decl->ownerKey.empty()) {
+    return memberDeclaration(doc, normalizedPath, target.decl->ownerKey,
+                             target.decl->key, index);
+  }
+  // Otherwise the cursor has to be on a member procedure inside a type body. A
+  // field is not one: a field has no implementation, and answering with the
+  // nearest declared member instead would be a guess.
+  Symbol const *const owner = parentOf(tree, target.decl);
+  if (owner == nullptr ||
+      (owner->kind != SymbolKind::Type && owner->kind != SymbolKind::Union)) {
+    return {};
+  }
+  if (target.decl->kind != SymbolKind::Sub &&
+      target.decl->kind != SymbolKind::Function &&
+      target.decl->kind != SymbolKind::Property) {
+    return {};
+  }
+  return memberImplementation(doc, normalizedPath, owner->key, target.decl->key,
+                              index);
+}
+
+CrossDecl typeAtIdentity(AnalyzedDoc const &doc, DeclIdentity const &id) {
+  for (Symbol const &root : doc.parse.roots) {
+    if (root.kind != SymbolKind::Type && root.kind != SymbolKind::Union) {
+      continue;
+    }
+    if (root.selection.beg == id.beg && root.selection.end == id.end) {
+      return CrossDecl{nullptr, &root};
+    }
+  }
+  return {};
 }
 
 namespace {

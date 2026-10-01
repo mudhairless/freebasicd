@@ -401,6 +401,7 @@ add_executable(session_integration
     tests/session_rename_checks.cpp
     tests/session_semantic_tokens_checks.cpp
     tests/session_settings_checks.cpp
+    tests/session_type_hierarchy_checks.cpp
     tests/session_workspace_checks.cpp
 )
 target_include_directories(session_integration PRIVATE

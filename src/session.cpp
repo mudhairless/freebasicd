@@ -1150,6 +1150,24 @@ void FreeBasicServer::registerHandlers() {
   });
   session_.on(
       [this](td_inlayHint::request const &req) { return onInlayHint(req); });
+  // Type go-to (M15): LspCpp ships these two correctly, as shipped.
+  session_.on([this](td_typeDefinition::request const &req) {
+    return onTypeDefinition(req);
+  });
+  session_.on([this](td_implementation::request const &req) {
+    return onImplementation(req);
+  });
+  // Type hierarchy (M15): the local request types, registered under the
+  // protocol's own method names — see type_hierarchy_lsp.h.
+  session_.on([this](td_typeHierarchyPrepare::request const &req) {
+    return onPrepareTypeHierarchy(req);
+  });
+  session_.on([this](td_typeHierarchySupertypes::request const &req) {
+    return onSupertypes(req);
+  });
+  session_.on([this](td_typeHierarchySubtypes::request const &req) {
+    return onSubtypes(req);
+  });
   session_.on([this](td_selectionRange::request const &req) {
     return onSelectionRange(req);
   });
@@ -1221,6 +1239,14 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   rsp.result.capabilities.referencesProvider.emplace();
   rsp.result.capabilities.referencesProvider->first.emplace(true);
 
+  // Type go-to (M15): the two requests whose answer is a `Location` list, so
+  // the bare-bool arm, like definitionProvider above.
+  rsp.result.capabilities.typeDefinitionProvider.emplace();
+  rsp.result.capabilities.typeDefinitionProvider->first.emplace(true);
+
+  rsp.result.capabilities.implementationProvider.emplace();
+  rsp.result.capabilities.implementationProvider->first.emplace(true);
+
   rsp.result.capabilities.documentHighlightProvider.emplace();
   rsp.result.capabilities.documentHighlightProvider->first.emplace(true);
 
@@ -1289,6 +1315,15 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   // methods, no options and no resolve.
   rsp.result.capabilities.callHierarchyProvider.emplace();
   rsp.result.capabilities.callHierarchyProvider->first.emplace(true);
+
+  // Type hierarchy (M15): the bare-bool arm for the same reason. The protocol's
+  // `TypeHierarchyOptions` has a `resolveProvider`, and the vendored capability
+  // type is the bool arm, so nothing is sent and the field stays absent rather
+  // than false — which is what tells a client not to send
+  // `typeHierarchy/resolve`, the one method this build does not implement.
+  // `prepare` fills `parents` and `children` eagerly, so nothing is lazy.
+  rsp.result.capabilities.typeHierarchyProvider.emplace();
+  rsp.result.capabilities.typeHierarchyProvider->first.emplace(true);
 
   // Code lens (M13): the "N references" annotation, with resolveProvider off —
   // the count is one walk over the same closure `textDocument/references`
@@ -2154,6 +2189,237 @@ FreeBasicServer::onDefinition(td_definition::request const &req) {
   }
   rsp.result.first.emplace();
   rsp.result.first->push_back(std::move(loc));
+  return rsp;
+}
+
+// --- M15: type go-to, member implementation, type hierarchy -----------------
+//
+// All five answer from `fblang`'s type graph and share two rules the rest of
+// this file already follows: a result's ranges are converted against the
+// content of the file that declares it (never the request's own bytes), and a
+// file that cannot be read is skipped rather than reported at a guessed offset.
+
+// One `Location` for a byte range in `path`, converted against `content` — the
+// file's own bytes, which is the only thing the offsets in a reply are relative
+// to. `content` is the open buffer when the client has one, else the file on
+// disk, fetched by the caller because it is a member of the server.
+lsLocation locationIn(std::string const &path, std::string_view content,
+                      fblang::SourceRange const &range) {
+  return lsLocation(lsDocumentUri(AbsolutePath(path)),
+                    fblang::utf16Range(content, range.beg, range.end));
+}
+
+// A type-hierarchy node on the wire. `detail` is the opener line the client
+// shows under the name, and `data` is left unset for the same reason
+// `callHierarchyItem` leaves it: `uri` + `selectionRange` already identify the
+// item, and the two follow-up requests read exactly those (see
+// `typeHierarchyIdentity`). `parents`/`children` are filled by the caller —
+// the two halves of a hierarchy are answered from different scopes, and an item
+// whose list is "not resolved yet" is a thing a client has to poll for.
+TypeHierarchyItem typeHierarchyItem(std::string const &path,
+                                    std::string_view content,
+                                    fblang::TypeItem const &type) {
+  TypeHierarchyItem out;
+  out.name = type.name;
+  out.kind = toLspSymbolKind(type.kind);
+  if (!type.detail.empty()) {
+    out.detail.emplace(type.detail);
+  }
+  out.uri = lsDocumentUri(AbsolutePath(path));
+  out.range = fblang::utf16Range(content, type.range.beg, type.range.end);
+  out.selectionRange =
+      fblang::utf16Range(content, type.selection.beg, type.selection.end);
+  return out;
+}
+
+// The identity a follow-up request is answered against, for the same reason and
+// with the same trade as `callHierarchyIdentity`: a (path, name-token range)
+// pair is what a (path, selection) pair means, and a client that trimmed the
+// range gets nothing rather than a type picked by name.
+fblang::DeclIdentity typeHierarchyIdentity(TypeHierarchyItem const &item,
+                                           std::string_view content) {
+  fblang::DeclIdentity id;
+  id.path = fblang::normalizePath(item.uri.GetAbsolutePath().path());
+  id.beg =
+      fblang::byteOffsetForUtf16Position(content, item.selectionRange.start);
+  id.end = fblang::byteOffsetForUtf16Position(content, item.selectionRange.end);
+  return id;
+}
+
+td_typeDefinition::response
+FreeBasicServer::onTypeDefinition(td_typeDefinition::request const &req) {
+  td_typeDefinition::response rsp;
+  rsp.id = req.id;
+
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
+    return rsp;
+  }
+  std::string const normPath = fblang::normalizePath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  std::uint32_t const offset =
+      fblang::byteOffsetForUtf16Position(cached->content, req.params.position);
+
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  ensureRequestClosure(normPath, index);
+  std::optional<fblang::TypeItem> const type =
+      fblang::typeOf(cached->analysis, normPath, offset, index.get());
+  if (!type) {
+    return rsp; // the symbol carries no type: nothing to go to
+  }
+  std::optional<std::string> const content =
+      contentForPath(std::filesystem::path(type->file));
+  if (!content) {
+    return rsp;
+  }
+  rsp.result.first.emplace();
+  // The name token, not the whole declaration: that is what a go-to-type
+  // should select, and it is inside `range` so a client can also reveal it.
+  rsp.result.first->push_back(
+      locationIn(type->file, *content, type->selection));
+  return rsp;
+}
+
+td_implementation::response
+FreeBasicServer::onImplementation(td_implementation::request const &req) {
+  td_implementation::response rsp;
+  rsp.id = req.id;
+
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
+    return rsp;
+  }
+  std::string const normPath = fblang::normalizePath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  std::uint32_t const offset =
+      fblang::byteOffsetForUtf16Position(cached->content, req.params.position);
+
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  ensureRequestClosure(normPath, index);
+  fblang::CrossDecl const target = fblang::implementationTarget(
+      cached->analysis, normPath, offset, index.get());
+  if (target.decl == nullptr) {
+    return rsp;
+  }
+  // `target.file == nullptr` means the far end is in this document, whose bytes
+  // the cache already holds; otherwise read the owning file and convert against
+  // it, the same branch onDefinition takes. Either way the index snapshot that
+  // owns `target.decl` stays pinned by `target.file` for the conversion.
+  if (!target.file) {
+    rsp.result.first.emplace();
+    rsp.result.first->push_back(
+        locationIn(normPath, cached->content, target.decl->selection));
+    return rsp;
+  }
+  std::optional<std::string> const remote = contentForPath(target.file->path);
+  if (!remote) {
+    return rsp;
+  }
+  rsp.result.first.emplace();
+  rsp.result.first->push_back(
+      locationIn(target.file->path, *remote, target.decl->selection));
+  return rsp;
+}
+
+td_typeHierarchyPrepare::response FreeBasicServer::onPrepareTypeHierarchy(
+    td_typeHierarchyPrepare::request const &req) {
+  td_typeHierarchyPrepare::response rsp;
+  rsp.id = req.id;
+
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
+    return rsp;
+  }
+  std::string const normPath = fblang::normalizePath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  std::uint32_t const offset =
+      fblang::byteOffsetForUtf16Position(cached->content, req.params.position);
+
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  ensureRequestClosure(normPath, index);
+  // The type of the symbol under the cursor, which is also the type itself when
+  // the cursor is already on a type name — the case a client sends prepare for,
+  // and the one that makes a derived type's breadcrumb work.
+  std::optional<fblang::TypeItem> const type =
+      fblang::typeOf(cached->analysis, normPath, offset, index.get());
+  if (!type) {
+    return rsp; // no result: the client offers no hierarchy affordance
+  }
+  std::optional<std::string> const content =
+      contentForPath(std::filesystem::path(type->file));
+  if (!content) {
+    return rsp;
+  }
+  TypeHierarchyItem item = typeHierarchyItem(type->file, *content, *type);
+
+  // Filled eagerly, in both directions, because the capability is advertised
+  // without `resolveProvider` and `typeHierarchy/resolve` is not implemented —
+  // the same call M13's code lens made. `parents` is closure-scoped and
+  // `children` workspace-wide (fblang::supertypes / fblang::subtypes).
+  item.parents.emplace(hierarchyItems(
+      fblang::supertypes(cached->analysis, normPath, type->key, index.get())));
+  item.children.emplace(
+      hierarchyItems(fblang::subtypes(type->key, index.get())));
+
+  std::vector<TypeHierarchyItem> items;
+  items.push_back(std::move(item));
+  rsp.result.emplace(std::move(items));
+  return rsp;
+}
+
+td_typeHierarchySupertypes::response
+FreeBasicServer::onSupertypes(td_typeHierarchySupertypes::request const &req) {
+  td_typeHierarchySupertypes::response rsp;
+  rsp.id = req.id;
+
+  // The item names its own file: no textDocument on this request, so the uri is
+  // the only pointer to one, and the same content+analysis pair answers both
+  // what the item names and what its ranges mean.
+  std::filesystem::path const path =
+      req.params.item.uri.GetAbsolutePath().path();
+  std::shared_ptr<fblang::DocumentContent const> const dc =
+      contentForPathAnalysis(path);
+  if (!dc) {
+    return rsp;
+  }
+  std::string const normPath = fblang::normalizePath(path);
+  fblang::CrossDecl const target = fblang::typeAtIdentity(
+      dc->analysis, typeHierarchyIdentity(req.params.item, dc->content));
+  if (target.decl == nullptr) {
+    return rsp;
+  }
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  ensureRequestClosure(normPath, index);
+  rsp.result.emplace(hierarchyItems(fblang::supertypes(
+      dc->analysis, normPath, target.decl->key, index.get())));
+  return rsp;
+}
+
+td_typeHierarchySubtypes::response
+FreeBasicServer::onSubtypes(td_typeHierarchySubtypes::request const &req) {
+  td_typeHierarchySubtypes::response rsp;
+  rsp.id = req.id;
+
+  std::filesystem::path const path =
+      req.params.item.uri.GetAbsolutePath().path();
+  std::shared_ptr<fblang::DocumentContent const> const dc =
+      contentForPathAnalysis(path);
+  if (!dc) {
+    return rsp;
+  }
+  std::string const normPath = fblang::normalizePath(path);
+  fblang::CrossDecl const target = fblang::typeAtIdentity(
+      dc->analysis, typeHierarchyIdentity(req.params.item, dc->content));
+  if (target.decl == nullptr) {
+    return rsp;
+  }
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  ensureRequestClosure(normPath, index);
+  rsp.result.emplace(
+      hierarchyItems(fblang::subtypes(target.decl->key, index.get())));
   return rsp;
 }
 
@@ -3775,4 +4041,19 @@ FreeBasicServer::resolveAtOrAcross(fblang::AnalyzedDoc const &doc,
     return fblang::CrossDecl{nullptr, local};
   }
   return {};
+}
+
+std::vector<TypeHierarchyItem>
+FreeBasicServer::hierarchyItems(std::vector<fblang::TypeItem> const &types) {
+  std::vector<TypeHierarchyItem> out;
+  out.reserve(types.size());
+  for (fblang::TypeItem const &type : types) {
+    std::optional<std::string> const content =
+        contentForPath(std::filesystem::path(type.file));
+    if (!content) {
+      continue; // see the declaration: a wrong range is worse than no node
+    }
+    out.push_back(typeHierarchyItem(type.file, *content, type));
+  }
+  return out;
 }

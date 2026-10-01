@@ -28,6 +28,7 @@
 #include "LibLsp/lsp/textDocument/foldingRange.h"
 #include "LibLsp/lsp/textDocument/highlight.h"
 #include "LibLsp/lsp/textDocument/hover.h"
+#include "LibLsp/lsp/textDocument/implementation.h"
 #include "LibLsp/lsp/textDocument/inlayHint.h"
 #include "LibLsp/lsp/textDocument/prepareRename.h"
 #include "LibLsp/lsp/textDocument/publishDiagnostics.h"
@@ -35,6 +36,13 @@
 #include "LibLsp/lsp/textDocument/rename.h"
 #include "LibLsp/lsp/textDocument/selectionRange.h"
 #include "LibLsp/lsp/textDocument/signature_help.h"
+#include "LibLsp/lsp/textDocument/type_definition.h"
+
+// The type-hierarchy request types are local (src/type_hierarchy_lsp.h): the
+// vendored td_typeHierarchy is typed as a bare TypeHierarchyItem where the
+// protocol says TypeHierarchyItem[] | null, and supertypes/subtypes ship no
+// request type at all.
+#include "type_hierarchy_lsp.h"
 
 #include "LibLsp/lsp/working_files.h"
 
@@ -251,6 +259,24 @@ private:
   td_semanticTokens_range::response
   onSemanticTokensRange(td_semanticTokens_range::request const &req);
   td_inlayHint::response onInlayHint(td_inlayHint::request const &req);
+  // Type go-to (M15): the type a symbol has (`dim v as base_t`, a field inside
+  // a type body, the type a `sub t.go()` qualifies) and the far end of a member
+  // procedure's declare <-> defined edge. Both answer one location, and both
+  // answer nothing rather than a guess when the symbol carries no type.
+  td_typeDefinition::response
+  onTypeDefinition(td_typeDefinition::request const &req);
+  td_implementation::response
+  onImplementation(td_implementation::request const &req);
+  // Type hierarchy (M15): prepare returns the type under the cursor with its
+  // parents and children already filled, and the two follow-ups take an item
+  // the client echoes back — identified by `uri` + `selectionRange`, exactly as
+  // callHierarchyIdentity is, so `TypeHierarchyItem::data` stays unset.
+  td_typeHierarchyPrepare::response
+  onPrepareTypeHierarchy(td_typeHierarchyPrepare::request const &req);
+  td_typeHierarchySupertypes::response
+  onSupertypes(td_typeHierarchySupertypes::request const &req);
+  td_typeHierarchySubtypes::response
+  onSubtypes(td_typeHierarchySubtypes::request const &req);
   // Expand selection (M13): the token / statement / block / file chain at each
   // requested position, nested outward. One response entry per requested
   // position, which is the mapping the client assumes.
@@ -328,6 +354,16 @@ private:
   fblang::CrossDecl resolveAtOrAcross(fblang::AnalyzedDoc const &doc,
                                       std::string const &normalizedPath,
                                       std::uint32_t off);
+
+  // One type-hierarchy node per entry of `types`, each converted against the
+  // content of the file that declares it — a node's `uri`, `range` and
+  // `selectionRange` all describe one file, and the items in a list are
+  // routinely in different ones. A type whose file cannot be read is skipped
+  // rather than answered at an offset measured against bytes nobody can
+  // produce; a client shows a partial hierarchy and can still drill into it,
+  // where a wrong range is worse than a missing node.
+  std::vector<TypeHierarchyItem>
+  hierarchyItems(std::vector<fblang::TypeItem> const &types);
 
   // Which files a reference walk sweeps. Both name the same declaration; they
   // differ in what the caller is asking about.
