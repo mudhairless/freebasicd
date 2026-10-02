@@ -265,6 +265,40 @@ static void testAcceptsBodyMember() {
       {BlockKind::Enum, "dim n as integer", false, ""},
       {BlockKind::Enum, "public:", false, ""},
       {BlockKind::Enum, "as integer a", false, ""},
+      // A reserved word is a legal enum member name for 226 of the 353 — the
+      // I/O and intrinsic statement words above all — so an enum body is not
+      // the
+      // boundary every keyword used to be. `name = expr` and nothing more: the
+      // tail is judged too, which is what fbc's `error 3` is about.
+      {BlockKind::Enum, "print", true, ""},
+      {BlockKind::Enum, "PRINT", true, ""}, // case-insensitive
+      {BlockKind::Enum, "stop = 1", true, ""},
+      {BlockKind::Enum, "data = 1 + 2", true, ""},
+      {BlockKind::Enum, "input = -1", true, ""},
+      {BlockKind::Enum, "a = 1 + 2", true, ""},
+      {BlockKind::Enum, "a(3)", false, ""},
+      {BlockKind::Enum, "print a = 1", false, ""},
+      {BlockKind::Enum, "x as integer", false, ""},
+      // ...and the 127 it refuses keep the answer they had, a boundary, with
+      // the name named on the way out. A bare closer word is one of them: an
+      // enum body is not a loop body, so nothing above it wants `next`.
+      {BlockKind::Enum, "sub", false, ""},
+      {BlockKind::Enum, "and", false, ""},
+      {BlockKind::Enum, "type", false, ""},
+      {BlockKind::Enum, "next", false, ""},
+      {BlockKind::Enum, "wend", false, ""},
+      {BlockKind::Enum, "loop", false, ""},
+      {BlockKind::Enum, "end", false, ""},
+      {BlockKind::Enum, "1", false, ""},
+      // ...`rem` among them, and for a reason of its own: fbc reads the line as
+      // a comment, so the enum ends up empty. The body is what a probe has to
+      // get right here — with a second member present the source compiles, and
+      // `rem` looks legal. By the time a statement reaches this function the
+      // lexer has already called `rem` a comment, so the rows below are the
+      // comment rows: nothing to judge. The empty enum fbc then objects to
+      // (`error 256`) is a body-level check this server does not make; §12.
+      {BlockKind::Enum, "rem", true, ""},
+      {BlockKind::Enum, "rem note", true, ""},
       // A closer is never a member, but it is not a boundary either: the
       // parser's own closer path owns it, and a mismatching one is that path's
       // evidence.
@@ -330,6 +364,112 @@ static void testAcceptsBodyMember() {
   CHECK(acceptsBodyMember(BlockKind::Enum, {}, "point"));
 }
 
+// The probed member-name tables, over the whole reserved-word catalog. The
+// probe is `tools/probe_member_names.sh`, which compiles one `type`/`enum` per
+// reserved word against fbc 1.10.2 and reports which words each body kind
+// accepts; the answer is 16 words no record field may be named, 112 that a
+// plain record accepts but fbc's `error 238` refuses in a record that also
+// holds a member procedure, and 128 that no enum member may be named. The enum
+// count is derived, not tabulated, and the derivation is what this checks.
+static void testMemberNameTables() {
+  // The 16, spelled out: this list *is* the `invalid-member-name` diagnostic
+  // for a record field, so an edit to the table that adds or drops a word has
+  // to edit this list too, which is what makes the pair reviewable.
+  static char const *const kNever[] = {
+      "and", "andalso", "const",  "delete",  "eqv", "imp", "mod", "new",
+      "not", "or",      "orelse", "pointer", "ptr", "shl", "shr", "xor",
+  };
+  std::size_t const nNever = sizeof(kNever) / sizeof(kNever[0]);
+  CHECK(nNever == 16);
+
+  for (char const *const w : kNever) {
+    if (!isNeverFieldName(w)) {
+      std::printf("FAIL isNeverFieldName(\"%s\") = false, want true\n", w);
+      ++failures;
+    }
+  }
+
+  std::size_t nEnumLegal = 0;
+  std::size_t nNeverSeen = 0;
+  std::size_t nConditionalSeen = 0;
+  for (std::string_view const w : reservedWords()) {
+    bool const never = isNeverFieldName(w);
+    bool const conditional = isConditionalFieldName(w);
+    // Disjointness: a word fbc refuses as a field name outright cannot also be
+    // one it accepts in a plain record — the two answers would contradict.
+    if (never && conditional) {
+      std::printf("FAIL \"%s\" is in both member-name tables\n",
+                  std::string(w).c_str());
+      ++failures;
+    }
+    nNeverSeen += never ? 1 : 0;
+    nConditionalSeen += conditional ? 1 : 0;
+    // The derived enum rule, checked against its own definition over every word
+    // in the catalog rather than against a third hand-kept list:
+    //     enum-illegal(128) == never-field(16) + conditional(112)
+    bool const wantEnumLegal = !never && !conditional;
+    if (isLegalEnumMemberName(w) != wantEnumLegal) {
+      std::printf("FAIL isLegalEnumMemberName(\"%s\") = %d, want %d\n",
+                  std::string(w).c_str(), isLegalEnumMemberName(w) ? 1 : 0,
+                  wantEnumLegal ? 1 : 0);
+      ++failures;
+    }
+    nEnumLegal += isLegalEnumMemberName(w) ? 1 : 0;
+  }
+  CHECK(reservedWords().size() == 353);
+  CHECK(nNeverSeen == nNever);
+  CHECK(nConditionalSeen == 112);
+  CHECK(nEnumLegal == 225);
+
+  // A word that is not reserved is in neither table. The enum predicate is
+  // vacuously true for one — its rule is derived from the two tables, and a
+  // word in neither has nothing against it, which is also the right answer:
+  // an identifier is of course a legal enum member name.
+  for (char const *const w : {"counter", "and_", "x", "", "print2"}) {
+    CHECK(!isNeverFieldName(w));
+    CHECK(!isConditionalFieldName(w));
+    CHECK(isLegalEnumMemberName(w));
+  }
+  // `rem` is the word that looks like the exception to the enum rule and is
+  // not: fbc reads a `rem` line as a *comment*, so no member named `rem` is
+  // created and an enum holding nothing else is `error 256`. A probe whose body
+  // held a second member could not tell that apart from a legal name and
+  // reported `rem` as the one word accepted as an enum member yet refused under
+  // `error 238`; the enum count is what caught it. The lexer is the layer that
+  // answers it, which is why the parser asks this predicate nothing about it
+  // (testAcceptsBodyMember sees a comment, not a statement).
+  CHECK(isConditionalFieldName("rem"));
+  CHECK(!isNeverFieldName("rem"));
+  CHECK(!isLegalEnumMemberName("rem"));
+  // The repair is one underscore away, which is what the quick fix writes.
+  CHECK(isLegalEnumMemberName("rem_"));
+
+  // The words that made an enum body look broken before the tables existed: the
+  // I/O and intrinsic statement names, which fbc accepts as enum members.
+  for (char const *const w : {"print", "stop", "data", "input", "line", "put",
+                              "get", "error", "sleep", "width"}) {
+    if (!isLegalEnumMemberName(w)) {
+      std::printf("FAIL isLegalEnumMemberName(\"%s\") = false, want true\n", w);
+      ++failures;
+    }
+  }
+  // And the other direction: a word fbc refuses in an enum body is not silently
+  // accepted, which is what `acceptsBodyMember` keys on.
+  for (char const *const w : {"and", "type", "end", "next", "as", "const",
+                              "ptr", "public", "dim", "if"}) {
+    if (isLegalEnumMemberName(w)) {
+      std::printf("FAIL isLegalEnumMemberName(\"%s\") = true, want false\n", w);
+      ++failures;
+    }
+  }
+  // A keyword field name is legal in a plain record — that is the whole reason
+  // `next as node ptr` is the canonical linked list — so the field question has
+  // its own answer, separate from the enum one.
+  CHECK(isConditionalFieldName("next"));
+  CHECK(isConditionalFieldName("end"));
+  CHECK(!isLegalEnumMemberName("next"));
+}
+
 static void testFolderNameCatalog() {
   // The project-layout folder-name catalog: source/include directory names per
   // language (full + common abbreviation). isSourceDirName/isIncludeDirName
@@ -375,6 +515,7 @@ int main() {
   testParamLabels();
   testStatementPosition();
   testAcceptsBodyMember();
+  testMemberNameTables();
   testFolderNameCatalog();
 
   if (failures == 0) {

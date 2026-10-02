@@ -474,9 +474,112 @@ void UnresolvedIncludeDiagnosticsMatchTheEdges() {
   CHECK(unresolvedIncludeDiagnostics(edges, 64).size() == 1);
 }
 
+// The fix that answers a reserved word in the member-name position: the name
+// gains a trailing underscore, which is not part of the word, so `and_` is
+// already a legal identifier. Both shapes of the diagnostic get the same edit —
+// the record and enum spellings differ only in their message.
+void MemberNameFixAppendsUnderscore() {
+  std::string const fieldSrc = "type point\n"
+                               "  as integer and\n"
+                               "end type\n";
+  AnalyzedDoc const fieldDoc = analyze(fieldSrc);
+  QuickFixContext const fieldCtx = bareContext(fieldSrc, fieldDoc);
+  std::size_t const at = fieldSrc.find("and");
+
+  std::vector<QuickFix> const fixes =
+      fixesFor("invalid-member-name",
+               diagAt("invalid-member-name", static_cast<std::uint32_t>(at),
+                      static_cast<std::uint32_t>(at + 3)),
+               fieldCtx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() != 1) {
+    return;
+  }
+  CHECK(fixes[0].title == "Rename member to \"and_\"");
+  CHECK(fixes[0].code == "invalid-member-name");
+  // Only the name is replaced; the `as integer ` in front of it is untouched.
+  CHECK(editText(fixes[0]) ==
+        std::to_string(at) + ":" + std::to_string(at + 3) + ">and_");
+
+  TextEditBytes const &e = fixes[0].edits.front();
+  std::string const applied = fieldSrc.substr(0, e.range.beg) + e.newText +
+                              fieldSrc.substr(e.range.end);
+  CHECK(applied == "type point\n  as integer and_\nend type\n");
+  // The acceptance criterion, at the seam: the text the fix writes re-parses
+  // clean, and the member is a member under its new name.
+  AnalyzedDoc const after = analyze(applied);
+  CHECK(after.parse.diagnostics.empty());
+  CHECK(after.parse.roots.size() == 1);
+  CHECK(after.parse.roots.front().children.size() == 1);
+  CHECK(after.parse.roots.front().children.front().key == "and_");
+
+  // The enum spelling, end to end: an enum body that cannot accept a block
+  // keyword is a boundary, so this fix and the closer fix answer the same line
+  // from two angles and both apply.
+  std::string const enumSrc = "enum colors\n"
+                              "  sub\n"
+                              "end enum\n";
+  AnalyzedDoc const enumDoc = analyze(enumSrc);
+  QuickFixContext const enumCtx = bareContext(enumSrc, enumDoc);
+  std::size_t const subAt = enumSrc.find("sub");
+  Diagnostic const named =
+      diagAt("invalid-member-name", static_cast<std::uint32_t>(subAt),
+             static_cast<std::uint32_t>(subAt + 3));
+  std::vector<QuickFix> const enumFixes =
+      fixesFor("invalid-member-name", named, enumCtx);
+  CHECK(enumFixes.size() == 1);
+  if (enumFixes.size() != 1) {
+    return;
+  }
+  CHECK(enumFixes[0].title == "Rename member to \"sub_\"");
+  TextEditBytes const &ee = enumFixes[0].edits.front();
+  std::string const enumApplied = enumSrc.substr(0, ee.range.beg) + ee.newText +
+                                  enumSrc.substr(ee.range.end);
+  AnalyzedDoc const enumAfter = analyze(enumApplied);
+  CHECK(enumAfter.parse.diagnostics.empty());
+  CHECK(enumAfter.parse.roots.size() == 1);
+  CHECK(enumAfter.parse.roots.front().children.size() == 1);
+  CHECK(enumAfter.parse.roots.front().children.front().key == "sub_");
+}
+
+// The fix writes a name, so the range it writes over has to *be* a name. A
+// client can send the code action request against a buffer that moved on since
+// the diagnostic was published, and the range then names bytes that are not the
+// offending word — appending `_` to those is not a rename, it is corrupting
+// whatever they spell.
+void MemberNameFixRefusesARangeThatIsNotAName() {
+  std::string const src = "type point\n  as integer and\nend type\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  // Empty range, a range past the buffer, one covering the whole declaration,
+  // and one that has picked up an identifier suffix: four shapes of "not the
+  // name", all refused rather than edited.
+  CHECK(fixesFor("invalid-member-name", diagAt("invalid-member-name", 30, 30),
+                 ctx)
+            .empty());
+  CHECK(fixesFor("invalid-member-name",
+                 diagAt("invalid-member-name",
+                        static_cast<std::uint32_t>(src.size() - 1),
+                        static_cast<std::uint32_t>(src.size() + 8)),
+                 ctx)
+            .empty());
+  CHECK(fixesFor("invalid-member-name",
+                 diagAt("invalid-member-name",
+                        static_cast<std::uint32_t>(src.find("as integer")),
+                        static_cast<std::uint32_t>(src.find("end type"))),
+                 ctx)
+            .empty());
+  CHECK(fixesFor("invalid-member-name",
+                 diagAt("invalid-member-name", 22,
+                        static_cast<std::uint32_t>(src.find("end type"))),
+                 ctx)
+            .empty());
+}
+
 void RegistryAnswersTheFixableCodes() {
-  CHECK(quickFixProviders().size() == 2);
+  CHECK(quickFixProviders().size() == 3);
   CHECK(quickFixProviderFor("unterminated-block") != nullptr);
+  CHECK(quickFixProviderFor("invalid-member-name") != nullptr);
   CHECK(quickFixProviderFor("include-not-found") != nullptr);
   // Every registered code is a real diagnostic code, and the registry is
   // stable across calls (the session serves it from the handler pool).
@@ -500,6 +603,8 @@ int main() {
   IncludeFixOrdersShallowestFirst();
   IncludeFixCapsTheCandidateList();
   UnresolvedIncludeDiagnosticsMatchTheEdges();
+  MemberNameFixAppendsUnderscore();
+  MemberNameFixRefusesARangeThatIsNotAName();
   RegistryAnswersTheFixableCodes();
 
   if (failures == 0) {

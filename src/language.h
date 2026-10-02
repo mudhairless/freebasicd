@@ -34,6 +34,29 @@ std::string keywordDocsUrl(std::string_view word);
 // Built-in type names (also reserved, listed separately for completion/hover).
 bool isBuiltinType(std::string_view wordLower);
 
+// Member-name legality, from two probed tables (FreeBASIC.md 7, and the probe
+// that produced them is tools/probe_member_names.sh). `wordLower` must be
+// ASCII-folded lowercase. These answer for a reserved word only; an ordinary
+// identifier is always legal and never reaches a table.
+//
+//  * isNeverFieldName: fbc refuses the word as a TYPE/UNION field name outright
+//    (16 words: the binary operators, `New`, `Delete`, `Const`, `Ptr`,
+//    `Pointer`). fbc's `error 14: Expected identifier`.
+//  * isConditionalFieldName: legal as a TYPE/UNION field name in a plain
+//  record,
+//    but `error 238` in one that also holds a `Static` field, a `Const`, a
+//    nested record/enum, or a member procedure (112 words). Note the asymmetry
+//    with `New`/`Delete`, which are never legal: those fail the name itself,
+//    these only fail the body the name sits in.
+//  * isLegalEnumMemberName: legal as an ENUM member name (225 of 353). The enum
+//    rule needs no table of its own: probed, enum-illegal(128) is exactly
+//    never-field(16) + conditional(112). `rem` is in the second half, not
+//    special: fbc reads a `rem` line in an enum body as a comment, so
+//    `enum e / rem / end enum` is an empty enum (`error 256`) with no member.
+bool isNeverFieldName(std::string_view wordLower);
+bool isConditionalFieldName(std::string_view wordLower);
+bool isLegalEnumMemberName(std::string_view wordLower);
+
 // Opening keyword -> block closer facts.
 struct BlockCloser {
   BlockKind kind = BlockKind::Scope;

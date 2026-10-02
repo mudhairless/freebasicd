@@ -26,6 +26,66 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-01 — Which reserved words may name a record or enum member
+
+- The server's whole reserved-word catalog (353 words) was compiled against fbc
+  1.10.2 — one `TYPE`, one `ENUM` and one "record with a member procedure" per
+  word — by `tools/probe_member_names.sh`, and the answer is three sets, not
+  one. `kNeverFieldNames` (16): the binary operators, `New`/`Delete` and the two
+  pointer keywords, none of which can name a field in any body; fbc answers
+  `error 14: Expected identifier` (`const` is `error 273`, read as a type
+  modifier), and no spelling rescues one — not a type suffix, not `ALL CAPS`.
+  `kConditionalFieldNames` (112): legal as a field name in a plain record, and
+  `error 238` once the body also holds a member procedure, a `Static` field, a
+  `Const` or a nested type. And the enum question, which needs no table of its
+  own: `enum-illegal(128) == never-field(16) + conditional(112)`, leaving 225 of
+  353 legal as an enum member name — the intrinsic and I/O statement words
+  (`print`, `stop`, `data`, `input`, …) among them. The two shorter lists are
+  the ones encoded, as the static asserts beside them keep them sorted, disjoint
+  and inside the catalog. Full tables and provenance: FreeBASIC.md §7.
+- Two diagnostics and one fix ride on it. `invalid-member-name` now covers a
+  reserved word in the name position of a record field (`as integer and`, and
+  the `dim and as integer` spelling, which asked the same question and got no
+  answer) and of an enum member. A record's answer is a boundary plus the name;
+  an enum's is the boundary it already had **plus** the name, because that
+  boundary is load-bearing — it is where a missing `END ENUM` belongs and what
+  the `unterminated-block` fix inserts at, so replacing it with fbc's
+  stay-open `error 3` would have removed the closer's anchor. The quick fix
+  appends `_` (`and_`, `sub_`), which needs no guess: a suffix is not part of
+  the word, the same rule that makes `foo` and `foo$` two variables. It is a
+  pure function of the diagnostic's own range and refuses a range that is not a
+  bare word, since a client can ask for a code action against a buffer that
+  moved on.
+- **An enum body that is a reserved word stopped being a broken body.** `enum e /
+  print / end enum` compiled clean in fbc and used to draw an unterminated enum
+  plus a stray closer here — an enum member is `name` or `name = expr`, and the
+  tail is judged too (`a 1`, `a(3)` and `print 1` are each fbc's `error 3`).
+- **Three findings, none of them about the diagnostic.** (1) A line-leading
+  `rem` at end of line lexed as a *keyword*: `isWhitespace` stops at the line
+  ends, so `rem note` was a comment and a bare `rem` was not, and the lexer
+  contradicted its own comment. That made `enum e / rem / end enum` a
+  member-name error where fbc's complaint is `error 256` (the enum is empty) —
+  one word, one lexer's intent, one wrong answer. (2) `rem` is not the exception
+  to the enum rule the first probe reported it as: a probe body carrying a
+  second member cannot tell "this line is a comment" from "this line is a
+  member", and the enum *count* is what caught the difference. The rule lost an
+  exception. (3) The audit that compared the parser against the transcript for
+  all 353 words, on the question "does the parse declare this member", found
+  three words fbc creates a member for and the parser dropped: `redim` and
+  `local` in an enum body (a var-decl opener swallowed the line) and `as` in
+  `as integer as` (a second type-introducer ate the name). A diagnostic wave
+  that only asked "is the name legal" would have shipped all three; the member
+  is the thing completion and hover offer. `parser_checks` now asks both
+  questions for every word in the catalog.
+- Deferred and recorded in FreeBASIC.md §12 rather than half-built: `error 238`
+  (needs a `static` flag on `Symbol` and an end-of-block answer, not a word
+  list) and `error 256` (an empty body is not counted).
+- Lesson: **a probe's template is part of its result.** Two of the three
+  findings came from a template that was one line short of the language, and
+  neither showed up as a wrong count — only as a plausible special case. The
+  count is the assertion that catches a template; make the probe print it, and
+  make the test pin it.
+
 ### 2026-10-01 — A record body ends at a by-value self-reference
 
 - `dim p as point` inside `type point` is fbc's `error 88: Recursive TYPE or

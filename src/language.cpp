@@ -565,6 +565,58 @@ constexpr char const *kReserved[] = {
     "zstring",
 };
 
+// Reserved words fbc 1.10.2 refuses as a TYPE/UNION *field* name, whatever
+// else the body holds. Probed by compiling the template below once per entry
+// of `kReserved` (tools/probe_member_names.sh; FreeBASIC.md §7):
+//
+//   type keyword_test
+//     as integer first_field
+//     as integer <WORD>
+//   end type
+//
+// 16 of 353: the binary operators, `New`/`Delete`, and the two pointer type
+// keywords `Ptr`/`Pointer` (`as integer ptr` is `error 273: Expected 'PTR' or
+// 'POINTER'`). Every one is `error 14: Expected identifier` except `Const`,
+// which fbc reads as a type modifier and so wants a pointer after.
+constexpr char const *kNeverFieldNames[] = {
+    "and", "andalso", "const",  "delete",  "eqv", "imp", "mod", "new",
+    "not", "or",      "orelse", "pointer", "ptr", "shl", "shr", "xor",
+};
+
+// Reserved words that *are* legal TYPE/UNION field names in a plain record, and
+// are `error 238: Fields cannot be named as keywords in TYPE's that contain
+// member functions` in one that also holds a `Static` field, a `Const`, a
+// nested record/enum, or a member procedure (all probed; a plain `Dim` field
+// and an access section do not arm it). These 112 are also illegal as an ENUM
+// member outright — which is why the enum question needs no table of its own:
+//
+//     enum-illegal(128) == never-field(16) + conditional(112)
+constexpr char const *kConditionalFieldNames[] = {
+    "abs",      "abstract",   "alias",    "any",         "as",
+    "asm",      "base",       "boolean",  "byref",       "byte",
+    "byval",    "call",       "case",     "cast",        "cbool",
+    "cbyte",    "cdbl",       "cdecl",    "cint",        "class",
+    "clng",     "clngint",    "common",   "constructor", "continue",
+    "cptr",     "cshort",     "csign",    "csng",        "cubyte",
+    "cuint",    "culng",      "culngint", "cunsg",       "cushort",
+    "declare",  "destructor", "dim",      "do",          "double",
+    "else",     "elseif",     "end",      "endif",       "enum",
+    "exit",     "export",     "extends",  "extern",      "fix",
+    "for",      "frac",       "function", "goto",        "if",
+    "iif",      "implements", "import",   "int",         "integer",
+    "is",       "let",        "lib",      "long",        "longint",
+    "loop",     "namespace",  "next",     "operator",    "overload",
+    "pascal",   "peek",       "poke",     "private",     "procptr",
+    "property", "protected",  "public",   "rem",         "return",
+    "scope",    "select",     "sgn",      "shared",      "short",
+    "single",   "static",     "stdcall",  "step",        "string",
+    "sub",      "swap",       "then",     "to",          "type",
+    "typeof",   "ubyte",      "uinteger", "ulong",       "ulongint",
+    "union",    "unsigned",   "until",    "ushort",      "using",
+    "var",      "virtual",    "wend",     "while",       "with",
+    "wstring",  "zstring",
+};
+
 constexpr char const *kBuiltinTypes[] = {
     "any",   "boolean",  "byte",   "double",  "integer",
     "long",  "longint",  "object", "pointer", "ptr",
@@ -1195,6 +1247,62 @@ constexpr bool intrinsicsSorted() {
 }
 static_assert(intrinsicsSorted(), "kIntrinsics must be sorted by key");
 
+// Both member-name tables are probed output and are looked up by binary
+// search, so sortedness is an invariant of the data, not a style preference —
+// and a word appearing in both tables would make the two answers contradict.
+template <std::size_t N>
+constexpr bool wordTableSorted(char const *const (&table)[N]) {
+  for (std::size_t i = 1; i < N; ++i) {
+    if (!(std::string_view(table[i - 1]) < std::string_view(table[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+static_assert(wordTableSorted(kNeverFieldNames),
+              "kNeverFieldNames must be sorted");
+static_assert(wordTableSorted(kConditionalFieldNames),
+              "kConditionalFieldNames must be sorted");
+constexpr bool memberNameTablesDisjoint() {
+  for (char const *never : kNeverFieldNames) {
+    for (char const *cond : kConditionalFieldNames) {
+      if (std::string_view(never) == std::string_view(cond)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+static_assert(memberNameTablesDisjoint(),
+              "a word cannot be both never- and conditionally-legal");
+constexpr bool memberNameTablesReserved() {
+  // Search kReserved directly rather than calling isReservedWord: that is not
+  // constexpr, and a static_assert must be. The tables are keyed by the same
+  // catalog, so "is in kReserved" is the property worth pinning at compile
+  // time.
+  auto const inCatalog = [](std::string_view w) {
+    for (char const *r : kReserved) {
+      if (std::string_view(r) == w) {
+        return true;
+      }
+    }
+    return false;
+  };
+  for (char const *w : kNeverFieldNames) {
+    if (!inCatalog(w)) {
+      return false;
+    }
+  }
+  for (char const *w : kConditionalFieldNames) {
+    if (!inCatalog(w)) {
+      return false;
+    }
+  }
+  return true;
+}
+static_assert(memberNameTablesReserved(),
+              "every member-name table entry must be a reserved word");
+
 } // namespace
 
 bool isReservedWord(std::string_view word) {
@@ -1256,6 +1364,41 @@ std::string keywordDocsUrl(std::string_view word) {
 bool isBuiltinType(std::string_view wordLower) {
   return std::any_of(std::begin(kBuiltinTypes), std::end(kBuiltinTypes),
                      [&](char const *t) { return wordLower == t; });
+}
+
+namespace {
+
+template <std::size_t N>
+bool inWordTable(char const *const (&table)[N], std::string_view lower) {
+  auto const *const it =
+      std::lower_bound(std::begin(table), std::end(table), lower,
+                       [](char const *a, std::string_view b) {
+                         return std::string_view(a) < b;
+                       });
+  return it != std::end(table) && std::string_view(*it) == lower;
+}
+
+} // namespace
+
+bool isNeverFieldName(std::string_view wordLower) {
+  return inWordTable(kNeverFieldNames, wordLower);
+}
+
+bool isConditionalFieldName(std::string_view wordLower) {
+  return inWordTable(kConditionalFieldNames, wordLower);
+}
+
+bool isLegalEnumMemberName(std::string_view wordLower) {
+  // No table of its own: probed, enum-illegal(128) is exactly never-field(16) +
+  // conditional(112), so this is the whole enum rule expressed in terms of the
+  // two tables the field questions use. `rem` sits in the second half for the
+  // same reason as the rest of it and is not special: fbc reads a `rem` line as
+  // a comment, so `enum e / rem / end enum` is an *empty* enum (`error 256`)
+  // and fbc creates no member there. A first probe that put a second member in
+  // the body read that same source as accepted and made `rem` look like the one
+  // exception — the body was what made the difference, not the word. `rem_` is
+  // a real member either way, which is what the quick fix writes.
+  return !isNeverFieldName(wordLower) && !isConditionalFieldName(wordLower);
 }
 
 namespace {
@@ -1631,12 +1774,46 @@ bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt,
     return true; // nothing to judge: a blank or comment-only line
   }
   Token const &first = stmt.front();
+  if (kind == BlockKind::Enum) {
+    // An enum body is `name`, `name = expr` — a name and at most an `=`,
+    // nothing else. A reserved word is a legal name for 225 of the 353 (the
+    // intrinsic and I/O statement words — `print`, `stop`, `data`, `input`
+    // among them), so refusing every keyword here reported an unterminated enum
+    // plus a stray closer for code fbc compiles clean. The 128 fbc refuses keep
+    // the answer they had: a boundary, which is where a missing `END ENUM`
+    // belongs and what the `unterminated-block` fix inserts at. What they gain
+    // is being *named* on the way out — the boundary says the closer is
+    // missing, not why (FreeBASIC.md §7; tools/probe_member_names.sh).
+    //
+    // Judged before isCloserStatement, because that check answers for a record
+    // (where `next as node ptr` is a field, not a closer) and an enum body has
+    // no `as` clause to make the distinction. `END ENUM` is the one closer an
+    // enum has, and its first word is `end` — which fbc refuses as a member
+    // name, so the closer has to be recognized here or every enum would end at
+    // its own `END ENUM`. A bare `next`/`wend`/`loop`/`end` in an enum body is
+    // a member name it cannot have: an enum body is not a loop body, so nothing
+    // above it is expecting those words.
+    if (first.kind != TokenKind::Identifier &&
+        first.kind != TokenKind::Keyword) {
+      return false; // a number or punctuation starts an expression
+    }
+    if (first.kind == TokenKind::Keyword) {
+      std::string const w = toLowerChars(first.text());
+      if (!isLegalEnumMemberName(w)) {
+        return w == "end" && stmt.size() >= 2 &&
+               stmt[1].kind == TokenKind::Keyword &&
+               toLowerChars(stmt[1].text()) == "enum";
+      }
+    }
+    // The tail counts as much as the name: fbc's `error 3: Expected
+    // End-of-Line` is what it answers for `a 1`, `a(3)` and `print 1` alike, so
+    // a line whose first token is a fine member name can still be no member at
+    // all.
+    return stmt.size() == 1 ||
+           (stmt[1].kind == TokenKind::Symbol && stmt[1].text() == "=");
+  }
   if (isCloserStatement(stmt)) {
     return true;
-  }
-  if (kind == BlockKind::Enum) {
-    // An enum body is `name`, `name = expr` — an identifier, nothing else.
-    return first.kind == TokenKind::Identifier;
   }
   if (first.kind != TokenKind::Keyword && first.kind != TokenKind::Identifier) {
     return false; // a number, string or punctuation starts an expression

@@ -255,6 +255,47 @@ std::vector<QuickFix> retargetInclude(Diagnostic const &d,
   return fixes;
 }
 
+// `invalid-member-name` -> move the member's name off the reserved word.
+//
+// The one repair that needs no guess. A reserved word cannot be a member name
+// (FreeBASIC.md §7, probed), and a trailing `_` is not part of the word — the
+// suffix is a separate identifier character, the same rule that makes `foo` and
+// `foo$` two different variables. So `and_` is already a legal name and needs
+// no second hop: the edit is the diagnostic's own range plus one character, and
+// nothing about the enclosing body is consulted to produce it.
+std::vector<QuickFix> renameReservedMemberName(Diagnostic const &d,
+                                               QuickFixContext const &ctx) {
+  if (d.range.beg >= d.range.end || d.range.end > ctx.content.size()) {
+    return {}; // a range from another revision of the buffer
+  }
+  std::string_view const name =
+      ctx.content.substr(d.range.beg, d.range.end - d.range.beg);
+  // The range has to *be* the name: the diagnostic names one word, and a
+  // keyword is letters only, so anything else means the bytes have moved under
+  // a stale range. Appending `_` to that is not a rename, so offer nothing. The
+  // test also bounds the edit: letters hold no newline, quote or backslash, so
+  // the replacement cannot escape the range it claims.
+  if (name.empty()) {
+    return {};
+  }
+  for (char const c : name) {
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
+      return {};
+    }
+  }
+
+  QuickFix fix;
+  // TRANSLATORS: %s is the member name the fix would write with a trailing
+  // underscore (e.g. `and_`); it is a FreeBASIC identifier, never translated.
+  fix.title = trf("Rename member to \"%s_\"", name);
+  fix.code = d.code;
+  fix.diagRange = d.range;
+  // Only the name changes, so the range is replaced by name-plus-underscore and
+  // nothing else on the line is touched.
+  fix.edits.push_back({d.range, std::string(name) + "_"});
+  return {std::move(fix)};
+}
+
 } // namespace
 
 std::vector<QuickFixRegistration> const &quickFixProviders() {
@@ -263,6 +304,9 @@ std::vector<QuickFixRegistration> const &quickFixProviders() {
   static std::vector<QuickFixRegistration> const table = {
       // parser.cpp: a block opener that reached EOF without its closer.
       {"unterminated-block", insertBlockCloser},
+      // parser.cpp: a reserved word in the name position of a record or enum
+      // member list (see the probed tables in language.cpp).
+      {"invalid-member-name", renameReservedMemberName},
       // M6: an `#include` edge that resolved nowhere (session.cpp publishes
       // these through unresolvedIncludeDiagnostics).
       {"include-not-found", retargetInclude},

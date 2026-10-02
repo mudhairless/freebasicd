@@ -153,6 +153,32 @@ int main() {
     CHECK(mid[4].kind == TokenKind::Comment);
   }
 
+  // A line-leading `Rem` is a comment whether or not anything follows it. The
+  // bare form is the one that is easy to get wrong, because "end of line" is a
+  // newline and not one of the blanks `isWhitespace` covers: `rem note` lexed
+  // as a comment while a line-ending `rem` lexed as a keyword. In a record or
+  // enum body that is the difference between "this line declares no member"
+  // (what fbc means) and "this is an identifier the body must reject" — the
+  // empty enum fbc then objects to is `error 256`, not a member-name error.
+  {
+    for (const char *src : {"rem\n", "rem \n", "rem note\n", "rem\tnote\n",
+                            "rem' note\n", "rem"}) {
+      auto const ts = tokensOf(src);
+      if (ts[0].kind != TokenKind::Comment) {
+        std::printf("FAIL \"%s\" lexed as kind %d, want Comment\n", src,
+                    static_cast<int>(ts[0].kind));
+        ++failures;
+      }
+    }
+    // Not at the start of a line it is an ordinary keyword: that is what makes
+    // `as integer rem` a field declaration fbc accepts.
+    checkKinds("type t\n  as integer rem\nend type\n",
+               {TokenKind::Keyword, TokenKind::Identifier, TokenKind::Newline,
+                TokenKind::Keyword, TokenKind::Keyword, TokenKind::Keyword,
+                TokenKind::Newline, TokenKind::Keyword, TokenKind::Keyword,
+                TokenKind::Newline});
+  }
+
   // Preprocessor and legacy meta lines.
   checkKinds("#include once\n", {TokenKind::Preprocessor, TokenKind::Newline});
   checkKinds("$DYNAMIC\nx",

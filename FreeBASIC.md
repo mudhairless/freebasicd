@@ -196,17 +196,51 @@ body must not read the leading word as a closer. Only when the type *also* holds
 member functions does fbc object: `error 238: Fields cannot be named as keywords
 in TYPE's that contain member functions or in CLASS'es` `(fbc)`.
 
+#### Which reserved words may name a member (probed, all 353)
+
+Every word in the server's reserved-word catalog was compiled against fbc
+1.10.2, one minimal program per body kind per word, by
+`tools/probe_member_names.sh` — the tables in `src/language.cpp` are that
+script's output, and the static asserts beside them keep them sorted, disjoint,
+and inside the catalog. The template is one field per line after a required
+`first_field` (fbc rejects an empty UDT with `error 256`, which would make every
+word look rejected for the wrong reason), and the answers are three, not two:
+
+| question | answer | fbc |
+|---|---|---|
+| never a `TYPE`/`UNION` field name | **16** — `and andalso const delete eqv imp mod new not or orelse pointer ptr shl shr xor` | `error 14: Expected identifier` (`const` is `error 273: Expected 'PTR' or 'POINTER'`, read as a type modifier) |
+| legal as a field name in a *plain* record, refused once the body also holds a member procedure, a `Static` field, a `Const`, or a nested type/enum | **112** — the rest of the catalog, minus those 16 | `error 238` (a plain `Dim` field and an access section do **not** arm it) |
+| never a legal `ENUM` member name | **128** — exactly those 16 + those 112 | `error 3: Expected End-of-Line` |
+
+So the enum question needs no table of its own:
+`enum-illegal(128) == never-field(16) + conditional(112)`, which leaves **225**
+of 353 legal as an enum member name — the intrinsic and I/O statement words
+(`print`, `stop`, `data`, `input`, `line`, `put`, `get`, …) among them. No
+spelling rescues any of the 16: a type suffix (`and$`, `and%`) and `ALL CAPS`
+fail identically.
+
+`rem` belongs to the second row, and not because it is special: fbc reads a
+line-leading `rem` as a **comment**, so no member named `rem` is ever created and
+an enum holding nothing else is `error 256`. A probe whose body carried a second
+member could not tell that apart from a legal name and reported `rem` as the one
+word accepted as an enum member yet refused under `error 238` — the enum *count*
+is what caught it. `rem_` is a real member either way, and `Rem` mid-line
+(`as integer rem`) is a field name fbc accepts, because the comment rule only
+applies at the start of a line.
+
 `Field = n` (field alignment) and `Extends t` are **opener-line** modifiers, not
 body members: `type t / Field = 4 / x As Single / End Type` is `error 17:
 Syntax error, found '=' in 'field = 4'`, while `type t Field = 4` and
 `type b Extends a` both compile `(fbc)`.
+
+      `type b Extends a` both compile `(fbc)`.
 
 **A record must declare at least one data field** `(fbc)`. `Type`/`Union`/`Enum`
 with no field is `error 256: An ENUM, TYPE or UNION cannot be empty`, and
 **none** of a nested record/enum, a `Declare`d member procedure, an access
 section, a `Const`, or a `Static` field counts toward it — only a plain data
 field does. So a record whose body is *only* nested types is rejected, while
-the same nesting plus one field compiles.
+the same nesting plus one field compiles. **Not implemented** (§12, item 17).
 
 **A field's declared type must already be declared** — there are no forward type
 references. `type a / b As b / End Type` written before the later
@@ -588,3 +622,17 @@ to "the language is what the lexer does":
     same way `sub t.go()` used to. Cost: no go-to-implementation for a UDT
     constructor or destructor, and a phantom `documentSymbol`/code-lens entry
     for that one form.
+17. **`error 238` and `error 256` are not raised.** Two fbc checks on a record
+    body have no diagnostic here, both probed in §7 ("Which reserved words may
+    name a member"):
+    - `error 238` — a keyword field name in a type that also holds a member
+      procedure, a `Static` field, a `Const`, or a nested type. The 112 words
+      concerned (`kConditionalFieldNames`) are accepted as field names in every
+      record, because the check needs a `static` flag on `Symbol` and an
+      end-of-block answer, not just a word list. The 16 words fbc refuses
+      outright *are* diagnosed (`invalid-member-name`).
+    - `error 256` — a `Type`/`Union`/`Enum` body with no plain data field. The
+      body-level count that would raise it is not computed. This one has a
+      visible consequence for `rem`: a line-leading `rem` is a comment, so
+      `enum e / rem / end enum` declares no member here and draws no diagnostic
+      where fbc answers `error 256`.

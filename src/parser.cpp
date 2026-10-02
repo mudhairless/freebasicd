@@ -221,6 +221,14 @@ private:
            k == BlockKind::Enum;
   }
 
+  // Inside a TYPE/UNION body, which is where a *field* name can be a reserved
+  // word at all. An enum body is excluded on purpose: its member names have a
+  // different probed rule, and it never reaches the declaration paths that ask.
+  bool inRecordBody() const {
+    return !blocks_.empty() && isMemberBodyKind(blocks_.back().kind) &&
+           blocks_.back().kind != BlockKind::Enum;
+  }
+
   static SymbolKind declKindFor(const std::string &w) {
     if (w == "sub") {
       return SymbolKind::Sub;
@@ -412,11 +420,35 @@ private:
     std::string_view const key = top.sym != nullptr
                                      ? std::string_view(top.sym->key)
                                      : std::string_view();
-    if (acceptsBodyMember(top.kind, statementTokens(), key)) {
+    std::vector<Token> const stmt = statementTokens();
+    if (acceptsBodyMember(top.kind, stmt, key)) {
       return false;
+    }
+    // An enum body rejected this because its first token is a reserved word
+    // fbc will not accept as a member name. The `unterminated-block` that
+    // follows says where the closer belongs but not why the body ended here,
+    // and for this case the why is the whole error — fbc's own is `error 3:
+    // Expected End-of-Line` on the name, not a missing closer. So name it.
+    if (top.kind == BlockKind::Enum && !stmt.empty() &&
+        stmt.front().kind == TokenKind::Keyword &&
+        !isLegalEnumMemberName(toLowerChars(stmt.front().text()))) {
+      addDiagnostic(stmt.front().beg, stmt.front().end, Severity::Error,
+                    "invalid-member-name",
+                    trf("'%s' is a reserved word and cannot be an enum member "
+                        "name",
+                        stmt.front().text()));
     }
     closeBlockUnterminated(cur_.beg);
     return true;
+  }
+
+  // What ends a statement: a newline, a comment, a doc comment, or a `:`.
+  // Shared so the member-capture path below can ask the same question the line
+  // peek asks.
+  static bool endsStatement(Token const &t) {
+    return t.kind == TokenKind::Newline || t.kind == TokenKind::Eof ||
+           t.kind == TokenKind::Comment || t.kind == TokenKind::DocComment ||
+           (t.kind == TokenKind::Symbol && t.text() == ":");
   }
 
   // The tokens of the statement starting at `cur_`, up to its statement end.
@@ -425,11 +457,6 @@ private:
   // already merged `_` continuation lines into one logical line.
   std::vector<Token> statementTokens() {
     std::vector<Token> out;
-    auto endsStatement = [](Token const &t) {
-      return t.kind == TokenKind::Newline || t.kind == TokenKind::Eof ||
-             t.kind == TokenKind::Comment || t.kind == TokenKind::DocComment ||
-             (t.kind == TokenKind::Symbol && t.text() == ":");
-    };
     if (endsStatement(cur_)) {
       return out;
     }
@@ -486,37 +513,59 @@ private:
       }
       if (captureMember && k == TokenKind::Keyword &&
           toLowerChars(cur_.text()) == "as") {
-        // Type-first member: `as <type> name`. Skip the type name (builtin
-        // keyword or user-defined type) so the *member* is captured, not the
-        // type — drd/temp/inc/world.bi's `as Wall walls(MAX_WALLS - 1)` used
-        // to register `wall`. The member's signature still covers the full
-        // line so the declared type survives for hover/resolve.
-        advance();
-        // The type is one name token; a keyword is consumed as part of the
-        // type only while a member name still follows, so `as integer name`
-        // keeps `name` as the member while `as name n` (`name` is a keyword
-        // *type* name) and `as integer ptr p` keep `n`/`p`. Reserved words
-        // are valid field names (fbc-verified): `as string name`.
-        if (cur_.kind == TokenKind::Identifier) {
+        // `as integer as` names a field `as` — fbc accepts it (probed;
+        // FreeBASIC.md §7, tools/probe_member_names.sh), and without this the
+        // type-skipping below read the name as a second type-introducer and
+        // registered nothing at all. An `as` with no token behind it can only
+        // be the name: the line has no room for a type and then none for a
+        // name.
+        if (!endsStatement(lex_.peek(0))) {
+          // Type-first member: `as <type> name`. Skip the type name (builtin
+          // keyword or user-defined type) so the *member* is captured, not the
+          // type — drd/temp/inc/world.bi's `as Wall walls(MAX_WALLS - 1)` used
+          // to register `wall`. The member's signature still covers the full
+          // line so the declared type survives for hover/resolve.
           advance();
-        } else if (cur_.kind == TokenKind::Keyword) {
-          Token const nxt = lex_.peek(0);
-          bool const memberFollows = nxt.kind == TokenKind::Identifier ||
-                                     (nxt.kind == TokenKind::Keyword &&
-                                      toLowerChars(nxt.text()) != "as");
-          if (isBuiltinType(toLowerChars(cur_.text())) || memberFollows) {
+          // The type is one name token; a keyword is consumed as part of the
+          // type only while a member name still follows, so `as integer name`
+          // keeps `name` as the member while `as name n` (`name` is a keyword
+          // *type* name) and `as integer ptr p` keep `n`/`p`. Reserved words
+          // are valid field names (fbc-verified): `as string name`.
+          if (cur_.kind == TokenKind::Identifier) {
             advance();
+          } else if (cur_.kind == TokenKind::Keyword) {
+            Token const nxt = lex_.peek(0);
+            bool const memberFollows = nxt.kind == TokenKind::Identifier ||
+                                       (nxt.kind == TokenKind::Keyword &&
+                                        toLowerChars(nxt.text()) != "as");
+            if (isBuiltinType(toLowerChars(cur_.text())) || memberFollows) {
+              advance();
+            }
           }
+          continue;
         }
+      }
+      if (captureMember && k == TokenKind::Keyword &&
+          isNeverFieldName(toLowerChars(cur_.text()))) {
+        // A reserved word fbc refuses as a field name outright: `as integer
+        // and` is its `error 14`, and it declares no such field, so nothing is
+        // registered here — completion must not offer a member fbc rejects
+        // (probed; FreeBASIC.md §7, tools/probe_member_names.sh).
+        addDiagnostic(cur_.beg, cur_.end, Severity::Error,
+                      "invalid-member-name",
+                      trf("'%s' is a reserved word and cannot be a field name",
+                          cur_.text()));
+        captureMember = false;
+        advance();
         continue;
       }
       if (captureMember &&
-          (k == TokenKind::Identifier ||
-           (k == TokenKind::Keyword && toLowerChars(cur_.text()) != "as" &&
-            toLowerChars(cur_.text()) != "ptr"))) {
-        // Reserved-word member names (`as string name`) are captured like
-        // identifiers. `ptr`/`const` are always type modifiers, never field
-        // names (fbc rejects `as integer ptr` with a bare `ptr` member).
+          (k == TokenKind::Identifier || k == TokenKind::Keyword)) {
+        // The other 337 reserved words *are* legal field names (`as string
+        // name`, `as integer next`), so a keyword is captured exactly like an
+        // identifier. An enum body's 225 legal names arrive by this same route;
+        // its 128 illegal ones never reach it, being a boundary instead — and
+        // so does `rem`, which the lexer has already called a comment.
         Symbol m;
         m.kind = mk;
         m.name = std::string(cur_.text());
@@ -642,6 +691,16 @@ private:
     }
     if (w == "dim" || w == "redim" || w == "var" || w == "local" ||
         w == "common" || w == "const") {
+      if (!blocks_.empty() && blocks_.back().kind == BlockKind::Enum) {
+        // In an enum body every word that got this far is a name the body may
+        // hold — the boundary check above closed the body on the ones it may
+        // not — so this is a member name and not an opener. `redim` and `local`
+        // are legal enum members and fbc creates them; the var-decl handler
+        // instead swallowed the line, so completion and hover could not offer a
+        // member that exists.
+        skipStatement();
+        return;
+      }
       handleVarDecls(w == "const" ? SymbolKind::Const : SymbolKind::Dim);
       return;
     }
@@ -1139,6 +1198,19 @@ private:
           advance();
           continue;
         } else {
+          // A reserved word where a declared name belongs. Only a record body
+          // has a probed answer to give, and only the 16 fbc refuses as a field
+          // name at all are reported — `dim next as integer` is a legal field,
+          // and this path registers no name for it either way (FreeBASIC.md §7,
+          // tools/probe_member_names.sh).
+          if (tk == TokenKind::Keyword && inRecordBody() &&
+              isNeverFieldName(toLowerChars(cur_.text()))) {
+            addDiagnostic(cur_.beg, cur_.end, Severity::Error,
+                          "invalid-member-name",
+                          trf("'%s' is a reserved word and cannot be a field "
+                              "name",
+                              cur_.text()));
+          }
           advance();
         }
       } else {

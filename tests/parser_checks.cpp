@@ -45,6 +45,20 @@ static const Symbol *find(const std::vector<Symbol> &scope,
   return nullptr;
 }
 
+// Does the parse declare a member with this name? Any kind: a member fbc
+// creates is a member, and the question here is whether it exists at all, not
+// which of the body's spellings produced it.
+static bool declares(ParseResult const &r, const std::string &key) {
+  for (const auto &s : r.roots) {
+    for (const auto &c : s.children) {
+      if (c.key == key) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 int main() {
   // A realistic multi-construct program must parse with zero diagnostics.
   {
@@ -1049,6 +1063,237 @@ int main() {
     CHECK(q != nullptr);
     CHECK(q != nullptr && q->extendsKey == "p");
     CHECK(q != nullptr && q->children.size() == 1);
+  }
+
+  {
+    // A reserved word fbc refuses as a field name (`error 14`): reported on the
+    // name token, and *not* registered — a member the compiler does not create
+    // must not be offered in completion or resolved from `v.name`.
+    std::string const src = "type point\n"
+                            "  as integer and\n"
+                            "end type\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "invalid-member-name") == 1);
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(r.diagnostics[0].range.beg == static_cast<uint32_t>(src.find("and")));
+    CHECK(r.diagnostics[0].range.end ==
+          static_cast<uint32_t>(src.find("and") + 3));
+    const Symbol *point = find(r.roots, "point", SymbolKind::Type);
+    CHECK(point != nullptr);
+    CHECK(point != nullptr && point->children.empty());
+  }
+  {
+    // The `dim <name>` spelling asks the same question and gets the same
+    // answer, or `dim and as integer` would sit in the code with no diagnostic
+    // while `as integer and` had one.
+    ParseResult r = parseDocument("type point\n"
+                                  "  dim and as integer\n"
+                                  "end type\n");
+    CHECK(diagnosticCount(r, "invalid-member-name") == 1);
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+  }
+  {
+    // A union body is a record body for this purpose, and the 337 words fbc
+    // does accept stay members: `next` is the canonical linked-list field.
+    std::string const src = "type node\n"
+                            "  as integer next\n"
+                            "end type\n"
+                            "union bits\n"
+                            "  as integer and\n"
+                            "end union\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "invalid-member-name") == 1);
+    const Symbol *node = find(r.roots, "node", SymbolKind::Type);
+    CHECK(node != nullptr);
+    CHECK(node != nullptr && node->children.size() == 1);
+    CHECK(node != nullptr && node->children[0].name == "next");
+    const Symbol *bits = find(r.roots, "bits", SymbolKind::Union);
+    CHECK(bits != nullptr);
+    CHECK(bits != nullptr && bits->children.empty());
+  }
+  {
+    // A reserved word fbc accepts as an enum member is a member, and the body
+    // stays open. Every one of these used to report an unterminated enum plus a
+    // stray closer for source fbc compiles clean.
+    std::string const src = "enum keys\n"
+                            "  access\n"
+                            "  print\n"
+                            "  stop = 1\n"
+                            "  data = 2\n"
+                            "end enum\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.diagnostics.empty());
+    const Symbol *keys = find(r.roots, "keys", SymbolKind::Enum);
+    CHECK(keys != nullptr);
+    CHECK(keys != nullptr && keys->children.size() == 4);
+    if (keys != nullptr && keys->children.size() == 4) {
+      CHECK(keys->children[0].key == "access");
+      CHECK(keys->children[1].key == "print");
+      CHECK(keys->children[2].key == "stop");
+      CHECK(keys->children[2].kind == SymbolKind::Const);
+    }
+  }
+  {
+    // A reserved word fbc refuses as an enum member keeps the boundary it had —
+    // the closer belongs on that line, and the `unterminated-block` fix inserts
+    // it there — and gains the name that says why. Two diagnostics, not one:
+    // the boundary says where, the name says which word.
+    std::string const src = "enum colors\n"
+                            "  sub\n"
+                            "end enum\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "invalid-member-name") == 1);
+    CHECK(r.diagnostics[0].code == "invalid-member-name");
+    CHECK(r.diagnostics[0].range.beg == static_cast<uint32_t>(src.find("sub")));
+    // The enum's own unterminated-block anchors the closer fix on the offending
+    // line, which is where `END ENUM` belongs. A second one follows for the
+    // `sub` block, because the boundary hands the line back to the enclosing
+    // scope and `sub` really does open a block there — that is the boundary
+    // doing its job, not the same report twice, so the count is not asserted.
+    bool enumCloserAnchored = false;
+    for (const auto &d : r.diagnostics) {
+      if (d.code == "unterminated-block" &&
+          d.message == "Expected 'END ENUM'") {
+        enumCloserAnchored =
+            d.closerAt.value_or(0) == static_cast<uint32_t>(src.find("sub"));
+      }
+    }
+    CHECK(enumCloserAnchored);
+  }
+  {
+    // The two tables, checked against the parser over the whole catalog rather
+    // than by a spot-check of a few words: for each reserved word, the record
+    // and enum answers must be what the tables say. This is the test that keeps
+    // the two in step — a table edit that the parser does not implement fails
+    // here, and so does a parser change the probe contradicts.
+    //
+    // `rem` is asked of the table and not of the parser, because the lexer is
+    // the layer that answers it (a `rem` line is a comment). It is checked
+    // separately below.
+    for (std::string_view const w : reservedWords()) {
+      if (w == "rem") {
+        continue;
+      }
+      std::string const word(w);
+      ParseResult const field = parseDocument("type keyword_test\n"
+                                              "  as integer first_field\n"
+                                              "  as integer " +
+                                              word +
+                                              "\n"
+                                              "end type\n");
+      if (diagnosticCount(field, "invalid-member-name") !=
+          (isNeverFieldName(w) ? 1 : 0)) {
+        std::printf("FAIL field name \"%s\": %d invalid-member-name, "
+                    "isNeverFieldName=%d\n",
+                    word.c_str(), diagnosticCount(field, "invalid-member-name"),
+                    isNeverFieldName(w) ? 1 : 0);
+        ++failures;
+      }
+      // And the member itself: a word the probe says is legal is a member fbc
+      // creates, and one we drop is one completion and hover cannot offer. This
+      // is the half that caught `redim`, `local` and `as` — legal names that a
+      // statement opener or a second type-introducer claimed first.
+      if (!isNeverFieldName(w) && !declares(field, word)) {
+        std::printf("FAIL field name \"%s\": no such member\n", word.c_str());
+        ++failures;
+      }
+      ParseResult const en =
+          parseDocument("enum e\n  " + word + "\nend enum\n");
+      if (diagnosticCount(en, "invalid-member-name") !=
+          (isLegalEnumMemberName(w) ? 0 : 1)) {
+        std::printf("FAIL enum member \"%s\": %d invalid-member-name, "
+                    "isLegalEnumMemberName=%d\n",
+                    word.c_str(), diagnosticCount(en, "invalid-member-name"),
+                    isLegalEnumMemberName(w) ? 1 : 0);
+        ++failures;
+      }
+      if (isLegalEnumMemberName(w) && !declares(en, word)) {
+        std::printf("FAIL enum member \"%s\": no such member\n", word.c_str());
+        ++failures;
+      }
+    }
+  }
+  {
+    // `rem` is a comment, so the table's "not a legal enum member name" is
+    // answered before the parser is asked: no member, and no diagnostic on a
+    // word the lexer never called a keyword. fbc's complaint about the same
+    // source is about the *body* being empty (`error 256`), which is a check
+    // this server does not make (FreeBASIC.md §12).
+    for (char const *const body : {"  rem\n", "  rem note\n", "  rem = 1\n"}) {
+      std::string const src = std::string("enum e\n") + body + "end enum\n";
+      ParseResult const r = parseDocument(src);
+      if (!r.diagnostics.empty()) {
+        std::printf("FAIL enum body \"%s\": %zu diagnostics, want 0\n", body,
+                    r.diagnostics.size());
+        ++failures;
+      }
+      const Symbol *e = find(r.roots, "e", SymbolKind::Enum);
+      if (e == nullptr || !e->children.empty()) {
+        std::printf("FAIL enum body \"%s\": not an empty enum\n", body);
+        ++failures;
+      }
+    }
+    // A record field named `rem` is a different question and fbc accepts it,
+    // because the word is not at the start of a line there: `as integer rem`
+    // lexes as a type and a keyword, not as a comment.
+    ParseResult const field = parseDocument("type t\n"
+                                            "  as integer first_field\n"
+                                            "  as integer rem\n"
+                                            "end type\n");
+    CHECK(field.diagnostics.empty());
+    const Symbol *t = find(field.roots, "t", SymbolKind::Type);
+    CHECK(t != nullptr);
+    CHECK(t != nullptr && t->children.size() == 2);
+    if (t != nullptr && t->children.size() == 2) {
+      CHECK(t->children[1].key == "rem");
+    }
+  }
+  {
+    // A member name that a statement opener would otherwise claim. The tables
+    // say these words are legal names, and a member we drop is a member
+    // completion and hover cannot offer — the diagnostic wave found this by
+    // auditing every reserved word for a member it should have produced and did
+    // not. `redim` and `local` are var-decl openers; in an enum body they are
+    // just a name, and the opener handler used to swallow the whole line.
+    for (char const *const w : {"redim", "local"}) {
+      for (char const *const tail : {"", " = 1"}) {
+        std::string const src =
+            std::string("enum e\n  ") + w + tail + "\nend enum\n";
+        ParseResult const r = parseDocument(src);
+        if (!r.diagnostics.empty() || r.roots.size() != 1 ||
+            r.roots.front().children.size() != 1) {
+          std::printf("FAIL enum member \"%s%s\": not one clean member\n", w,
+                      tail);
+          ++failures;
+          continue;
+        }
+        CHECK(r.roots.front().children.front().key == w);
+        CHECK(r.roots.front().children.front().kind == SymbolKind::Const);
+      }
+    }
+    // Same shape in a record: the type-introducer `as` is also a legal field
+    // name, and `as integer as` is the only way to spell it.
+    ParseResult const f = parseDocument("type t\n"
+                                        "  as integer first_field\n"
+                                        "  as integer as\n"
+                                        "end type\n");
+    CHECK(f.diagnostics.empty());
+    const Symbol *t = find(f.roots, "t", SymbolKind::Type);
+    CHECK(t != nullptr);
+    CHECK(t != nullptr && t->children.size() == 2);
+    if (t != nullptr && t->children.size() == 2) {
+      CHECK(t->children[1].key == "as");
+    }
+  }
+  {
+    // An enum member is `name` or `name = expr`: the tail is part of the member
+    // definition, so a line that starts with a fine name can still be no member
+    // at all. fbc's `error 3` is about the line, not the word.
+    ParseResult r = parseDocument("enum e\n"
+                                  "  a 1\n"
+                                  "end enum\n");
+    CHECK(diagnosticCount(r, "unterminated-block") == 1);
+    CHECK(diagnosticCount(r, "invalid-member-name") == 0);
   }
 
   if (failures == 0) {

@@ -152,10 +152,21 @@ Token Lexer::lexNext() {
 
     // Line-leading REM is a comment (swallows the line). It must be the
     // first token and followed by whitespace, a quote, or end of line.
+    //
+    // "End of line" has to mean the newline too, not just the end of the
+    // buffer: `isWhitespace` stops at the line ends (they are line ends, not
+    // blanks), so `rem note` was a comment and a bare `rem` was not. fbc reads
+    // both as comments, and the difference is load-bearing rather than
+    // cosmetic — in a record or enum body a `Rem` line contributes no member,
+    // so a bare `rem` came out as a keyword the body had to reject. The source
+    // whose real complaint is that the enum is left empty
+    // (`error 256`, FreeBASIC.md §7) was reported as a member-name error.
+    char const afterRem = peekChar(3);
     if (atLineStart() && p_ + 3 <= end_ && (c == 'r' || c == 'R') &&
         (peekChar(1) == 'e' || peekChar(1) == 'E') &&
         (peekChar(2) == 'm' || peekChar(2) == 'M') &&
-        (p_ + 3 == end_ || isWhitespace(peekChar(3)) || peekChar(3) == '\'')) {
+        (p_ + 3 == end_ || isWhitespace(afterRem) || afterRem == '\'' ||
+         afterRem == '\n' || afterRem == '\r')) {
       uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
       while (p_ < end_ && *p_ != '\n' && *p_ != '\r') {
         ++p_;
