@@ -115,6 +115,14 @@ target_compile_definitions(freebasicd_core PUBLIC
 # requires the license to travel with the binary.
 install(TARGETS freebasicd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES LICENSE.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
+# M18: the editor grammars, so an installed server hands its user a syntax
+# file without a source checkout. They are generated (the `grammar` target),
+# but committed, so they are installed from the tree rather than from a build
+# output directory — the same three bytes `grammar_checks` gates on.
+install(FILES
+    ${CMAKE_SOURCE_DIR}/docs/grammar/freebasic.vim
+    ${CMAKE_SOURCE_DIR}/docs/grammar/freebasic.tmLanguage.json
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/freebasicd/grammar)
 
 # --- gettext catalogs (M20) -------------------------------------------------
 # Committed sources: po/freebasicd.pot is the extracted message template;
@@ -349,9 +357,9 @@ add_executable(gen_grammar
 target_link_libraries(gen_grammar PRIVATE freebasicd_grammar)
 
 add_custom_target(grammar
-    COMMAND gen_grammar ${CMAKE_SOURCE_DIR}/editors
+    COMMAND gen_grammar ${CMAKE_SOURCE_DIR}/docs/grammar
     DEPENDS gen_grammar
-    COMMENT "Regenerating editors/ from src/language.cpp")
+    COMMENT "Regenerating docs/grammar/ from src/language.cpp")
 
 add_executable(grammar_checks
     tests/grammar_checks.cpp
@@ -360,7 +368,7 @@ target_include_directories(grammar_checks PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/third_party/LspCpp/third_party/rapidjson/include)
 target_compile_definitions(grammar_checks PRIVATE
-    EDITORS_DIR="${CMAKE_SOURCE_DIR}/editors")
+    GRAMMAR_DIR="${CMAKE_SOURCE_DIR}/docs/grammar")
 target_link_libraries(grammar_checks PRIVATE freebasicd_grammar freebasicd_lang)
 add_test(NAME grammar_checks COMMAND grammar_checks)
 

@@ -59,7 +59,7 @@ ctest --test-dir build --output-on-failure
 clang-format --dry-run --Werror src/*.cpp src/*.h tests/*.cpp tools/*.cpp
 
 # 3. regenerate anything generated that your change touched
-cmake --build build --target grammar      # editors/freebasic.* from the catalog
+cmake --build build --target grammar      # docs/grammar/ from the catalog
 cmake --build build --target po-template  # po/freebasicd.pot from the sources
 ```
 
@@ -87,7 +87,8 @@ is not formatter-clean on its own.
 | `tests/` | One ctest suite per subsystem, no test framework |
 | `tools/` | Generators, not runtime code |
 | `third_party/` | Vendored. Do not edit. |
-| `editors/` | Generated. Do not edit; regenerate. |
+| `docs/grammar/` | Generated. Do not edit; regenerate. |
+| `docs/editors/`, `docs/install.md` | Hand-written setup guides, one page per editor |
 
 `FreeBASIC.md` is the source of truth for language facts. If your change
 touches how FreeBASIC behaves, update that file in the same pull request, and

@@ -32,8 +32,9 @@ What that means in practice:
 
 - The feature list below is what the code does today, not a roadmap.
 - Nothing is stable or supported. Expect breaking changes without notice.
-- The build works on Linux with GCC or Clang. Other platforms are aspirational;
-  CI is scaffolded but has never run against the hosted runners.
+- The CI matrix builds and tests Linux (GCC and Clang), macOS (AppleClang), and
+  Windows (MSVC) on every push, and a local green run is not a substitute for
+  the other two — those legs exist only in CI.
 
 ## What it does
 
@@ -118,7 +119,9 @@ cmake --install build --prefix /usr/local
 ```
 
 That installs the binary to `<prefix>/bin`, the message catalogs to
-`<prefix>/share/locale`, and `LICENSE.md` to `<prefix>/share/doc/freebasicd`.
+`<prefix>/share/locale`, the editor grammars to
+`<prefix>/share/freebasicd/grammar`, and `LICENSE.md` to
+`<prefix>/share/doc/freebasicd`.
 
 One caveat: the catalog directory is compiled in as an absolute path at
 configure time, so `--prefix` at install time has to match the
@@ -130,8 +133,8 @@ The server has no packaging config (CPack, AppImage, MSI) yet.
 
 ## Running in an editor
 
-There is no first-party editor extension yet. Any LSP client that can launch a
-binary over stdio will work. The shape of the config, using a generic
+Any LSP client that can launch a binary over stdio will work; no first-party
+editor extension is needed or shipped. The shape of the config, using a generic
 key-based LSP client:
 
 ```json
@@ -142,10 +145,13 @@ key-based LSP client:
 }
 ```
 
-Editor grammars for FreeBASIC live in [`editors/`](editors/README.md): a
-TextMate grammar for VS Code and friends, and a vim/Neovim syntax file. They
-are generated from the keyword catalog in `src/language.cpp`, so they cannot
-drift from the server.
+Ready-made steps for the editors that work with no extension are in
+[`docs/editors/`](docs/editors/README.md) — Kate, Neovim, Emacs, Helix, and
+Vim — and installation is covered in [`docs/install.md`](docs/install.md).
+
+The editor grammars (a TextMate grammar and a vim/Neovim syntax file) are in
+[`docs/grammar/`](docs/grammar/README.md). They are generated from the keyword
+catalog in `src/language.cpp`, so they cannot drift from the server.
 
 ## Configuration
 

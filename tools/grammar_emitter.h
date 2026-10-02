@@ -11,8 +11,8 @@
 
 namespace fbgrammar {
 
-// One generated editor artifact: a path relative to `editors/` plus its exact
-// bytes. Shared by the `gen_grammar` tool (which writes them) and the
+// One generated editor artifact: a path relative to `docs/grammar/` plus its
+// exact bytes. Shared by the `gen_grammar` tool (which writes them) and the
 // `grammar_checks` test (which byte-diffs them against the committed copies),
 // so the writer and the freshness gate cannot disagree about the format.
 struct GeneratedFile {

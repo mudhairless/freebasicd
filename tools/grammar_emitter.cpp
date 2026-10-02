@@ -245,7 +245,7 @@ std::string emitVim() {
          "by hand.\n";
   vim +=
       "\" Install: ~/.vim/syntax/freebasic.vim, or a Neovim runtime path. See "
-      "editors/README.md.\n";
+      "docs/editors/README.md.\n";
   vim += "\n";
   vim += "if exists(\"b:current_syntax\")\n";
   vim += "  finish\n";
@@ -327,7 +327,7 @@ Generated from the `src/language.cpp` catalog by `tools/gen_grammar`. **Do not
 edit these files by hand** — edit the catalog and regenerate:
 
 ```
-cmake --build build --target grammar     # or: ./build/gen_grammar editors
+cmake --build build --target grammar   # or: ./build/gen_grammar docs/grammar
 ```
 
 `grammar_checks` (ctest) regenerates in memory and byte-diffs the result
@@ -335,29 +335,25 @@ against the committed files, so a stale grammar fails CI.
 
 ## Files
 
-- `freebasic.tmLanguage.json` — TextMate grammar (`source.freebasic`).
-- `freebasic.vim` — vim/Neovim syntax (`b:current_syntax = "freebasic"`).
+- `freebasic.tmLanguage.json` — TextMate grammar (`source.freebasic`), for
+  TextMate-compatible editors.
+- `freebasic.vim` — vim and Neovim syntax (`b:current_syntax = "freebasic"`).
 
-## Install
+`cmake --install` copies both to `<prefix>/share/freebasicd/grammar/`.
 
-### VS Code / TextMate-compatible editors
+## Installing them
 
-Copy or symlink `freebasic.tmLanguage.json` into an extension's `syntaxes/`
-directory and register it for the `bas`/`bi` file types.
-
-### vim
+One page per editor, GUI-first where the editor has a GUI, lives in
+[`../editors/`](../editors/README.md). The short version for vim, which
+detects FreeBASIC itself and only needs the syntax file plus a filetype
+override:
 
 ```
 mkdir -p ~/.vim/syntax ~/.vim/ftdetect
-cp editors/freebasic.vim ~/.vim/syntax/freebasic.vim
+cp freebasic.vim ~/.vim/syntax/freebasic.vim
 printf 'au BufRead,BufNewFile *.bas,*.bi set filetype=freebasic\n' \
   > ~/.vim/ftdetect/freebasic.vim
 ```
-
-### Neovim
-
-Use the same files under `stdpath("config")/syntax` and
-`stdpath("config")/ftdetect`, or drop them into a runtime path.
 )";
 }
 

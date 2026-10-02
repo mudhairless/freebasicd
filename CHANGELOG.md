@@ -26,6 +26,43 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-02 — Editor setup docs, and `editors/` moved under `docs/`
+
+- `docs/install.md` — the end-user path: build, install to a prefix, get it on
+  `PATH`, and check that it runs. It says plainly that running the binary in a
+  terminal prints one line and waits, because that is what a stdio server does,
+  and it explains the one install gotcha that is still true — the catalog
+  directory is compiled in at configure time, so `--prefix` at install time has
+  to match, or `FBLANG_LOCALEDIR` has to point at the catalogs.
+- `docs/editors/` — an index plus one page each for Kate, Neovim, Emacs, Helix,
+  and Vim. The index carries the feature matrix, because the honest answer to
+  "what will I see" is per *client*: the server answers selection ranges, code
+  lens, and call/type hierarchy, and four of the five editors have nowhere to
+  draw them. Kate and Helix lead with the fewest possible steps (a settings
+  dialog and two TOML tables); Vim's page is honest that it is a
+  highlighting-only page, because Vim ships no LSP client at all.
+- `cmake --install` copies the two generated grammars to
+  `<prefix>/share/freebasicd/grammar/`, and `tools/check_install_tree.cmake`
+  now checks for them. An installed server whose user has to clone the
+  repository to get a syntax file is not an installed server.
+- The generated grammars moved from `editors/` to `docs/grammar/`, and the
+  README's generic stdio snippet now points at the per-editor pages.
+
+Every claim in those pages was checked against the editor's own source rather
+than from memory, and four of them would have been wrong otherwise: Eglot's
+semantic tokens and call/type hierarchy exist in Emacs master but in neither 29
+nor 30, so the index says "Emacs master only" instead of a flat yes; Kate
+advertises the pull-diagnostics capability, which is the one thing that makes
+this server stop pushing, and reading the server wrapper alone suggested it
+never sent the request — it does, from `LSPDiagnosticProvider::onViewState` in
+the plugin view; Helix has no FreeBASIC tree-sitter grammar and therefore cannot
+read either grammar file this project generates, so its page opens with that
+rather than pretending; and Vim 9 already detects FreeBASIC from file *content*,
+falling back to `basic` only for a file too short to look like FreeBASIC. The
+generalization: a missing call site is evidence about the files you grepped, not
+about the code — grep the whole plugin before writing down what an editor does
+not support.
+
 ### 2026-10-01 — Which reserved words may name a record or enum member
 
 - The server's whole reserved-word catalog (353 words) was compiled against fbc

@@ -296,15 +296,7 @@
      `#pragma once` / `#ifndef` are processed as recorded metadata, not macros
      (FreeBASIC.md §12.6) — and `#inclib` is not treated as a source include.
      Force-disabling the fbc system include search (step ⑥) also remains open.
-  2. No per-editor wiring docs yet. `README.md`, `cmake --install`, the 0.7.0
-     version, `.github/workflows/ci.yml` (four `build-test` legs plus the Linux
-     `clang-format` job pinned to 22.1.8), and `tools/check_install_tree.cmake`
-     all landed 2026-09-25, and the matrix has run green on all three platforms
-     since. The editors' setup recipes — neovim builtin LSP, a minimal vscode
-     client, emacs `lsp-mode`, each installing the generated `editors/` grammar
-     and enabling semantic tokens — are still open. The README carries a generic
-     stdio snippet until they land.
-  3. The install tree is **not relocatable**: `FBLANG_LOCALEDIR_INSTALL` is
+  2. The install tree is **not relocatable**: `FBLANG_LOCALEDIR_INSTALL` is
      `${CMAKE_INSTALL_PREFIX}/share/locale` baked in at configure time
      (`src/i18n.cpp`'s probe order: `FBLANG_LOCALEDIR` env override, then the
      build tree, then that path). `cmake --install --prefix /somewhere/else`
@@ -315,7 +307,7 @@
      `CMAKE_INSTALL_PREFIX` in favor of a relative lookup. Not done in the 0.7.0
      wave because it is platform code that only a real multi-platform CI run can
      verify.
-  4. Windows localization is borrowed, not shipped. `cmake/FindIntl.cmake` needs
+  3. Windows localization is borrowed, not shipped. `cmake/FindIntl.cmake` needs
      a real libintl on Windows, and CI gets one from a downloaded
      `mlocati/gettext-iconv-windows` bundle (tools + MSVC import library +
      `intl-8.dll` in `bin`). So a Windows build links a DLL from outside the
@@ -325,7 +317,7 @@
      vendoring the DLL, static-linking libintl, or dropping gettext on Windows
      (all 29 catalogs are empty today, so an English-only Windows build loses
      nothing yet).
-  5. Pull diagnostics ships `full` | `unchanged`, and the per-item *delta* form
+  4. Pull diagnostics ships `full` | `unchanged`, and the per-item *delta* form
      is not implemented: LSP 3.17 defines a `DocumentDiagnosticReport` with
      `kind: "unchanged"` and an optional `relatedDocuments`, and the server answers
      `full` | `unchanged`. What is missing is `textDocument/diagnostic` with
@@ -366,22 +358,18 @@ with the file pipeline, format-on-type triggers) is deliberately
 unspecified here; it gets fleshed out as a dedicated design pass before
 implementation.
 
-### M18 — Public release: editor setup docs, first tag
+### M18 — Public release: first tag
 
-Remaining of a milestone whose CI and install work landed 2026-09-25 (see
+Remaining of a milestone whose CI and install work landed 2026-09-25 and whose
+`docs/editors/` wiring recipes plus `docs/install.md` landed 2026-10-02 (see
 [`CHANGELOG.md`](CHANGELOG.md)):
 
-- **Per-editor wiring recipes** under `docs/editors/`: neovim builtin LSP,
-  minimal vscode client, emacs `lsp-mode`. Each installs the M9 grammar
-  (`editors/`) and turns on semantic tokens. The README carries a generic stdio
-  snippet until these land.
 - **A first tagged release**: `git tag` at the version the release notes claim,
   plus a CPack config if a downloadable artifact is wanted. Nothing else in this
   milestone needs to be invented for that. The changelog's `## [Unreleased]`
   becomes the released version heading with its date.
-- Acceptance: wiring docs accurate end-to-end on all three editors; a tagged
-  version whose `CMakeLists.txt` number, README, and `CHANGELOG.md` heading
-  agree.
+- Acceptance: a tagged version whose `CMakeLists.txt` number, README, and
+  `CHANGELOG.md` heading agree.
 
 ## 6. Not doing (soon)
 

@@ -47,6 +47,16 @@ if(NOT _exe)
   list(APPEND _problems "no freebasicd binary in ${_prefix}/${_bindir}/")
 endif()
 
+# The editor grammars. An installed server whose user has to clone the repo to
+# get a syntax file is not an installed server, and a renamed DESTINATION is
+# exactly the failure this script exists to catch.
+foreach(_grammar freebasic.vim freebasic.tmLanguage.json)
+  if(NOT EXISTS "${_prefix}/share/freebasicd/grammar/${_grammar}")
+    list(APPEND _problems
+         "no ${_grammar} under ${_prefix}/share/freebasicd/grammar/")
+  endif()
+endforeach()
+
 # The GPL requires the license to travel with the binary. GNUInstallDirs puts
 # it under share/doc/<project>, so glob for it rather than spelling the path.
 file(GLOB_RECURSE _licenses "${_prefix}/share/doc/LICENSE.md"
@@ -89,6 +99,7 @@ if(_exe)
 endif()
 message(STATUS "license copies:  ${_license_count}")
 message(STATUS "catalogs:        ${_catalog_count} (expected ${_expected})")
+message(STATUS "grammars:         ${_prefix}/share/freebasicd/grammar/")
 
 if(_problems)
   foreach(_problem IN LISTS _problems)

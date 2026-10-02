@@ -4,11 +4,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// Writes the generated editor grammars (`editors/*`) from the catalog. The
-// emit logic lives in the shared `grammar_emitter` module so `grammar_checks`
-// byte-diffs exactly what this tool would write.
+// Writes the generated editor grammars (`docs/grammar/*`) from the catalog.
+// The emit logic lives in the shared `grammar_emitter` module so
+// `grammar_checks` byte-diffs exactly what this tool would write.
 //
-//   gen_grammar [output-dir]     # default: editors
+//   gen_grammar [output-dir]     # default: docs/grammar
 #include "grammar_emitter.h"
 
 #include <cstdio>
@@ -33,7 +33,7 @@ int reportFatal(std::string const &message) {
 } // namespace
 
 int main(int argc, char **argv) {
-  std::filesystem::path const outDir = argc > 1 ? argv[1] : "editors";
+  std::filesystem::path const outDir = argc > 1 ? argv[1] : "docs/grammar";
 
   std::error_code ec;
   std::filesystem::create_directories(outDir, ec);
