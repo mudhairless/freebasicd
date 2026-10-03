@@ -33,7 +33,8 @@
   |-----------|--------|
   | M16 — document links + completion resolve + protocol polish (backlog) | next |
   | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
-  | M18 — public release: editor setup docs, first tag | in progress |
+  | M21 — module model, constructors, and fbc's codes | next |
+  | M18 — public release: editor setup docs, first tag | blocked on M21 |
 
 ## 2. What exists (condensed)
 
@@ -281,9 +282,25 @@
     `Common` is not visible in procedures even in-file (FreeBASIC.md §8,
     fbc-verified). Procedure-local names never cross a file boundary; a header
     never sees the `.bas` that included it.
+  - **Module level carries statements, and which `main` they belong to decides
+    what runs and when** (FreeBASIC.md §9, fbc-verified). The main module's
+    module level *is* an implicit `main`; **every other** module's — including
+    a library module's — is a load-time constructor that runs *before* it,
+    silently and with no fbc diagnostic. There is no forward declaration inside
+    a module, so a module-level call to a routine defined later is `error 42`.
+    `Sub name() Constructor [priority]` is the explicit form, runs before its
+    own module's module-level code, and is the **only** ordering control that
+    means anything: `priority` 101–65535, relative only among prioritized
+    constructors, and cross-module order is unspecified and not stable across
+    link orders. A constructor is a procedure body, so a plain module-level
+    `Dim` is invisible inside one. M21 implements this.
   - **Case-insensitive identity.** Canonical `key` = lowercase name including
-    any type-suffix char (`foo$`, `i%`, …). The suffix is part of the token:
-    lexers tie it to the identifier for resolution and edits.
+    any type-suffix char (`foo$`, `i%`, …), which is what the symbol model keys
+    on today. **In `fb` that is wrong and §12.1 tracks it**: fbc ignores
+    identifier suffixes (warning 44) and aliases `foo`/`foo$` to one symbol.
+    Suffixes are a `qb`/`fblite`/`deprecated` feature; `fb`'s suffix is the
+    numeric-literal one (`100ul` is a `ULong`), so a diagnostic must not inherit
+    the wrong half.
   - **Byte-offset core.** Lexer/parser/resolve work in byte offsets; UTF-16
     conversion happens only at the session boundary per file buffer. Any
     cross-file reply must convert against the *target* file's content.
@@ -326,6 +343,31 @@
      `typeDefinition` / `implementation` / `typeHierarchy` shipped with M15 —
      `typeHierarchy/resolve` excepted, since prepare fills both lists — and
      `completionItem/resolve` waits on the M10 catalog making items heavy.)
+  5. **The module model is documented but not implemented** (FreeBASIC.md §9,
+     M21). `Constructor`/`Destructor` are neither lexed nor parsed, a module's
+     *main-ness* is not tracked, and the diagnostics that fall out of the model
+     — module-level code outside the main module running before `main`, a module
+     global read from a constructor without `Shared` (fbc `error 42`), two
+     `Public` constructors colliding across modules (an fbc link error) — do not
+     exist. Nothing knows that a `.bas` in an include closure may *be* the main
+     module, and nothing can: an LSP never sees the build command line, so the
+     project's **artifact kind** and **main module** are facts only the user can
+     supply. M21 takes both as optional config with defaults that keep today's
+     behavior.
+  6. **Our diagnostic codes are our own, not fbc's.** fbc's whole catalog is
+     data in its source — `error.bas` at tag `1.10.2`, 328 errors and 49
+     warnings whose *array position is the printed number* (FreeBASIC.md §13)
+     — so a reader who knows `error 42` learns nothing from our output. M21
+     turns that table into generated, checked-in data with a staleness test
+     rather than prose.
+  7. **Diagnostics are not version-aware** (M21, second half). Nothing records
+     which fbc version a finding assumes, there is no `fbc.path`/`fbc.version`
+     config, and the two sites that locate `fbc` are independent:
+     `findFbcExecutableDir` in `src/index.cpp` (used only for the include dir,
+     behind a magic static that a config change would not invalidate) and a bare
+     `std::system("fbc -version …")` in `tests/corpus_checks.cpp`. The measured
+     basis for the shape: `error.bas` is byte-identical across 1.10.0–1.10.3,
+     so versioning belongs on *behavior*, not on message identity.
 
 ## 5. Forward plan
 
@@ -358,7 +400,122 @@ with the file pipeline, format-on-type triggers) is deliberately
 unspecified here; it gets fleshed out as a dedicated design pass before
 implementation.
 
+### M21 — Module model, module constructors, and fbc's own codes
+
+Make the module model (§9) something the server actually knows, and give the
+diagnostics it implies fbc's numbers instead of ours. Gating milestone for M18.
+
+**Core, in order** — each step is independently testable:
+
+1. **Lex and parse `Constructor` / `Destructor`**, with optional `priority`.
+   Reject the malformed forms the way fbc does: a non-empty parameter list
+   (`error 1`), appearing on a `Declare` line (`error 3`), and `priority`
+   outside 101–65535 (`error 189`). A `Static` UDT member procedure may be a
+   module constructor and a non-`Static` one may not (`error 17`).
+2. **A constructor is a procedure body**, so §8 applies inside one: a plain
+   module-level `Dim` is invisible there and reading it is `error 42`. The fix
+   is adding `Shared`, and we can offer it because both halves are known — this
+   is a quick fix through the M12 provider table, not a session handler.
+3. **Project type and main module, as optional config** — the two facts an LSP
+   cannot derive (detailed below). Nothing requires them, and each has a
+   default that keeps today's behavior.
+4. **Module-level executable code outside the main module**, which step 3 makes
+   stateable. The fix wraps the run in `Sub <name>() Constructor` — an explicit
+   `Constructor` states *when* it runs, an implicit module body does not.
+5. **Two `Public` constructors sharing a name across the include closure** is
+   an fbc link error; report it while editing, case-insensitively. Say nothing
+   about constructor *order*: fbc does not specify it, it is not stable across
+   link orders (probed — two link orders of the same three modules interleave
+   differently), so neither is any claim we make.
+6. **The catalog as data.** Check in a generated table from `error.bas` at the
+   pinned tag (FreeBASIC.md §13), the generator under `tools/`, and a test that
+   fails when the checked-in table drifts from the script. A reader who knows
+   `error 42` then learns something from our output.
+
+**Step 3 in detail: what the config says, and what it defaults to.**
+
+An LSP never sees the build command line, so two facts must be told to it or
+guessed: what kind of artifact this is, and which module is `main`. Both go in
+`freebasicd.toml`, both are optional, and both default to the conservative
+answer:
+
+| key | default | setting it buys |
+|-----|---------|-----------------|
+| `build.kind` | `"exe"` | `"dll"` / `"staticlib"` → no module is `main` |
+| `build.main` | unset — unknown | names the main module of an exe |
+| `fbc.path` | first `fbc` found on `PATH` | pins a different compiler |
+| `fbc.version` | the version it reports | asserts the version findings assume |
+
+**`kind` is the load-bearing one.** A dll or a static library has no process
+entry point — probed, not assumed: `-lib` and `-dylib` builds carry module-level
+statements with no diagnostic, emit them as load-time constructors
+(`fb_ctor__*`, `__fb_DllMain_ctor`) with no `main` symbol, and run them before
+the linking exe's `main` (FreeBASIC.md §9) — so in one of those projects every
+module level is initialization, and step 4 can say that flatly. Only an exe
+needs `build.main` on top, and only to sharpen it: with `main` set, step 4 can
+say *"app.bas is the main module, so this level runs before it"*; with it unset
+the finding is phrased against fbc's own default, which is the **first `.bas` on
+the command line** (FreeBASIC.md §9) — "if this file is not the first source on
+the link line, everything here runs before `main`". Both phrasings are honest —
+they differ in how much they assert, not in what they report.
+
+Defaults are what a project with no `freebasicd.toml` gets, so the no-config
+case has to be *right*, not merely legal:
+
+- `build.kind = "exe"` with `build.main` unset ⇒ today's behavior. A single-file
+  project is an exe whose main is that file, and nothing changes.
+- `fbc.path` falls back to the existing `PATH` search, so a machine with fbc
+  installed diagnoses against that compiler with no setup at all, and
+  `fbc.version` defaults to whatever it reports — correct for the compiler
+  actually present, with zero configuration.
+
+`build.main` resolves relative to the config file's own directory, like
+`includePaths` today, and so is root-scoped like every setting since M11.
+Contradictions are reported rather than silently resolved: a `build.main` naming
+a file that is not in the index, or set at all on a non-`exe` `kind`, is a
+configuration error worth saying out loud (AGENTS.md §Boundary discipline).
+
+**Config shape.** The new keys go in `[build]` and `[fbc]` sub-tables rather
+than as four more top-level keys. That is one helper in `src/settings.cpp`
+(tomlplusplus indexes a sub-table the same way), and it is free *now* for a
+reason that will not stay true: **no tag exists yet** (`git tag` is empty at
+0.7.0), so reshaping `freebasicd.toml` costs nothing today and becomes a
+breaking 0.x config change — a MINOR — the moment M18 ships. `README.md` and
+`docs/install.md` document the keys and move with them.
+
+**Second half, after the above is green** (gap 7): version awareness, behind
+the `fbc.*` keys. A probe that compares the dotted number only, never the build
+date `fbc -version` embeds; `findFbcExecutableDir` gains the `fbc.path`
+override and stops being a once-only magic static, since a pin set by
+`didChangeConfiguration` has to take effect; and `tests/corpus_checks.cpp`
+resolves `fbc` through the same seam, so the corpus half cannot quietly test a
+different compiler than the server diagnoses against. Findings carry
+`since`/`until`, defaulting to "all 1.10.x" — most carry none, because
+`error.bas` is byte-identical across 1.10.0–1.10.3 and what varies is
+*behavior*, not message identity.
+
+**Acceptance**
+
+- `Constructor`/`Destructor` parse; each malformed form has a test naming fbc's
+  code.
+- The module-global-in-a-constructor diagnostic ships as a quick fix added
+  through the M12 provider table — no `session.cpp` change (AGENTS.md §Quick
+  fixes: adding a fix is one function plus one table row).
+- Generated catalog table plus a staleness test, and our emitted codes are
+  fbc's for the covered set.
+- **No config key is required for any diagnostic to fire.** Each one either
+  firms up a default or sharpens a phrasing, and a test asserts that a project
+  with no `freebasicd.toml` reports exactly what it reports today — the
+  no-config case is the default case, so it is the one that has to be right.
+- Every divergence this bakes in is written into FreeBASIC.md §12, main-module
+  unknowability above all.
+- `ctest` green, changed files clang-format clean.
+
 ### M18 — Public release: first tag
+
+**Gated on M21**: shipping a first tag with the module model documented but
+undetected, and diagnostic numbers that do not match the compiler they stand in
+for, would make the release the moment those become expensive to change.
 
 Remaining of a milestone whose CI and install work landed 2026-09-25 and whose
 `docs/editors/` wiring recipes plus `docs/install.md` landed 2026-10-02 (see

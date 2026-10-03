@@ -487,8 +487,24 @@ they belong to decides what runs and when** `(fbc, probed)`.
   `-lib` module with module-level statements compiles clean — `rc=0`, no
   diagnostic under `-w all` (`lib.bas`) — `nm` on the archive shows them as
   `fb_ctor__lib`, and an executable linking that object runs them before its own
-  `main` (`uselib.bas` + `liblib.a` prints the library's line first). There is
-  no `-dynlib` in this fbc (`error 81: Invalid command-line option`).
+  `main` (`uselib.bas` + `liblib.a` prints the library's line first). A shared
+  library behaves identically: `-dylib` builds it — the flag is **`-dylib`**,
+  and the earlier `-dynlib` probe here was a misspelling, not a missing feature
+  — the module-level statements survive, and a linking executable prints the
+  library's line first again (`lmod.bas` + `app.bas`: `[lib] module-level ran`,
+  then `[app] main module-level`). The emitted symbols say why: a `-dylib`
+  object exports **no `main`** — the first input module's level becomes
+  `__fb_DllMain_ctor` and the later ones `fb_ctor__<name>`, all local
+  constructors — so **a library has no process entry point**. Its module-level
+  code is entirely load-time initialization, and fbc's `-m` default (the first
+  input `.bas`) still chooses which module becomes the library's own init. The
+  Shared Libraries page calls that module's code "a main code"; it is a load
+  hook, not a process `main`.
+- **The default main module is the first `.bas` on the command line.** fbc's own
+  `--help`: `-m <name> Specify main module (default if not -c: first input
+  .bas)`. So which module is `main` is a property of the *link command line*,
+  not of any file — invisible in the sources, and invisible to an LSP. The
+  swap-the-command-line probe above is this rule seen from the other side.
 - **`-m` takes the module name without `.bas`.** `-m ord1` makes `ord1` the main
   module even though it is listed second on the command line;
   `-m ord1.bas` compiles every file but then fails to link —
@@ -564,6 +580,50 @@ End Sub
   are reliably readable from a constructor `(wiki)`. The wiki's standing advice
   follows from the ordering table: prefer one constructor that explicitly calls
   the other modules' init procedures over relying on constructor order.
+
+### Exported symbols (`Export`)
+
+Documentation: https://www.freebasic.net/wiki/KeyPgExport
+Documentation: https://www.freebasic.net/wiki/ProPgSharedLibraries
+
+`Export` marks a procedure for a **shared library's export table**, so another
+program can bind it — statically (`#inclib` + `Declare`) or at runtime
+(`DyLibSymbol`). It is not a visibility rule like `Public`; it is a request that
+survives only as far as the compiler and linker allow.
+
+- **It is a definition-line specifier, parsed with the constructor keywords.**
+  `Sub name() Export`, forbidden on a `Declare` — `Declare Sub f() Export` is
+  `error 3: Expected End-of-Line`, the same code `Constructor` gives on a
+  declaration line (`decl_exp.bas`), and the same parser loop:
+  `parser-proc.bas` reads `Export`, then `select case( tk ) case
+  FB_TK_CONSTRUCTOR`. It also *implies* `Public` — the parser sets
+  `FB_SYMBATTRIB_EXPORT or FB_SYMBATTRIB_PUBLIC` in one statement. On a plain
+  exe it compiles and runs unchanged (`exeexp.bas`).
+- **Its effect is target- and link-dependent** `(src)`. The export table is
+  emitted only when the `-export` command-line option is given **and** the
+  target carries `FB_TARGETOPT_EXPORT` (`emit_x86.bas`). In `fb.bas`'s
+  `targetinfo`, **win32 and cygwin** have that flag and **linux does not**;
+  where it is emitted the emitter writes a ` -export:<name>` directive into a
+  COFF directive section, i.e. a linker directive. On linux, `-export` instead
+  appends `--export-dynamic` to the link line (`fbc.bas`) — and a `-dylib`
+  build gets that whether or not `-export` was passed, because an ELF shared
+  object's symbols are already in its dynamic table.
+- **So on Linux, `Export` looks like a no-op, and a Linux-only probe cannot see
+  the difference.** A `-dylib` module whose sub is plain `Public` with no
+  `Export` still shows `T <NAME>` under `nm -D` (`lmod.bas`). That is the
+  platform's default, not `Export` working, and it must not be carried to
+  Windows, where the COFF directive is what puts the name in the export table.
+- **The catalog's `CANNOTEXPORT` warning never fires in 1.10.2.** "Cannot export
+  symbol without -export option" sits at warning level 2 in `error.bas`, but its
+  only call site is commented out (`parser-proc.bas`). `Export` without
+  `-export` compiles clean under `-w all`, for an exe and a `-dylib` alike
+  (`exp.bas`).
+- **An executable can export too** — `Export` plus `-export` at link time, for
+  symbols another shared library needs when it loads. `-export` has no extra
+  effect with `-dylib`/`-dll` `(wiki)`.
+- Dialect and platform notes `(wiki)`: not available in `-lang qb` except under
+  the alias `__Export`, and no effect on DOS DXEs, where every `Public`
+  procedure is exported anyway.
 
 ## 10. Preprocessor and macros
 
