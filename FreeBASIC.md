@@ -854,21 +854,69 @@ Source: the compiler is FreeBASIC itself. `src/compiler/` (173 files),
 - **Numbering = position.** Both are 1-based `dim shared` arrays, so the *n*th
   entry is message `n`. Verified 25/25 against codes printed by the local
   compiler, including every one quoted in this file.
-- **Warning tuples are `(level, text)`**, where `level` is the `-w` threshold
-  that enables the warning — *not* the message number. Levels: 4 at 0, 29 at 1,
-  12 at 2, 4 at 3. The always-on ones (`level 0`) are
+- **Warning tuples are `(level, text)`**, where `level` is compared against the
+  `-w` threshold — *not* the message number. Levels: 4 at 0, 29 at 1, 12 at 2,
+  4 at 3. The test is `errReportWarnEx`:
+  `if( warningMsgs(msgnum).level < env.clopt.warninglevel ) then exit sub`,
+  against `FB_WARNINGMSGS_DEFAULT_LEVEL = 1` (`error.bi:393-395`). A warning is
+  shown **iff `level >= warninglevel`**, so the level is a floor and a *higher*
+  `-w N` shows *fewer* warnings. The four `level 0` warnings —
   `CONSTQUALIFIERDISCARDED`, `RETURNTYPEMISMATCH`, `CALLINGCONVMISMATCH`,
-  `ARGCNTMISMATCH`.
+  `ARGCNTMISMATCH` — are therefore **off by default** and need `-w all`; the 45
+  at level ≥ 1 need no opt-in. `-w all` = 0 (everything), `-w none` = 4 (nothing
+  exists at 4), `-w N` = level ≥ N. `-w constness` and `-w funcptr` set a
+  pedantic flag *and* drop the level to 0, so they reveal the level-0 group;
+  `-w param`, `-w escape`, `-w next`, `-w signedness`, `-w suffix`, `-w error`
+  and `-w pedantic` leave the level alone. Probed with fbc's own
+  `tests/warnings/ptr-callconv.bas`: with no `-w` it prints
+  `warning 4(2): Suspicious pointer assignment` only; `-w all` adds
+  `warning 42(0): Calling convention mismatch in function pointer`. Note the
+  printed shape `warning <number>(<level>)` — the parenthesised number is the
+  level, not a second message number.
 - **Some catalog texts are prefixes.** `errReportNotAllowed` appends the dialect
   list at report time, so the stored strings are `"Only valid in -lang"` for
   `error 146` and `"Default types or suffixes are only valid in -lang"` for
   `error 147` — the `deprecated or fblite or qb` tail is not in the array.
   Quoting these needs the reporter, not just the catalog.
-- **Reporters** (the shape of every call site): `errReport`, `errReportEx`,
+- **Reporters** — eight, all in `error.bas`: `errReport`, `errReportEx`,
   `errReportWarn`, `errReportWarnEx`, `errReportNotAllowed`, `errReportParam`,
-  `errReportParamWarn`, `errReportUndef`, `errReportWarnEx`.
-- Nothing is dead: every one of the 328 + 49 messages has at least one call site
-  in `src/compiler`.
+  `errReportParamWarn`, `errReportUndef`. That list is **not** enough to locate a
+  call site, because only one shape puts a number next to the reporter: seven
+  indirect shapes exist, and in each the constant is *not on the reporting line*.
+  A declared **default argument** (`errReportNotAllowed`'s `errnum` defaults to
+  `FB_ERRMSG_ONLYVALIDINLANG`, so every one-argument call still reports
+  `error 146`); a **pass-through wrapper** sub (31 of them — `hParamError` alone
+  reaches 11 messages); a `byref` **out-param assigned by the callee**
+  (`symbCalcProcMatch` sets 5 `OVERRIDE*` errors); a **`#macro` body**
+  (`hExitError` is report + `hSkipStmt( )` + `return`); a local **chosen by a
+  `select case`** over the statement token and reported once at the end
+  (`cCompStmtGetTOS`); the sub's **return value** (`astNewCONV` ends
+  `return FB_ERRMSG_CASTDERIVEDPTRFROMINCOMPATIBLE`); and a message carried as a
+  **parameter's default** (`byval msgnum as FB_ERRMSG = FB_ERRMSG_ILLEGALPARAMSPECAT`).
+- **18 error entries are dead** — the *only* occurrence of each name anywhere in
+  the 1.10.2 tree (`src/compiler`, `tests/`, `inc/`, `src/rtlib`) is its own
+  catalog line, so these are **reserved numbers fbc cannot print**:
+  `2 EXPECTEDEOF`, `38 INNERPROCNOTALLOWED`, `39 EXPECTEDENDSUBORFUNCT`,
+  `43 VARIABLEREQUIRED`, `46 PROCNOTDECLARED`, `56 ARRAYALREADYDIMENSIONED`,
+  `57 ILLEGALRESUMEERROR`, `70 FORWARDREFNOTALLOWED`, `80 MACROTEXTTOOLONG`,
+  `93 MISSINGCMDOPTION`, `97 CANTPASSUDTRESULTBYREF`, `102 CANTINITDYNAMICFIELDS`,
+  `103 BRANCHTOBLOCKWITHLOCALVARS`, `138 PARAMORRESULTMUSTBEANUDT`,
+  `139 SAMEPARAMETERTYPES`, `262 INVALIDINITIALIZER`, `296 CLASSWITHOUTCTOR`,
+  `321 INCOMPATIBLEREFINIT`. Every one of the 49 warnings is referenced. Two
+  entries a naive reference audit also flags are in fact **live**:
+  `133 TOOMANYERRORS` is raised by `errReportEx` itself (`error.bas:626`), and
+  `146 ONLYVALIDINLANG` is never passed explicitly — it *is* the default
+  argument, so the 26 one-argument `errReportNotAllowed` calls report it (the
+  other 6 call sites pass a specific `*ONLYVALIDINLANG` message). So
+  "is the name referenced?" is not the reachability test, and a bare substring
+  search is worse than useless: `EXPECTEDEOF` matches the unrelated
+  `ERROR_SXS_XML_E_UNEXPECTEDEOF` in `inc/win/`, and a search for
+  `ONLYVALIDINLANG` finds five *different* `*ONLYVALIDINLANG` constants.
+- **`error 14` has two constant names.** `error.bi:19-20` declares
+  `FB_ERRMSG_EXPECTEDVAR` and then
+  `FB_ERRMSG_EXPECTEDIDENTIFIER = FB_ERRMSG_EXPECTEDVAR` — the only alias in the
+  catalog. It consumes no number and both names print "Expected identifier", so
+  key a table on the number and never on the constant.
 - Call-site frequency is a usable proxy for "what real code trips on":
   `17 SYNTAXERROR` 106, `24 INVALIDDATATYPES` 86, `14 EXPECTEDIDENTIFIER` 61,
   `9 EXPECTEDEXPRESSION` 59, `4 DUPDEFINITION` 45, `20 TYPEMISMATCH` 43,
