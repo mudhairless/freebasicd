@@ -10,10 +10,15 @@ regress to them — this file wins.
 Provenance tags:
 - `(wiki)` — from FBWiki `ProPg*` pages; not yet probe-verified.
 - `(fbc)` — verified against `fbc` 1.10.2
+- `(src)` — read out of the compiler's own source at tag `1.10.2` (§13)
 
 The keyword catalog (~250 words from `CatPgFullIndex`) is **data in
 `src/language.cpp`**, not prose: `kReserved` holds the set, plus per-word wiki
 doc URLs and block-closer facts (block closures in §7 are `(fbc)`).
+
+The compiler's own source is the authority behind every `error N` / `warning N`
+code quoted in this file — §13 says where the catalog lives, how the numbering
+works, and how to check a code against its text without installing anything.
 
 Documentation Table of Contents: https://www.freebasic.net/wiki/DocToc
 
@@ -45,7 +50,8 @@ Documentation: https://www.freebasic.net/wiki/ProPgIdentifierLookup
 
 ## 2. Type suffixes and dialect gating
 
-Suffix chars on identifiers, attached at the end of the bare name (only in ):
+Suffix chars on identifiers, attached at the end of the bare name (only in the
+`qb`/`fblite`/`deprecated` dialects):
 
 | suffix | type | sizeof (this linux-x64 `fbc`) |
 |--------|------|-------------------------------|
@@ -62,6 +68,10 @@ Suffix chars on identifiers, attached at the end of the bare name (only in ):
   `warning 44: Suffix ignored in 'x%'` and treats `foo` and `foo$` as the
   **same symbol** (probe: `Dim foo As Integer` + `Dim foo$ As String` →
   warning 44 + `error 4: Duplicated definition, foo`). `(fbc)`
+- The suffix the modern default mode *does* have is the **numeric-literal** one,
+  C-style: `100ul` is a `ULong` (sizeof 4 on this build), `1.5f` a `Single`
+  (§4). Identifier suffixes and numeric-literal suffixes are separate features
+  of separate dialects — `fb` has the latter only.
 - Default-typed `Dim q` (no `As`) is rejected in `fb`:
   `error 147: Default types or suffixes are only valid in -lang deprecated or
   fblite or qb` `(fbc)`.
@@ -341,6 +351,11 @@ sub t.go()     ' module level, qualified — in the includer .bas or a sibling
 end sub        ' header of the same #include closure
 ```
 
+A member procedure declared `Static` may additionally be a **module
+constructor** — the `Constructor` keyword goes on the module-level definition,
+not on the `Declare` line, and a non-`Static` member sub may not (§9 Module
+constructors and destructors).
+
 A derived type may **not** re-implement an inherited member: `type d Extends t`
 followed by `sub d.go()` is `error 158: Declaration outside the original
 namespace or class in 'sub d.go()'` `(fbc)`. The declared→implemented edge is
@@ -422,8 +437,8 @@ header) in every includer. Probe-verified with fbc 1.10.2:
 ## 9. Module model
 
 - A program is one or more `.bas` files; the first file is the main module
-  (`-m name` overrides). `.bi` files are headers pulled in **textually** via
-  `#include`.
+  (`-m name` overrides — the name **without** `.bas`; see below). `.bi` files
+  are headers pulled in **textually** via `#include`.
 - Cross-module sharing exists only at module scope, and only for
   `shared`/`common`/`common shared` names. Procedure-local names never cross a
   file boundary.
@@ -436,6 +451,119 @@ header) in every includer. Probe-verified with fbc 1.10.2:
 - Paths accept both `/` and `\`; identifier/name case sensitivity follows the
   host filesystem when opening files `(wiki)` (the compiler itself is
   case-insensitive).
+
+### Module-level executable code
+
+Module level is not a neutral namespace: it holds statements, and **which `main`
+they belong to decides what runs and when** `(fbc, probed)`.
+
+- **The main module's module level *is* an implicit `main`.** Its statements run
+  top-down in source order (`ord1.bas` prints `A`, calls, prints `B`), and `End`
+  halts the program (`order.bas` prints `start` and nothing after `End`). The
+  same module level also declares the program's globals — module-level
+  `Dim`/`Const` — so it is a function body *and* a declaration space at once.
+  A single-file program with any number of headers is exactly this shape.
+- **No forward declaration inside the module.** A module-level call to a
+  `Sub`/`Function` defined *later in the same file* is
+  `error 42: Variable not declared, Later` (`fwd.bas`, `fwd2.bas`) — the
+  implicit main sees only what is declared above the call, which is §8's
+  declaration-order rule, not a module-model rule. `Declare` is the fix, and it
+  is the only fix across files too: `m1h.bas` `#include`s a header carrying
+  `Declare Function Helper() As Integer` and links the definition in a second
+  file (`helper.bi` + `m2.bas`, prints `main got 42`).
+- **Locals are not inherited in either direction.** Module-level names live in
+  the implicit main, so a procedure it calls sees only `Shared`/`Common Shared`
+  module names (§8) — never the main module's plain module-level `Dim`.
+- **Every *other* module's module-level code runs too — before `main`.** fbc
+  accepts it silently (nothing under `-w all`) and emits it as a load-time
+  constructor, so a second file's top-level statements print *ahead of* the main
+  module's first line: `fbc ord1.bas ord2.bas` gives `X: second module
+  top-level`, then `A: main module, before call`. Swap the command line and
+  `ord2` becomes main — so its statements now belong to `main` and run last
+  (`ord2.bas ord1.bas` gives `A`, `Y`, `B`, then `X`). One rule, both orderings:
+  **the main module's module level is `main`; every other module's is a
+  constructor that precedes it.**
+- **A library has no `main`, so the same code is a constructor there too.** A
+  `-lib` module with module-level statements compiles clean — `rc=0`, no
+  diagnostic under `-w all` (`lib.bas`) — `nm` on the archive shows them as
+  `fb_ctor__lib`, and an executable linking that object runs them before its own
+  `main` (`uselib.bas` + `liblib.a` prints the library's line first). There is
+  no `-dynlib` in this fbc (`error 81: Invalid command-line option`).
+- **`-m` takes the module name without `.bas`.** `-m ord1` makes `ord1` the main
+  module even though it is listed second on the command line;
+  `-m ord1.bas` compiles every file but then fails to link —
+  `undefined reference to 'main'`.
+
+### Module constructors and destructors
+
+Documentation: https://www.freebasic.net/wiki/KeyPgModuleConstructor
+Documentation: https://www.freebasic.net/wiki/KeyPgModuleDestructor
+
+The **explicit** form of "run before `main`". It is a procedure marked at its
+`Sub` definition, outside any type:
+
+```
+[Public|Private] Sub name() Constructor [priority]   ' body
+End Sub
+```
+
+- **A constructor runs before its own module's module-level code**, and all
+  constructors run before the main module's `main` — whichever module each is in
+  (`ctor.bas`: `Constructor1() called`, `Constructor2() called`,
+  `module-level code`; `kmain.bas ka.bas kb.bas` puts the main module's own
+  constructor ahead of everything).
+- **A constructor is a procedure body, so §8 applies to it.** A plain
+  module-level `Dim` is *invisible* inside one — `error 42: Variable not
+  declared, g` on a write (`kplain.bas`), and the same on a read (`ktot.bas`) —
+  while `Dim Shared` and `Const` are visible (`ktot2.bas` prints
+  `ctor: shared_total=42 K=7`). Initializing a module global from a constructor
+  therefore requires `Shared`.
+- **Order across constructors is unspecified, and it is not even stable across
+  link orders.** Three modules, one constructor and one body line each, built
+  two ways (`ka/kb/kmain`):
+
+  - main module `kmain`: `main ctor`, `A ctor`, `A body`, `B ctor`,
+    `B body`, `main body`
+  - main module `kb`: `B ctor`, `A ctor`, `A body`, `main ctor`, `main body`,
+    `B body`
+
+  So a non-main module's module-level body can run *between* other modules'
+  constructors, and the main module's constructor can run *after* a non-main
+  module's body. Within one module this fbc emits constructors in definition
+  order and destructors in reverse (`ctor.bas`) — the wiki's own example shows
+  the reverse constructor order, and states both are permitted
+  `(wiki)`. Nothing may depend on either.
+- **`priority` is the only ordering control**: an integer **101–65535**, where
+  101 is highest and the value means nothing except relative to other
+  constructors that also carry one. Probed: 101 → first, 65535 → last, and an
+  unprioritized constructor ran after both (`prio.bas`). Outside the range →
+  `error 189: Invalid priority attribute` for `100` and for `65536`
+  (`priolo.bas`, `priohi.bas`).
+- **The parameter list must be empty** — `Sub Bad(x As Integer) Constructor` is
+  `error 1: Argument count mismatch, before 'Constructor'` (`ctorparam.bas`).
+  Consequently at most one constructor may exist in a set of overloads, since
+  every overload of a 0-arg `Sub` would collide.
+- **`Constructor`/`Destructor` are forbidden on a declaration line** —
+  `Declare Sub Init() Constructor` is `error 3: Expected End-of-Line` in both
+  the plain (`ctordecl.bas`) and UDT-member (`udtctor.bas`) spellings. Mark the
+  **definition**.
+- **A `Static` member procedure of a UDT can be one**: `Declare Static Sub
+  Init()` in the type, `Sub Widget.Init() Constructor` at the definition
+  (`udtctor3.bas` compiles and prints `widget static init` before
+  `module-level code`). A non-`Static` member sub is `error 17: Syntax error`
+  (`udtctor2.bas`).
+- **Name clashes are a link error across modules**: two `Public` constructors
+  named `Init` in different files give `multiple definition of 'INIT'` — the
+  emitted symbol is the uppercased name. `Private` constructors still run
+  (`privctor.bas` runs both).
+- **Destructors** (`Sub name() Destructor`) mirror this at exit, in no
+  guaranteed order either (`ctor.bas`: `Destructor2()` then `Destructor1()`,
+  after the module-level code and before the process ends).
+- Static globals whose initial value is computable at compile time are
+  initialized before *any* code runs, so they — unlike a plain module `Dim` —
+  are reliably readable from a constructor `(wiki)`. The wiki's standing advice
+  follows from the ordering table: prefer one constructor that explicitly calls
+  the other modules' init procedures over relying on constructor order.
 
 ## 10. Preprocessor and macros
 
@@ -479,8 +607,16 @@ Documentation: https://www.freebasic.net/wiki/CompilerDialects
     only in the `-lang fb` dialect" `(wiki, §7 Access sections)`.
   - Deftype directives (`DEFINT`/`DEFLNG`/`DEFSNG`/`DEFSTR`/`DEFBYTE`/…)
     set the implicit default type per first letter; suffix throws override
-    `DEFxxx`. Without `Option Explicit`, undeclared-but-referenced variables
-    are implicitly declared `(wiki, ProPgImplicitdeclarations)`.
+    `DEFxxx` `(wiki)`.
+  - **Implicit variable declaration does not exist in `fb`** `(fbc, probed)`:
+    a bare undeclared name is `error 42: Variable not declared,
+    undeclaredThing` (`implicit.bas`), and there is no keyword that switches
+    implicitness on — `Option Explicit` is *itself* rejected in this dialect,
+    `error 146: Only valid in -lang deprecated or fblite or qb, found 'Option'`
+    (`optex.bas`). Implicitness is the *other* dialects' behavior
+    `(wiki, ProPgImplicitdeclarations)`, and note what `Option Explicit` does
+    there: it turns implicitness **off**, so `-lang qb` + `Option Explicit`
+    gives error 42 exactly as `fb` does with no directive at all.
 
 ## 12. Known divergences in this implementation (as of now)
 
@@ -636,3 +772,54 @@ to "the language is what the lexer does":
       visible consequence for `rem`: a line-leading `rem` is a comment, so
       `enum e / rem / end enum` declares no member here and draws no diagnostic
       where fbc answers `error 256`.
+
+## 13. Where the diagnostics come from (compiler source)
+
+Every `error N` / `warning N` in this file is a real fbc message, and fbc's
+**entire catalog is data in its own source** — no install, no probe, no guess
+needed to check one `(src)`.
+
+Source: the compiler is FreeBASIC itself. `src/compiler/` (173 files),
+`src/rtlib/` and `src/gfxlib2/` are C.
+
+- **Repository**: `https://github.com/freebasic/fbc`. Read at tag **`1.10.2`** =
+  commit `8e1023e3`, the release matching the system `fbc` this file is probed
+  against. There is a later `1.10.3`; it is *not* what the
+  local compiler is, and the 25/25 message-code match below is the evidence that
+  `1.10.2` is the right pin. The tag's commit is dated 2023-12-28 while the
+  installed binary reports a 2026-09-27 build, so an `fbc` built from this tag
+  may differ in ways the catalog does not show.
+- **The catalog**: `src/compiler/error.bas`, as two arrays —
+  `errorMsgs` (328 entries) and `warningMsgs` (49 entries).
+- **Numbering = position.** Both are 1-based `dim shared` arrays, so the *n*th
+  entry is message `n`. Verified 25/25 against codes printed by the local
+  compiler, including every one quoted in this file.
+- **Warning tuples are `(level, text)`**, where `level` is the `-w` threshold
+  that enables the warning — *not* the message number. Levels: 4 at 0, 29 at 1,
+  12 at 2, 4 at 3. The always-on ones (`level 0`) are
+  `CONSTQUALIFIERDISCARDED`, `RETURNTYPEMISMATCH`, `CALLINGCONVMISMATCH`,
+  `ARGCNTMISMATCH`.
+- **Some catalog texts are prefixes.** `errReportNotAllowed` appends the dialect
+  list at report time, so the stored strings are `"Only valid in -lang"` for
+  `error 146` and `"Default types or suffixes are only valid in -lang"` for
+  `error 147` — the `deprecated or fblite or qb` tail is not in the array.
+  Quoting these needs the reporter, not just the catalog.
+- **Reporters** (the shape of every call site): `errReport`, `errReportEx`,
+  `errReportWarn`, `errReportWarnEx`, `errReportNotAllowed`, `errReportParam`,
+  `errReportParamWarn`, `errReportUndef`, `errReportWarnEx`.
+- Nothing is dead: every one of the 328 + 49 messages has at least one call site
+  in `src/compiler`.
+- Call-site frequency is a usable proxy for "what real code trips on":
+  `17 SYNTAXERROR` 106, `24 INVALIDDATATYPES` 86, `14 EXPECTEDIDENTIFIER` 61,
+  `9 EXPECTEDEXPRESSION` 59, `4 DUPDEFINITION` 45, `20 TYPEMISMATCH` 43,
+  `7 EXPECTEDRPRNT` 42. Note that 4 and 20 are *semantic* — roughly a quarter
+  of the catalog's call sites are name and type checks, not syntax.
+- `tests/` is 2493 `.bas` files, and **`tests/warnings/` is one minimal
+  reproducer per warning** (72 files) — empirical trigger conditions rather than
+  a prose description. `tests/quirk/` (52 files) is deliberate oddities.
+
+Two traps when reading `error.bas` by hand, both silent rather than loud: the
+arrays are **brace**-delimited inside the parens-looking array bound
+(`warningMsgs( 1 to N-1 )` closes a naive paren scan on its first `)`), and
+each name is space-padded before its closing quote, so a pattern without
+tolerating that whitespace matches **zero** entries and still reports success.
