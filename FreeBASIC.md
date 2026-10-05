@@ -74,7 +74,9 @@ Suffix chars on identifiers, attached at the end of the bare name (only in the
   of separate dialects — `fb` has the latter only.
 - Default-typed `Dim q` (no `As`) is rejected in `fb`:
   `error 147: Default types or suffixes are only valid in -lang deprecated or
-  fblite or qb` `(fbc)`.
+  fblite or qb` `(fbc)`. The converse is the initializer: `Dim a As Integer = 5`
+  is `error 146: Only valid in -lang fb or deprecated or fblite` in `qb`. The
+  two gates are **disjoint**, so `Dim a = 5` is rejected by every dialect — §11.
 - `Integer`/`UInteger`/`LongInt` sizes are **platform-dependent**: on this
   64-bit build Integer=8, Long=4, LongInt=8; on 32-bit targets Integer=4.
   Never hardcode sizes in resolution/semantic code.
@@ -144,7 +146,9 @@ CONSTRUCTOR/DESTRUCTOR ... END <same>`, `TYPE/UNION/ENUM ... END <same>`,
 `NAMESPACE ... END NAMESPACE` (**no `MODULE` keyword**), `SCOPE ... END SCOPE`,
 `IF ... END IF`, `SELECT CASE ... END SELECT`, `WITH ... END WITH`,
 `EXTERN ... END EXTERN`, `ASM ... END ASM`. `(fbc)`; enforced as data in
-`language.cpp`.
+`language.cpp`. **This list is complete** — note in particular that there is
+**no `CLASS ... END CLASS`**: `class` is a reserved word with no construct
+behind it, because the class-ness folded into the type system (§11).
 
 Non-`END` closures: `FOR ... NEXT` (closed by `NEXT`, no `END FOR`);
 `WHILE ... WEND` (**`WEND` only** — `END WHILE` is rejected by fbc);
@@ -657,7 +661,9 @@ Documentation: https://www.freebasic.net/wiki/CompilerDialects
   declaration) or the `$lang` metacommand (`'$lang: "qb"` / `rem $lang: "qb"`).
   `$lang` overrides `-lang` on the command line but is ignored (with a warning)
   under `-forcelang`; `-forcelang` is a compiler flag, never visible in source.
-  The parser records the active dialect word in `ParseResult.lang`. `(fbc)`
+  The parser records the active dialect word in `ParseResult.lang`. `#lang` is
+  **module level only** — inside a procedure it is `error 61: Illegal inside
+  functions, found 'qb' in '#lang "qb"'` `(fbc, probed)`, not a dialect message.
 - Dialect differences that matter to the lexer/parser:
   - identifiers with periods (qb/fblite; §1), suffix types (§2),
     default-typed `Dim q` (§2), `LongInt` not accepted in `qb`
@@ -677,6 +683,150 @@ Documentation: https://www.freebasic.net/wiki/CompilerDialects
     `(wiki, ProPgImplicitdeclarations)`, and note what `Option Explicit` does
     there: it turns implicitness **off**, so `-lang qb` + `Option Explicit`
     gives error 42 exactly as `fb` does with no directive at all.
+
+### How dialect gating actually works (fbc source, all of this probed)
+
+Dialect behaviour is **not** scattered `if lang = qb` tests. It is one 23-bit
+feature mask per dialect: `enum FB_LANG_OPT` (`fb.bi:329-356`) plus the
+`langTb()` table (`fb.bas:31-105`), tested through the one-line macro
+`#define fbLangOptIsSet( op ) ((env.lang.opt and (op)) <> 0)` (`fb.bi:622`).
+Because the test is a bitmask, the whole dialect story is one table:
+
+| bits set in | bits (and what they allow) |
+|---|---|
+| all four | `QUIRKFUNC` |
+| `fb` only | `OPEROVL`, `CLASS`, `AUTOVAR`, `SINGERRLINE` |
+| `fb`, `deprecated` | `SCOPE` |
+| `fb`, `deprecated`, `fblite` | `MT`, `NAMESPC`, `EXTERN`, `FUNCOVL`, `INITIALIZER` |
+| all but `fb` | `CALL`, `LET`, `PERIODS`, `NUMLABEL`, `IMPLICIT`, `DEFTYPE`, `SUFFIX`, `METACMD`, `OPTION`, `ONERROR` |
+| all but `fb` and `deprecated` | `GOSUB` |
+| **no dialect** | `ALWAYSOVL` — read at `symb-proc.bas:909,932`, set by none |
+| set by all four, read by none | `QUIRKFUNC` — dead the other way |
+
+Three **layers** produce three different diagnostics, which is why
+"dialect-gate the check" is not a sufficient instruction:
+
+1. **bit + keyword present** → `errReportNotAllowed` (`error.bas:810`) reports
+   `error 146` (`ONLYVALIDINLANG`, the default argument) or a named
+   `*ONLYVALIDINLANG` message. There are **32** such call sites, all in the
+   parser phase and all lexically determined — none needs type resolution, so a
+   dialect check is a mask test and not a semantic pass. Distribution of the
+   32: **27** take the default and report 146, 3 report
+   `147 DEFTYPEONLYVALIDINLANG` (`parser-decl-proc-params.bas:416`,
+   `parser-decl-var.bas:1339`, `parser-proc.bas:1499`), 1 reports
+   `150 AUTOVARONLYVALIDINLANG` (`parser-decl-var.bas:2161`), and 1 is the
+   uncalled `hErrSuffix()` (§13).
+2. **keyword absent in that dialect** → a **syntax error**, not 146. The
+   keyword table `kwdTb` (`symb-keyword.bas`, 247 rows) carries per-word flags,
+   applied in `symbKeywordInit` (`symb-keyword.bas:285-321`):
+   `KWD_OPTION_NO_QB` (**90** rows) renames the plain spelling to `__name` in
+   `qb`, so it becomes an ordinary identifier there — `scope = 1` compiles clean
+   under `-lang qb`, and gives `error 10: Expected '='` while
+   `error 146: Only valid in -lang fb or deprecated, found 'scope'` under
+   `-lang fblite` `(both probed)`. So in `qb` the 90 `NO_QB` words (`Scope`,
+   `Namespace`, `Extern`, `Overload`, `Class`, `Union`, `Constructor`,
+   `Destructor`, `Property`, `Operator`, `Private`, `Public`, `Var`, `New`,
+   `Delete`, `LongInt`, `Shl`, `Shr`, …) are identifiers: `Dim true As
+   Integer` is `error 4: Duplicated definition, true` in `fb` and compiles
+   clean in `qb` `(probed)`. Three more names are renamed by hand rather than
+   through `kwdTb`, for the same effect: `True`/`False` are literals spelled
+   `__true`/`__false` in `qb` (`symb-keyword.bas:381,393`), and `cva_list` is a
+   typedef aliased `__cva_list` (`:454`) — so unlike the other two it is not
+   reserved, and `Dim cva_list As Integer` compiles in both dialects.
+   `KWD_OPTION_STRSUFFIX` (**12**: `STRING`, `STR`, `MKD`, `MKS`, `MKI`, `MKL`,
+   `MID`, `RTRIM`, `LTRIM`, `LCASE`, `UCASE`, `CHR`) — the `$`-suffixed spelling
+   exists only in `qb`. `KWD_OPTION_QB_ONLY` (**1** row: the `SCREENQB` quirk
+   keyword; `SCREEN` has a *second*, `NO_QB` row, so it is reserved only in
+   `qb`). Everything else — `Gosub`, `Return`, `Let`, `Option`, `LPrint`,
+   `DefInt`, `On`, `Error`, `Seek`, `Resume`, `Data`, `Restore`, `Width`,
+   `Palette`, `Window` — is a plain keyword in **all four** dialects, so its
+   *statement* is gated by a bit and gives 146, not a syntax error.
+3. **silent semantic difference** → **nothing at all**, which is the layer a
+   diagnostic cannot show. About 42 direct dialect comparisons (25 `fbLangIsSet`
+   + 17 inline `env.clopt.lang <>`), dominated by QB-vs-the-rest: the QB type
+   remap (`fb.bas:414-448`, `integerkeyworddtype` Integer vs **Short**,
+   `int16literaldtype` UInteger, `floatliteraldtype` **Single** — note this is
+   `lang <> qb`, so `deprecated` and `fblite` keep fb's typing), and **builtin
+   availability**: the `rtl*.bas` intrinsic tables carry per-entry option flags
+   consumed at `rtl.bas:120-142`. Four of them gate a builtin on the dialect —
+   `NOQB` (135 entries; in `qb` the name is re-prefixed `__`, `rtl.bas:240-245`,
+   so the builtin silently vanishes), `QBONLY` (11), `FBONLY` (4), `NOFB` (3),
+   the last three being direct `env.clopt.lang = FB_LANG_…` tests. `MT` (13) is
+   the fifth dialect gate and the only one routed through a feature bit
+   (`fbLangOptIsSet( FB_LANG_OPT_MT )`, `rtl.bas:122`). `STRSUFFIX` (30) is
+   **not** a dialect gate despite the name: it sets `FB_SYMBATTRIB_SUFFIXED`
+   (`rtl.bas:232-234`), i.e. the builtin has a `$`-suffixed spelling, so §2's
+   `$`-rule reaches the *library* too. `OVER` (135), `ERROR` (13), `X86ONLY`,
+   `32BIT`/`64BIT`, `NOGCC`, `ASSERTONLY` and `CANBECLONED` are non-dialect.
+   So roughly 135 of the rtlib's entries simply do not exist in a `qb` buffer,
+   with no diagnostic until the compile fails.
+
+`SINGERRLINE` is a *delivery policy* wearing a dialect bit: it is fb-only, and
+it decides whether a diagnostic quotes the offending line (`error.bas:565-568`).
+
+### `DEFTYPE` and `INITIALIZER` are disjoint — so no dialect allows `Dim a = 5`
+
+`DEFTYPE` allows a declaration with no `As` clause; `INITIALIZER` allows
+`Dim … = expr`. `fb` has only the second, `qb` only the first, and
+`deprecated`/`fblite` have both — so the *modern* spelling is the only one `fb`
+accepts, and the *implicit-type* spelling is the only one `qb` accepts. Probed
+in all four dialects:
+
+| source | `fb` | `deprecated` | `fblite` | `qb` |
+|---|---|---|---|---|
+| `Dim a As Integer` | ok | ok | ok | ok |
+| `Dim a` (no `As`) | **147** | ok | ok | ok |
+| `Dim a(10)` (no `As`) | **147** | ok | ok | ok |
+| `Sub s(x)` (untyped param) | **147** | ok | ok | ok |
+| `Dim a As Integer = 5` | ok | ok | ok | **146** |
+| `Dim a = 5` (no `As`) | **147** | ok | ok | **146** |
+| `var v = 1` | ok | **150** | **150** | **10** |
+
+`(fbc, probed)`. Reading the numbers: 147 = `DEFTYPE` off (fb only), 146 here =
+`INITIALIZER` off (qb only), 150 = `AUTOVAR` off (`var`, which is also a
+`NO_QB` keyword, so in `qb` it is not even a keyword and the failure is layer 2,
+`error 10`). Two details worth not getting wrong: **`Dim a = 5` is illegal in
+every dialect** — `fb` rejects the untyped name, `qb` rejects the initializer —
+so "`Dim x = 5` needs `Dim x As Integer = 5` in modern FB" is not a style
+preference; and the token `146` quotes is the `=`, not the declaration
+(`error 146: Only valid in -lang fb or deprecated or fblite, found '='`).
+
+### `class` is a reserved word with no construct behind it
+
+`class` **is** in the keyword catalog (`symb-keyword.bas:152`, and in
+`language.cpp`'s `kReserved` / `kConditionalFieldNames`), but there is **no
+`class … end class`** in FreeBASIC — the class-ness folded into the type system
+and is spelled `type … end type` plus member procedures and `Virtual` (§7;
+`Virtual` needs the type to `Extends Object`, else `error 221: Method declared
+VIRTUAL, but UDT does not extend OBJECT` `(probed)`). Probed in all four
+dialects: `class c / n as integer / end class` gives `error 3: Expected
+End-of-Line, found 'class'` (`error 10` in `qb`) and then cascades. The bit is
+`FB_LANG_OPT_CLASS`, and it gates **member procedures inside a Type**, not a
+type declaration — `parser-decl-struct.bas:62` (a `Declare` member) and
+`parser-proc.bas:1857,1868,1886` (`Constructor`, `Destructor`, `Property`).
+`CLASS` is set for `fb` only, so those three give `error 146: Only valid in
+-lang fb, found 'declare'` in all three legacy dialects `(probed)`. Two
+consequences: never treat `class` as a type-declaration opener when extending
+§7, and treat any future `class` keyword as a *breaking* change to this section.
+
+The class-ness survives only in **prose**, which is the strongest available
+evidence that this is settled rather than merely unfinished: **12 of the 328
+catalog messages** say "CLASS" while there is no `class` construct —
+`error 238: Fields cannot be named as keywords in TYPE's that contain member
+functions or in CLASS'es`, `error 158: Declaration outside the original
+namespace or class`, `error 160: Expected class or UDT identifier`,
+`error 168: Parent is not a class or UDT`, `error 183: TYPE or CLASS has no
+default constructor`, `error 265: Symbol not a CLASS, ENUM, TYPE or UNION type`,
+`error 270: COMMON variables cannot be object instances of CLASS/TYPE's with
+cons/destructors`, `error 293: Not extending a TYPE/UNION`,
+`error 294: Illegal outside a CLASS, TYPE or UNION method`,
+`error 295: CLASS, TYPE or UNION not derived`, `error 296: CLASS, TYPE or UNION
+has no constructor` (one of the 18 dead numbers, §13), and `error 299: Expected
+a CLASS, TYPE or UNION symbol type`. Every one means "`Type`", and a quoting
+tool must reproduce the text verbatim rather than normalize it — so a message
+that says `CLASS'es` is not a hint that a `CLASS` block exists. Where §7 already
+says "a Type or Class" it is quoting this tradition, not asserting a second
+construct.
 
 ## 12. Known divergences in this implementation (as of now)
 
@@ -906,12 +1056,36 @@ Source: the compiler is FreeBASIC itself. `src/compiler/` (173 files),
   entries a naive reference audit also flags are in fact **live**:
   `133 TOOMANYERRORS` is raised by `errReportEx` itself (`error.bas:626`), and
   `146 ONLYVALIDINLANG` is never passed explicitly — it *is* the default
-  argument, so the 26 one-argument `errReportNotAllowed` calls report it (the
-  other 6 call sites pass a specific `*ONLYVALIDINLANG` message). So
-  "is the name referenced?" is not the reachability test, and a bare substring
-  search is worse than useless: `EXPECTEDEOF` matches the unrelated
+  argument, so the 27 one-argument `errReportNotAllowed` calls report it (the
+  other 5 call sites pass a specific `*ONLYVALIDINLANG` message). A bare
+  substring search is worse than useless: `EXPECTEDEOF` matches the unrelated
   `ERROR_SXS_XML_E_UNEXPECTEDEOF` in `inc/win/`, and a search for
   `ONLYVALIDINLANG` finds five *different* `*ONLYVALIDINLANG` constants.
+- **Two further entries are *referenced but unreachable*** — a second, distinct
+  kind of dead number, and the one a reference audit is blind to by
+  construction. Both are `*ONLYVALIDINLANG` messages, both are named at a call
+  site, and neither can ever be printed:
+  - `148 SUFFIXONLYVALIDINLANG` ("Suffixes are only valid in -lang") — its only
+    site is the macro `#define hErrSuffix()` at `lex.bas:2567`, which is
+    **defined and never called**. All three `LEXCHECK_POST_*` paths in
+    `lexCheckToken` use `hWarnSuffix()` (→ warning 44) plus `hDropSuffix()`
+    instead (`lex.bas:2586-2619`). Probed in fb mode: `foo%` gives
+    `warning 44(1): Suffix ignored in 'foo%'` and nothing else.
+  - `149 IMPLICITVARSONLYVALIDINLANG` ("Implicit variables are only valid in
+    -lang") — its guard reads `fbLangOptIsSet( FB_LANG_OPT_IMPLICIT = FALSE )`
+    (`parser-expr-atom.bas:435`). The `= FALSE` is **inside the macro
+    argument**, and the macro is just
+    `#define fbLangOptIsSet( op ) ((env.lang.opt and (op)) <> 0)` (`fb.bi:622`),
+    so what gets compiled is `((env.lang.opt and FALSE) <> 0)` — permanently
+    false. It is unreachable twice over: `IMPLICIT` is off only in `fb`, and
+    `env.opt.explicit = (env.clopt.lang = FB_LANG_FB)` (`fb.bas:411`), so in
+    that one dialect `error 42` fires first. Probed: an undeclared name gives
+    `error 42` only.
+
+  ∴ the audit needs **three** tests, not two — referenced, called, and guarded
+  by a condition that can be true — and only the third caught these. "Is the
+  name referenced?" is not the reachability test; neither is a count of
+  references.
 - **`error 14` has two constant names.** `error.bi:19-20` declares
   `FB_ERRMSG_EXPECTEDVAR` and then
   `FB_ERRMSG_EXPECTEDIDENTIFIER = FB_ERRMSG_EXPECTEDVAR` — the only alias in the
