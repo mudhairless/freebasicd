@@ -146,9 +146,38 @@ CONSTRUCTOR/DESTRUCTOR ... END <same>`, `TYPE/UNION/ENUM ... END <same>`,
 `NAMESPACE ... END NAMESPACE` (**no `MODULE` keyword**), `SCOPE ... END SCOPE`,
 `IF ... END IF`, `SELECT CASE ... END SELECT`, `WITH ... END WITH`,
 `EXTERN ... END EXTERN`, `ASM ... END ASM`. `(fbc)`; enforced as data in
-`language.cpp`. **This list is complete** — note in particular that there is
-**no `CLASS ... END CLASS`**: `class` is a reserved word with no construct
-behind it, because the class-ness folded into the type system (§11).
+`language.cpp`. **This list of opener words is complete** — note in particular
+that there is **no `CLASS ... END CLASS`**: `class` is a reserved word with no
+construct behind it, because the class-ness folded into the type system (§11).
+
+Complete as a set of *words*, but not uniform in *when* each word opens a block.
+The six procedure keywords — `SUB`, `FUNCTION`, `PROPERTY`, `OPERATOR`,
+`CONSTRUCTOR`, `DESTRUCTOR` — open a block only in **implementation form**. In a
+`TYPE`/`UNION` body the same six words are member *declarations*, and they take
+**no closer**: the body ends at the next member or at `END TYPE`.
+
+```freebasic
+type t
+  declare constructor()
+  declare property p as integer
+  x as integer
+end type
+```
+
+That compiles `(fbc)`, and the same body with a closer after either declaration
+does not: `declare constructor()` / `end constructor` is `error 19: Expected
+'END TYPE' or 'END UNION', found 'constructor' in 'end constructor'`, and
+`declare sub go()` / `end sub` fails the same way `(fbc)`. That is not a special
+rule about `END` — it is the body-grammar rule below (a record body ends at the
+first statement it cannot accept), so `end constructor` is read as the *end of
+the record body*, not as a member closer. A member procedure spelled with its
+body (`sub go()` / … / `end sub` inside the record) is a third shape again: fbc
+answers `error 17: found 'go'`, and this parser accepts it deliberately
+(§12.15).
+
+So the same word opens a block, declares a member, or is refused depending on
+the body it sits in, which is the one case a table keyed on the opener word
+alone cannot answer.
 
 Non-`END` closures: `FOR ... NEXT` (closed by `NEXT`, no `END FOR`);
 `WHILE ... WEND` (**`WEND` only** — `END WHILE` is rejected by fbc);
@@ -178,6 +207,12 @@ Legal `TYPE`/`UNION` body members `(fbc)`:
 | member procedure declaration | `Declare Sub`, `Declare Function`, `Declare Constructor`, … |
 | access section | `Public:` / `Private:` / `Protected:` (next subsection) |
 | nested record or enum | `Type … End Type`, `Union … End Union`, `Enum … End Enum` |
+
+A member procedure declaration is the one member that is **not** a block: it
+carries a signature and no body, so there is no `END SUB` to write and none is
+accepted — see the six-keyword note at the top of this section. It pairs with a
+module-level implementation (see "Inheritance (`Extends`) and
+member-procedure implementation" below).
 
 `Dim` is optional because "variables are created in UDTs much the same way
 variables are created normally, except that the Dim keyword is optional"
@@ -246,8 +281,6 @@ applies at the start of a line.
 body members: `type t / Field = 4 / x As Single / End Type` is `error 17:
 Syntax error, found '=' in 'field = 4'`, while `type t Field = 4` and
 `type b Extends a` both compile `(fbc)`.
-
-      `type b Extends a` both compile `(fbc)`.
 
 **A record must declare at least one data field** `(fbc)`. `Type`/`Union`/`Enum`
 with no field is `error 256: An ENUM, TYPE or UNION cannot be empty`, and

@@ -13,11 +13,20 @@
 # src/language.cpp are generated from this script's output, and the three
 # static_asserts next to them keep them sorted, disjoint, and inside the
 # catalog. Re-run it after a word is added to kReserved, or after an fbc upgrade
-# — the counts it prints (16 / 112 / 226) are what the tests in
-# tests/language_checks.cpp pin.
+# — the counts it prints (words probed, never field, conditional, legal enum
+# name, enum-illegal) are what the tests in tests/language_checks.cpp pin, and
+# the comment on the member-name tables in src/language.h quotes them. Do not
+# type them into either place from memory: paste what this script prints.
+#
+# One-directional by construction, and it has to be: it enumerates kReserved, so
+# it can only report about words the server already knows. It cannot find a word
+# fbc reserves and the catalog omits — that check is a diff of the whole catalog
+# against fbc's own keyword table, and src/language.h says so where the catalog
+# is declared.
 #
 # Requires fbc (1.10.2 when the tables were generated). Exits non-zero when fbc
-# is missing, so a CI job cannot silently produce an empty result.
+# is missing, so a CI job cannot silently produce an empty result, and non-zero
+# when the structure or the trigger/control sets disagree (see below).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -133,8 +142,8 @@ done
 
 # The three shapes the tables encode, counted from the transcript so the numbers
 # cannot be quoted from memory. The `func` column is the `error 238` question, so
-# its rejects split into the 16 (which fail the name itself) and the 112 (which
-# fail only the body the name sits in).
+# its rejects split into the never-legal set (which fails the name itself) and
+# the conditional set (which fails only the body the name sits in).
 words=$(( $(awk -F'\t' '$2=="type"' "$TSV" | wc -l) ))
 never=$(awk -F'\t' '$2=="type" && $3=="reject"' "$TSV" | wc -l)
 func_reject=$(awk -F'\t' '$2=="func" && $3=="reject"' "$TSV" | wc -l)
@@ -151,7 +160,7 @@ enum-illegal:    $enum_illegal      (== never + conditional)
 transcript:      $TSV
 SUMMARY
 
-printf '\nThe 16 that are never a field name:\n'
+printf '\nThe %d that are never a field name:\n' "$never"
 awk -F'\t' '$2=="type" && $3=="reject" {printf "  %-10s %s\n", $1, $4}' "$TSV"
 
 if (( enum_illegal != never + conditional )); then
@@ -162,8 +171,8 @@ fi
 
 # The `error 238` claim is about the *body the name sits in*, so the three other
 # triggers must refuse exactly the set a member procedure refuses, and the two
-# negative controls must refuse exactly the 16 — a plain `Dim` field and an
-# access section leave the body a plain record. Counts alone cannot tell a
+# negative controls must refuse exactly the never-legal set — a plain `Dim` field
+# and an access section leave the body a plain record. Counts alone cannot tell a
 # trigger from a control; this can, and it is what keeps FreeBASIC.md §7 from
 # being a comment that outlives its evidence.
 rejects() { awk -F'\t' -v k="$1" '$2==k && $3=="reject" {print $1}' "$TSV"; }

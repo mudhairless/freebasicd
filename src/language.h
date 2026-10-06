@@ -17,8 +17,19 @@
 namespace fblang {
 
 // True if `word` (no suffix) is a reserved FreeBASIC keyword, matched
-// case-insensitively as fbc matches them. The set was verified against
-// fbc 1.10.2: each entry fails `dim <word> as integer`.
+// case-insensitively as fbc matches them.
+//
+// The catalog was verified against fbc 1.10.2 with a **one-directional** probe:
+// every entry here fails `dim <word> as integer` (fbc `error 4`), which shows
+// each listed word is reserved and says nothing at all about a word fbc
+// reserves and this catalog omits. A word can only join the set by differential
+// argument — probe fbc for candidates, or diff the whole catalog against fbc's
+// own keyword table — not by re-running the check above. Two directional holes
+// in particular: a non-word keyword (`<something>` the lexer knows as one
+// token) would not be a word to probe, and a `KWD_OPTION_NO_QB` word is
+// unreserved under `-lang qb`, so a probe must fix the dialect for the answer
+// to mean one thing. tools/probe_member_names.sh inherits the same one-way
+// shape, since it enumerates this catalog rather than fbc's.
 bool isReservedWord(std::string_view word);
 
 // The full reserved-word catalog (lowercase, sorted). Completion iterates it
@@ -43,16 +54,27 @@ bool isBuiltinType(std::string_view wordLower);
 //    (16 words: the binary operators, `New`, `Delete`, `Const`, `Ptr`,
 //    `Pointer`). fbc's `error 14: Expected identifier`.
 //  * isConditionalFieldName: legal as a TYPE/UNION field name in a plain
-//  record,
-//    but `error 238` in one that also holds a `Static` field, a `Const`, a
-//    nested record/enum, or a member procedure (112 words). Note the asymmetry
-//    with `New`/`Delete`, which are never legal: those fail the name itself,
-//    these only fail the body the name sits in.
+//    record, but `error 238` in one that also holds a `Static` field, a
+//    `Const`, a nested record/enum, or a member procedure (112 words). Note
+//    the asymmetry with `New`/`Delete`, which are never legal: those fail the
+//    name itself, these only fail the body the name sits in.
 //  * isLegalEnumMemberName: legal as an ENUM member name (225 of 353). The enum
 //    rule needs no table of its own: probed, enum-illegal(128) is exactly
 //    never-field(16) + conditional(112). `rem` is in the second half, not
 //    special: fbc reads a `rem` line in an enum body as a comment, so
 //    `enum e / rem / end enum` is an empty enum (`error 256`) with no member.
+//
+// The three questions are not one boolean, and neither is any of the counts:
+// all five numbers here come from one probe run, which prints them (words
+// probed, never field, conditional, legal enum name, enum-illegal) and exits
+// non-zero if enum-illegal != never + conditional or if the error-238 trigger
+// set and its control set disagree. Paste what it prints; do not type them from
+// memory — this catalog has already had one count in a comment that the tool no
+// longer produces. Re-run the probe after any word is added to or removed from
+// the reserved-word catalog, or after an fbc upgrade, and update this comment,
+// the tables, and the sizes pinned in tests/language_checks.cpp together. A
+// word in a member-name table that is missing from the catalog is a compile
+// error rather than a silent no-op (`memberNameTablesReserved`).
 bool isNeverFieldName(std::string_view wordLower);
 bool isConditionalFieldName(std::string_view wordLower);
 bool isLegalEnumMemberName(std::string_view wordLower);
