@@ -575,9 +575,10 @@ static void testMemberNameTables() {
   CHECK(keywordDocsUrl("__thiscall").find("KeyPgThiscall") !=
         std::string::npos);
   CHECK(keywordDocsUrl("cva_arg").find("KeyPgCvaArg") != std::string::npos);
-  // `defulng` is the one `def*` word with no wiki page yet; the row points
-  // it at KeyPgDefulng, the name its siblings follow, explicitly rather
-  // than through the naive rule that builds the same URL today.
+  // `defulng` is listed explicitly even though the naive rule builds the
+  // same URL: its page (KeyPgDefulng, named like its `def*` siblings) was
+  // created for the sweep, and the row pins that target as data rather
+  // than leaving it to the rule.
   CHECK(keywordDocsUrl("defulng").find("KeyPgDefulng") != std::string::npos);
   CHECK(keywordDocsUrl("on").find("KeyPgOngoto") != std::string::npos);
   CHECK(keywordDocsUrl("dynamic").find("KeyPgOptiondynamic") !=

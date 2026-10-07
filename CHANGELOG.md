@@ -63,8 +63,8 @@ history use; they are kept here so an entry can be traced back.
 - A whole-catalog wiki-link audit (GET, not the 403'd HEAD) found exactly two
   dead links, and both now point at their real pages: `protected` →
   `KeyPgVisProtected`, and `defulng` → `KeyPgDefulng` (the one `def*` word
-  whose page did not exist when the row landed — the row is pinned so the
-  link stays where the page will be, and the `def*` siblings' naming is kept).
+  whose page did not exist when the row landed; it has since been created,
+  and the `def*` siblings' naming is kept).
 
 ### 2026-10-02 — Editor setup docs, and `editors/` moved under `docs/`
 
