@@ -52,6 +52,11 @@ struct Block {
       nullptr; // decl container (SUB, TYPE, ...), or null for control blocks
   uint32_t begOpen = 0; // opener keyword range
   uint32_t endOpen = 0;
+  // Arm for fbc's `error 238` — only ever set on a TYPE/UNION block: the body
+  // held something a plain record may not (a `Declare`, a member procedure, a
+  // `Static` field, a `Const`, or a nested record/enum), so every conditional
+  // field name in it is refused when the body closes (FreeBASIC.md §7).
+  bool armed = false;
 };
 
 struct Container {
@@ -368,8 +373,52 @@ private:
     return &c.sym->children.back();
   }
 
+  // Arm the TYPE/UNION body on top for fbc's `error 238`. Every trigger is
+  // probed — a `Declare`, a member procedure with its body, a `Static` field, a
+  // `Const`, and a nested record/enum — with a plain `Dim` field and an access
+  // section as the negative controls (FreeBASIC.md §7,
+  // tools/probe_member_names.sh). The arm happens where the trigger is *read*
+  // and the refusal where the body *closes*: fbc reports it on `end type` and
+  // accepts the field on either side of the trigger, so a check at capture
+  // would only catch one of the two orders the probe compiles.
+  void armRecordBody() {
+    if (inRecordBody()) {
+      blocks_.back().armed = true;
+    }
+  }
+
+  // The refusal itself: an armed record may not hold a conditional field name.
+  // fbc anchors its report on `end type` and its text says "member functions"
+  // for *every* trigger (a `Static` field arms it the same way and is still
+  // told about member functions — probed, tools/probe_member_names.sh); this
+  // keeps the wording searchable against fbc's own, while the anchor is the
+  // field word, which is where the rename goes and where the other two
+  // `invalid-member-name` reports already sit. The member is dropped, as fbc
+  // drops it: completion and hover must not offer a field that does not exist.
+  void dropArmedConditionalFields(Symbol &record) {
+    std::vector<Symbol> &kids = record.children;
+    for (std::size_t i = kids.size(); i-- > 0;) {
+      Symbol const &m = kids[i];
+      bool const field = m.kind == SymbolKind::Variable ||
+                         m.kind == SymbolKind::Dim ||
+                         m.kind == SymbolKind::Const;
+      if (!field || !isConditionalFieldName(m.key)) {
+        continue;
+      }
+      addDiagnostic(m.selection.beg, m.selection.end, Severity::Error,
+                    "invalid-member-name",
+                    trf("'%s' is a reserved word and cannot be a field name in "
+                        "a type with member functions",
+                        m.name));
+      kids.erase(kids.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+  }
+
   void closeBlock(uint32_t end) {
     Block const b = blocks_.back();
+    if (b.armed && b.sym != nullptr) {
+      dropArmedConditionalFields(*b.sym);
+    }
     blocks_.pop_back();
     out_.blockRanges.push_back({b.begOpen, end});
     if (b.sym != nullptr) {
@@ -561,10 +610,10 @@ private:
       }
       if (captureMember &&
           (k == TokenKind::Identifier || k == TokenKind::Keyword)) {
-        // The other 337 reserved words *are* legal field names (`as string
+        // The other 349 reserved words *are* legal field names (`as string
         // name`, `as integer next`), so a keyword is captured exactly like an
-        // identifier. An enum body's 225 legal names arrive by this same route;
-        // its 128 illegal ones never reach it, being a boundary instead — and
+        // identifier. An enum body's 230 legal names arrive by this same route;
+        // its 135 illegal ones never reach it, being a boundary instead — and
         // so does `rem`, which the lexer has already called a comment.
         Symbol m;
         m.kind = mk;
@@ -655,6 +704,10 @@ private:
       if (w == "static" && (nxt.kind == TokenKind::Identifier ||
                             (nxt.kind == TokenKind::Keyword &&
                              toLowerChars(nxt.text()) == "shared"))) {
+        // A `Static` field arms the record body for `error 238`; a plain `Dim`
+        // field is the control that does not (probed,
+        // tools/probe_member_names.sh).
+        armRecordBody();
         handleVarDecls(SymbolKind::Dim);
         return;
       }
@@ -701,7 +754,15 @@ private:
         skipStatement();
         return;
       }
-      handleVarDecls(w == "const" ? SymbolKind::Const : SymbolKind::Dim);
+      if (w == "const") {
+        // `Const` is a trigger too; `Dim`, `Redim`, `Var`, `Local` and `Common`
+        // are not (a plain `Dim` field is the probed control that arms
+        // nothing).
+        armRecordBody();
+        handleVarDecls(SymbolKind::Const);
+        return;
+      }
+      handleVarDecls(SymbolKind::Dim);
       return;
     }
     if (w == "if") {
@@ -884,6 +945,10 @@ private:
 
   void handleDeclBlock(const std::string &openWord, SymbolKind k) {
     Token const openTok = cur_;
+    // Arm the enclosing record before the push: a member procedure body or a
+    // nested record/enum inside a TYPE/UNION is one of the five `error 238`
+    // triggers, and the block this call opens is not the body being armed.
+    armRecordBody();
     BlockCloser closer;
     blockForOpener(openWord, &closer);
     advance();
@@ -1000,6 +1065,9 @@ private:
 
   void handleType() {
     Token const openTok = cur_;
+    // A nested record is the fifth trigger; arm the enclosing one first, before
+    // this record's own block is pushed (FreeBASIC.md §7).
+    armRecordBody();
     BlockCloser closer;
     blockForOpener("type", &closer);
     advance();
@@ -1076,6 +1144,11 @@ private:
 
   void handleDeclare() {
     Token const openTok = cur_;
+    // Any `Declare` in a record body is the member-procedure trigger, including
+    // the ones this handler does not model (`declare constructor()`,
+    // `declare operator`): fbc arms on them all — probed,
+    // tools/probe_member_names.sh.
+    armRecordBody();
     advance(); // past DECLARE
     if (cur_.kind != TokenKind::Keyword) {
       resetDoc();

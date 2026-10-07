@@ -19,17 +19,18 @@ namespace fblang {
 // True if `word` (no suffix) is a reserved FreeBASIC keyword, matched
 // case-insensitively as fbc matches them.
 //
-// The catalog was verified against fbc 1.10.2 with a **one-directional** probe:
-// every entry here fails `dim <word> as integer` (fbc `error 4`), which shows
-// each listed word is reserved and says nothing at all about a word fbc
-// reserves and this catalog omits. A word can only join the set by differential
-// argument — probe fbc for candidates, or diff the whole catalog against fbc's
-// own keyword table — not by re-running the check above. Two directional holes
-// in particular: a non-word keyword (`<something>` the lexer knows as one
-// token) would not be a word to probe, and a `KWD_OPTION_NO_QB` word is
-// unreserved under `-lang qb`, so a probe must fix the dialect for the answer
-// to mean one thing. tools/probe_member_names.sh inherits the same one-way
-// shape, since it enumerates this catalog rather than fbc's.
+// Verified against fbc 1.10.2 in both directions. The check that can *find* a
+// word this set omits is a diff against fbc's own keyword table (`kwdTb`, the
+// `FB_TK_*` token names, and the runtime builtin names the lexer reserves);
+// that diff is how the twelve words this wave added were found. Each entry
+// also fails `dim <word> as integer` (fbc `error 4`), which proves it *is*
+// reserved but is one-directional: it confirms an entry and can never report
+// a missing one. Two holes the diff must carry: a `KWD_OPTION_NO_QB` word is
+// unreserved under `-lang qb` (this server parses `fb`, so the table is the
+// fb answer), and a non-word keyword (an operator the lexer knows as one
+// token) is not an entry here at all. tools/probe_member_names.sh stays
+// one-way by construction — it enumerates this catalog rather than fbc's —
+// and is the check for the member-name tables below.
 bool isReservedWord(std::string_view word);
 
 // The full reserved-word catalog (lowercase, sorted). Completion iterates it
@@ -55,12 +56,12 @@ bool isBuiltinType(std::string_view wordLower);
 //    `Pointer`). fbc's `error 14: Expected identifier`.
 //  * isConditionalFieldName: legal as a TYPE/UNION field name in a plain
 //    record, but `error 238` in one that also holds a `Static` field, a
-//    `Const`, a nested record/enum, or a member procedure (112 words). Note
+//    `Const`, a nested record/enum, or a member procedure (119 words). Note
 //    the asymmetry with `New`/`Delete`, which are never legal: those fail the
 //    name itself, these only fail the body the name sits in.
-//  * isLegalEnumMemberName: legal as an ENUM member name (225 of 353). The enum
-//    rule needs no table of its own: probed, enum-illegal(128) is exactly
-//    never-field(16) + conditional(112). `rem` is in the second half, not
+//  * isLegalEnumMemberName: legal as an ENUM member name (230 of 365). The enum
+//    rule needs no table of its own: probed, enum-illegal(135) is exactly
+//    never-field(16) + conditional(119). `rem` is in the second half, not
 //    special: fbc reads a `rem` line in an enum body as a comment, so
 //    `enum e / rem / end enum` is an empty enum (`error 256`) with no member.
 //

@@ -210,6 +210,8 @@ bool isIncludeDirName(std::string_view lowerName) {
 namespace {
 
 constexpr char const *kReserved[] = {
+    "__fastcall",
+    "__thiscall",
     "abs",
     "abstract",
     "access",
@@ -284,6 +286,10 @@ constexpr char const *kReserved[] = {
     "cunsg",
     "curdir",
     "cushort",
+    "cva_arg",
+    "cva_copy",
+    "cva_end",
+    "cva_start",
     "cvd",
     "cvi",
     "cvl",
@@ -305,6 +311,7 @@ constexpr char const *kReserved[] = {
     "defstr",
     "defubyte",
     "defuint",
+    "defulng",
     "defulongint",
     "defushort",
     "delete",
@@ -317,6 +324,7 @@ constexpr char const *kReserved[] = {
     "dylibfree",
     "dylibload",
     "dylibsymbol",
+    "dynamic",
     "else",
     "elseif",
     "encoding",
@@ -367,6 +375,7 @@ constexpr char const *kReserved[] = {
     "imp",
     "implements",
     "import",
+    "include",
     "inkey",
     "inp",
     "input",
@@ -420,8 +429,10 @@ constexpr char const *kReserved[] = {
     "object",
     "oct",
     "offsetof",
+    "on",
     "open",
     "operator",
+    "option",
     "or",
     "orelse",
     "out",
@@ -536,6 +547,7 @@ constexpr char const *kReserved[] = {
     "until",
     "ushort",
     "using",
+    "va_first",
     "val",
     "valint",
     "vallng",
@@ -574,7 +586,7 @@ constexpr char const *kReserved[] = {
 //     as integer <WORD>
 //   end type
 //
-// 16 of 353: the binary operators, `New`/`Delete`, and the two pointer type
+// 16 of 365: the binary operators, `New`/`Delete`, and the two pointer type
 // keywords `Ptr`/`Pointer` (`as integer ptr` is `error 273: Expected 'PTR' or
 // 'POINTER'`). Every one is `error 14: Expected identifier` except `Const`,
 // which fbc reads as a type modifier and so wants a pointer after.
@@ -587,34 +599,35 @@ constexpr char const *kNeverFieldNames[] = {
 // are `error 238: Fields cannot be named as keywords in TYPE's that contain
 // member functions` in one that also holds a `Static` field, a `Const`, a
 // nested record/enum, or a member procedure (all probed; a plain `Dim` field
-// and an access section do not arm it). These 112 are also illegal as an ENUM
+// and an access section do not arm it). These 119 are also illegal as an ENUM
 // member outright — which is why the enum question needs no table of its own:
 //
-//     enum-illegal(128) == never-field(16) + conditional(112)
+//     enum-illegal(135) == never-field(16) + conditional(119)
 constexpr char const *kConditionalFieldNames[] = {
-    "abs",      "abstract",   "alias",    "any",         "as",
-    "asm",      "base",       "boolean",  "byref",       "byte",
-    "byval",    "call",       "case",     "cast",        "cbool",
-    "cbyte",    "cdbl",       "cdecl",    "cint",        "class",
-    "clng",     "clngint",    "common",   "constructor", "continue",
-    "cptr",     "cshort",     "csign",    "csng",        "cubyte",
-    "cuint",    "culng",      "culngint", "cunsg",       "cushort",
-    "declare",  "destructor", "dim",      "do",          "double",
-    "else",     "elseif",     "end",      "endif",       "enum",
-    "exit",     "export",     "extends",  "extern",      "fix",
-    "for",      "frac",       "function", "goto",        "if",
-    "iif",      "implements", "import",   "int",         "integer",
-    "is",       "let",        "lib",      "long",        "longint",
-    "loop",     "namespace",  "next",     "operator",    "overload",
-    "pascal",   "peek",       "poke",     "private",     "procptr",
-    "property", "protected",  "public",   "rem",         "return",
-    "scope",    "select",     "sgn",      "shared",      "short",
-    "single",   "static",     "stdcall",  "step",        "string",
-    "sub",      "swap",       "then",     "to",          "type",
-    "typeof",   "ubyte",      "uinteger", "ulong",       "ulongint",
-    "union",    "unsigned",   "until",    "ushort",      "using",
-    "var",      "virtual",    "wend",     "while",       "with",
-    "wstring",  "zstring",
+    "__fastcall",  "__thiscall", "abs",        "abstract", "alias",
+    "any",         "as",         "asm",        "base",     "boolean",
+    "byref",       "byte",       "byval",      "call",     "case",
+    "cast",        "cbool",      "cbyte",      "cdbl",     "cdecl",
+    "cint",        "class",      "clng",       "clngint",  "common",
+    "constructor", "continue",   "cptr",       "cshort",   "csign",
+    "csng",        "cubyte",     "cuint",      "culng",    "culngint",
+    "cunsg",       "cushort",    "cva_arg",    "cva_copy", "cva_end",
+    "cva_start",   "declare",    "destructor", "dim",      "do",
+    "double",      "else",       "elseif",     "end",      "endif",
+    "enum",        "exit",       "export",     "extends",  "extern",
+    "fix",         "for",        "frac",       "function", "goto",
+    "if",          "iif",        "implements", "import",   "int",
+    "integer",     "is",         "let",        "lib",      "long",
+    "longint",     "loop",       "namespace",  "next",     "operator",
+    "overload",    "pascal",     "peek",       "poke",     "private",
+    "procptr",     "property",   "protected",  "public",   "rem",
+    "return",      "scope",      "select",     "sgn",      "shared",
+    "short",       "single",     "static",     "stdcall",  "step",
+    "string",      "sub",        "swap",       "then",     "to",
+    "type",        "typeof",     "ubyte",      "uinteger", "ulong",
+    "ulongint",    "union",      "unsigned",   "until",    "ushort",
+    "using",       "va_first",   "var",        "virtual",  "wend",
+    "while",       "with",       "wstring",    "zstring",
 };
 
 constexpr char const *kBuiltinTypes[] = {
@@ -668,6 +681,8 @@ struct DocsPage {
   char const *page;
 };
 constexpr DocsPage kDocsPages[] = {
+    {"__fastcall", "Fastcall"},
+    {"__thiscall", "Thiscall"},
     {"and", "OpAnd"},
     {"andalso", "OpAndAlso"},
     {"condbroadcast", "CondBroadcast"},
@@ -675,7 +690,13 @@ constexpr DocsPage kDocsPages[] = {
     {"conddestroy", "CondDestroy"},
     {"condsignal", "CondSignal"},
     {"condwait", "CondWait"},
+    {"cva_arg", "CvaArg"},
+    {"cva_copy", "CvaCopy"},
+    {"cva_end", "CvaEnd"},
+    {"cva_start", "CvaStart"},
+    {"defulng", "Defulng"},
     {"delete", "OpDelete"},
+    {"dynamic", "Optiondynamic"},
     {"eqv", "OpEqv"},
     {"explicit", "Enum"},
     {"get", "Getfileio"},
@@ -695,6 +716,7 @@ constexpr DocsPage kDocsPages[] = {
     {"mutexunlock", "MutexUnlock"},
     {"new", "OpNew"},
     {"not", "OpNot"},
+    {"on", "Ongoto"},
     {"or", "OpOr"},
     {"orelse", "OpOrElse"},
     {"pointcoord", "PointCoord"},
@@ -710,6 +732,7 @@ constexpr DocsPage kDocsPages[] = {
     {"threadcall", "ThreadCall"},
     {"threadcreate", "ThreadCreate"},
     {"threadwait", "ThreadWait"},
+    {"va_first", "VaFirst"},
     {"varptr", "OpVarptr"},
     {"view", "Viewgraphics"},
     {"xor", "OpXor"},
@@ -1259,10 +1282,23 @@ constexpr bool wordTableSorted(char const *const (&table)[N]) {
   }
   return true;
 }
+static_assert(wordTableSorted(kReserved), "kReserved must be sorted");
 static_assert(wordTableSorted(kNeverFieldNames),
               "kNeverFieldNames must be sorted");
 static_assert(wordTableSorted(kConditionalFieldNames),
               "kConditionalFieldNames must be sorted");
+// kDocsPages is read with std::partition_point, which returns an arbitrary
+// row (then a wrong wiki URL) if the table is out of order.
+constexpr bool docsPagesSorted() {
+  for (std::size_t i = 1; i < std::size(kDocsPages); ++i) {
+    if (!(std::string_view(kDocsPages[i - 1].word) <
+          std::string_view(kDocsPages[i].word))) {
+      return false;
+    }
+  }
+  return true;
+}
+static_assert(docsPagesSorted(), "kDocsPages must be sorted by word");
 constexpr bool memberNameTablesDisjoint() {
   for (char const *never : kNeverFieldNames) {
     for (char const *cond : kConditionalFieldNames) {
@@ -1389,8 +1425,8 @@ bool isConditionalFieldName(std::string_view wordLower) {
 }
 
 bool isLegalEnumMemberName(std::string_view wordLower) {
-  // No table of its own: probed, enum-illegal(128) is exactly never-field(16) +
-  // conditional(112), so this is the whole enum rule expressed in terms of the
+  // No table of its own: probed, enum-illegal(135) is exactly never-field(16) +
+  // conditional(119), so this is the whole enum rule expressed in terms of the
   // two tables the field questions use. `rem` sits in the second half for the
   // same reason as the rest of it and is not special: fbc reads a `rem` line as
   // a comment, so `enum e / rem / end enum` is an *empty* enum (`error 256`)
@@ -1776,10 +1812,10 @@ bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt,
   Token const &first = stmt.front();
   if (kind == BlockKind::Enum) {
     // An enum body is `name`, `name = expr` — a name and at most an `=`,
-    // nothing else. A reserved word is a legal name for 225 of the 353 (the
+    // nothing else. A reserved word is a legal name for 230 of the 365 (the
     // intrinsic and I/O statement words — `print`, `stop`, `data`, `input`
     // among them), so refusing every keyword here reported an unterminated enum
-    // plus a stray closer for code fbc compiles clean. The 128 fbc refuses keep
+    // plus a stray closer for code fbc compiles clean. The 135 fbc refuses keep
     // the answer they had: a boundary, which is where a missing `END ENUM`
     // belongs and what the `unterminated-block` fix inserts at. What they gain
     // is being *named* on the way out — the boundary says the closer is

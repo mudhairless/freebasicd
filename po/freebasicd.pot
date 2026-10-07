@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-10-01 19:33-0500\n"
-"PO-Revision-Date: 2026-10-01 19:33-0500\n"
+"POT-Creation-Date: 2026-10-07 10:33-0500\n"
+"PO-Revision-Date: 2026-10-07 10:33-0500\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -54,7 +54,7 @@ msgid_plural "%s references"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/parser.cpp:96
+#: src/parser.cpp:101
 #, c-format
 msgid "/// is not a %s comment; use '' for doc comments"
 msgstr ""
@@ -62,49 +62,56 @@ msgstr ""
 #. TRANSLATORS: %s = the proper noun "FreeBASIC" (never
 #. translated); the second %s is an example directive kept
 #. verbatim.
-#: src/parser.cpp:111
+#: src/parser.cpp:116
 #, c-format
 msgid ""
 "bare '$' is not a valid metacommand; %s metacommands are written as "
 "comments, e.g. %s"
 msgstr ""
 
-#: src/parser.cpp:133 src/parser.cpp:396 src/parser.cpp:1272
-#: src/parser.cpp:1336
+#: src/parser.cpp:138 src/parser.cpp:445 src/parser.cpp:1369
+#: src/parser.cpp:1433
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
 
-#: src/parser.cpp:159
+#: src/parser.cpp:164
 msgid "unterminated string literal"
 msgstr ""
 
-#: src/parser.cpp:178
+#: src/parser.cpp:183
 #, c-format
 msgid "dialect '%s' is not supported yet; parsing in '%s' mode"
 msgstr ""
 
-#: src/parser.cpp:354
+#: src/parser.cpp:359
 #, c-format
 msgid "duplicate definition: '%s'"
 msgstr ""
 
-#: src/parser.cpp:437
+#: src/parser.cpp:410
+#, c-format
+msgid ""
+"'%s' is a reserved word and cannot be a field name in a type with member "
+"functions"
+msgstr ""
+
+#: src/parser.cpp:486
 #, c-format
 msgid "'%s' is a reserved word and cannot be an enum member name"
 msgstr ""
 
-#: src/parser.cpp:497
+#: src/parser.cpp:550
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:543 src/parser.cpp:1186
+#: src/parser.cpp:605 src/parser.cpp:1283
 #, c-format
 msgid "'%s' is a reserved word and cannot be a field name"
 msgstr ""
 
-#: src/parser.cpp:690 src/parser.cpp:699 src/parser.cpp:1295
-#: src/parser.cpp:1364 src/parser.cpp:1412 src/parser.cpp:1419
+#: src/parser.cpp:775 src/parser.cpp:784 src/parser.cpp:1392
+#: src/parser.cpp:1461 src/parser.cpp:1509 src/parser.cpp:1516
 #, c-format
 msgid "%s without %s"
 msgstr ""

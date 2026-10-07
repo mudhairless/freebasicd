@@ -265,7 +265,7 @@ static void testAcceptsBodyMember() {
       {BlockKind::Enum, "dim n as integer", false, ""},
       {BlockKind::Enum, "public:", false, ""},
       {BlockKind::Enum, "as integer a", false, ""},
-      // A reserved word is a legal enum member name for 226 of the 353 — the
+      // A reserved word is a legal enum member name for 230 of the 365 — the
       // I/O and intrinsic statement words above all — so an enum body is not
       // the
       // boundary every keyword used to be. `name = expr` and nothing more: the
@@ -279,7 +279,7 @@ static void testAcceptsBodyMember() {
       {BlockKind::Enum, "a(3)", false, ""},
       {BlockKind::Enum, "print a = 1", false, ""},
       {BlockKind::Enum, "x as integer", false, ""},
-      // ...and the 127 it refuses keep the answer they had, a boundary, with
+      // ...and the 135 it refuses keep the answer they had, a boundary, with
       // the name named on the way out. A bare closer word is one of them: an
       // enum body is not a loop body, so nothing above it wants `next`.
       {BlockKind::Enum, "sub", false, ""},
@@ -367,9 +367,9 @@ static void testAcceptsBodyMember() {
 // The probed member-name tables, over the whole reserved-word catalog. The
 // probe is `tools/probe_member_names.sh`, which compiles one `type`/`enum` per
 // reserved word against fbc 1.10.2 and reports which words each body kind
-// accepts; the answer is 16 words no record field may be named, 112 that a
+// accepts; the answer is 16 words no record field may be named, 119 that a
 // plain record accepts but fbc's `error 238` refuses in a record that also
-// holds a member procedure, and 128 that no enum member may be named. The enum
+// holds a member procedure, and 135 that no enum member may be named. The enum
 // count is derived, not tabulated, and the derivation is what this checks.
 static void testMemberNameTables() {
   // The 16, spelled out: this list *is* the `invalid-member-name` diagnostic
@@ -406,7 +406,7 @@ static void testMemberNameTables() {
     nConditionalSeen += conditional ? 1 : 0;
     // The derived enum rule, checked against its own definition over every word
     // in the catalog rather than against a third hand-kept list:
-    //     enum-illegal(128) == never-field(16) + conditional(112)
+    //     enum-illegal(135) == never-field(16) + conditional(119)
     bool const wantEnumLegal = !never && !conditional;
     if (isLegalEnumMemberName(w) != wantEnumLegal) {
       std::printf("FAIL isLegalEnumMemberName(\"%s\") = %d, want %d\n",
@@ -416,10 +416,10 @@ static void testMemberNameTables() {
     }
     nEnumLegal += isLegalEnumMemberName(w) ? 1 : 0;
   }
-  CHECK(reservedWords().size() == 353);
+  CHECK(reservedWords().size() == 365);
   CHECK(nNeverSeen == nNever);
-  CHECK(nConditionalSeen == 112);
-  CHECK(nEnumLegal == 225);
+  CHECK(nConditionalSeen == 119);
+  CHECK(nEnumLegal == 230);
 
   // A word that is not reserved is in neither table. The enum predicate is
   // vacuously true for one — its rule is derived from the two tables, and a
@@ -468,6 +468,62 @@ static void testMemberNameTables() {
   CHECK(isConditionalFieldName("next"));
   CHECK(isConditionalFieldName("end"));
   CHECK(!isLegalEnumMemberName("next"));
+
+  // The twelve reserved words with their probed member-name answers
+  // (tools/probe_member_names.sh): seven are conditional field names — illegal
+  // as enum members and refused by `error 238` in an armed record — and five,
+  // the quirk words, are legal everywhere, as a field, as an enum member, and
+  // beside a member function. The two answers on one word are the evidence
+  // that keyword legality is not one boolean.
+  struct WordAnswer {
+    char const *word;
+    bool conditional; // legal plain-record field, refused when armed
+    bool enumLegal;
+  };
+  WordAnswer const kNewReservedWords[] = {
+      {"__fastcall", true, false}, {"__thiscall", true, false},
+      {"cva_arg", true, false},    {"cva_copy", true, false},
+      {"cva_end", true, false},    {"cva_start", true, false},
+      {"defulng", false, true},    {"dynamic", false, true},
+      {"include", false, true},    {"on", false, true},
+      {"option", false, true},     {"va_first", true, false},
+  };
+  for (WordAnswer const &w : kNewReservedWords) {
+    if (!isReservedWord(w.word)) {
+      std::printf("FAIL isReservedWord(\"%s\") = false, want true\n", w.word);
+      ++failures;
+    }
+    if (isNeverFieldName(w.word)) {
+      std::printf("FAIL isNeverFieldName(\"%s\") = true, want false\n", w.word);
+      ++failures;
+    }
+    if (isConditionalFieldName(w.word) != w.conditional) {
+      std::printf("FAIL isConditionalFieldName(\"%s\") = %d, want %d\n", w.word,
+                  isConditionalFieldName(w.word) ? 1 : 0,
+                  w.conditional ? 1 : 0);
+      ++failures;
+    }
+    if (isLegalEnumMemberName(w.word) != w.enumLegal) {
+      std::printf("FAIL isLegalEnumMemberName(\"%s\") = %d, want %d\n", w.word,
+                  isLegalEnumMemberName(w.word) ? 1 : 0, w.enumLegal ? 1 : 0);
+      ++failures;
+    }
+  }
+  // Their docs-pages rows (the naive KeyPg<word> rule is wrong for all of
+  // them): the URLs keywordDocsUrl builds must name the real pages.
+  CHECK(keywordDocsUrl("__fastcall").find("KeyPgFastcall") !=
+        std::string::npos);
+  CHECK(keywordDocsUrl("__thiscall").find("KeyPgThiscall") !=
+        std::string::npos);
+  CHECK(keywordDocsUrl("cva_arg").find("KeyPgCvaArg") != std::string::npos);
+  // `defulng` is the one `def*` word with no wiki page yet; the row points
+  // it at KeyPgDefulng, the name its siblings follow, explicitly rather
+  // than through the naive rule that builds the same URL today.
+  CHECK(keywordDocsUrl("defulng").find("KeyPgDefulng") != std::string::npos);
+  CHECK(keywordDocsUrl("on").find("KeyPgOngoto") != std::string::npos);
+  CHECK(keywordDocsUrl("dynamic").find("KeyPgOptiondynamic") !=
+        std::string::npos);
+  CHECK(keywordDocsUrl("va_first").find("KeyPgVaFirst") != std::string::npos);
 }
 
 static void testFolderNameCatalog() {

@@ -814,9 +814,12 @@ int main() {
     // storage of their own — `ptr`, the documented workaround, and `static` —
     // and both compile in fbc, so neither may become a boundary. An array
     // dimension does not help (`dim p as point(10)` is `error 88`), and
-    // neither does a type suffix, which `fb` ignores (warning 44).
+    // neither does a type suffix, which `fb` ignores (warning 44). The field
+    // is not named `next`: the server refuses conditional field names in a
+    // record a `Static` arms, which fbc rejects with `error 238`
+    // and this body now diagnoses.
     std::string const src = "type node\n"
-                            "  next as node ptr\n"
+                            "  tail as node ptr\n"
                             "  static total as node\n"
                             "  label as string\n"
                             "end type\n";
@@ -1093,7 +1096,7 @@ int main() {
     CHECK(diagnosticCount(r, "unterminated-block") == 0);
   }
   {
-    // A union body is a record body for this purpose, and the 337 words fbc
+    // A union body is a record body for this purpose, and the 349 words fbc
     // does accept stay members: `next` is the canonical linked-list field.
     std::string const src = "type node\n"
                             "  as integer next\n"
@@ -1294,6 +1297,63 @@ int main() {
                                   "end enum\n");
     CHECK(diagnosticCount(r, "unterminated-block") == 1);
     CHECK(diagnosticCount(r, "invalid-member-name") == 0);
+  }
+  {
+    // The negative test: a conditional field name beside a member procedure.
+    // `cva_arg` is legal in a plain record (probe: a plain `type` body
+    // accepts every conditional word), but fbc refuses it here with
+    // `error 238` anchored on `end type` (FreeBASIC.md §7); this server
+    // refuses it at close too, with the diagnostic on the field word, and
+    // drops the member as fbc drops it — completion and hover must not offer
+    // a field fbc rejects. The trigger is the un-modeled
+    // `declare constructor()`, which arms the body through the
+    // wait-until-close check: `declare constructor()` declares no field,
+    // then `cva_arg` is captured, then `end type` closes and the field is
+    // refused.
+    ParseResult const r = parseDocument("type t\n"
+                                        "  declare constructor()\n"
+                                        "  cva_arg as integer\n"
+                                        "end type\n");
+    CHECK(diagnosticCount(r, "invalid-member-name") == 1);
+    const Symbol *t = find(r.roots, "t", SymbolKind::Type);
+    CHECK(t != nullptr);
+    CHECK(t != nullptr && t->children.empty());
+  }
+  {
+    // The other order, which the close-time check exists for: the field sits
+    // *before* the trigger (the probe compiles the field first in every body).
+    // fbc rejects both orders — `error 238` is about the body, not the line —
+    // and a capture-time-only check would have accepted this one.
+    ParseResult const r = parseDocument("type t\n"
+                                        "  va_first as integer\n"
+                                        "  declare sub go()\n"
+                                        "end type\n");
+    CHECK(diagnosticCount(r, "invalid-member-name") == 1);
+    const Symbol *t = find(r.roots, "t", SymbolKind::Type);
+    CHECK(t != nullptr);
+    // The declared member procedure itself survives the drop: only the
+    // conditional field goes, and `go` stays registered for completion.
+    CHECK(t != nullptr && t->children.size() == 1);
+    if (t != nullptr && t->children.size() == 1) {
+      CHECK(t->children[0].key == "go");
+      CHECK(t->children[0].kind == SymbolKind::Sub);
+    }
+  }
+  {
+    // The same word in a plain record is a legal field and is captured, not
+    // dropped: the diagnostic is about the body, never the name.
+    ParseResult const r = parseDocument("type t\n"
+                                        "  cva_arg as integer\n"
+                                        "  next as node ptr\n"
+                                        "end type\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *t = find(r.roots, "t", SymbolKind::Type);
+    CHECK(t != nullptr);
+    CHECK(t != nullptr && t->children.size() == 2);
+    if (t != nullptr && t->children.size() == 2) {
+      CHECK(t->children[0].key == "cva_arg");
+      CHECK(t->children[1].key == "next");
+    }
   }
 
   if (failures == 0) {

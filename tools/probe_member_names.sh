@@ -43,7 +43,7 @@ fi
 mapfile -t WORDS < <(
   sed -n '/^constexpr char const \*kReserved\[\]/,/^};/p' \
     "$ROOT/src/language.cpp" |
-    grep -o '"[a-z0-9]*"' | tr -d '"'
+    python3 -c "import sys,re; s=sys.stdin.read(); print('\n'.join(re.findall(r'\"([^\"]+)\"', s)))"
 )
 
 # fbc drops a bare .o next to the source it compiles, so each program gets its
