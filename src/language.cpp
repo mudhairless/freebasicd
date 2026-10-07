@@ -587,9 +587,12 @@ constexpr char const *kReserved[] = {
 //   end type
 //
 // 16 of 365: the binary operators, `New`/`Delete`, and the two pointer type
-// keywords `Ptr`/`Pointer` (`as integer ptr` is `error 273: Expected 'PTR' or
-// 'POINTER'`). Every one is `error 14: Expected identifier` except `Const`,
-// which fbc reads as a type modifier and so wants a pointer after.
+// keywords `Ptr`/`Pointer`. Every one is `error 14: Expected identifier`
+// except `Const`, which fbc reads as a type modifier and so wants a pointer
+// after (`as integer const` is `error 273: Expected 'PTR' or 'POINTER'`).
+// The probe template is the *dangling* chain: with a field behind it
+// (`as integer ptr p`) `Ptr` is a modifier, not a name, and reports nothing —
+// that is the chain rule in parser.cpp's `skipStatement`/`handleVarDecls`.
 constexpr char const *kNeverFieldNames[] = {
     "and", "andalso", "const",  "delete",  "eqv", "imp", "mod", "new",
     "not", "or",      "orelse", "pointer", "ptr", "shl", "shr", "xor",

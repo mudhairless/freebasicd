@@ -26,6 +26,33 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-07 — The type half of a field declaration is a chain, not a word
+
+- **`as integer ptr the_data` no longer reports `ptr` and no longer drops
+  `the_data`.** The type after `As` is a chain — `As Integer Ptr p`,
+  `As Integer Ptr Ptr m`, `As Integer Const Ptr c`, `As Const Integer c`,
+  `Dim x As Integer Ptr`, and the type-first list `Dim As Integer Ptr a, b`,
+  all probed against fbc 1.10.2 — and both member-capture paths consumed
+  exactly *one* word of it, so the next word landed in the field-name
+  position. `ptr` is one of the 16 words fbc refuses as a field name, so the
+  never-field report fired on the **modifier**, while the field the line
+  declares was dropped from completion, hover, and `t.the_data` resolution.
+  Fixed at both seams: `skipStatement` (the bare `As` form) and
+  `handleVarDecls` (`Dim`/`Const`/`Var`/`Local`/`Redim`), which now skip the
+  whole chain while a declared name still follows — or all of it when the
+  name came first (`dim x as integer ptr`).
+- **The report keeps its anchor where fbc has one.** A chain with no field
+  behind it (`as integer ptr`, `error 14: Expected identifier`) still reports
+  on the dangling word, and a dangling `Const` (`error 273`) still reports
+  too — the rule was always right about the *word* and wrong about the
+  position, because the position is chosen by the type skip: when a report
+  names a modifier, the type parser upstream of it is what to distrust, not
+  the word table. The probe template is the dangling form for exactly this
+  reason, and `FreeBASIC.md` §7 now records the chain shape the parser
+  encodes (the `kNeverFieldNames` comment attributing `error 273` to
+  `as integer ptr` was a typo for `as integer const`, corrected against the
+  probe).
+
 ### 2026-10-07 — The keyword catalog rounded out, error 238 raised at close, and closer hints for UDT member procedures
 
 - **Twelve missing reserved words join `kReserved` (353 → 365):** `__fastcall`,

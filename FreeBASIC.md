@@ -219,6 +219,17 @@ variables are created normally, except that the Dim keyword is optional"
 `(wiki)`. Both spellings declare a field fbc resolves through `p.member`
 `(fbc)`.
 
+The type half of a field declaration is a **chain**, not one word: a type
+followed by any number of `Ptr`/`Pointer` modifiers, with `Const` allowed
+inside the chain (fbc reads it as a modifier that must be followed by one) —
+`As Integer Ptr the_data`, `As Integer Ptr Ptr m`, `As Integer Const Ptr c`,
+`As Const Integer c`, `As Udt Ptr u`, `Dim x As Integer Ptr`, and the
+type-first list `Dim As Integer Ptr a, b` (one type, several names) all
+compile `(fbc)`. The field name is what *follows* the chain, so a `Ptr` in
+that position is never the name; with nothing behind it the chain is
+incomplete and fbc anchors `error 14: Expected identifier` on the dangling
+word (`As Integer Const` alone is `error 273`, wanting its pointer).
+
 Legal `ENUM` body members: `name`, `name = expr` — and nothing else `(fbc)`. The
 array-shaped form is not one of them: `a(1) = 1` is `error 3: Expected
 End-of-Line`, so an enumerator cannot carry a subscript.

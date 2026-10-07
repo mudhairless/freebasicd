@@ -500,6 +500,18 @@ private:
            (t.kind == TokenKind::Symbol && t.text() == ":");
   }
 
+  // Can `t` continue a type chain after `As`? A builtin type word (`ptr`,
+  // `pointer`, `integer`, `zstring`, …) or the `const` modifier: everything
+  // `as integer ptr the_data` puts between the type and the field name
+  // (probed; fbc compiles those chains).
+  static bool isTypeChainWord(Token const &t) {
+    if (t.kind != TokenKind::Keyword) {
+      return false;
+    }
+    std::string const w = toLowerChars(t.text());
+    return isBuiltinType(w) || w == "const";
+  }
+
   // The tokens of the statement starting at `cur_`, up to its statement end.
   // Same stop set as skipStatement — a newline, a comment, or a `:` separator —
   // so a `:`-separated statement is judged on its own tokens, and the lexer has
@@ -578,8 +590,8 @@ private:
           // The type is one name token; a keyword is consumed as part of the
           // type only while a member name still follows, so `as integer name`
           // keeps `name` as the member while `as name n` (`name` is a keyword
-          // *type* name) and `as integer ptr p` keep `n`/`p`. Reserved words
-          // are valid field names (fbc-verified): `as string name`.
+          // *type* name) keeps `n`. Reserved words are valid field names
+          // (fbc-verified): `as string name`.
           if (cur_.kind == TokenKind::Identifier) {
             advance();
           } else if (cur_.kind == TokenKind::Keyword) {
@@ -590,6 +602,25 @@ private:
             if (isBuiltinType(toLowerChars(cur_.text())) || memberFollows) {
               advance();
             }
+          }
+          // The type half is a chain, not one word: `as integer ptr p`,
+          // `as integer const ptr c`, `as const integer c`, `as udt ptr ptr m`
+          // (probed; fbc compiles every one). Keep consuming type words while
+          // a member name still follows, or `ptr` stops here and reaches the
+          // never-field report below as though it were the field name — the
+          // field is `p`/`c`/`m`, and `ptr` is only its modifier. A chain
+          // word with no name behind it is left alone: `as integer ptr` is
+          // `error 14: Expected identifier` in fbc, and the report on the
+          // dangling word is the closest this parser gets to that error.
+          while (isTypeChainWord(cur_)) {
+            Token const nxt = lex_.peek(0);
+            bool const memberFollows = nxt.kind == TokenKind::Identifier ||
+                                       (nxt.kind == TokenKind::Keyword &&
+                                        toLowerChars(nxt.text()) != "as");
+            if (!memberFollows) {
+              break;
+            }
+            advance();
           }
           continue;
         }
@@ -1257,11 +1288,27 @@ private:
         } else if (tk == TokenKind::Keyword &&
                    toLowerChars(cur_.text()) == "as") {
           advance();
-          // Type-first form: `DIM AS <type> name`. Skip the type
-          // (builtin keyword or user-defined type) before the name.
-          if ((cur_.kind == TokenKind::Keyword &&
-               isBuiltinType(toLowerChars(cur_.text()))) ||
-              cur_.kind == TokenKind::Identifier) {
+          // Type-first form: `DIM AS <type> name`. Skip the whole type
+          // *chain* before the name, not one word: `dim as integer ptr a, b`
+          // and `dim x as integer ptr` both end the type in `ptr`, which is
+          // the pointer modifier and never the declared name (probed; fbc
+          // compiles both). Stopping on `ptr` used to report it as a
+          // reserved word used as a field name — the field is `a`/`b`/`x`.
+          // Words are skipped while a name still follows; when the name
+          // came first (`dim x as ...`) the rest of the line *is* type, so
+          // every chain word goes, except a dangling `const`: fbc refuses
+          // that (`error 273: Expected 'PTR' or 'POINTER'`) and the report
+          // on the word is what says so.
+          if (cur_.kind == TokenKind::Identifier) {
+            advance();
+          }
+          while (isTypeChainWord(cur_)) {
+            bool const danglingConst = !atName &&
+                                       toLowerChars(cur_.text()) == "const" &&
+                                       !isTypeChainWord(lex_.peek(0));
+            if (danglingConst || (atName && endsStatement(lex_.peek(0)))) {
+              break;
+            }
             advance();
           }
           continue;

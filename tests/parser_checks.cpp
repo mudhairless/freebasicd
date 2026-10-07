@@ -1254,6 +1254,73 @@ int main() {
     }
   }
   {
+    // The type half of a field declaration is a chain, not one word: in
+    // `as integer ptr the_data`, `ptr` is the pointer modifier and
+    // `the_data` is the field (probed; every line below compiles under fbc
+    // 1.10.2). The never-field report used to fire on the *modifier* —
+    // naming `ptr` as though it were the field name — and dropped the field
+    // the line does declare, so completion and hover had no `the_data`.
+    // Both declaration spellings are covered: the bare `As` form and the
+    // `Dim` one, which reaches the same chain question through
+    // handleVarDecls, name-first (`dim x as integer ptr`) and type-first
+    // (`dim as integer ptr a, b` — the way to declare several fields of one
+    // pointer type).
+    struct ChainCase {
+      char const *line;
+      char const *first;
+      char const *second; // "" when the declaration has one name
+    };
+    constexpr ChainCase kChainCases[] = {
+        {"as integer ptr the_data", "the_data", ""},
+        {"as integer ptr ptr m", "m", ""},
+        {"as integer const ptr c1", "c1", ""},
+        {"as const integer c", "c", ""},
+        {"as zstring ptr s1", "s1", ""},
+        {"as udt ptr u", "u", ""},
+        {"x as integer ptr", "x", ""},
+        {"dim x as integer ptr", "x", ""},
+        {"dim as integer ptr q", "q", ""},
+        {"dim as integer ptr a, b", "a", "b"},
+        {"dim as const integer c", "c", ""},
+        {"dim as udt ptr u1, u2", "u1", "u2"},
+    };
+    for (ChainCase const &c : kChainCases) {
+      std::string const src = std::string("type udt\n"
+                                          "  as integer z\n"
+                                          "end type\n"
+                                          "type t\n  ") +
+                              c.line + "\nend type\n";
+      ParseResult const r = parseDocument(src);
+      if (!r.diagnostics.empty()) {
+        std::printf("FAIL type chain \"%s\": %zu diagnostic(s), first %s\n",
+                    c.line, r.diagnostics.size(),
+                    r.diagnostics.front().code.c_str());
+        ++failures;
+      }
+      if (!declares(r, c.first)) {
+        std::printf("FAIL type chain \"%s\": no member \"%s\"\n", c.line,
+                    c.first);
+        ++failures;
+      }
+      if (c.second[0] != '\0' && !declares(r, c.second)) {
+        std::printf("FAIL type chain \"%s\": no member \"%s\"\n", c.line,
+                    c.second);
+        ++failures;
+      }
+      // The modifier is not a member — nothing in the chain leaks a name
+      // the compiler never created.
+      CHECK(!declares(r, "ptr"));
+    }
+    // And the report the audit above asks for still stands where the chain
+    // is dangling: fbc's own answer to `as integer ptr` with no field behind
+    // it is `error 14: Expected identifier`.
+    ParseResult const bare = parseDocument("type t\n"
+                                           "  as integer ptr\n"
+                                           "end type\n");
+    CHECK(diagnosticCount(bare, "invalid-member-name") == 1);
+    CHECK(!declares(bare, "ptr"));
+  }
+  {
     // A member name that a statement opener would otherwise claim. The tables
     // say these words are legal names, and a member we drop is a member
     // completion and hover cannot offer — the diagnostic wave found this by
