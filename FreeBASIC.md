@@ -19,6 +19,10 @@ doc URLs and block-closer facts (block closures in §7 are `(fbc)`).
 The compiler's own source is the authority behind every `error N` / `warning N`
 code quoted in this file — §13 says where the catalog lives, how the numbering
 works, and how to check a code against its text without installing anything.
+The compiler includes numerous example of syntax and general usage under
+the `~/Projects/freebasic/compiler/examples` directory. You should checkout a tagged
+version release matching the installed version to use as newer versions/master
+branch may support new features.
 
 Documentation Table of Contents: https://www.freebasic.net/wiki/DocToc
 
@@ -1100,7 +1104,9 @@ Every `error N` / `warning N` in this file is a real fbc message, and fbc's
 needed to check one `(src)`.
 
 Source: the compiler is FreeBASIC itself. `src/compiler/` (173 files),
-`src/rtlib/` and `src/gfxlib2/` are C.
+`src/rtlib/` and `src/gfxlib2/` are C. A local copy of the compiler is located 
+at `~/Projects/freebasic/compiler`, do not modify repo and only look at a checkout
+of a tagged release matching the installed version.
 
 - **Repository**: `https://github.com/freebasic/fbc`. Read at tag **`1.10.2`** =
   commit `8e1023e3`, the release matching the system `fbc` this file is probed
