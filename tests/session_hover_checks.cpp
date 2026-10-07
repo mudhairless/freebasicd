@@ -290,6 +290,23 @@ char const *kIntrinsicHoverFrame =
     R"FB({"jsonrpc":"2.0","id":"ihv","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file://{{tmp}}/intr.bas"},"position":{"line":5,"character":4}}})FB";
 
+// The runtime builtins this wave added rows for: hovering `sleep` (a statement
+// keyword) and `inp` (a function) must show the catalog signature and the
+// intrinsic's wiki page — not the generic keyword link. Both words are
+// reserved, so the token is a Keyword either way; the catalog answer must win.
+char const kDidOpenNewIntrinsicsHoverFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file://{{tmp}}/hovint.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"sleep 500\ninp(&H3C)\n"}}})FB";
+
+char const *kSleepHoverFrame =
+    R"FB({"jsonrpc":"2.0","id":"hgs","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovint.bas"},"position":{"line":0,"character":1}}})FB";
+
+char const *kInpHoverFrame =
+    R"FB({"jsonrpc":"2.0","id":"hgi","method":"textDocument/hover","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/hovint.bas"},"position":{"line":1,"character":1}}})FB";
+
 // Enum members resolve on hover: an `Explicit` enum's branded value
 // (`MyEnum.value_1`), a plain enum's qualified member with a reserved-word
 // enum name (`color.green`), and a bare plain-enum member usage (`z = green`)
@@ -723,6 +740,44 @@ void TestHoverShowsIntrinsicSignature() {
 
   session.stop();
 }
+
+void TestHoverShowsNewIntrinsicSignatures() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenNewIntrinsicsHoverFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "intrinsics hover document didOpen must publish diagnostics");
+
+  // `sleep` is a statement keyword: the catalog signature and its page, not
+  // the plain keyword link.
+  input->append(MakeLspFrame(kSleepHoverFrame));
+  std::string const sleep = WaitForOutputContaining(output, "\"id\":\"hgs\"");
+  Expect(sleep.find("Sleep [ amount [, keyflag ]]") != std::string::npos,
+         "hover on Sleep must show the catalog statement signature");
+  Expect(sleep.find("FreeBASIC intrinsic") != std::string::npos,
+         "hover on Sleep must label it an intrinsic");
+  Expect(sleep.find("https://www.freebasic.net/wiki/KeyPgSleep") !=
+             std::string::npos,
+         "hover on Sleep must link to the Sleep wiki page");
+
+  // `inp` is a function row: same treatment.
+  input->append(MakeLspFrame(kInpHoverFrame));
+  std::string const inp = WaitForOutputContaining(output, "\"id\":\"hgi\"");
+  Expect(inp.find("Inp( port As Ushort ) As Long") != std::string::npos,
+         "hover on Inp must show the catalog function signature");
+  Expect(inp.find("https://www.freebasic.net/wiki/KeyPgInp") !=
+             std::string::npos,
+         "hover on Inp must link to the Inp wiki page");
+
+  session.stop();
+}
 } // namespace
 
 namespace fbtest {
@@ -738,6 +793,7 @@ void RunHoverTests() {
   RUN_TEST(TestMemberHoverFallsBackToOwningVariable);
   RUN_TEST(TestHoverLinksKeywordDocs);
   RUN_TEST(TestHoverShowsIntrinsicSignature);
+  RUN_TEST(TestHoverShowsNewIntrinsicSignatures);
 }
 
 } // namespace fbtest

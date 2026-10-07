@@ -110,6 +110,65 @@ static void testLookup() {
   CHECK(intrinsicFor("$") == nullptr);
 }
 
+static void testRuntimeBuiltins() {
+  // The eight runtime builtins the catalog now owns — names fbc registers
+  // that had no `kIntrinsics` row, so keyword completion skipped them and
+  // hover fell through to "FreeBASIC keyword". Probe notes (fbc 1.10.2):
+  // `Sleep` and `DylibFree`/`DylibSymbol` are statements with a separate
+  // function form — one row per base name, so the row is the common call
+  // form, and `Inp`/`Lpos` are functions (`lpos = Lpos()` compiles, `Inp`
+  // reads a port).
+  struct Row {
+    char const *key;
+    char const *page; // "" when the naive KeyPg<key> rule is right
+    IntrinsicKind kind;
+    char const *signature;
+  };
+  Row const rows[] = {
+      {"dylibfree", "DylibFree", IntrinsicKind::Statement,
+       "Dylibfree( libhandle As Any Ptr )"},
+      {"dylibload", "DylibLoad", IntrinsicKind::Function,
+       "Dylibload( libname As String ) As Any Ptr"},
+      {"dylibsymbol", "DylibSymbol", IntrinsicKind::Function,
+       "Dylibsymbol( libhandle As Any Ptr, symbol As String ) As Any Ptr"},
+      {"inp", "", IntrinsicKind::Function, "Inp( port As Ushort ) As Long"},
+      {"lpos", "", IntrinsicKind::Function, "Lpos( printer As Long ) As Long"},
+      {"out", "", IntrinsicKind::Statement,
+       "Out port As Integer, value As Integer"},
+      {"sleep", "", IntrinsicKind::Statement, "Sleep [ amount [, keyflag ]]"},
+      {"wait", "", IntrinsicKind::Statement,
+       "Wait port As Integer, and_value As Integer [, xor_value As Integer]"},
+  };
+  for (Row const &r : rows) {
+    Intrinsic const *fn = intrinsicFor(r.key);
+    if (fn == nullptr) {
+      std::printf("FAIL intrinsicFor(\"%s\") = null\n", r.key);
+      ++failures;
+      continue;
+    }
+    if (fn->kind != r.kind) {
+      std::printf("FAIL intrinsicFor(\"%s\").kind = %d, want %d\n", r.key,
+                  static_cast<int>(fn->kind), static_cast<int>(r.kind));
+      ++failures;
+    }
+    CHECK_EQ_STR(fn->signature, r.signature);
+    // Suffix spellings and an all-caps spelling hit the same row (`fb`
+    // ignores suffixes, warning 44; FreeBASIC.md §2).
+    CHECK(intrinsicFor(std::string(r.key) + "%") == fn);
+    CHECK(intrinsicFor(std::string(r.key) + "$") == fn);
+    std::string const upper =
+        *r.key ? std::string(1, static_cast<char>(r.key[0] - 'a' + 'A'))
+               : std::string();
+    CHECK(intrinsicFor(upper + std::string(r.key).substr(1)) == fn);
+    std::string const wantPage =
+        r.page[0] != '\0'
+            ? r.page
+            : std::string(1, static_cast<char>(r.key[0] - 'a' + 'A')) +
+                  std::string(r.key).substr(1);
+    CHECK(intrinsicDocsUrl(*fn).find("KeyPg" + wantPage) != std::string::npos);
+  }
+}
+
 static void testCatalogShape() {
   std::vector<Intrinsic const *> const all = intrinsics();
   CHECK(all.size() > 200);
@@ -565,14 +624,87 @@ static void testFolderNameCatalog() {
   CHECK(!isIncludeDirName(""));
 }
 
+// Byte offset of the first Keyword token equal to `word`, or UINT32_MAX when
+// absent (a probe source may legitimately start with the word at offset 0).
+static std::uint32_t firstKw(std::vector<Token> const &toks,
+                             std::string const &word) {
+  for (Token const &t : toks) {
+    if (t.kind == TokenKind::Keyword &&
+        toLowerChars(std::string(t.text())) == word) {
+      return t.beg;
+    }
+  }
+  return UINT32_MAX;
+}
+
+static void testExpectedCloser() {
+  // The four procedure keywords have two lives (FreeBASIC.md §7, §12): a
+  // member *declaration* inside a record body — `constructor()`,
+  // `property p()`, `declare constructor()` — where the body ends at
+  // `end type` and a closer sentence is fbc's `error 19`, and a module-level
+  // block that `END CONSTRUCTOR` really closes. expectedCloserAt gates the
+  // record-body form; `sub`/`function` are deliberately not gated — this
+  // parser reads their body form as a real block that `END SUB` closes.
+  {
+    std::vector<Token> const toks = tokensOf("type t\n"
+                                             "  constructor()\n"
+                                             "end type\n");
+    std::uint32_t const beg = firstKw(toks, "constructor");
+    CHECK(beg != UINT32_MAX);
+    CHECK(beg != UINT32_MAX && expectedCloserAt(toks, beg).empty());
+  }
+  {
+    std::vector<Token> const toks = tokensOf("type t\n"
+                                             "  property p()\n"
+                                             "end type\n");
+    std::uint32_t const beg = firstKw(toks, "property");
+    CHECK(beg != UINT32_MAX);
+    CHECK(beg != UINT32_MAX && expectedCloserAt(toks, beg).empty());
+  }
+  {
+    // The declare form declares no field and pushes no block; the gate is what
+    // keeps a naive `blockForOpener` answer from leaking out of it.
+    std::vector<Token> const toks = tokensOf("type t\n"
+                                             "  declare constructor()\n"
+                                             "end type\n");
+    std::uint32_t const beg = firstKw(toks, "constructor");
+    CHECK(beg != UINT32_MAX);
+    CHECK(beg != UINT32_MAX && expectedCloserAt(toks, beg).empty());
+  }
+  {
+    // Module level is not a record body: the implementation is a real block
+    // and keeps its closer, which is what the inlay hint and quick fix rely on.
+    std::vector<Token> const toks = tokensOf("constructor t()\n"
+                                             "end constructor\n");
+    std::uint32_t const beg = firstKw(toks, "constructor");
+    CHECK(beg != UINT32_MAX);
+    CHECK(beg != UINT32_MAX &&
+          expectedCloserAt(toks, beg) == "END CONSTRUCTOR");
+  }
+  {
+    // The deliberate non-gate: a `sub` body inside a record is read as a real
+    // block (FreeBASIC.md §12), so its closer hint must survive the record
+    // gate.
+    std::vector<Token> const toks = tokensOf("type t\n"
+                                             "  sub go()\n"
+                                             "  end sub\n"
+                                             "end type\n");
+    std::uint32_t const beg = firstKw(toks, "sub");
+    CHECK(beg != UINT32_MAX);
+    CHECK(beg != UINT32_MAX && expectedCloserAt(toks, beg) == "END SUB");
+  }
+}
+
 int main() {
   testLookup();
+  testRuntimeBuiltins();
   testCatalogShape();
   testParamLabels();
   testStatementPosition();
   testAcceptsBodyMember();
   testMemberNameTables();
   testFolderNameCatalog();
+  testExpectedCloser();
 
   if (failures == 0) {
     std::printf("language_checks: all passed\n");

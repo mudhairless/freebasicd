@@ -26,6 +26,46 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-07 — The keyword catalog rounded out, error 238 raised at close, and closer hints for UDT member procedures
+
+- **Twelve missing reserved words join `kReserved` (353 → 365):** `__fastcall`,
+  `__thiscall`, `cva_arg`, `cva_copy`, `cva_end`, `cva_start`, `defulng`,
+  `dynamic`, `include`, `on`, `option`, `va_first`. The verification note in
+  `language.h` now says which check does which job: a diff against fbc's own
+  keyword table can *find* an omitted word, while the `dim <word>` probe only
+  confirms an entry, so the catalog is closed in both directions now.
+- **The member-name tables re-run over the completed catalog**, with the probe
+  script fixed to extract underscore spellings it used to drop:
+  `tools/probe_member_names.sh` printed **16 never-field, 119 conditional,
+  135 enum-illegal, and 230 of 365 enum-legal** — the 112/128/225 the earlier
+  wave recorded were counts of a smaller catalog, not of the language.
+- **`error 238` is now raised at record-body close.** A record body is armed
+  when it reads a trigger — any `Declare`, a member procedure, `Static`,
+  `Const`, or a nested record/enum — and a conditional field name is refused
+  when the body closes, with the member dropped as fbc drops it. The one
+  divergence from fbc is recorded in FreeBASIC.md §12: fbc anchors its report
+  on `end type`, this server anchors on the field word, where the rename goes.
+  A capture-time-only check could never have been right, because the trigger
+  arrives *after* the field; the field is refused at the close that commits it.
+- **Eight runtime builtins get catalog rows** (`DylibFree`, `DylibLoad`,
+  `DylibSymbol`, `Inp`, `Lpos`, `Out`, `Sleep`, `Wait`; 255 intrinsics total),
+  so keyword completion offers the statement/call form and hover shows the
+  fbc signature and wiki link instead of falling through to the bare keyword.
+- **`function` and `sub` are now the *type* half of `As`**, which is how
+  function-pointer fields are spelled: `as function() as integer p` had been
+  registering a member named `function` and dropping `p`; fbc builds both forms
+  (probed), and the record member path now reads them against `kBuiltinTypes`.
+- **No closer hint for a member-procedure declaration inside a record.**
+  `constructor()` and `property p()` inside a `Type` end at `end type` — a
+  closer sentence there is fbc's `error 19` — while `sub`/`function` bodies
+  are real blocks (FreeBASIC.md §12) and keep their `END SUB` / `END FUNCTION`.
+  The inlay-hint and code-action surfaces now agree with the parser.
+- A whole-catalog wiki-link audit (GET, not the 403'd HEAD) found exactly two
+  dead links: `KeyPgProtected`, a pre-existing gap left alone, and
+  `KeyPgDefulng`, which the sweep pointed at explicitly (the one `def*` word
+  whose page did not exist when the row landed — the row is pinned so the link
+  stays where the page will be, and the `def*` siblings' naming is kept).
+
 ### 2026-10-02 — Editor setup docs, and `editors/` moved under `docs/`
 
 - `docs/install.md` — the end-user path: build, install to a prefix, get it on

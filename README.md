@@ -177,7 +177,7 @@ ignored, the file is the truth.
 ```
 src/lexer.cpp        tokenizer over the FreeBASIC surface, byte offsets
 src/parser.cpp       declarations, block matching, dialect detection
-src/language.cpp     keyword catalog, block closers, 247 intrinsics
+src/language.cpp     keyword catalog, block closers, 255 intrinsics
 src/resolve.cpp      same-file and cross-file name and member resolution
 src/index.cpp        in-memory workspace index, include resolution
 src/session.cpp      LSP handlers, capabilities, diagnostics

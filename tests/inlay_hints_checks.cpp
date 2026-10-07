@@ -94,6 +94,43 @@ int main() {
   // Exactly four closers plus five inferred-type hints.
   CHECK(hints.size() == 9);
 
+  // Member-procedure bodies inside a record: `constructor()` and
+  // `property p()` open a parser block, but inside the record they are
+  // declarations the body closes at `end type` — the closer-hint must not
+  // name END CONSTRUCTOR / END PROPERTY for them, only the record's own END
+  // TYPE. At module level the same `constructor t()` is a real block and
+  // keeps its END CONSTRUCTOR.
+  {
+    std::string const src = "type t\n"
+                            "  constructor()\n"
+                            "  end constructor\n"
+                            "  property p()\n"
+                            "  end property\n"
+                            "end type\n"
+                            "constructor t()\n"
+                            "end constructor\n";
+    AnalyzedDoc const doc = analyze(src);
+    std::vector<InlayHintItem> const hints = inlayHints(doc, src);
+    auto lineEnd = [&](std::string const &needle) -> std::uint32_t {
+      std::size_t const beg = src.find(needle);
+      CHECK(beg != std::string::npos);
+      return static_cast<std::uint32_t>(src.find('\n', beg));
+    };
+    auto hasAt = [&](std::uint32_t pos, std::string const &label) {
+      for (InlayHintItem const &h : hints) {
+        if (h.bytePos == pos && h.label == label) {
+          return true;
+        }
+      }
+      return false;
+    };
+    CHECK(!hasAt(lineEnd("constructor()"), "END CONSTRUCTOR"));
+    CHECK(!hasAt(lineEnd("property p()"), "END PROPERTY"));
+    CHECK(hasAt(lineEnd("type t"), "END TYPE"));
+    CHECK(hasAt(lineEnd("constructor t()"), "END CONSTRUCTOR"));
+    CHECK(hints.size() == 2);
+  }
+
   if (failures == 0) {
     std::printf("inlay_hints_checks: all passed\n");
     return 0;

@@ -630,11 +630,17 @@ constexpr char const *kConditionalFieldNames[] = {
     "while",       "with",       "wstring",    "zstring",
 };
 
+// `function` and `sub` are here too: fbc accepts them as the *type* half of
+// `As <>` (`dim f as function() as integer`, `dim g as sub()`, and both in a
+// record body — probed, all compile), and the record member path asks this
+// table whether the word after `As` is part of the type. Without the entries
+// `as function() as integer p` registered `function` as the member name and
+// dropped `p`.
 constexpr char const *kBuiltinTypes[] = {
-    "any",   "boolean",  "byte",   "double",  "integer",
-    "long",  "longint",  "object", "pointer", "ptr",
-    "short", "single",   "string", "ubyte",   "uinteger",
-    "ulong", "ulongint", "ushort", "wstring", "zstring",
+    "any",      "boolean", "byte",    "double",  "function", "integer",
+    "long",     "longint", "object",  "pointer", "ptr",      "short",
+    "single",   "string",  "sub",     "ubyte",   "uinteger", "ulong",
+    "ulongint", "ushort",  "wstring", "zstring",
 };
 
 // Reserved words that are never legitimate identifiers start at this point;
@@ -776,7 +782,8 @@ constexpr Intrinsic kIntrinsics[] = {
     {"bload", false, IntrinsicKind::Statement,
      "Bload( filename As String, dest As Any Ptr, pal As Any Ptr )", "Bload"},
     {"bsave", false, IntrinsicKind::Statement,
-     "Bsave( filename As String, source As Any Ptr, size As Ulong, pal As Any "
+     "Bsave( filename As String, source As Any Ptr, size As Ulong, pal As "
+     "Any "
      "Ptr, bitsperpixel As Long )",
      "Bsave"},
     {"callocate", false, IntrinsicKind::Function,
@@ -799,7 +806,8 @@ constexpr Intrinsic kIntrinsics[] = {
     {"cint", false, IntrinsicKind::Function, "Cint( expression ) As Integer",
      "Cint"},
     {"circle", false, IntrinsicKind::Statement,
-     "Circle [ Step ] ( x, y ), radius [, color [, start, end [, aspect [, "
+     "Circle [ Step ] ( x, y ), radius [, color [, start, end [, aspect "
+     "[, "
      "F]]]]",
      "Circle"},
     {"clear", false, IntrinsicKind::Statement,
@@ -862,7 +870,8 @@ constexpr Intrinsic kIntrinsics[] = {
      "Cvshort( str As String ) As Short", "Cvshort"},
     {"date", true, IntrinsicKind::Function, "Date$() As String", "Date"},
     {"dateadd", false, IntrinsicKind::Function,
-     "Dateadd( interval As String, number As Double, date_serial As Double ) "
+     "Dateadd( interval As String, number As Double, date_serial As "
+     "Double ) "
      "As Double",
      "DateAdd"},
     {"datediff", false, IntrinsicKind::Function,
@@ -870,7 +879,8 @@ constexpr Intrinsic kIntrinsics[] = {
      "firstdayofweek As Long, firstdayofyear As Long ) As Longint",
      "DateDiff"},
     {"datepart", false, IntrinsicKind::Function,
-     "Datepart( interval As String, date_serial As Double, firstdayofweek As "
+     "Datepart( interval As String, date_serial As Double, firstdayofweek "
+     "As "
      "Long, firstdayofyear As Long ) As Long",
      "DatePart"},
     {"dateserial", false, IntrinsicKind::Function,
@@ -888,6 +898,13 @@ constexpr Intrinsic kIntrinsics[] = {
     {"drawstring", false, IntrinsicKind::Statement,
      "Draw String [ buffer, ] [ Step ] ( x, y ), text [, color ]",
      "DrawString"},
+    {"dylibfree", false, IntrinsicKind::Statement,
+     "Dylibfree( libhandle As Any Ptr )", "DylibFree"},
+    {"dylibload", false, IntrinsicKind::Function,
+     "Dylibload( libname As String ) As Any Ptr", "DylibLoad"},
+    {"dylibsymbol", false, IntrinsicKind::Function,
+     "Dylibsymbol( libhandle As Any Ptr, symbol As String ) As Any Ptr",
+     "DylibSymbol"},
     {"environ", true, IntrinsicKind::Function,
      "Environ$( varname As String ) As String", "Environ"},
     {"eof", false, IntrinsicKind::Function, "Eof( filenum As Long ) As Long",
@@ -966,6 +983,8 @@ constexpr Intrinsic kIntrinsics[] = {
      "Long, pitch As Long, pixdata As Any Ptr, size As Long ) As Long",
      "ImageInfo"},
     {"inkey", true, IntrinsicKind::Function, "Inkey$() As String", "Inkey"},
+    {"inp", false, IntrinsicKind::Function, "Inp( port As Ushort ) As Long",
+     "Inp"},
     {"input", true, IntrinsicKind::Function, "Input$( n As Integer ) As String",
      "Inputnum"},
     {"instr", false, IntrinsicKind::Function,
@@ -1010,6 +1029,8 @@ constexpr Intrinsic kIntrinsics[] = {
      "Log"},
     {"loword", false, IntrinsicKind::Function,
      "Loword( expr As Uinteger ) As Ushort", "LoWord"},
+    {"lpos", false, IntrinsicKind::Function, "Lpos( printer As Long ) As Long",
+     "Lpos"},
     {"lset", false, IntrinsicKind::Statement,
      "Lset( dst As String, src As String )", "Lset"},
     {"ltrim", true, IntrinsicKind::Function,
@@ -1053,6 +1074,8 @@ constexpr Intrinsic kIntrinsics[] = {
      "Oct"},
     {"offsetof", false, IntrinsicKind::Statement,
      "Offsetof( typename, fieldname ) As Integer", "Offsetof"},
+    {"out", false, IntrinsicKind::Statement,
+     "Out port As Integer, value As Integer", "Out"},
     {"paint", false, IntrinsicKind::Statement,
      "Paint [ Step ] ( x, y ) [, color [, bordercolor ]]", "Paint"},
     {"palette", false, IntrinsicKind::Statement,
@@ -1159,6 +1182,10 @@ constexpr Intrinsic kIntrinsics[] = {
      "Sin"},
     {"sizeof", false, IntrinsicKind::Statement,
      "Sizeof( datatype | variable ) As Integer", "Sizeof"},
+    // Statement form chosen: `Sleep 500` is how the wiki's Usage leads and
+    // how code reads; the `result = Sleep(...)` function form shares the row.
+    {"sleep", false, IntrinsicKind::Statement, "Sleep [ amount [, keyflag ]]",
+     "Sleep"},
     {"space", true, IntrinsicKind::Function,
      "Space$( count As Integer ) As String", "Space"},
     {"spc", false, IntrinsicKind::Function, "Spc( n As Integer ) As String",
@@ -1227,6 +1254,9 @@ constexpr Intrinsic kIntrinsics[] = {
     {"view", false, IntrinsicKind::Statement,
      "View [ Screen ] ( x1, y1 )-( x2, y2 ) [, color [, border ]]",
      "Viewgraphics"},
+    {"wait", false, IntrinsicKind::Statement,
+     "Wait port As Integer, and_value As Integer [, xor_value As Integer]",
+     "Wait"},
     {"wbin", false, IntrinsicKind::Function,
      "Wbin( number As Ubyte ) As Wstring", "Wbin"},
     {"wchr", false, IntrinsicKind::Function,
@@ -1564,6 +1594,52 @@ bool statementPosition(std::vector<Token> const &tokens, std::uint32_t off) {
   return false;
 }
 
+// True when `beg` sits inside a `TYPE`/`UNION` body that is still open above
+// it. expectedCloserAt asks this for the four procedure keywords whose member
+// *declaration* form appears in a record body (constructor/destructor/
+// property/operator, FreeBASIC.md §7): there they are declarations, not blocks
+// — the body ends at the next member or at `end type`, and a closer sentence
+// after one of them is fbc's `error 19`.
+//
+// The scan is backward so the first `type`/`union` met that is not itself a
+// closer is the body enclosing `beg`, and nesting is counted the natural way:
+// a record closer met first (`type` preceded by `end`, which line continuation
+// has already merged into one logical line, so the two are token-adjacent)
+// raises the depth, and an opener past it lowers the depth again. `declare`
+// bodies open no record scope, so the same walk finds `declare constructor()`
+// and its bare-body spelling alike.
+namespace {
+
+bool insideRecordBodyAt(std::vector<Token> const &tokens, std::uint32_t beg) {
+  int depth = 0;
+  for (std::size_t i = tokens.size(); i-- > 0;) {
+    Token const &t = tokens[i];
+    if (t.beg >= beg) {
+      continue;
+    }
+    if (t.kind != TokenKind::Keyword) {
+      continue;
+    }
+    std::string const w = toLowerChars(std::string(t.text()));
+    if (w != "type" && w != "union") {
+      continue;
+    }
+    bool const isCloser =
+        i > 0 && tokens[i - 1].kind == TokenKind::Keyword &&
+        toLowerChars(std::string(tokens[i - 1].text())) == "end";
+    if (isCloser) {
+      ++depth;
+    } else if (depth > 0) {
+      --depth;
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
 std::string expectedCloserAt(std::vector<Token> const &tokens,
                              std::uint32_t openerBeg) {
   Token const *opener = nullptr;
@@ -1582,6 +1658,17 @@ std::string expectedCloserAt(std::vector<Token> const &tokens,
   if (opener->kind == TokenKind::Keyword) {
     BlockCloser closer;
     if (!blockForOpener(toLowerChars(std::string(opener->text())), &closer)) {
+      return {};
+    }
+    // `sub` and `function` are deliberately not gated here: they are the two
+    // member procedures whose body form this parser reads as a real block that
+    // `END SUB` / `END FUNCTION` does close (FreeBASIC.md §12, member-procedure
+    // bodies in a UDT body), so their closer hints must survive.
+    if ((closer.kind == BlockKind::Constructor ||
+         closer.kind == BlockKind::Destructor ||
+         closer.kind == BlockKind::Property ||
+         closer.kind == BlockKind::Operator) &&
+        insideRecordBodyAt(tokens, opener->beg)) {
       return {};
     }
     return closerDisplay(closer);

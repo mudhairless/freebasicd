@@ -1355,6 +1355,28 @@ int main() {
       CHECK(t->children[1].key == "next");
     }
   }
+  {
+    // `function` and `sub` as function-pointer *type* names. fbc builds
+    // a function-pointer type out of `As function() As Integer` and `As sub()`
+    // (probed: both compile at module level and inside a record body), so the
+    // record member path must read them as the type half of the field, not as
+    // the field name — without both rows in `kBuiltinTypes`,
+    // `as function() as integer p` registered a member named `function` and
+    // dropped `p`.
+    ParseResult const r = parseDocument("type t\n"
+                                        "  as function() as integer p\n"
+                                        "  as sub() q\n"
+                                        "end type\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *t = find(r.roots, "t", SymbolKind::Type);
+    CHECK(t != nullptr);
+    CHECK(t != nullptr && t->children.size() == 2);
+    if (t != nullptr && t->children.size() == 2) {
+      CHECK(t->children[0].key == "p");
+      CHECK(t->children[1].key == "q");
+      CHECK(t->children[0].kind == SymbolKind::Variable);
+    }
+  }
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

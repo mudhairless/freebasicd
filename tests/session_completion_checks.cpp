@@ -88,6 +88,40 @@ char const *kIntrinsicSignatureFrame =
     R"FB({"jsonrpc":"2.0","id":"isg","method":"textDocument/signatureHelp","params":)FB"
     R"FB({"textDocument":{"uri":"file://{{tmp}}/intr.bas"},"position":{"line":4,"character":20}}})FB";
 
+// The words and catalog rows added with this wave: the new reserved words
+// complete as keyword items, and `sleep`/`wait`/`out` — runtime builtins that
+// fbc registers but the catalog had no row for — come back as intrinsic items
+// at statement position, replacing the bare keyword entry instead of
+// duplicating it. Each line is a bare prefix at statement start, line 0 empty.
+char const kDidOpenKeywordsAndIntrinsicsFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file://{{tmp}}/kwd.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"\nsl\ncva\nva_\non\nou\n"}}})FB";
+
+char const *kAllKeywordsCompletionFrame =
+    R"FB({"jsonrpc":"2.0","id":"g3a","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/kwd.bas"},"position":{"line":0,"character":0}}})FB";
+
+char const *kSleepCompletionFrame =
+    R"FB({"jsonrpc":"2.0","id":"g3s","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/kwd.bas"},"position":{"line":1,"character":2}}})FB";
+
+char const *kOutCompletionFrame =
+    R"FB({"jsonrpc":"2.0","id":"g3o","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/kwd.bas"},"position":{"line":5,"character":2}}})FB";
+
+char const *kCvaKeywordsCompletionFrame =
+    R"FB({"jsonrpc":"2.0","id":"g3c","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/kwd.bas"},"position":{"line":2,"character":3}}})FB";
+
+char const *kVaFirstCompletionFrame =
+    R"FB({"jsonrpc":"2.0","id":"g3v","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/kwd.bas"},"position":{"line":3,"character":3}}})FB";
+
+char const *kOnOptionCompletionFrame =
+    R"FB({"jsonrpc":"2.0","id":"g3n","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/kwd.bas"},"position":{"line":4,"character":2}}})FB";
+
 void TestCompletionOffersKeywordsAndSymbols() {
   lsp::NullLog log;
   lsp::LanguageSession session(log);
@@ -282,6 +316,74 @@ void TestSignatureHelpResolvesIntrinsic() {
 
   session.stop();
 }
+
+void TestCompletionOffersNewReservedWordsAndIntrinsics() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenKeywordsAndIntrinsicsFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "keywords-and-intrinsics document didOpen must publish diagnostics");
+
+  // The empty prefix at statement start: every new reserved word is a keyword
+  // item, label lowercase as in the catalog.
+  input->append(MakeLspFrame(kAllKeywordsCompletionFrame));
+  std::string const all = WaitForOutputContaining(output, "\"id\":\"g3a\"");
+  for (char const *w : {"__fastcall", "__thiscall", "cva_arg", "cva_copy",
+                        "cva_end", "cva_start", "defulng", "dynamic", "include",
+                        "on", "option", "va_first"}) {
+    Expect(all.find(std::string("\"label\":\"") + w + "\"") !=
+               std::string::npos,
+           "the new reserved word must complete as a keyword item");
+  }
+
+  // `sl` at statement position: the Sleep row owns the name — signature and
+  // wiki page, no bare lowercase keyword entry next to it.
+  input->append(MakeLspFrame(kSleepCompletionFrame));
+  std::string const sl = WaitForOutputContaining(output, "\"id\":\"g3s\"");
+  Expect(sl.find("\"label\":\"Sleep\"") != std::string::npos,
+         "completion must offer the Sleep intrinsic at statement position");
+  Expect(sl.find("\"detail\":\"Sleep [ amount [, keyflag ]]\"") !=
+             std::string::npos,
+         "the Sleep item must carry its statement-form signature");
+  Expect(sl.find("KeyPgSleep") != std::string::npos,
+         "the Sleep item must link to its wiki page");
+  Expect(sl.find("\"label\":\"sleep\"") == std::string::npos,
+         "the catalog item must replace the bare keyword entry, not duplicate "
+         "it");
+
+  // `ou` at statement position: the Out statement row.
+  input->append(MakeLspFrame(kOutCompletionFrame));
+  std::string const ou = WaitForOutputContaining(output, "\"id\":\"g3o\"");
+  Expect(ou.find("\"label\":\"Out\"") != std::string::npos &&
+             ou.find("\"detail\":\"Out port As Integer, value As Integer\"") !=
+                 std::string::npos,
+         "the Out statement row must complete with its usage signature");
+
+  // Prefix-filtered keyword items for the rest of the new words.
+  input->append(MakeLspFrame(kCvaKeywordsCompletionFrame));
+  std::string const cva = WaitForOutputContaining(output, "\"id\":\"g3c\"");
+  Expect(cva.find("\"label\":\"cva_arg\"") != std::string::npos &&
+             cva.find("\"label\":\"cva_end\"") != std::string::npos,
+         "the cva_* words complete as keywords");
+  input->append(MakeLspFrame(kVaFirstCompletionFrame));
+  std::string const va = WaitForOutputContaining(output, "\"id\":\"g3v\"");
+  Expect(va.find("\"label\":\"va_first\"") != std::string::npos,
+         "va_first completes as a keyword");
+  input->append(MakeLspFrame(kOnOptionCompletionFrame));
+  std::string const on = WaitForOutputContaining(output, "\"id\":\"g3n\"");
+  Expect(on.find("\"label\":\"on\"") != std::string::npos &&
+             on.find("\"label\":\"option\"") != std::string::npos,
+         "on and option complete as keywords");
+
+  session.stop();
+}
 } // namespace
 
 namespace fbtest {
@@ -292,6 +394,7 @@ void RunCompletionTests() {
   RUN_TEST(TestSignatureHelpShowsParamsAndActiveIndex);
   RUN_TEST(TestCompletionOffersIntrinsicCatalogItems);
   RUN_TEST(TestSignatureHelpResolvesIntrinsic);
+  RUN_TEST(TestCompletionOffersNewReservedWordsAndIntrinsics);
 }
 
 } // namespace fbtest
