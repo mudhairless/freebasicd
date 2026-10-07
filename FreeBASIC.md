@@ -26,6 +26,13 @@ branch may support new features.
 
 Documentation Table of Contents: https://www.freebasic.net/wiki/DocToc
 
+An offline copy of the wiki is available in the directory: 
+`~/Projects/freebasic/compiler/doc/manual/markdown` 
+with the file DocToc.md being equivalent to the online table of contents. All pages
+from the online wiki should be present as markdown files in this directory.
+This offline copy is for your convenience and should not be expected to be available
+on end users machines.
+
 ## 1. Identifiers
 
 Documentation: https://www.freebasic.net/wiki/ProPgIdentifierRules
