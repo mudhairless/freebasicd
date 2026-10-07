@@ -26,6 +26,69 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-07 — `Type As` spellings, branch scopes, and the false diagnostics they fanned out into
+
+- **The `Type As` cascade is gone: `raylib.bi` 96 → 0 phantom diagnostics,
+  `raygui.bi` 44 → 0, `rlgl.bi` 20 → 0.** One misread fed them all: `Type As
+  <type> <name>` (raylib's binding style, a module-scope alias named *after*
+  the type) was read as a record whose name was the `as` keyword, so a body no
+  `end type` belonged to opened and every statement below parsed as a member
+  list — reports multiplied down to EOF on a file that is 141 clean lines. All
+  three probed spellings are now handled (fbc 1.10.2): module `Type As <type>
+  <name>` registers the alias, nameless `Type As <type>` is `error 14` and
+  opens **nothing** (pinned by a stray-closer assertion — a body it did open
+  would swallow that closer), and in a record body `Type As <type>` is a
+  *field named `type`* while `Type <name> As <type>` is an in-body alias:
+  never a member, but it arms `error 238` like a nested record.
+  **Lesson: a diagnostic count in the dozens on one file is a single root
+  cause wearing N costumes — find the first wrong *block boundary* before
+  reading any of the reports past it.**
+- **Member capture stopped hunting in type tails.** After a member procedure's
+  signature (`declare function f() as const zstring ptr`) and inside an
+  alias's parameter list (`type cb as sub(byval a as long)`), the line holds
+  type, not members — `ptr` and `byval` were being registered as fields (and,
+  armed, dropped with a report). Capture is suppressed on those two tails.
+- **Sibling branches are scopes now (probed): `dim p` in a `then` and again
+  in its `else` compiles** — twice in one branch is still `error 4`, no
+  branch sees a sibling's name across the split (`error 42`), each `case` of
+  a `select` re-declares freely, and a branch `Dim` dies at the block's
+  closer. Each branch is a `Scope` child under the block's own scope, split
+  at `elseif`/`else`/`case` and closed at `end if`; before this, reasings.bi
+  reported two false duplicate-`postFix` warnings from two `if` arms sharing
+  one symbol table. **Lesson: a false `duplicate definition` means the scope
+  granularity is wrong, not the dedupe — the fix is a Scope, not a wider
+  key.**
+- **A comma's meaning is set by the innermost bracket.** An initializer's
+  braces separate *elements*: `{ lgt, lgt, lgt }` used to re-arm the name
+  scan per element and register `lgt` three times (rlights.bi, 6 false
+  duplicates). Both capture paths now track brace depth alongside paren depth,
+  and only a depth-0 comma splits a declaration list.
+- **Enum member *lists* parse (fbc-probed):** `a, b, c = 5, d` on one line,
+  and a comma at the line end continuing the list on the next — which is how
+  rlgl.bi writes its attribute enums, and a trailing comma used to be read as
+  a body boundary that cascaded into an unterminated enum, a stray `#endif`,
+  and 4 reports. Junk after a name (`a 1`, `a(3)`) still closes the body;
+  recorded divergence: only the first name of a multi-name line registers
+  (FreeBASIC.md §12.18, a miss — no diagnostic hangs on it).
+- **An unnamed declaration has no name to duplicate.** Two bare `enum`s
+  collided on the empty key (raylib.bi warned `duplicate definition: ''`
+  twenty times); dedupe now skips empty keys. Probing the follow-up
+  question — *can* two anonymous enums duplicate? — drew the real line: fbc
+  accepts every cross-declaration of the same member (two enums, anonymous
+  or not, or beside a module `Dim`) and raises `error 4` only inside one
+  block, which still reports here because member keys are per-container and
+  never empty; the cross-block refusal comes at the *use* (`error 255:
+  Ambiguous symbol access`), which first-match resolution answers silently —
+  the `Dim` wins, as fbc does, and the miss is tracked as FreeBASIC.md
+  §12.19 with a test pinning the pick.
+- Regression tests: 5 new `parser_checks` blocks (all spellings above plus
+  branch re-dim and same-branch still-warns) and `resolve_checks`'
+  `TestBranchScopesAreSiblings` (sibling branches resolve to *different* Dims,
+  cross-branch and post-block uses resolve to nothing). `FreeBASIC.md` §7
+  carries the `Type As` table and the enum-list grammar, §8 the branch-scope
+  probes. The sweep that found all of this parses the twelve real
+  `.bas`/`.bi` files of a user workspace — all now report 0 diagnostics.
+
 ### 2026-10-07 — The type half of a field declaration is a chain, not a word
 
 - **`as integer ptr the_data` no longer reports `ptr` and no longer drops

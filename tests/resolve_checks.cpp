@@ -1737,6 +1737,104 @@ static void TestMemberCompletionContexts() {
   }
 }
 
+// Each branch of an `if` and each `case` of a `select` is its own
+// declaration scope (fbc-probed, FreeBASIC.md §8): siblings may reuse a name
+// — `dim p` in a `then` and again in its `else` compiles — and no branch can
+// reach a sibling's declarations across the split (fbc answers a cross-branch
+// use with error 42), nor anything in the block after its closer. The branch
+// Scope symbols are siblings under the block's own Scope, so the parent walk
+// from one never passes through another.
+static void TestBranchScopesAreSiblings() {
+  std::string const src = "sub f(t as single)\n"
+                          "  if t < 1 then\n"
+                          "    dim as single p = t\n"
+                          "    p = 1\n"
+                          "  elseif t < 2 then\n"
+                          "    dim as single p = t\n"
+                          "    p = 2\n"
+                          "  else\n"
+                          "    dim as single only_else = t\n"
+                          "    only_else = 3\n"
+                          "    p = 4\n" // `p` lives in the earlier branches
+                          "  end if\n"
+                          "  only_else = 5\n" // dead after the block
+                          "  select case t\n"
+                          "    case 1\n"
+                          "      dim as single q = 1\n"
+                          "      q = 2\n"
+                          "    case 2\n"
+                          "      dim as single q = 3\n"
+                          "      q = 4\n"
+                          "  end select\n"
+                          "end sub\n";
+  AnalyzedDoc const doc = analyze(src);
+  CHECK(doc.parse.diagnostics.empty());
+
+  Symbol const *thenP =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("p = 1")));
+  Symbol const *elifP =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("p = 2")));
+  CHECK_MSG(thenP && thenP->kind == SymbolKind::Dim && thenP->name == "p",
+            "the then-branch use resolves to its own Dim");
+  CHECK_MSG(elifP && elifP->name == "p" && elifP != thenP,
+            "sibling branches are separate declarations of the name");
+
+  Symbol const *elseLocal =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("only_else = 3")));
+  CHECK_MSG(elseLocal && elseLocal->name == "only_else",
+            "a use inside a branch resolves to that branch's Dim");
+  CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(src.find("p = 4"))) ==
+                nullptr,
+            "a sibling branch's name is unreachable across the split");
+  CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(
+                               src.find("only_else = 5"))) == nullptr,
+            "a branch Dim dies at the block's closer");
+
+  Symbol const *case1Q =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("q = 2")));
+  Symbol const *case2Q =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("q = 4")));
+  CHECK_MSG(case1Q && case1Q->name == "q" && case2Q && case2Q->name == "q" &&
+                case1Q != case2Q,
+            "every case of a select is its own declaration scope");
+}
+
+// fbc accepts every cross-*declaration* of enum members and refuses the
+// *use*: an unqualified name that two enums both declare is `error 255:
+// Ambiguous symbol access` (probed — anonymous vs anonymous and named vs
+// named alike), while a module `Dim` beside an anonymous enum's member is
+// clean and the `Dim` wins. Parse-time diagnostics cannot see a use site, so
+// this server picks the first candidate instead of reporting (FreeBASIC.md
+// §12.19) — these checks pin the pick, so changing it is a conscious act.
+static void TestEnumMemberUseAmbiguityPicksFirst() {
+  std::string const twoAnon = "enum\n"
+                              "  log_all\n"
+                              "end enum\n"
+                              "enum\n"
+                              "  log_all\n"
+                              "end enum\n"
+                              "print log_all\n";
+  AnalyzedDoc const d1 = analyze(twoAnon);
+  CHECK(d1.parse.diagnostics.empty());
+  Symbol const *picked =
+      resolveAt(d1, static_cast<std::uint32_t>(twoAnon.rfind("log_all")));
+  CHECK_MSG(picked && picked->name == "log_all" &&
+                picked->kind == SymbolKind::Const,
+            "an ambiguous use resolves to one of the two enum members");
+
+  std::string const withDim = "dim log_all as long\n"
+                              "enum\n"
+                              "  log_all\n"
+                              "end enum\n"
+                              "print log_all\n";
+  AnalyzedDoc const d2 = analyze(withDim);
+  CHECK(d2.parse.diagnostics.empty());
+  Symbol const *dim =
+      resolveAt(d2, static_cast<std::uint32_t>(withDim.rfind("log_all")));
+  CHECK_MSG(dim && dim->kind == SymbolKind::Dim,
+            "a module Dim beats an anonymous enum's member, as in fbc");
+}
+
 int main() {
   TestScopingResolvesCorrectly();
   TestUnknownAndNonIdentifiersResolveNull();
@@ -1747,6 +1845,8 @@ int main() {
   TestAnalyzePragmaOnce();
   TestStorageGate();
   TestBlockScopesShadowAndDie();
+  TestBranchScopesAreSiblings();
+  TestEnumMemberUseAmbiguityPicksFirst();
   TestForCounterIsLoopLocal();
   TestEnumConformance();
   TestMemberAccessResolution();

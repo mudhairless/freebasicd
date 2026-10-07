@@ -1447,6 +1447,151 @@ int main() {
     }
   }
 
+  {
+    // `TYPE AS ...` spellings, fbc 1.10.2 probed — the root of every phantom
+    // report in drd/temp/inc/raylib.bi (~96 at its worst): reading `as` as a
+    // *name* pushed a record body no `end type` belonged to, so every
+    // statement below it parsed as a member list.
+    //   module scope: `type as <type> <name>` is an alias named after the
+    //     type; `type as long` with no name behind it is fbc error 14 and
+    //     opens nothing at all;
+    //   record body:  `type as ulong` is a *field* named `type`;
+    //   record body:  `type cb as sub(...)` is an alias — not a member, and
+    //     its parameter list is not a member list.
+    ParseResult const alias =
+        parseDocument("type as rAudioBuffer rAudioBuffer_\n"
+                      "type as long\n");
+    CHECK(alias.diagnostics.empty());
+    CHECK(find(alias.roots, "raudiobuffer_", SymbolKind::Type) != nullptr);
+    // The nameless spelling opened no body: a closer with nothing to close
+    // is a stray, which is exactly what a body it did open would swallow.
+    ParseResult const noName = parseDocument("type as long\n"
+                                             "end type\n");
+    CHECK(diagnosticCount(noName, "stray-closer") == 1);
+    CHECK(noName.roots.empty());
+
+    ParseResult const rec = parseDocument("type automation_event\n"
+                                          "  frame as ulong\n"
+                                          "  type as ulong\n"
+                                          "  cva_end as ulong\n"
+                                          "end type\n");
+    CHECK(rec.diagnostics.empty());
+    const Symbol *ae = find(rec.roots, "automation_event", SymbolKind::Type);
+    CHECK(ae != nullptr && ae->children.size() == 3);
+    if (ae != nullptr && ae->children.size() == 3) {
+      CHECK(ae->children[1].key == "type");
+      CHECK(ae->children[1].kind == SymbolKind::Variable);
+    }
+
+    ParseResult const inBody = parseDocument("type t\n"
+                                             "  type cb as sub(byval a as "
+                                             "long)\n"
+                                             "  x as long\n"
+                                             "end type\n");
+    CHECK(inBody.diagnostics.empty());
+    CHECK(declares(inBody, "cb"));
+    CHECK(!declares(inBody, "byval"));
+
+    // After a member procedure's signature the line holds only its return
+    // type — `ptr` there is a modifier, never a field name.
+    ParseResult const decl = parseDocument("type t\n"
+                                           "  declare function f() as const "
+                                           "zstring ptr\n"
+                                           "  x as long\n"
+                                           "end type\n");
+    CHECK(decl.diagnostics.empty());
+    CHECK(declares(decl, "f"));
+    CHECK(!declares(decl, "ptr"));
+  }
+  {
+    // An unnamed *declaration* has no name to duplicate: two bare `enum`s
+    // used to collide on the empty key and warn `duplicate definition: ''`
+    // at 1:1 (twenty times inside raylib.bi's first bogus body alone). Only
+    // that own key is skipped — a member named twice *within one* enum is
+    // still fbc's `error 4` (probed), while the same member in two separate
+    // enums compiles clean at the declaration (fbc's `error 255` comes at
+    // the *use*, FreeBASIC.md §7/§12.19 — a resolve-time report this
+    // parse-time check cannot see), so member keys staying per-container
+    // matches fbc either way.
+    ParseResult const anon = parseDocument("enum\n"
+                                           "  log_none\n"
+                                           "end enum\n"
+                                           "enum\n"
+                                           "  log_all\n"
+                                           "end enum\n");
+    CHECK(anon.diagnostics.empty());
+    ParseResult const inBlock = parseDocument("enum\n"
+                                              "  log_all\n"
+                                              "  log_all\n"
+                                              "end enum\n");
+    CHECK(diagnosticCount(inBlock, "duplicate-definition") == 1);
+    ParseResult const crossBlock = parseDocument("enum\n"
+                                                 "  log_all\n"
+                                                 "end enum\n"
+                                                 "enum\n"
+                                                 "  log_all\n"
+                                                 "end enum\n");
+    CHECK(crossBlock.diagnostics.empty());
+  }
+  {
+    // An enum member *list*: `a, b, c = 5, d` on one line, and a comma at
+    // the line end continuing the list on the next (probed; both compile,
+    // and rlgl.bi's attribute enums are written the second way). The line
+    // shape is a boundary only when it is not a list — `a 1`, `a(3)`.
+    ParseResult const lists = parseDocument("enum e\n"
+                                            "  a, b, c = 5, d\n"
+                                            "  e1 = g(1, 2),\n"
+                                            "  e2\n"
+                                            "end enum\n");
+    CHECK(lists.diagnostics.empty());
+    CHECK(diagnosticCount(lists, "unterminated-block") == 0);
+    // lean-ctx: only the first name of a multi-name line registers today
+    // (`a`, `e1`, `e2` above) — a miss on `b`/`c`/`d`, not a false report.
+  }
+  {
+    // An initializer's braces separate elements, not declarations: every
+    // comma inside `{ ... }` used to re-arm the name scan, so
+    // `dim x(0 to 2) as single = { lgt, lgt, lgt }` registered `lgt` once
+    // per element and warned duplicate (drd/temp/inc/rlights.bi).
+    ParseResult const br = parseDocument("sub f()\n"
+                                         "  dim as single lgt = 1\n"
+                                         "  dim x(0 to 2) as single = { lgt, "
+                                         "lgt, lgt }\n"
+                                         "  dim y(0 to 2) as single = { 1, 2, "
+                                         "3 }\n"
+                                         "end sub\n");
+    CHECK(br.diagnostics.empty());
+  }
+  {
+    // Each branch of an `if` and each `case` of a `select` is its own
+    // declaration scope (probed: `dim p` in a `then` and again in its `else`
+    // compiles; twice in *one* branch is still error 4). Siblings reuse a
+    // name without colliding, same-branch re-declaration still warns.
+    ParseResult const branches = parseDocument("sub f(t as single)\n"
+                                               "  if t < 1 then\n"
+                                               "    dim as single p = t\n"
+                                               "  elseif t < 2 then\n"
+                                               "    dim as single p = t\n"
+                                               "  else\n"
+                                               "    dim as single p = t\n"
+                                               "  end if\n"
+                                               "  select case t\n"
+                                               "    case 1\n"
+                                               "      dim as single q = 1\n"
+                                               "    case 2\n"
+                                               "      dim as single q = 2\n"
+                                               "  end select\n"
+                                               "end sub\n");
+    CHECK(branches.diagnostics.empty());
+    ParseResult const sameBranch = parseDocument("sub f(t as single)\n"
+                                                 "  if t < 1 then\n"
+                                                 "    dim as single p = t\n"
+                                                 "    dim as single p = t\n"
+                                                 "  end if\n"
+                                                 "end sub\n");
+    CHECK(diagnosticCount(sameBranch, "duplicate-definition") == 1);
+  }
+
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");
     return 0;

@@ -1935,9 +1935,59 @@ bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt,
     // The tail counts as much as the name: fbc's `error 3: Expected
     // End-of-Line` is what it answers for `a 1`, `a(3)` and `print 1` alike, so
     // a line whose first token is a fine member name can still be no member at
-    // all.
-    return stmt.size() == 1 ||
-           (stmt[1].kind == TokenKind::Symbol && stmt[1].text() == "=");
+    // all. What fbc accepts is a member *list*: `name`, `name = expr`, each
+    // comma-extendable — `a, b, c = 5, d` on one line, and a comma at the line
+    // end continuing the list on the next (probed; rlgl.bi's attribute enums
+    // compile that way). Walk the shape: after a name only `,` or `=` may
+    // follow, the expression runs to a depth-0 comma, and the token after the
+    // comma has to be a name as legal as the first.
+    size_t i = 1;
+    for (;;) {
+      if (i >= stmt.size()) {
+        return true;
+      }
+      if (stmt[i].kind == TokenKind::Symbol && stmt[i].text() == ",") {
+        ++i;
+        if (i >= stmt.size()) {
+          return true; // trailing comma: the list continues on the next line
+        }
+      } else if (stmt[i].kind == TokenKind::Symbol && stmt[i].text() == "=") {
+        int depth = 0;
+        ++i;
+        while (i < stmt.size()) {
+          if (stmt[i].kind == TokenKind::Symbol && stmt[i].text() == "(") {
+            ++depth;
+          } else if (stmt[i].kind == TokenKind::Symbol &&
+                     stmt[i].text() == ")") {
+            if (depth > 0) {
+              --depth;
+            }
+          } else if (depth == 0 && stmt[i].kind == TokenKind::Symbol &&
+                     stmt[i].text() == ",") {
+            break;
+          }
+          ++i;
+        }
+        if (i >= stmt.size()) {
+          return true; // `name = expr` runs to the end of the line
+        }
+        ++i; // the comma
+        if (i >= stmt.size()) {
+          return true; // trailing comma continues on the next line
+        }
+      } else {
+        return false; // junk after the name: `a 1`, `a(3)`
+      }
+      Token const &n = stmt[i];
+      if (n.kind != TokenKind::Identifier && n.kind != TokenKind::Keyword) {
+        return false;
+      }
+      if (n.kind == TokenKind::Keyword &&
+          !isLegalEnumMemberName(toLowerChars(n.text()))) {
+        return false;
+      }
+      ++i;
+    }
   }
   if (isCloserStatement(stmt)) {
     return true;

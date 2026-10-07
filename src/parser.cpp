@@ -351,7 +351,17 @@ private:
         s.kind == SymbolKind::Variable || s.kind == SymbolKind::Label ||
         s.kind == SymbolKind::Type || s.kind == SymbolKind::Union ||
         s.kind == SymbolKind::Enum || s.kind == SymbolKind::Namespace;
-    if (dedupe && !containers_.empty()) {
+    if (dedupe && !containers_.empty() && !s.key.empty()) {
+      // Empty key = an unnamed declaration (a bare `enum`). Only the
+      // *declaration's own* key is skipped: every anonymous enum used to
+      // collide with the first on `''` — drd/temp/inc/raylib.bi warned
+      // `duplicate definition: ''` twenty times at 1:1 on that alone. The
+      // member keys inside it are ordinary non-empty keys in the enum's own
+      // container, so the one shape fbc does call a duplicate — the same
+      // member named twice *in one* enum, `error 4` (probed) — still reports,
+      // while the shapes fbc calls clean (same member in two separate enums,
+      // anonymous or not; against a module `dim`/`const`/`sub`) never reach
+      // this set from a second container anyway.
       auto &set = containers_.back().keys;
       if (set.count(s.key) != 0) {
         addDiagnostic(s.selection.beg, s.selection.end, Severity::Warning,
@@ -423,6 +433,7 @@ private:
     out_.blockRanges.push_back({b.begOpen, end});
     if (b.sym != nullptr) {
       b.sym->range.end = end;
+      unwindBranchScopes(b.sym, end);
       if (!containers_.empty() && containers_.back().sym == b.sym) {
         containers_.pop_back();
       }
@@ -548,6 +559,7 @@ private:
     }
     Token const stmtStart = cur_;
     int parenDepth = 0;
+    int braceDepth = 0;
     for (;;) {
       TokenKind const k = cur_.kind;
       if (k == TokenKind::Newline || k == TokenKind::Eof ||
@@ -567,9 +579,17 @@ private:
         if (parenDepth > 0) {
           --parenDepth;
         }
+      } else if (inRecord && k == TokenKind::Symbol && cur_.text() == "{") {
+        ++braceDepth;
+      } else if (inRecord && k == TokenKind::Symbol && cur_.text() == "}") {
+        if (braceDepth > 0) {
+          --braceDepth;
+        }
       } else if (inRecord && k == TokenKind::Symbol && cur_.text() == "," &&
-                 parenDepth == 0) {
+                 parenDepth == 0 && braceDepth == 0) {
         // `as integer a, b` declares a whole list of members on one line.
+        // A comma inside initializer braces separates elements, not members
+        // (`= { lgt.x, lgt.y }` must not re-arm the capture per element).
         captureMember = true;
       }
       if (captureMember && k == TokenKind::Keyword &&
@@ -804,6 +824,8 @@ private:
       if (blocks_.empty() || blocks_.back().kind != BlockKind::If) {
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
                       trf("%s without %s", uppercase(w), "IF"));
+      } else {
+        openBranchScope(w);
       }
       resetDoc();
       skipStatement();
@@ -813,6 +835,8 @@ private:
       if (blocks_.empty() || blocks_.back().kind != BlockKind::Select) {
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
                       trf("%s without %s", "CASE", "SELECT"));
+      } else {
+        openBranchScope("case");
       }
       resetDoc();
       skipStatement();
@@ -874,6 +898,61 @@ private:
     if (b->sym != nullptr) {
       containers_.push_back(Container(b->sym));
     }
+  }
+
+  // Pop the declaration scopes stacked *above* `target`'s own container — the
+  // branch scopes `openBranchScope` opens — closing each popped range at
+  // `end`. The closed range is what keeps a position inside the branch
+  // nesting into that scope after the pop (resolution walks ranges, not the
+  // container stack). Leaves `target`'s container on top; if the stack never
+  // held it, touches nothing (a desync must not drain the whole stack).
+  void unwindBranchScopes(Symbol *target, uint32_t end) {
+    if (target == nullptr || containers_.empty()) {
+      return;
+    }
+    bool found = false;
+    for (auto it = containers_.rbegin(); it != containers_.rend(); ++it) {
+      if (it->sym == target) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      return;
+    }
+    while (!containers_.empty() && containers_.back().sym != target) {
+      Symbol *branch = containers_.back().sym;
+      if (branch != nullptr) {
+        branch->range.end = end;
+      }
+      containers_.pop_back();
+    }
+  }
+
+  // Each branch of a control block is its own declaration scope — fbc-probed
+  // (FreeBASIC.md §8): `dim p` in an `if` branch and again in its `elseif`/
+  // `else` compiles (twice in *one* branch is still error 4), and no branch
+  // can see a sibling's name across the split (error 42), the same for every
+  // `case` of a `select`. So open a Scope child under the block's own and
+  // push it as the declaration container: declarations land in this branch,
+  // the next branch unwinds back to the block's container here (closing this
+  // branch's range at the split), and the block's closer unwinds the last
+  // one. Requires `blocks_.back()` to be the owning control block.
+  void openBranchScope(std::string const &name) {
+    Block const &b = blocks_.back();
+    unwindBranchScopes(b.sym, cur_.beg);
+    if (b.sym == nullptr || containers_.empty() ||
+        containers_.back().sym != b.sym) {
+      return; // no scope container to branch from: leave the stack alone
+    }
+    Symbol s;
+    s.kind = SymbolKind::Scope;
+    s.name = name;
+    s.key.clear();
+    s.selection.beg = s.range.beg = cur_.beg;
+    s.selection.end = s.range.end = cur_.end;
+    s.signature = name;
+    containers_.push_back(Container(addSymbol(std::move(s))));
   }
 
   // `for`-loop header: `for <counter> [as <type>] = min [to max [step n]]`.
@@ -1096,8 +1175,89 @@ private:
 
   void handleType() {
     Token const openTok = cur_;
+    // `TYPE AS <type> ...` never introduces a record: the token after the
+    // keyword is the alias/field introducer, not a name. fbc 1.10.2 probed:
+    //   - inside a record body, `type as ulong` is a FIELD named `type` whose
+    //     type follows the `as` (nothing may follow it — `type as integer x`
+    //     is `error 3: Expected End-of-Line`);
+    //   - outside one, `type as rAudioBuffer rAudioBuffer_` is an alias with
+    //     the name *after* the type, and `type as long` with no name behind it
+    //     is `error 14: Expected identifier`.
+    // Reading `as` as the name instead pushed a record body no `end type`
+    // belonged to, and every statement below it was then parsed as a member
+    // list — drd/temp/inc/raylib.bi reported dozens of phantom
+    // invalid-member-name / duplicate-definition / unterminated-block errors
+    // starting at its first `type as <type> <name>` alias.
+    bool const asFirst = lex_.peek(0).kind == TokenKind::Keyword &&
+                         toLowerChars(lex_.peek(0).text()) == "as";
+    if (asFirst) {
+      if (inRecordBody()) {
+        // The field form: capture `type` through the same route as any plain
+        // field line (signature, doc, armed-238-drop all follow), then let
+        // skipStatement swallow the `as <type>` tail with capture off — there
+        // is no name after the type on this form for it to be hunting.
+        skipStatement();
+        return;
+      }
+      advance(); // the `as`
+      // Alias whose name trails the type: the last identifier at paren depth
+      // 0 that sits at least one token past the `as`. The gap is what tells
+      // name from type — `type as MyUdt` ends in the type itself and has no
+      // name (fbc errors), while `type as MyUdt ptr p` ends in the real one.
+      // A comma list (`type as integer a1, a2`, which fbc compiles) names only
+      // its last element here; that records one alias and skips the other,
+      // which is quiet on both sides — lean-ctx: upgrade to per-segment names
+      // if a false report ever hangs on it.
+      std::string name;
+      uint32_t nameBeg = 0;
+      uint32_t nameEnd = 0;
+      int depth = 0;
+      std::vector<Token> const toks = statementTokens();
+      for (std::size_t i = 1; i < toks.size(); ++i) {
+        Token const &t = toks[i];
+        if (t.kind == TokenKind::Symbol && t.text() == "(") {
+          ++depth;
+          continue;
+        }
+        if (t.kind == TokenKind::Symbol && t.text() == ")") {
+          if (depth > 0) {
+            --depth;
+          }
+          continue;
+        }
+        if (depth == 0 && i >= 2 && t.kind == TokenKind::Identifier) {
+          name = std::string(t.text());
+          nameBeg = t.beg;
+          nameEnd = t.end;
+        }
+      }
+      if (!name.empty()) {
+        Symbol s;
+        s.kind = SymbolKind::Type;
+        s.name = name;
+        s.key = toLowerChars(name);
+        s.selection.beg = nameBeg;
+        s.selection.end = nameEnd;
+        s.range.beg = openTok.beg;
+        s.range.end = currentLineEnd();
+        s.signature = headerText(openTok);
+        s.doc = takeDoc();
+        addSymbol(std::move(s));
+      } else {
+        // fbc rejects the nameless spelling; register nothing and above all
+        // open nothing — the report is its job, not ours.
+        resetDoc();
+      }
+      skipStatement(/*suppressMemberCapture=*/true);
+      return;
+    }
+
     // A nested record is the fifth trigger; arm the enclosing one first, before
-    // this record's own block is pushed (FreeBASIC.md §7).
+    // this record's own block is pushed (FreeBASIC.md §7). The arm covers the
+    // nested record *and* the in-body alias `type f1 as long` (probed: that
+    // spelling arms 238 too, though fbc never makes it a member); the field
+    // form above deliberately does not arm (probed: a plain `type as long`
+    // field leaves the gate shut).
     armRecordBody();
     BlockCloser closer;
     blockForOpener("type", &closer);
@@ -1154,7 +1314,11 @@ private:
     if (alias) {
       s.range.end = currentLineEnd();
       addSymbol(std::move(s));
-      skipStatement();
+      // The tail of an alias line is only its type expression, never a member
+      // — but with the alias sitting inside a record body (probed: legal, and
+      // not a member), capture-on read `type cb as sub(byval a as long)`'s
+      // parameter list as fields and reported `byval`.
+      skipStatement(/*suppressMemberCapture=*/true);
       return;
     }
 
@@ -1220,7 +1384,11 @@ private:
       populateParams(s);
     }
     addSymbol(std::move(s));
-    skipStatement();
+    // After the signature the line holds only the return type and the
+    // `lib`/`alias` clauses — a type expression, never a member. Capture-on
+    // used to hunt a field name in `declare function f() as const zstring
+    // ptr` and report `ptr` as one (drd/temp/inc/raylib.bi).
+    skipStatement(/*suppressMemberCapture=*/true);
   }
 
   void handleVarDecls(SymbolKind k) {
@@ -1231,6 +1399,7 @@ private:
     bool first = true;
     bool seenShared = false;
     int parenDepth = 0;
+    int braceDepth = 0;
     for (;;) {
       TokenKind const tk = cur_.kind;
       if (tk == TokenKind::Newline || tk == TokenKind::Eof) {
@@ -1245,8 +1414,11 @@ private:
         // separator (`type(x, .sectors(i).h, y)`, `Foo(a, b)`); treating it as
         // a declaration separator registered `.sectors` and `y` as fake
         // definitions, tripping false "duplicate definition" warnings
-        // (drd/temp/src/engine.bas).
-        if (parenDepth == 0) {
+        // (drd/temp/src/engine.bas). The same holds for an initializer's
+        // braces: `{ lgt.x, lgt.y, lgt.z }` separates *elements*, not names,
+        // and each comma used to re-arm the name scan so `lgt` was registered
+        // again per element (drd/temp/inc/rlights.bi).
+        if (parenDepth == 0 && braceDepth == 0) {
           atName = true;
         }
         advance();
@@ -1260,6 +1432,18 @@ private:
       if (tk == TokenKind::Symbol && cur_.text() == ")") {
         if (parenDepth > 0) {
           --parenDepth;
+        }
+        advance();
+        continue;
+      }
+      if (tk == TokenKind::Symbol && cur_.text() == "{") {
+        ++braceDepth;
+        advance();
+        continue;
+      }
+      if (tk == TokenKind::Symbol && cur_.text() == "}") {
+        if (braceDepth > 0) {
+          --braceDepth;
         }
         advance();
         continue;
@@ -1394,6 +1578,10 @@ private:
     b.endOpen = ifTok.end;
     attachScopeBlock(&b, "if");
     blocks_.push_back(b);
+    // The then-branch is a branch like any other: its own scope, sibling to
+    // the elseif/else ones, so no branch can resolve a sibling's declarations
+    // through the block's container.
+    openBranchScope("then");
     resetDoc();
     advance();
     skipStatement();

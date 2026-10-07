@@ -230,9 +230,35 @@ that position is never the name; with nothing behind it the chain is
 incomplete and fbc anchors `error 14: Expected identifier` on the dangling
 word (`As Integer Const` alone is `error 273`, wanting its pointer).
 
-Legal `ENUM` body members: `name`, `name = expr` — and nothing else `(fbc)`. The
-array-shaped form is not one of them: `a(1) = 1` is `error 3: Expected
-End-of-Line`, so an enumerator cannot carry a subscript.
+`Type` itself has three non-body spellings, all probed `(fbc 1.10.2)` — none
+of them opens a body, and only `Type <name>` (± `Extends`) ever does:
+
+| where | spelling | meaning |
+|---|---|---|
+| module/`Extern` | `Type As <type> <name>` | alias whose name comes **after** the type — raylib's binding style, `Type As rAudioBuffer rAudioBuffer_`; the name is the last identifier at paren depth 0 past the `As` |
+| module/`Extern` | `Type As <type>` (no name) | `error 14: Expected identifier` — declares nothing, opens nothing |
+| record body | `Type As <type>` | a **field named `type`** (`Type As ulong` in a plain record compiles, and it is a conditional field name like any other — `error 238` once the body is armed); nothing may follow the type, `Type As Integer x` is `error 3` |
+| record body | `Type <name> As <type>` | an alias *inside* the record: **not a member** (`t.f1` is `error 18: Element not defined`), but visible to the type's own methods (`Dim q As f1` inside one compiles, at module scope it does not), and it **arms** `error 238` the way a nested record does |
+
+Reading the `As` as a name instead opens a record body no `end type` belongs
+to, and every statement below it then parses as a member list — that single
+misread is what produced ~96 phantom diagnostics in a real binding header
+(`drd/temp/inc/raylib.bi`), most of them anchored at EOF.
+
+Legal `ENUM` body members: `name`, `name = expr`, and comma-separated **lists**
+of them — `a, b, c = 5, d` on one line compiles, and a comma at the line end
+continues the list on the next line (probed; the shipped raylib `rlgl.bi`
+writes its attribute enums that way, which is why a trailing comma must not
+close the body). The array-shaped form is not one of them: `a(1) = 1` is
+`error 3: Expected End-of-Line`, so an enumerator cannot carry a subscript.
+
+The same member may be *declared* in two different enums — anonymous or
+not — and beside a module-level `Dim`/`Const` as well: every such combination
+compiles `(fbc)`. The refusal comes at the **use**: naming unqualified a
+member that two enums declare (anonymous vs anonymous, named vs named alike)
+is `error 255: Ambiguous symbol access, explicit scope resolution required
+for <enum>.X, <enum>.X`. A module `Dim` next to an anonymous enum's member
+is not ambiguous at all — the `Dim` wins and prints its own value.
 
 Anything else in the body is a hard error, and fbc anchors the missing closer
 on the offending statement `(fbc)`:
@@ -442,6 +468,22 @@ Probe results:
 So: **scope blocks nest and inherit; procedure bodies do not see module-level
 plain `Dim`/`Common`** — only `Shared`/`Common Shared` module names plus their
 own locals and enclosing-in-procedure block names.
+
+Each **branch** inside a control block is its own scope, not merely the block
+(probed `(fbc 1.10.2)`):
+
+- `Dim p` in an `If` `Then` branch and again in its `Else` (or `ElseIf`)
+  compiles — twice in the *same* branch is still `error 4: Duplicated
+  definition`.
+- No branch sees a sibling's name across the split: `Print p` in `Else` when
+  only `Then` declared `p` is `error 42: Variable not declared, p`.
+- The same holds per `Case` of a `Select Case`: each `Case` re-declares the
+  name freely, and a `Case`-local `Dim` is gone after `End Select`.
+- A one-line `If ... Then Dim p` scopes too: `p` is `error 42` after it.
+
+The implementation models this as a `Scope` child per branch under the block's
+own scope (siblings, so the parent walk from one branch never reaches
+another).
 
 Type-member visibility (`Public:`/`Private:`/`Protected:`) is *not* in this
 table — it is a record-body construct, documented under §7 Access sections.
@@ -1031,6 +1073,25 @@ to "the language is what the lexer does":
       visible consequence for `rem`: a line-leading `rem` is a comment, so
       `enum e / rem / end enum` declares no member here and draws no diagnostic
       where fbc answers `error 256`.
+18. **Only the first name of a multi-name enum-member line registers.** §7
+    records that `a, b, c = 5, d` and a trailing-comma continuation are legal
+    enum member lists, and the parser now accepts them (no boundary, no false
+    unterminated block), but the symbol capture behind it keeps one name per
+    line: `b`, `c`, `d` above are missing from completion/hover while `a`
+    resolves. A miss, not a false report — no user-visible diagnostic hangs
+    on it — tracked because a test pins the accepting half.
+19. **An ambiguous enum-member use resolves silently to the first candidate.**
+    §7 records that fbc accepts every cross-*declaration* combination of enum
+    members — two enums, anonymous or not, sharing a member; one beside a
+    module `Dim` — and refuses the *use* instead: `error 255: Ambiguous
+    symbol access` when two enums declare the name being used unqualified.
+    This implementation's resolution is first-match, so it picks one enum's
+    member and carries on (hover/goto land somewhere real rather than
+    nowhere). The `Dim`-shadows-anonymous-member case matches fbc: the `Dim`
+    wins here too. Raising error 255 needs a diagnostic computed at resolve
+    time against two live candidates — parse-time diagnostics cannot see a
+    use site at all — so it is unimplemented rather than wrong, and a test
+    pins the pick.
 
 ## 13. Where the diagnostics come from (compiler source)
 
