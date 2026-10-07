@@ -35,6 +35,7 @@
   | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
+  | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
 
 ## 2. What exists (condensed)
 
@@ -509,6 +510,63 @@ different compiler than the server diagnoses against. Findings carry
   no-config case is the default case, so it is the one that has to be right.
 - Every divergence this bakes in is written into FreeBASIC.md §12, main-module
   unknowability above all.
+- `ctest` green, changed files clang-format clean.
+
+### M22 — fbc declaration-order parity: use-before-declaration (backlog note)
+
+fbc compiles strictly top-down; ours resolves order-insensitively (FreeBASIC.md
+§12: "no source-order gating at module level"), so a name we happily resolve can
+be invisible to fbc at the same point in the file. Not scheduled — a nice
+diagnostic for a future wave: detect it, diagnose it, fix it, and stop
+suggesting it.
+
+**Probed at fbc 1.10.2** (the facts any implementation and its tests must match):
+
+- Calling a `Sub`/`Function` whose `Declare` or definition appears later in the
+  same file is `error 42: Variable not declared, <name>` — at module level *and*
+  inside a procedure body (mutual recursion needs the `Declare`). The `Declare`
+  must sit **above the first use**: one placed after a module-level use leaves
+  the earlier use still `error 42`.
+- `Declare Sub helper(a As Integer = 5)` is legal — defaults belong in the
+  `Declare`. A `Declare` omitting a default breaks the calls the definition
+  allows (`helper()` → `error 1: Argument count mismatch`), so the generated
+  `Declare` copies the signature **verbatim**: param modifiers (`ByRef`/`ByVal`)
+  and defaults, plus `As <rettype>` for a `Function`.
+- **A type has no fbc-legal top-of-file forward reference.** `Dim As T`, a value
+  field, a *pointer* field (`p As T Ptr` with `T` undeclared), and a base type
+  all error 14 before `T`'s definition — and the alias idea (`type MyType_ as
+  MyType` at the top) does **not** fix an early `Dim x As MyType`: the alias
+  binds a new name, it does not pre-declare the aliased one (probed: the early
+  `Dim` still errors 14 with the alias above it). The honest type fixes are
+  reordering (move the definition above the first use) or an include — never the
+  alias, which would teach users something that does not compile.
+
+**Shape** (mirrors M12/M21):
+
+- Diagnostic at each use (routine, type, or module-level var/const) whose
+  introduction — a `Declare`, a definition, or an `#include` preceding the use —
+  is absent above it (include *order* matters too: an `#include` at line N makes
+  its contents visible only after N). Reuse fbc's numbers from M21's generated
+  catalog (`error 42` / `error 14`) once that lands; our own codes until then.
+- Quickfix through the M12 provider table (`quickFixProviders`: one function +
+  one row, no `session.cpp`): for a routine, insert `Declare Sub/Function
+  <verbatim signature>` above the first use. If the name is declared or defined
+  in a header inside the project's include closure, offer `#include` of that
+  header instead — the documented cross-file fix (FreeBASIC.md §9: a header
+  carrying the `Declare`), through the same `resolveInclude` seam the
+  missing-include fix uses.
+- Completion/`visibleSymbols` stop offering a name while the cursor is above its
+  declaration in the same file. This deliberately removes part of the §12
+  "no source-order gating" convenience — update that divergence's text when it
+  ships.
+- New messages through `fblang::trf` and `po/freebasicd.pot` regeneration
+  (AGENTS.md §Message catalogs).
+
+**Acceptance**
+
+- `session_integration` pins the probed behaviors: a `declare` after the use
+  still diagnoses the earlier use; the generated `Declare` for a defaulted param
+  keeps the default; an early `Dim As T` offers reorder/include, never an alias.
 - `ctest` green, changed files clang-format clean.
 
 ### M18 — Public release: first tag
