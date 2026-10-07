@@ -728,6 +728,7 @@ constexpr DocsPage kDocsPages[] = {
     {"pointcoord", "PointCoord"},
     {"pointer", "Ptr"},
     {"procptr", "OpProcptr"},
+    {"protected", "VisProtected"},
     {"put", "Putfileio"},
     {"screen", "Screengraphics"},
     {"seek", "Seekset"},

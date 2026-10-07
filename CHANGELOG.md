@@ -61,10 +61,10 @@ history use; they are kept here so an entry can be traced back.
   are real blocks (FreeBASIC.md §12) and keep their `END SUB` / `END FUNCTION`.
   The inlay-hint and code-action surfaces now agree with the parser.
 - A whole-catalog wiki-link audit (GET, not the 403'd HEAD) found exactly two
-  dead links: `KeyPgProtected`, a pre-existing gap left alone, and
-  `KeyPgDefulng`, which the sweep pointed at explicitly (the one `def*` word
-  whose page did not exist when the row landed — the row is pinned so the link
-  stays where the page will be, and the `def*` siblings' naming is kept).
+  dead links, and both now point at their real pages: `protected` →
+  `KeyPgVisProtected`, and `defulng` → `KeyPgDefulng` (the one `def*` word
+  whose page did not exist when the row landed — the row is pinned so the
+  link stays where the page will be, and the `def*` siblings' naming is kept).
 
 ### 2026-10-02 — Editor setup docs, and `editors/` moved under `docs/`
 

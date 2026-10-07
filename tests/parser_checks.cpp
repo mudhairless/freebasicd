@@ -609,6 +609,8 @@ int main() {
     CHECK(keywordDocsUrl("new") == "https://www.freebasic.net/wiki/KeyPgOpNew");
     CHECK(keywordDocsUrl("pointer") ==
           "https://www.freebasic.net/wiki/KeyPgPtr");
+    CHECK(keywordDocsUrl("protected") ==
+          "https://www.freebasic.net/wiki/KeyPgVisProtected");
     CHECK(keywordDocsUrl("andalso") ==
           "https://www.freebasic.net/wiki/KeyPgOpAndAlso");
     CHECK(keywordDocsUrl("counter").empty());
@@ -714,7 +716,7 @@ int main() {
     CHECK(p != nullptr && p->access == Access::Public);
     CHECK(isReservedWord("protected"));
     CHECK(keywordDocsUrl("protected") ==
-          "https://www.freebasic.net/wiki/KeyPgProtected");
+          "https://www.freebasic.net/wiki/KeyPgVisProtected");
     // An uppercase member name is the same fact: keywords classify regardless
     // of case, and a type's field slot still captures them.
     ParseResult upper = parseDocument("type t2\n"
