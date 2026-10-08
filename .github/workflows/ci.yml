@@ -31,10 +31,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Pin the formatter to the version used locally: the gate fails on tool
-  # drift as well as on code drift, and an unpinned clang-format makes that
-  # failure unexplainable. Bump this together with the local tool.
-  CLANG_FORMAT_VERSION: "22.1.8"
+  # Pin the formatter to the system version (Arch tracks the latest LLVM;
+  # AGENTS.md, "Run the system-installed clang-format"). Keep local runs and CI
+  # on the same formatter so a drift shows up as a code change, not a tool
+  # difference. Bump this to the system version, in its own commit, when the
+  # two disagree.
+  CLANG_FORMAT_VERSION: "23.1.1"
   # GNU gettext for the Windows leg: there is no system one, and the CMake
   # build compiles every po file to a .mo with msgfmt. Two archives, because
   # mlocati splits the release: the plain bundle has the tools but no headers,
