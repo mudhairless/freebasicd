@@ -674,10 +674,48 @@ std::string declaredTypeName(Symbol const &decl) {
   return {};
 }
 
+namespace {
+
+// Whether `c` declares its members into the namespace of the block that holds
+// it — the rule that decides what `x.<member>` may name. fbc 1.10.2 probed:
+// a nested *anonymous* Type/Union publishes its fields to the structure that
+// nests it (ProPgTypeUnion: the fields "are declared within the structure that
+// nests it"; `x.b1` and `y.b` compile through a union and its inner type),
+// while a *named* nested block keeps them to itself (`y.u.b` and `y.b` are both
+// `error 18: Element not defined`). A plain `enum` publishes its members
+// whether or not it is named (`y.a` compiles), an `explicit` one only through
+// its qualified form, and a Scope is structure rather than a declaration at
+// all.
+bool publishesIntoOwner(Symbol const &c) {
+  switch (c.kind) {
+  case SymbolKind::Type:
+  case SymbolKind::Union:
+    return c.key.empty();
+  case SymbolKind::Enum:
+    return !c.explicitEnum;
+  default:
+    return false;
+  }
+}
+
+} // namespace
+
 Symbol const *findMember(Symbol const &typeDecl, std::string const &memberKey) {
   for (Symbol const &c : typeDecl.children) {
     if (!c.key.empty() && c.key == memberKey) {
       return &c;
+    }
+  }
+  // Then the blocks nested in this one that publish into it — an anonymous
+  // `union` inside the type, the anonymous `type` inside that union, a plain
+  // `enum`. Direct members are asked first: fbc treats the flattened set as a
+  // single namespace and reports a name declared twice in it as `error 4`, so
+  // a duplicate here is possible only in source fbc already rejects.
+  for (Symbol const &c : typeDecl.children) {
+    if (publishesIntoOwner(c)) {
+      if (Symbol const *const m = findMember(c, memberKey)) {
+        return m;
+      }
     }
   }
   return nullptr;
@@ -1136,6 +1174,32 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
   return out;
 }
 
+namespace {
+
+// The members `decl` offers through a `.`: its own name-bearing children, then
+// — depth-first — everything the blocks nested in it publish into it. The same
+// rule findMember resolves by, so completion offers exactly the names
+// `x.<member>` answers for. Access is read off each member; an anonymous block
+// inherits the enclosing access section at parse time, so a field behind
+// `Private:` stays hidden outside the owner type.
+void collectMemberCompletions(Symbol const &decl, bool insideOwner,
+                              std::vector<Symbol const *> *into) {
+  for (Symbol const &m : decl.children) {
+    if (m.key.empty()) {
+      if (publishesIntoOwner(m)) {
+        collectMemberCompletions(m, insideOwner, into);
+      }
+      continue; // scope/unused markers never complete as members
+    }
+    if (m.access != Access::Public && !insideOwner) {
+      continue;
+    }
+    into->push_back(&m);
+  }
+}
+
+} // namespace
+
 MemberCompletion resolveMemberCompletion(AnalyzedDoc const &doc,
                                          std::string const &normalizedPath,
                                          std::uint32_t off,
@@ -1223,15 +1287,7 @@ MemberCompletion resolveMemberCompletion(AnalyzedDoc const &doc,
       (typeDecl.decl->kind == SymbolKind::Type ||
        typeDecl.decl->kind == SymbolKind::Union) &&
       completionInsideOwnerType(doc.parse, off, typeDecl.decl->key);
-  for (Symbol const &m : typeDecl.decl->children) {
-    if (m.key.empty()) {
-      continue; // scope/unused markers never complete as members
-    }
-    if (m.access != Access::Public && !insideOwner) {
-      continue;
-    }
-    mc.members.push_back(&m);
-  }
+  collectMemberCompletions(*typeDecl.decl, insideOwner, &mc.members);
   return mc;
 }
 

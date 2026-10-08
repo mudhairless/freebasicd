@@ -1835,6 +1835,81 @@ static void TestEnumMemberUseAmbiguityPicksFirst() {
             "a module Dim beats an anonymous enum's member, as in fbc");
 }
 
+// An anonymous block publishes its members into the structure that nests it
+// (ProPgTypeUnion: the fields "are declared within the structure that nests
+// it"), so a field two anonymous levels down still answers `x.<member>` — while
+// a *named* nested block keeps its fields to itself, which is fbc's answer too
+// (`y.nested.c` and `y.c` are both `error 18` there, and the declaration
+// itself is accepted — that is the difference from the union form, which fbc
+// rejects as empty). Completion offers the same set, so the two paths can
+// never disagree about what a type exposes.
+static void TestAnonymousBlocksPublishIntoOwner() {
+  std::string const src = "type T\n"
+                          "    union\n"
+                          "        dim a as short\n"
+                          "        type\n"
+                          "            dim b1 as byte\n"
+                          "        end type\n"
+                          "    end union\n"
+                          "end type\n"
+                          "type U\n"
+                          "    type nested\n"
+                          "        dim c as long\n"
+                          "    end type\n"
+                          "    enum\n"
+                          "        flat = 4\n"
+                          "    end enum\n"
+                          "end type\n"
+                          "dim x as T\n"
+                          "dim y as U\n"
+                          "x.b1 = 1\n"
+                          "x.a = 2\n"
+                          "y.flat = 3\n"
+                          "y.c = 4\n"
+                          "x.\n"
+                          "y.\n";
+  AnalyzedDoc const doc = analyze(src);
+  CHECK(doc.parse.diagnostics.empty());
+  auto offOf = [&](std::string const &needle, size_t pastLen) {
+    return static_cast<std::uint32_t>(src.find(needle) + pastLen);
+  };
+
+  MemberAccess const b1 =
+      resolveMemberAccess(doc, "x.bas", offOf("x.b1 = 1", 2), nullptr);
+  CHECK_MSG(b1.member != nullptr && b1.member->key == "b1",
+            "`x.b1` reaches the anonymous type's field through the anonymous "
+            "union");
+  MemberAccess const a =
+      resolveMemberAccess(doc, "x.bas", offOf("x.a = 2", 2), nullptr);
+  CHECK_MSG(a.member != nullptr && a.member->key == "a",
+            "`x.a` reaches the anonymous union's own field");
+  MemberAccess const flat =
+      resolveMemberAccess(doc, "x.bas", offOf("y.flat = 3", 2), nullptr);
+  CHECK_MSG(flat.member != nullptr && flat.member->key == "flat",
+            "an anonymous enum's member is a member of the type holding it");
+  MemberAccess const c =
+      resolveMemberAccess(doc, "x.bas", offOf("y.c = 4", 2), nullptr);
+  CHECK_MSG(c.member == nullptr,
+            "a named nested type keeps its fields to itself, as fbc does");
+
+  auto offers = [](MemberCompletion const &mc, std::string const &key) {
+    for (Symbol const *const m : mc.members) {
+      if (m->key == key) {
+        return true;
+      }
+    }
+    return false;
+  };
+  MemberCompletion const onX =
+      resolveMemberCompletion(doc, "x.bas", offOf("x.\n", 2), nullptr);
+  CHECK_MSG(onX.memberAccess && offers(onX, "b1") && offers(onX, "a"),
+            "`x.` completes the members the anonymous blocks publish");
+  MemberCompletion const onY =
+      resolveMemberCompletion(doc, "x.bas", offOf("y.\n", 2), nullptr);
+  CHECK_MSG(onY.memberAccess && offers(onY, "flat") && !offers(onY, "c"),
+            "`y.` completes the anonymous enum only");
+}
+
 int main() {
   TestScopingResolvesCorrectly();
   TestUnknownAndNonIdentifiersResolveNull();
@@ -1849,6 +1924,7 @@ int main() {
   TestEnumMemberUseAmbiguityPicksFirst();
   TestForCounterIsLoopLocal();
   TestEnumConformance();
+  TestAnonymousBlocksPublishIntoOwner();
   TestMemberAccessResolution();
   TestMemberCompletionContexts();
   TestStorageGateInControlBlocks();

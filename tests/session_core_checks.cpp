@@ -246,6 +246,60 @@ void TestDocumentSymbolsReturnHierarchy() {
   session.stop();
 }
 
+// A nameless `enum`, the scope block holding a local, and the selection of the
+// nameless one: three outline shapes a client cannot recover on its own (an
+// empty name makes Kate graft every later entry under it, a dropped scope
+// loses its locals, and a selection outside the range is a click on the wrong
+// line). Frames only this test sends.
+char const kDidOpenOutlineFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file://{{tmp}}/outline.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"enum\n  red = 1\nend enum\nsub f()\n  dim flag as long\n)FB"
+    R"FB(  if flag then\n    dim inner as long\n  end if\nend sub\n"}}})FB";
+
+char const kOutlineSymbolFrame[] =
+    R"FB({"jsonrpc":"2.0","id":"dsym2","method":"textDocument/documentSymbol","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/outline.bas"}}})FB";
+
+void TestDocumentSymbolsNameAnonymousAndScopes() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenOutlineFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kOutlineSymbolFrame));
+  std::string const response =
+      WaitForOutputContaining(output, "\"id\":\"dsym2\"");
+
+  Expect(response.find("\"id\":\"dsym2\"") != std::string::npos,
+         "documentSymbol request must receive a response");
+  Expect(response.find("\"name\":\"<anonymous enum>\"") != std::string::npos,
+         "a nameless declaration must be named for the outline");
+  Expect(response.find("\"name\":\"\"") == std::string::npos,
+         "no outline entry may carry an empty name");
+  Expect(
+      response.find("\"selectionRange\":{\"start\":{\"line\":0,"
+                    "\"character\":0},\"end\":{\"line\":0,\"character\":4}}") !=
+          std::string::npos,
+      "the anonymous declaration selects its own `enum` keyword");
+  Expect(response.find("\"name\":\"red\"") != std::string::npos,
+         "the anonymous enum's members stay nested under it");
+  Expect(response.find("\"name\":\"if\",\"kind\":3") != std::string::npos,
+         "a scope block is emitted, mapped to the Namespace kind");
+  Expect(response.find("\"name\":\"inner\"") != std::string::npos,
+         "the local declared inside the scope block reaches the outline");
+
+  session.stop();
+}
+
 void TestFoldingRangesReturned() {
   lsp::NullLog log;
   lsp::LanguageSession session(log);
@@ -498,6 +552,7 @@ void RunCoreTests() {
   RUN_TEST(TestDiagnosticsReflectParseErrors);
   RUN_TEST(TestDiagnosticsRespectDeclarationScopes);
   RUN_TEST(TestDocumentSymbolsReturnHierarchy);
+  RUN_TEST(TestDocumentSymbolsNameAnonymousAndScopes);
   RUN_TEST(TestFoldingRangesReturned);
   RUN_TEST(TestDidChangePushesDiagnostics);
   RUN_TEST(TestDidCloseEvictsAndPublishes);

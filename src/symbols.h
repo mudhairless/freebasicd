@@ -63,19 +63,28 @@ enum class SymbolKind {
 
 // Member visibility as gated by an access section inside a TYPE body
 // (`Private:`, `Public:`, `Protected:` — FreeBASIC.md §7 Access sections).
-// Members default to Public; a section gates every member declaration after it
-// until the next section. Only TYPE
-// members ever carry a non-default value — Union bodies reject access
-// sections (fbc: syntax error) and enum members are always Public.
+// Members default to Public; a section gates every member declaration after
+// it until the next section. Only a TYPE body ever *changes* it — Union
+// bodies reject access sections (fbc: syntax error) and a plain enum has
+// none. An anonymous block does not start a new one either: it inherits the
+// section in force where it is written, so its fields carry the enclosing
+// `Private:` (FreeBASIC.md §7).
 enum class Access { Public, Private, Protected };
 
 // Per-document symbol. Ranges are byte offsets into the source buffer.
 struct Symbol {
-  std::string name; // display name (original case + suffix char)
-  std::string key;  // canonical lookup key = lowercase name incl. suffix
+  // Display name (original case + suffix char). A declaration block written
+  // without a name gets `<anonymous <keyword>>` here — display only.
+  std::string name;
+  // Canonical lookup key = lowercase name incl. suffix. Empty for a
+  // nameless block (and for a Scope): that emptiness is the parser's
+  // unnamed-declaration signal, so `name`'s placeholder never fills it in.
+  std::string key;
   SymbolKind kind = SymbolKind::Variable;
   SourceRange range; // whole construct (SUB ... END SUB); decls: the statement
-  SourceRange selection; // name token
+  SourceRange selection; // name token, or the opener keyword when the
+                         // declaration has no name (its selection must still
+                         // fall inside `range` — LSP requires it)
   std::string signature; // readable declaration header (for hover/details)
   std::string doc;       // /// or '' doc-comment block directly above
   std::vector<Symbol> children;

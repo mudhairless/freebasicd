@@ -25,6 +25,14 @@ static int failures = 0;
     }                                                                          \
   } while (0)
 
+#define CHECK_MSG(cond, msg)                                                   \
+  do {                                                                         \
+    if (!(cond)) {                                                             \
+      std::printf("FAIL %s:%d: %s (%s)\n", __FILE__, __LINE__, #cond, msg);    \
+      ++failures;                                                              \
+    }                                                                          \
+  } while (0)
+
 static int diagnosticCount(const ParseResult &r, const char *code) {
   int n = 0;
   for (const auto &d : r.diagnostics) {
@@ -57,6 +65,91 @@ static bool declares(ParseResult const &r, const std::string &key) {
     }
   }
   return false;
+}
+
+// An unnamed declaration block still needs a name the outline can show and a
+// selection that lies inside its own range: LSP requires selectionRange ⊆
+// range, and a client binds the outline click to it. `key` stays empty — that
+// is this parser's unnamed-declaration signal for dedupe, the index, and
+// resolution — so only `name` carries `<anonymous ...>`.
+static void checkShapeInvariants(const std::vector<Symbol> &scope) {
+  for (const Symbol &s : scope) {
+    CHECK(!s.name.empty());
+    CHECK(s.selection.beg >= s.range.beg && s.selection.end <= s.range.end &&
+          s.selection.beg <= s.selection.end);
+    checkShapeInvariants(s.children);
+  }
+}
+
+static void TestAnonymousDeclarationsNameAndSelect() {
+  // The ProPgTypeUnion nesting: a named type, an anonymous union, and the
+  // anonymous type inside that union (fbc compiles exactly this spelling).
+  std::string const nested = "enum\n"
+                             "  red = 1\n"
+                             "end enum\n"
+                             "type T\n"
+                             "  union\n"
+                             "    type\n"
+                             "      dim b1 as byte\n"
+                             "    end type\n"
+                             "  end union\n"
+                             "end type\n";
+  ParseResult const r = parseDocument(nested);
+  CHECK(r.diagnostics.empty());
+  checkShapeInvariants(r.roots);
+
+  Symbol const *en = find(r.roots, "", SymbolKind::Enum);
+  CHECK_MSG(en != nullptr && en->name == "<anonymous enum>" && en->key.empty(),
+            "a bare `enum` is named for the outline but stays unnamed to the "
+            "parser");
+  CHECK_MSG(en != nullptr && en->selection.beg == nested.find("enum") &&
+                en->selection.end == nested.find("enum") + 4,
+            "its selection is the `enum` keyword itself");
+
+  Symbol const *t = find(r.roots, "t", SymbolKind::Type);
+  Symbol const *anonUnion =
+      t != nullptr ? find(t->children, "", SymbolKind::Union) : nullptr;
+  Symbol const *anonType = anonUnion != nullptr
+                               ? find(anonUnion->children, "", SymbolKind::Type)
+                               : nullptr;
+  CHECK_MSG(anonUnion != nullptr && anonUnion->name == "<anonymous union>",
+            "an unnamed `union` gets a name of its own");
+  CHECK_MSG(anonType != nullptr && anonType->name == "<anonymous type>",
+            "the unnamed record body inside it gets one too");
+  CHECK_MSG(anonType != nullptr &&
+                find(anonType->children, "b1", SymbolKind::Dim) != nullptr,
+            "its field nests under it instead of floating up");
+  CHECK_MSG(t == nullptr || find(t->children, "b1", SymbolKind::Dim) == nullptr,
+            "the field did not leak into the enclosing type");
+
+  // Two anonymous enums in one file are two declarations, not a duplicate of
+  // each other (the `''`-key collision that warned twenty times in
+  // drd/temp/inc/raylib.bi).
+  ParseResult const two = parseDocument("enum\n  a = 1\nend enum\n"
+                                        "enum\n  b = 2\nend enum\n");
+  CHECK(two.diagnostics.empty());
+  CHECK(diagnosticCount(two, "duplicate-definition") == 0);
+
+  // An anonymous block inherits the access section in force where it is
+  // written: fbc gates the fields of a nested anonymous union by the
+  // enclosing `Private:` (probed: error 202), and an access section *inside*
+  // an anonymous union is rejected (probed: error 17).
+  ParseResult const gated = parseDocument("type t\n"
+                                          "  private:\n"
+                                          "    union\n"
+                                          "      dim a as long\n"
+                                          "    end union\n"
+                                          "  public:\n"
+                                          "    dim b as long\n"
+                                          "end type\n");
+  CHECK(gated.diagnostics.empty());
+  Symbol const *gt = find(gated.roots, "t", SymbolKind::Type);
+  Symbol const *gu =
+      gt != nullptr ? find(gt->children, "", SymbolKind::Union) : nullptr;
+  Symbol const *ga =
+      gu != nullptr ? find(gu->children, "a", SymbolKind::Dim) : nullptr;
+  CHECK_MSG(ga != nullptr && ga->access == Access::Private,
+            "the anonymous union's field keeps the section it was written in");
 }
 
 int main() {
@@ -1591,6 +1684,8 @@ int main() {
                                                  "end sub\n");
     CHECK(diagnosticCount(sameBranch, "duplicate-definition") == 1);
   }
+
+  TestAnonymousDeclarationsNameAndSelect();
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

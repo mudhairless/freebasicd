@@ -1053,6 +1053,30 @@ private:
     advance();
   }
 
+  // The outline name of a declaration block written without one: a bare
+  // `enum`, an anonymous `union` nested in a TYPE, a nameless record `type`
+  // inside a UNION (all three are legal spellings — ProPgTypeUnion's own
+  // examples are written this way, and fbc calls the construct "anonymous" in
+  // its diagnostics). Only `name` is filled: `key` must stay empty, because an
+  // empty key is this parser's unnamed-declaration signal for dedupe, the
+  // index, resolution, completion, and rename.
+  static std::string anonymousDeclName(const std::string &openWord) {
+    return "<anonymous " + toLowerChars(openWord) + ">";
+  }
+
+  // The declaration container for `psym`. An *anonymous* block keeps the
+  // access section in force where it is written: fbc gates the fields of a
+  // nested anonymous union by the enclosing `Private:` (probed: error 202),
+  // and an access section *inside* an anonymous union is itself rejected
+  // (probed: error 17), so the section is inherited rather than restarted.
+  Container containerFor(Symbol *psym) {
+    Container c(psym);
+    if (psym != nullptr && psym->key.empty() && !containers_.empty()) {
+      c.access = containers_.back().access;
+    }
+    return c;
+  }
+
   void handleDeclBlock(const std::string &openWord, SymbolKind k) {
     Token const openTok = cur_;
     // Arm the enclosing record before the push: a member procedure body or a
@@ -1066,6 +1090,12 @@ private:
     Symbol s;
     s.kind = k;
     s.range.beg = openTok.beg;
+    // Default the selection to the opener, because a block written without a
+    // name still needs a position inside its own range: LSP requires
+    // selectionRange ⊆ range, and a client binds the outline click to it. A
+    // name token below overwrites this.
+    s.selection.beg = openTok.beg;
+    s.selection.end = openTok.end;
     if (cur_.kind == TokenKind::Identifier || cur_.kind == TokenKind::Keyword ||
         (k == SymbolKind::Operator && cur_.kind == TokenKind::Symbol)) {
       s.name = std::string(cur_.text());
@@ -1073,6 +1103,8 @@ private:
       s.selection.beg = cur_.beg;
       s.selection.end = cur_.end;
       advance();
+    } else {
+      s.name = anonymousDeclName(openWord);
     }
     // `Enum <name> explicit`: the optional `Explicit` keyword gates the members
     // behind qualified `Name.member` access (FreeBASIC.md §8, fbc-verified).
@@ -1103,7 +1135,7 @@ private:
     b.endOpen = openTok.end;
     blocks_.push_back(b);
     if (psym != nullptr) {
-      containers_.push_back(Container(psym));
+      containers_.push_back(containerFor(psym));
     }
     skipStatement();
   }
@@ -1266,6 +1298,10 @@ private:
     Symbol s;
     s.kind = SymbolKind::Type;
     s.range.beg = openTok.beg;
+    // Same default selection as handleDeclBlock: a nameless record body gets
+    // the opener's position, so its selectionRange stays inside its range.
+    s.selection.beg = openTok.beg;
+    s.selection.end = openTok.end;
     bool hasName = false;
     if (cur_.kind == TokenKind::Identifier || cur_.kind == TokenKind::Keyword) {
       hasName = true;
@@ -1274,6 +1310,14 @@ private:
       s.selection.beg = cur_.beg;
       s.selection.end = cur_.end;
       advance();
+    } else {
+      // A nameless record body is legal only as UNION's inner Type
+      // (ProPgTypeUnion), but it must still get a node of its own: its fields
+      // belong to *it*, and an outline that let them float up to the parent
+      // container would show a flat member list for a nested structure. fbc
+      // rejects the spelling outside a union; a lenient parse keeps the fields
+      // where the source put them.
+      s.name = anonymousDeclName("type");
     }
     // Before the alias lookahead: `type derived extends base` has neither a
     // `:` nor an `as` on the line, so the scan below would leave alias false
@@ -1322,7 +1366,7 @@ private:
       return;
     }
 
-    Symbol *psym = hasName ? addSymbol(std::move(s)) : nullptr;
+    Symbol *psym = addSymbol(std::move(s));
     Block b;
     b.kind = BlockKind::Type;
     b.close = closer.closeWord;
@@ -1332,7 +1376,7 @@ private:
     b.endOpen = openTok.end;
     blocks_.push_back(b);
     if (psym != nullptr) {
-      containers_.push_back(Container(psym));
+      containers_.push_back(containerFor(psym));
     }
     skipStatement();
   }

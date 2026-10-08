@@ -26,6 +26,76 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-08 — The outline tells the truth: anonymous names, scope subtrees, a selection inside the range
+
+- **A block written without a name now says so: `<anonymous enum>`,
+  `<anonymous union>`, `<anonymous type>`** — fbc's own word for the construct,
+  and ProPgTypeUnion's examples are all written that way. It goes into `name`
+  only: `key` stays empty, because two bare `enum`s sharing one placeholder
+  key would re-open the `duplicate definition: ''` collision that the
+  2026-10-07 entry closed by skipping empty keys, and *empty* is what dedupe,
+  the index, resolution, completion, and rename all read as "unnamed".
+  **The defect was structural, not cosmetic.** `raygui.bi` has 19 bare enums
+  and each one answered `documentSymbol` with `"name": ""`; Kate's
+  `parseSymbol` keys its parent map by *name* and, for an entry with no
+  `containerName`, defaults the parent to `index.find("")` — a key our empty
+  names had just inserted, and since the last one inserted is the one found,
+  each bare enum became the parent of the next: 19 empty names, 19 levels.
+  **Lesson: to a client that maps by name, an absent name is not absence but
+  a key it already holds, and it will build arbitrary structure on it.**
+- **Scope subtrees are in the reply.** The converter recursed into `if`/`for`/
+  `select` and dropped the node, so every block-local `dim` inside one was
+  invisible in the outline. They are emitted as the **Namespace** kind and
+  pruned when their subtree is empty. Namespace because Kate's symbol view
+  pushes a variable under a *function* node through its "skip local variable"
+  filter but hands a package-icon parent the whole subtree — the parent's kind
+  decides whether a child survives the client's filter, so hiding a node and
+  flattening it are not the same request — and pruned-when-empty because an
+  `if` that declares nothing is structure the outline has no opinion about,
+  while the entries that carry a local are exactly the ones worth the space.
+- **`selectionRange` always lies inside `range`.** A nameless block left its
+  selection at `{0,0}` — in `raygui.bi` that is 382 lines above the block, so
+  an outline click bound the client to the wrong line. The default is now the
+  block's own opener keyword, overwritten by the name token when there is one:
+  one place, both shapes, with a recursive *selection ⊆ range* invariant over
+  the whole nesting to keep it that way.
+- **Anonymous containers inherit the enclosing access section, and member
+  lookup and completion flatten through them** — the support these needed. A
+  nameless record used to emit no symbol at all, so its fields floated into
+  the parent container; giving it a node would have hidden them instead
+  (`x.b1` resolving nowhere), so the member walk now recurses into a block
+  that *publishes into its owner* — an anonymous `Type`/`Union`, a
+  non-`Explicit` `Enum` — which is what ProPgTypeUnion means by "declared
+  within the structure that nests it". The boundary is structural, not
+  orthographic: a named block is a barrier for its whole subtree, pinned by
+  `pQ3` (a named union holding an anonymous type: `y.b` is `error 18`)
+  against `pQ4` (anonymous throughout: compiles), with `y.u.b` also
+  `error 18` and `print y.a` compiling for a plain nested enum. Completion
+  offers the same set, so the two paths cannot disagree. `FreeBASIC.md` §7
+  carries the table, §12.20 the one form fbc answers and we do not (`y.e.a`,
+  whose chain walk asks each intermediate member for its `as <type>` and an
+  enum has none), and §12.21 the bigger find of the wave: **no implicit
+  `This`** — a bare `b1` inside `Sub T.proc()` hovers as the procedure's own
+  header and offers no member of the type it belongs to, where fbc compiles
+  the wiki's example as written. Recorded rather than patched: that fix
+  belongs with scope resolution, not the member chain.
+- **A code lens no longer anchors on an unnamed declaration.** The old
+  guard was the selection's zero width, which the opener-keyword selection
+  above would have invalidated — every anonymous enum becoming a permanent
+  "0 references" lens. The guard is now `key.empty()`, the same signal.
+- Tests: `parser_checks` gains the recursive invariants (non-empty `name`,
+  `selection ⊆ range`) over the ProPgTypeUnion nesting, plus access
+  inheritance and two-bare-enums-still-do-not-collide; `resolve_checks` gains
+  `TestAnonymousBlocksPublishIntoOwner`, pinning both halves of the boundary
+  and the completion set that must agree with it; `session_core` gains
+  `TestDocumentSymbolsNameAnonymousAndScopes`, which runs the wire reply and
+  asserts no `"name":""`, the `<anonymous enum>`, its opener selection, and
+  the `if` → `inner` local; `code_lens_checks` gains
+  `TestUnnamedDeclarationsCarryNoLens`. A 70-file sweep (`drd/temp/inc/*.bi`
+  plus 60 of the compiler's manual examples) reports 0 empty names and 0
+  selection overruns, and none of the 19 anonymous enums in `raygui.bi`
+  carries a lens.
+
 ### 2026-10-07 — `Type As` spellings, branch scopes, and the false diagnostics they fanned out into
 
 - **The `Type As` cascade is gone: `raylib.bi` 96 → 0 phantom diagnostics,

@@ -106,6 +106,35 @@ void TestAnchorsAreTheNamedDeclarations() {
   }
 }
 
+// A declaration written without a name gets no lens. Its selection is now the
+// block's own opener keyword (so it lies inside its range like every other
+// declaration), which means the old zero-width guard would have anchored a
+// lens to it: `<anonymous enum>` with a permanent "0 references" and no name
+// for the click to carry back. The guard is the same empty `key` the rest of
+// the parser reads as "unnamed" — one signal, every consumer.
+void TestUnnamedDeclarationsCarryNoLens() {
+  AnalyzedDoc const doc = analyze("enum\n"
+                                  "    red\n"
+                                  "end enum\n"
+                                  "type t\n"
+                                  "    union\n"
+                                  "        dim a as integer\n"
+                                  "    end union\n"
+                                  "    sub move()\n"
+                                  "    end sub\n"
+                                  "end type\n");
+  std::vector<std::string> const names = anchorNames(doc);
+  std::vector<std::string> const expected{"t", "move"};
+  CHECK(names == expected);
+  if (names != expected) {
+    std::printf("  anchors:");
+    for (std::string const &n : names) {
+      std::printf(" %s", n.c_str());
+    }
+    std::printf("\n");
+  }
+}
+
 void TestAnchorIsTheNameToken() {
   AnalyzedDoc const doc = analyze(kFixture);
   std::vector<CodeLens> const lenses =
@@ -228,6 +257,7 @@ void TestNullCounterCountsZero() {
 
 int main() {
   TestAnchorsAreTheNamedDeclarations();
+  TestUnnamedDeclarationsCarryNoLens();
   TestAnchorIsTheNameToken();
   TestKindTravelsForEveryAnchorKind();
   TestCountFeedsTheTitle();

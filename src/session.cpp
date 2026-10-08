@@ -311,15 +311,26 @@ lsSymbolKind toLspSymbolKind(fblang::SymbolKind kind) {
   case fblang::SymbolKind::Variable:
     return lsSymbolKind::Variable;
   case fblang::SymbolKind::Scope:
+    // Structure, not a declaration — but it is *emitted* (it carries the
+    // locals of an `if`/`for` subtree, and skipping it silently dropped them
+    // from the outline). Namespace is the container kind that survives a
+    // client's own filtering: the alternative, Unknown, falls into the
+    // "local variable" bucket under a procedure node and is hidden, which is
+    // exactly what a scope subtree must not be.
+    return lsSymbolKind::Namespace;
   case fblang::SymbolKind::Label:
     return lsSymbolKind::Unknown;
   }
   return lsSymbolKind::Unknown;
 }
 
-// Scope blocks are noise in an outline; recurse but don't emit them.
-lsDocumentSymbol convertSymbol(std::string_view content,
-                               fblang::Symbol const &s) {
+// One symbol of the documentSymbol tree, or nothing. A Scope whose subtree
+// produced nothing is *not* emitted: the block then exists in the source but
+// declares nothing, and an outline entry naming `if` with no children is noise
+// a client cannot drop (it has no idea the entry is ours). Returns nullopt only
+// for that case — every declaration, named or `<anonymous ...>`, is returned.
+std::optional<lsDocumentSymbol> convertSymbol(std::string_view content,
+                                              fblang::Symbol const &s) {
   lsDocumentSymbol out;
   out.name = s.name;
   out.kind = toLspSymbolKind(s.kind);
@@ -330,13 +341,17 @@ lsDocumentSymbol convertSymbol(std::string_view content,
     out.detail.emplace(s.signature);
   }
   for (auto const &child : s.children) {
-    if (child.kind == fblang::SymbolKind::Scope) {
+    std::optional<lsDocumentSymbol> converted = convertSymbol(content, child);
+    if (!converted) {
       continue;
     }
     if (!out.children) {
       out.children.emplace();
     }
-    out.children->push_back(convertSymbol(content, child));
+    out.children->push_back(std::move(*converted));
+  }
+  if (s.kind == fblang::SymbolKind::Scope && !out.children) {
+    return std::nullopt;
   }
   return out;
 }
@@ -1911,10 +1926,13 @@ FreeBasicServer::onDocumentSymbol(td_symbol::request const &req) {
   }
   std::string_view const content = cached->content;
   for (auto const &root : cached->analysis.parse.roots) {
-    if (root.kind == fblang::SymbolKind::Scope) {
-      continue;
+    // A top-level scope (a `for`/`if` at file level) is emitted like any
+    // other subtree, so its declarations do not silently vanish from the
+    // outline; convertSymbol drops it when it holds nothing.
+    if (std::optional<lsDocumentSymbol> converted =
+            convertSymbol(content, root)) {
+      rsp.result.push_back(std::move(*converted));
     }
-    rsp.result.push_back(convertSymbol(content, root));
   }
   return rsp;
 }
@@ -3174,6 +3192,16 @@ FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
       collect = [&query, &collect](fblang::Symbol const &s,
                                    std::string const &container,
                                    std::vector<Match> &into) {
+        if (s.kind == fblang::SymbolKind::Scope) {
+          // Structure, not a declaration: a scope neither matches a query nor
+          // names the container path (`sub f.if` was wrong on both counts) —
+          // but its children are declarations of this file and are still
+          // walked, with the container it would have contributed left alone.
+          for (auto const &c : s.children) {
+            collect(c, container, into);
+          }
+          return;
+        }
         std::string const key = fblang::toLowerChars(s.key);
         std::string const name = fblang::toLowerChars(s.name);
         if (key.find(query) != std::string::npos ||

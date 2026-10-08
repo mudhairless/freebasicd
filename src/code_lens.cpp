@@ -42,10 +42,15 @@ bool carriesLens(SymbolKind kind) {
 void collectAnchors(std::vector<Symbol> const &roots,
                     std::vector<LensAnchor> &out) {
   for (Symbol const &sym : roots) {
-    // A zero-width selection is a declaration with no name token: there is
-    // nothing to anchor a lens to, and the click would have no position to
-    // carry back.
-    if (carriesLens(sym.kind) && sym.selection.beg != sym.selection.end) {
+    // Only a *name-bearing* declaration gets a lens. Two guards, both about
+    // the click: an empty key is the parser's unnamed-declaration signal — the
+    // block has an `<anonymous ...>` outline name, so there is no name for the
+    // count to be about — and a zero-width selection would give the click no
+    // position to carry back. The opener-keyword selection such a block now
+    // defaults to (handleDeclBlock) satisfies the second test, so the key is
+    // the one that has to hold.
+    if (carriesLens(sym.kind) && sym.selection.beg != sym.selection.end &&
+        !sym.key.empty()) {
       out.push_back(LensAnchor{sym.selection, sym.name, sym.kind});
     }
     collectAnchors(sym.children, out);

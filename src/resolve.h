@@ -146,7 +146,10 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
 std::string declaredTypeName(Symbol const &decl);
 
 // The member of a Type/Union declaration whose key equals `memberKey`
-// (lowercased name including suffix char), or nullptr.
+// (lowercased name including suffix char), or nullptr. The members of the
+// *anonymous* blocks nested inside it count as this type's own (fbc publishes
+// them into the structure that nests them, FreeBASIC.md §7); a named nested
+// block keeps its fields, so they are not found here.
 Symbol const *findMember(Symbol const &typeDecl, std::string const &memberKey);
 
 // Cross-file lookup of a Type/Union declaration by key: the requesting doc's

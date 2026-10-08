@@ -230,6 +230,26 @@ variables are created normally, except that the Dim keyword is optional"
 `(wiki)`. Both spellings declare a field fbc resolves through `p.member`
 `(fbc)`.
 
+Which namespace a **nested block's** members land in is decided by its
+spelling, all of it probed `(fbc 1.10.2)`:
+
+| nested block | does `x.<member>` answer? |
+|---|---|
+| anonymous `Type` / `Union` — nothing after the keyword | **yes**: its fields are the enclosing structure's fields, so `Type T` / `Union` / `Type` / `Dim b1` answers `x.b1` |
+| a plain `Enum`, anonymous or named | **yes**: `y.a` resolves through an instance (`print y.a` compiles, `y.a = 1` is `error 119: Cannot modify a constant`) |
+| a **named** nested `Type` / `Union` | **no**: its fields are its own — `y.u.b` and `y.b` are both `error 18: Element not defined` |
+
+Placement follows the same shape: a nameless `Type` only inside a `Union` and
+a nameless `Union` only inside a `Type` (the wiki's example,
+ProPgTypeUnion), both being `error 14: Expected identifier` at module level,
+and a nameless `Type` directly inside a named `Type` is `error 17`. A bare
+`enum` at module level is accepted as written.
+
+An anonymous block also **inherits the access section in force where it is
+written**: the fields behind a nested anonymous `union` keep the enclosing
+`Private:` (reaching one from outside is `error 202`), and an access section
+*inside* a union is itself `error 17`.
+
 The type half of a field declaration is a **chain**, not one word: a type
 followed by any number of `Ptr`/`Pointer` modifiers, with `Const` allowed
 inside the chain (fbc reads it as a modifier that must be followed by one) —
@@ -1103,6 +1123,26 @@ to "the language is what the lexer does":
     time against two live candidates — parse-time diagnostics cannot see a
     use site at all — so it is unimplemented rather than wrong, and a test
     pins the pick.
+20. **A nested-enum chain through an instance stops at the enum.** fbc answers
+    both spellings for a type holding a nested `enum e`: the flattened `y.a`
+    (§7, since member flattening landed) and the qualified `y.e.a` (probed:
+    both compile, the assignment being `error 119`). `y.e.a` here reaches
+    `y.e` — the enum itself hovers — and stops, because the chain walk asks
+    each intermediate member for the type after its `as` and an `enum e`
+    carries none (`declaredTypeName` returns empty, `walkIntermediateMembers`
+    gives up). The last segment then hovers as ``Member of `y`.`` with no
+    declaration behind it: a miss, not a wrong answer.
+21. **A bare member name inside a member procedure does not resolve — there is
+    no implicit `This`.** fbc answers `b1 = 1` / `Print b1, b2, a` inside
+    `Sub T.proc()` of the wiki's own ProPgTypeUnion example (it compiles as
+    written); here an unqualified name takes the ordinary scope path, never
+    consults the enclosing type's members, and hovers as the *enclosing
+    procedure's* header instead — while completion inside that body offers
+    keywords and module symbols but no member of the type it belongs to. This
+    is the whole shape of FreeBASIC's implicit `This`, not a corner of it, so
+    it is recorded rather than patched: the fix belongs with scope resolution
+    (`visibleSymbols`/`declAt`), not the member chain, and was deliberately
+    untouched by the anonymous-block wave.
 
 ## 13. Where the diagnostics come from (compiler source)
 
