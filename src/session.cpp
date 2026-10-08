@@ -324,36 +324,68 @@ lsSymbolKind toLspSymbolKind(fblang::SymbolKind kind) {
   return lsSymbolKind::Unknown;
 }
 
-// One symbol of the documentSymbol tree, or nothing. A Scope whose subtree
-// produced nothing is *not* emitted: the block then exists in the source but
-// declares nothing, and an outline entry naming `if` with no children is noise
-// a client cannot drop (it has no idea the entry is ours). Returns nullopt only
-// for that case — every declaration, named or `<anonymous ...>`, is returned.
-std::optional<lsDocumentSymbol> convertSymbol(std::string_view content,
-                                              fblang::Symbol const &s) {
-  lsDocumentSymbol out;
-  out.name = s.name;
-  out.kind = toLspSymbolKind(s.kind);
-  out.range = fblang::utf16Range(content, s.range.beg, s.range.end);
-  out.selectionRange =
+// Whether a Scope node declares something *itself* — the outline's test for
+// earning a level of its own. Every statement of an `if` lands in its
+// `then`/`else` branch scope, so the block node's children are scopes and
+// nothing else: as a tree level it is pure structure. The same holds for the
+// `select`/`case` pair and for any run of nested blocks whose declarations all
+// sit at the bottom.
+bool declaresHere(fblang::Symbol const &s) {
+  for (fblang::Symbol const &child : s.children) {
+    if (child.kind != fblang::SymbolKind::Scope) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The outline entries `s` contributes at *this* level: `s` itself, or — a
+// Scope that declares nothing directly — its own children lifted here,
+// recursively, so a whole ladder of structural levels collapses to the first
+// level that means something. A spliced node holds no declaration by
+// construction, so splicing moves no declaration: every emitted symbol keeps
+// the parent it already had, and only empty levels disappear. This is what
+// "show the immediate parents of a tracked symbol" means concretely.
+void appendOutline(std::string_view content, fblang::Symbol const &s,
+                   std::vector<lsDocumentSymbol> *out) {
+  if (s.kind == fblang::SymbolKind::Scope && !declaresHere(s)) {
+    for (fblang::Symbol const &child : s.children) {
+      appendOutline(content, child, out);
+    }
+    return;
+  }
+  lsDocumentSymbol node;
+  if (s.kind == fblang::SymbolKind::Scope) {
+    // A scope opener is structure, not a declaration, and unlike a procedure
+    // it carries no name that says so — a bare `if` in the tree reads like
+    // something the file declared. Mark it. No `detail` either: the signature
+    // of a scope *is* its opener, and repeating it beside the marker helps
+    // nobody.
+    node.name = s.name + " <scope>";
+  } else if (!s.ownerName.empty()) {
+    // `sub T.proc()` at file level: the body sits outside the type because fbc
+    // rejects a definition inside it, but the procedure's identity is still
+    // `T.proc` — without the qualifier the outline shows an unqualified `proc`
+    // at file level with nothing to say whose it is.
+    node.name = s.ownerName + "." + s.name;
+  } else {
+    node.name = s.name;
+  }
+  node.kind = toLspSymbolKind(s.kind);
+  node.range = fblang::utf16Range(content, s.range.beg, s.range.end);
+  node.selectionRange =
       fblang::utf16Range(content, s.selection.beg, s.selection.end);
-  if (!s.signature.empty()) {
-    out.detail.emplace(s.signature);
+  if (s.kind != fblang::SymbolKind::Scope && !s.signature.empty()) {
+    node.detail.emplace(s.signature);
   }
-  for (auto const &child : s.children) {
-    std::optional<lsDocumentSymbol> converted = convertSymbol(content, child);
-    if (!converted) {
-      continue;
-    }
-    if (!out.children) {
-      out.children.emplace();
-    }
-    out.children->push_back(std::move(*converted));
+  std::vector<lsDocumentSymbol> kids;
+  for (fblang::Symbol const &child : s.children) {
+    appendOutline(content, child, &kids);
   }
-  if (s.kind == fblang::SymbolKind::Scope && !out.children) {
-    return std::nullopt;
+  if (!kids.empty()) {
+    node.children.emplace(std::move(kids));
   }
-  return out;
+  out->push_back(std::move(node));
 }
 
 // One language-layer diagnostic as the protocol carries it. The byte-offset
@@ -1926,13 +1958,11 @@ FreeBasicServer::onDocumentSymbol(td_symbol::request const &req) {
   }
   std::string_view const content = cached->content;
   for (auto const &root : cached->analysis.parse.roots) {
-    // A top-level scope (a `for`/`if` at file level) is emitted like any
-    // other subtree, so its declarations do not silently vanish from the
-    // outline; convertSymbol drops it when it holds nothing.
-    if (std::optional<lsDocumentSymbol> converted =
-            convertSymbol(content, root)) {
-      rsp.result.push_back(std::move(*converted));
-    }
+    // A top-level scope (a `for`/`if` at file level) is entered like any other
+    // subtree, so its declarations do not silently vanish from the outline —
+    // and it is spliced like any other that declares nothing directly, so its
+    // declarations rise to the top level instead of hiding behind it.
+    appendOutline(content, root, &rsp.result);
   }
   return rsp;
 }
@@ -3204,12 +3234,17 @@ FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
         }
         std::string const key = fblang::toLowerChars(s.key);
         std::string const name = fblang::toLowerChars(s.name);
+        // A member implementation (`sub T.proc()`) has no parent in the tree —
+        // fbc puts its body at file level — so nothing in the walk names its
+        // container. The type it qualifies does: `containerName` is where a
+        // client reads that from, and without it the result is an unqualified
+        // `proc` with no owner, unlike the outline's `T.proc`.
+        std::string const owner = container.empty() ? s.ownerName : container;
         if (key.find(query) != std::string::npos ||
             name.find(query) != std::string::npos) {
-          into.push_back(Match{&s, container});
+          into.push_back(Match{&s, owner});
         }
-        std::string const next =
-            container.empty() ? s.name : container + "." + s.name;
+        std::string const next = owner.empty() ? s.name : owner + "." + s.name;
         for (auto const &c : s.children) {
           collect(c, next, into);
         }

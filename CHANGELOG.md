@@ -96,6 +96,37 @@ history use; they are kept here so an entry can be traced back.
   selection overruns, and none of the 19 anonymous enums in `raygui.bi`
   carries a lens.
 
+- **A scope is an outline node only when it directly holds a declaration —
+  and then one node deep.** The first cut emitted every block and branch its
+  own node, so `engine.bas`'s update loop read `with → if → then → if → else
+  → if → then → otherFloor`: six structural levels for two dims. `if` and
+  `select` blocks never declare anything themselves (their only children are
+  branches), so they are spliced out; a branch survives only when it directly
+  declares, and its children lift recursively. The invariant, pinned in the
+  converter: splicing moves no declaration — every emitted symbol keeps the
+  parent it had.
+- **A scope names the construct it belongs to: `if..then <scope>`,
+  `if..else <scope>`, `select..case <scope>`.** The parser is the only layer
+  that knows which block opened a branch (`openBranchScope` reads the owning
+  block's opener), so the label is composed there; the display layer only
+  appends the `<scope>` marker. A bare `then` with its `if` spliced away stays
+  readable instead of floating with nothing to say where it came from.
+- **A member implementation is listed as the source spells its identity:
+  `T.proc`, not a bare `proc` under a second `T`.** fbc puts definitions at
+  file level, so the outline's file roots used to show two `T`s — the type
+  and its implementation masquerading as another `T`. `Symbol::ownerName`
+  (source spelling only: `ownerKey` stays the lowercase lookup key, so
+  resolution is untouched) qualifies the outline name, and `workspace/symbol`
+  carries the same owner as `containerName` — the field Kate renders as
+  `T::proc`.
+- Tests: `session_core`'s scope test now asserts `if..then <scope>` on the
+  wire and gains `TestDocumentSymbolsQualifyMemberImplementations` (the reply
+  lists `T.proc` once, the type's bare `proc` declare once, and the
+  implementation quoted with its qualifier); `session_type_hierarchy`'s edge
+  test asserts the qualified outline name; `session_workspace` gains
+  `TestWorkspaceSymbolQualifiesMemberImplementations`, pinning the
+  `containerName` pair.
+
 ### 2026-10-07 — `Type As` spellings, branch scopes, and the false diagnostics they fanned out into
 
 - **The `Type As` cascade is gone: `raylib.bi` 96 → 0 phantom diagnostics,

@@ -947,11 +947,17 @@ private:
     }
     Symbol s;
     s.kind = SymbolKind::Scope;
-    s.name = name;
+    // A branch carries the construct it belongs to: the block's own scope is
+    // spliced out of the outline (it declares nothing directly — see
+    // session.cpp `appendOutline`), so a bare `then` would sit there with no
+    // `if` anywhere above it. Which block opened a branch is knowledge only
+    // the parser has, so the label is built here — `if..then`, `if..else`,
+    // `select..case` — and the display layer only decorates it.
+    s.name = b.sym->name + ".." + name;
     s.key.clear();
     s.selection.beg = s.range.beg = cur_.beg;
     s.selection.end = s.range.end = cur_.end;
-    s.signature = name;
+    s.signature = s.name;
     containers_.push_back(Container(addSymbol(std::move(s))));
   }
 
@@ -1045,7 +1051,8 @@ private:
       return;
     }
     s.ownerKey = s.key;
-    advance(); // '.'
+    s.ownerName = s.name; // the qualifier as written, for the outline
+    advance();            // '.'
     s.name = std::string(cur_.text());
     s.key = toLowerChars(s.name);
     s.selection.beg = cur_.beg;

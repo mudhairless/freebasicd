@@ -150,6 +150,14 @@ struct Symbol {
   // implementation is spelled `constructor t()` with no dot, which a parser
   // cannot tell from a module constructor (FreeBASIC.md §12).
   std::string ownerKey;
+
+  // The owner's spelling as written — `Sub T.proc()` records `T`, where
+  // `ownerKey` records `t`: the same name/key split every other declaration
+  // has. `ownerKey` is what resolution looks the type up by; `ownerName` is
+  // what an *outline* entry shows, so the implementation reads `T.proc`
+  // instead of an unqualified `proc` at file level with nothing to say whose
+  // it is. Empty exactly when `ownerKey` is.
+  std::string ownerName;
 };
 
 enum class Severity { Error = 1, Warning = 2, Information = 3, Hint = 4 };

@@ -1179,12 +1179,86 @@ void TestWorkspaceSymbolIndexesWorkspace() {
   std::error_code ec;
   std::filesystem::remove_all(sandbox, ec);
 }
+
+// A member implementation (`sub T.proc()`) sits at file level in fbc's own
+// model, so the workspace walk reaches it with no container around it: the
+// qualifier comes from `Symbol::ownerName` and lands in `containerName`,
+// which is the field a client renders as `T::proc` (Kate builds the label
+// from containerName + name).
+void TestWorkspaceSymbolQualifiesMemberImplementations() {
+  char const *kModContent = "type T\n"
+                            "    dim x as long\n"
+                            "end type\n"
+                            "\n"
+                            "sub T.proc()\n"
+                            "end sub\n";
+
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::path const wsDir = sandbox / "ws";
+  std::filesystem::create_directories(wsDir);
+  {
+    std::ofstream out(wsDir / "mod.bas");
+    out << kModContent;
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const fileUri = FileUri(wsDir / "mod.bas");
+  std::string const rootUri = FileUri(wsDir);
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  WaitForOutputContaining(output, "\"id\":\"init\"");
+
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      fileUri + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString(kModContent) + "\"}}}";
+  input->append(MakeLspFrame(openFrame.c_str()));
+
+  std::string last;
+  bool found = false;
+  for (int n = 0; n < 60 && !found; ++n) {
+    std::string const id = "\"id\":\"wsq" + std::to_string(n) + "\"";
+    std::string const request =
+        R"({"jsonrpc":"2.0","id":"wsq)" + std::to_string(n) +
+        R"(","method":"workspace/symbol","params":{"query":"proc"}})";
+    input->append(MakeLspFrame(request.c_str()));
+    last = WaitForOutputContaining(output, id, 50);
+    found = last.find("\"containerName\":\"T\"") != std::string::npos;
+  }
+  Expect(found, "workspace/symbol must return the member implementation, with "
+                "its qualifier as containerName");
+  Expect(last.find("\"name\":\"proc\"") != std::string::npos &&
+             last.find("\"containerName\":\"T\"") != std::string::npos,
+         "the qualifier must ride as containerName (a client renders the pair "
+         "as T::proc) — without it the hit is an unqualified `proc` with no "
+         "owner, unlike the outline's `T.proc`");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
 } // namespace
 
 namespace fbtest {
 
 void RunWorkspaceTests() {
   RUN_TEST(TestWorkspaceSymbolIndexesWorkspace);
+  RUN_TEST(TestWorkspaceSymbolQualifiesMemberImplementations);
   RUN_TEST(TestOutsideFileNotIndexed);
   RUN_TEST(TestHoverWorksForDocOutsideWorkspaceRoot);
   RUN_TEST(TestSourceLayoutRootNarrowsToOpenedProject);

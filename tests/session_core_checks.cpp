@@ -292,10 +292,61 @@ void TestDocumentSymbolsNameAnonymousAndScopes() {
       "the anonymous declaration selects its own `enum` keyword");
   Expect(response.find("\"name\":\"red\"") != std::string::npos,
          "the anonymous enum's members stay nested under it");
-  Expect(response.find("\"name\":\"if\",\"kind\":3") != std::string::npos,
-         "a scope block is emitted, mapped to the Namespace kind");
+  Expect(response.find("\"name\":\"if..then <scope>\",\"kind\":3") !=
+             std::string::npos,
+         "the scope directly holding the local is emitted, carrying the `if` "
+         "it belongs to, marked `<scope>` and mapped to the Namespace kind");
+  Expect(response.find("\"name\":\"if\"") == std::string::npos,
+         "the block level declaring nothing directly is spliced out: only the "
+         "immediate parent of a declaration earns a level of its own");
   Expect(response.find("\"name\":\"inner\"") != std::string::npos,
          "the local declared inside the scope block reaches the outline");
+  Expect(response.find("\"detail\":\"then\"") == std::string::npos,
+         "a scope marker is not repeated as its own detail");
+
+  session.stop();
+}
+
+// A member implementation is a file-level entry whose identity is the type it
+// qualifies: `sub T.proc()` is spelled that way because fbc rejects a
+// definition inside the type body (FreeBASIC.md §7), and the outline has to
+// carry the qualifier — at file level nothing else says whose proc it is.
+// Frames only this test sends.
+char const kDidOpenMemberFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file://{{tmp}}/member.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"type T\n  declare sub proc()\nend type\nsub T.proc()\nend sub\n"}}})FB";
+
+char const kMemberSymbolFrame[] =
+    R"FB({"jsonrpc":"2.0","id":"dsym3","method":"textDocument/documentSymbol","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/member.bas"}}})FB";
+
+void TestDocumentSymbolsQualifyMemberImplementations() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenMemberFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kMemberSymbolFrame));
+  std::string const response =
+      WaitForOutputContaining(output, "\"id\":\"dsym3\"");
+
+  Expect(response.find("\"name\":\"T.proc\"") != std::string::npos,
+         "the implementation must be listed as the source spells its "
+         "identity, qualifier included: `sub T.proc()` writes `T.proc`");
+  Expect(CountOf(response, "\"name\":\"proc\"") == 1,
+         "the `declare` inside the type is the only bare `proc`: the "
+         "implementation must not also answer as an unqualified one");
+  Expect(response.find("\"name\":\"T\"") != std::string::npos,
+         "the type itself is still listed at file level");
 
   session.stop();
 }
@@ -553,6 +604,7 @@ void RunCoreTests() {
   RUN_TEST(TestDiagnosticsRespectDeclarationScopes);
   RUN_TEST(TestDocumentSymbolsReturnHierarchy);
   RUN_TEST(TestDocumentSymbolsNameAnonymousAndScopes);
+  RUN_TEST(TestDocumentSymbolsQualifyMemberImplementations);
   RUN_TEST(TestFoldingRangesReturned);
   RUN_TEST(TestDidChangePushesDiagnostics);
   RUN_TEST(TestDidCloseEvictsAndPublishes);

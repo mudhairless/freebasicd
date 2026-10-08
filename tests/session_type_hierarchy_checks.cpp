@@ -331,11 +331,11 @@ void TestDocumentSymbolShowsTheEdgeNotItsParts() {
          "the qualifier of a member implementation is not a symbol of its "
          "own: `sub base_t.go()` used to be listed as a second `base_t`, and "
          "that is the duplicate outline entry this milestone removes");
-  Expect(CountOf(bas, "\"name\":\"go\"") == 1 &&
+  Expect(CountOf(bas, "\"name\":\"base_t.go\"") == 1 &&
              bas.find("\"detail\":\"sub base_t.go()\"") != std::string::npos,
-         "the implementation must be listed once, under its member name and "
-         "with its qualifier in the detail — which is what makes it "
-         "addressable");
+         "the implementation must be listed once, carrying its qualifier in "
+         "the outline name — `T.proc`, not a bare `proc` under a second "
+         "`base_t` — which is what makes it addressable");
 
   input->append(MakeLspFrame(
       (R"({"jsonrpc":"2.0","id":"dsym2","method":"textDocument/documentSymbol","params":{"textDocument":{"uri":")" +
