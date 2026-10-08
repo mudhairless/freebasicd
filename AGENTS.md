@@ -498,10 +498,15 @@ git ls-files '*.cpp' '*.h' | grep -v '^third_party/' \
 
 Every tracked C++ file, so a new file in a new directory cannot escape the
 gate; `git ls-files` does not descend into the submodules, and the filter says
-so out loud. **Keep the local tool and the workflow's pin in step**
-(`CLANG_FORMAT_VERSION`, currently `22.1.8`): the gate fails on tool drift as
-much as on code drift, and an unpinned formatter makes that failure
-unexplainable.
+so out loud. **Run the system-installed `clang-format` — the `/usr/bin` copy,
+not a vendored pin substitute.** This machine is Arch and tracks the latest
+LLVM, so the local tool drifts ahead of the workflow's pinned
+`CLANG_FORMAT_VERSION`; that is the expected state while both versions agree on
+the tree. **When a discrepancy arises — the system version formats a file
+differently than the workflow's pin would — tell the user and bump
+`CLANG_FORMAT_VERSION` to the system version in its own standalone commit**: no
+`CHANGELOG.md` entry, it is a tooling sync, not a milestone. The same policy
+covers the clang diagnostics below: run what the system installed.
 
 Apply with `clang-format -i <file>` (or `--lines=start:end` for a region, e.g.
 right after `clang-tidy --fix`). Corpus `.bas`/`.diag` files and
@@ -511,8 +516,11 @@ right after `clang-tidy --fix`). Corpus `.bas`/`.diag` files and
 
 On-demand only — not part of the milestone gate. Baseline config lives at repo
 root `.clang-tidy`; keep `src/` **zero-diagnostic** under it whenever you do
-run it, but don't block a milestone on tidying. Run it when asked or when a
-change looks tricky (copy-paste code, heavy templates, new headers):
+run it, but don't block a milestone on tidying. Run it with the
+system-installed `/usr/bin/clang-tidy`: the clang-format policy above ("run
+what the system installed; bump the CI pin only when the two disagree")
+applies to clang diagnostics as well. Run it when asked or when a change looks
+tricky (copy-paste code, heavy templates, new headers):
 
 ```
 cmake -S . -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_COMPILER=clang++
@@ -522,7 +530,7 @@ clang-tidy -p build-tidy --quiet src/lexer.cpp src/language.cpp src/parser.cpp \
 
 Gotchas learned the hard way (2026-09):
 
-- The system `clang-tidy` (LLVM 22) is built with **no checks enabled** — a
+- The system `clang-tidy` is built with **no checks enabled** — a
   bare run without `-checks`/`.clang-tidy` aborts with "no checks enabled".
   Disable checks by *adding* `-checks` values; `.clang-tidy` `Checks:` and
   `WarningsAsErrors:` are the committed source of truth.
