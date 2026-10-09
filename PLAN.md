@@ -12,7 +12,7 @@
 
   The project is `freebasicd` (renamed from `freebasiclsp` 2026-09-25), version
   0.7.0 under semantic versioning — the number is bumped only when a release
-  ships, never in an ordinary feature or fix commit. `ctest` is 18/18 green.
+  ships, never in an ordinary feature or fix commit. `ctest` is 19/19 green.
 
   LspCpp is vendored from our fork `mudhairless/LspCpp` at `e4b177e` (upstream
   `19150d12` plus eleven local commits) and supplies framing / JSON-RPC / typed
@@ -36,6 +36,8 @@
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
   | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
+  | M23 — fbc parser diagnostics: block structure, statements, warnings (backlog) | backlog |
+  | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
 
 ## 2. What exists (condensed)
 
@@ -58,6 +60,15 @@
     case-insensitively) that names project roots for workspace detection.
     `isReservedWord` matches the keyword catalog case-insensitively, as fbc
     does.
+  - `src/fbc_diagnostics.{h,cpp}` — the imported fbc diagnostic catalog as
+    data: `fbcMessage(kind, number)` (name / text / `-w` level),
+    `fbcMessageCount`, `fbcCode` (`fbc error: 42` / `fbc warning: 5`), and
+    `fbcMessageDocsUrl` (the one wiki page a coded diagnostic links to as
+    `codeDescription.href`). Generated from `tools/fbc_catalog.tsv` by
+    `tools/gen_fbc_catalog.cpp` (the `fbc-catalog` target) into
+    `src/fbc_diagnostics.inc`; `fbc_diagnostics_checks` byte-diffs the
+    committed copy. Maps our output onto the compiler's own numbers, so a
+    reader who knows `error 42` learns something from it.
   - `src/analysis_cache.{h,cpp}` — `AnalysisCache`: content-addressed
     `ParseResult` + token vector per path (FNV-1a content hash as the identity),
     open-buffer entries exempt from FIFO eviction, `removePath` on close.
@@ -428,10 +439,14 @@ diagnostics it implies fbc's numbers instead of ours. Gating milestone for M18.
    about constructor *order*: fbc does not specify it, it is not stable across
    link orders (probed — two link orders of the same three modules interleave
    differently), so neither is any claim we make.
-6. **The catalog as data.** Check in a generated table from `error.bas` at the
-   pinned tag (FreeBASIC.md §13), the generator under `tools/`, and a test that
-   fails when the checked-in table drifts from the script. A reader who knows
-   `error 42` then learns something from our output.
+6. **The catalog as data — landed (2026-10-09).**
+   `tools/extract_fbc_catalog.py` reads `error.bas` at the pinned tag into the
+   checked-in `tools/fbc_catalog.tsv`; `tools/gen_fbc_catalog.cpp` (the
+   `fbc-catalog` target) emits `src/fbc_diagnostics.inc`;
+   `src/fbc_diagnostics.{h,cpp}` is the reader (`fbcMessage`, `fbcCode`,
+   `fbcMessageDocsUrl`); and `fbc_diagnostics_checks` fails when the include
+   drifts from the snapshot. A reader who knows `error 42` now learns something
+   from our output.
 
 **Step 3 in detail: what the config says, and what it defaults to.**
 
@@ -568,6 +583,77 @@ suggesting it.
   still diagnoses the earlier use; the generated `Declare` for a defaulted param
   keeps the default; an early `Dim As T` offers reorder/include, never an alias.
 - `ctest` green, changed files clang-format clean.
+
+### M23 — fbc parser diagnostics: block structure, statements, warnings (backlog)
+
+The parser-reachable half of fbc's catalog, reported with fbc's own numbers and
+texts from M21's generated catalog. Gated on M21 (the catalog) and on §5's
+false-positive fixes: adding checks on top of a parser that rejects valid
+FreeBASIC makes the server worse, so the parser bugs land first.
+
+- **Block structure.** We already detect the shapes but collapse them into
+  generic codes; emit the specific message keyed on the opener token: expected
+  closer (`13/29/30/32/35/60/95/121/124/125–130`), closer without opener
+  (`106/107/108/110/111`), `33 ILLEGALEND`, and the mismatched procedure closers
+  (`127/129/130`). Data is already in `src/language.cpp`
+  (`kBlockOpeners`/`kCloserOnly`, `expectedCloserAt`, `blockForOpener`). This is
+  also the family behind the block-structure false positives, which the fixes
+  address.
+- **Statements.** The `select` family (`62/34/118/111/246/242/250/323`), the
+  `for`/`do` families (`EXPECTEDNEXT`, `NEXTWITHOUTFOR 107`, `FORNEXTVARIABLEMISMATCH
+  283`, `WHILE/WEND`), `EXIT`/`CONTINUE` outside a legal block (`251/252`), the
+  punctuator family routed through one `expected(token)` helper (`17`, `14`,
+  `9`, `6`, `7`, `3`, `10`, `16`, `66`, `309`), `11 EXPECTEDCONST` for a `const`
+  with no expression, and the statement-specific `REDIM`/`SEEK`/`CLOSE` checks.
+- **Placement.** `61 ILLEGALINSIDEASUB`, `96 ILLEGALINSIDEASCOPE`, `44
+  ILLEGALOUTSIDECOMP`, and `105 BRANCHCROSSINGDYNDATADEF` / warning `14` — each
+  needs the block stack the parser already keeps, plus the name of the enclosing
+  construct.
+- **Warnings.** The parser-reachable set: `12 NOCLOSINGQUOTE`, `44
+  SUFFIXIGNORED`, `26 NEXTVARMEANINGLESS`, `32 IFFOUNDAFTERELSE`, `33
+  SHIFTEXCEEDSBITSINDATATYPE`, `25 CONVOVERFLOW`, `46 CMDLINEIGNORED`, `15
+  NOEXPLICITPARAMMODE`. The `-w` level model is exposed as a `freebasicd.toml`
+  key whose default matches fbc (level 1; 45 of 49 on by default), and any gate
+  that changes the payload is folded into the M14 `resultId` hash.
+- **No cascades.** A single missing closer yields one diagnostic, not one per
+  subsequent line; the existing `unterminated-block` handling is the model.
+- **Corpus.** Import the fbc-suite triggers into `tests/` as goldens rather than
+  compiling against the external compiler at test time.
+
+Dialect gates (`146/147/150`, `*ONLYVALIDINLANG`) stay out until a non-`fb`
+dialect is modeled: only `fb` is parsed today.
+
+Acceptance: each new message carries fbc's number and text; the no-cascade rule
+has a test; a warning-level change moves the `resultId`; `ctest` green, changed
+files clang-format clean.
+
+### M24 — Resolve-layer type model + fbc semantic diagnostics (backlog)
+
+The largest diagnostic wave, and the one the parser alone cannot reach: fbc's
+name and type checks run past the parse, and `src/resolve.cpp` emits no
+diagnostics today. Build the type / overload / const-attribute model layered on
+`ResolvedSymbol`, then judge a name, an argument list, a member access, and an
+assignment against it and report fbc's numbers from M21's catalog:
+`42 VARIABLENOTDECLARED`, `8 UNDEFINEDSYMBOL`, `4 DUPDEFINITION`, `20/58` type
+mismatch, `181 ILLEGALASSIGNMENT`, `202 ILLEGALMEMBERACCESS`, `24
+INVALIDDATATYPES`, `119 CONSTANTCANTBECHANGED`, `99/98` no-matching / ambiguous
+proc, `1 ARGCNTMISMATCH`, `255 AMBIGUOUSSYMBOLACCESS`, `225–231 OVERRIDE*`, `71
+INCOMPLETETYPE`, the type-dependent `54/28/63/73/120`, and the type-heavy
+warnings (`1–5`, `10`, `13`, `40–43`, `49`).
+
+- Resolve diagnostics get their own result (a field `documentDiagnostics`
+  concatenates with the parse diagnostics) so the parse cache and the resolve
+  pass stay separable — the index only parses.
+- **The milestone fbc's `error 42` output for "use before declaration" (M22)
+  depends on.** M22 ships the declaration-order diagnostic; M24 is the model
+  that makes the rest of the semantic set honest, so schedule it with M22 in
+  view.
+- The semantic `warnings/` corpora are imported as goldens, not compiled
+  against the external compiler at test time.
+
+Acceptance: the covered set reports fbc's numbers and texts; a resolve gate
+cannot leave a stale M14 `resultId`; `ctest` green, changed files clang-format
+clean.
 
 ### M18 — Public release: first tag
 

@@ -57,6 +57,7 @@ add_library(freebasicd_lang STATIC
     src/call_hierarchy.cpp
     src/code_actions.cpp
     src/code_lens.cpp
+    src/fbc_diagnostics.cpp
     src/i18n.cpp
     src/index.cpp
     src/inlay_hints.cpp
@@ -371,6 +372,41 @@ target_compile_definitions(grammar_checks PRIVATE
     GRAMMAR_DIR="${CMAKE_SOURCE_DIR}/docs/grammar")
 target_link_libraries(grammar_checks PRIVATE freebasicd_grammar freebasicd_lang)
 add_test(NAME grammar_checks COMMAND grammar_checks)
+
+# fbc diagnostic catalog: tools/fbc_catalog.tsv is the imported snapshot (see
+# tools/extract_fbc_catalog.py), the shared emitter under tools/ writes
+# src/fbc_diagnostics.inc, and fbc_diagnostics_checks byte-diffs the committed
+# copy against a fresh emission. The `fbc-catalog` target regenerates it; like
+# the other regeneration targets it never runs by default.
+add_library(freebasicd_fbccatalog STATIC
+    tools/fbc_catalog.cpp
+)
+target_include_directories(freebasicd_fbccatalog PUBLIC ${CMAKE_SOURCE_DIR}/tools)
+
+add_executable(gen_fbc_catalog
+    tools/gen_fbc_catalog.cpp
+)
+target_link_libraries(gen_fbc_catalog PRIVATE freebasicd_fbccatalog)
+
+add_custom_target(fbc-catalog
+    COMMAND gen_fbc_catalog
+            ${CMAKE_SOURCE_DIR}/tools/fbc_catalog.tsv
+            ${CMAKE_SOURCE_DIR}/src/fbc_diagnostics.inc
+    DEPENDS gen_fbc_catalog
+    COMMENT "Regenerating src/fbc_diagnostics.inc from tools/fbc_catalog.tsv")
+
+add_executable(fbc_diagnostics_checks
+    tests/fbc_diagnostics_checks.cpp
+)
+target_include_directories(fbc_diagnostics_checks PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tools)
+target_compile_definitions(fbc_diagnostics_checks PRIVATE
+    FBC_CATALOG_TSV="${CMAKE_SOURCE_DIR}/tools/fbc_catalog.tsv"
+    FBC_CATALOG_INCLUDE="${CMAKE_SOURCE_DIR}/src/fbc_diagnostics.inc")
+target_link_libraries(fbc_diagnostics_checks PRIVATE
+    freebasicd_fbccatalog freebasicd_lang)
+add_test(NAME fbc_diagnostics_checks COMMAND fbc_diagnostics_checks)
 
 add_executable(index_checks
     tests/index_checks.cpp

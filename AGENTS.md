@@ -273,12 +273,12 @@ must stay there. Encoding directives that the lexer/parser must honor:
 
 ## Verification
 
-- Unit drivers in `tests/` via ctest (18 suites: `lexer_checks`,
+- Unit drivers in `tests/` via ctest (19 suites: `lexer_checks`,
   `analysis_cache_checks`, `language_checks`, `parser_checks`,
   `resolve_checks`, `corpus_checks`, `utf16_checks`,
   `semantic_tokens_checks`, `inlay_hints_checks`, `selection_checks`,
   `call_hierarchy_checks`, `code_actions_checks`, `code_lens_checks`,
-  `grammar_checks`,
+  `grammar_checks`, `fbc_diagnostics_checks`,
   `index_checks`, `settings_checks`,
   `i18n_checks`, and `session_integration`, which drives `LanguageSession` with
   in-memory streams — LspCpp `tests/test_helpers.h`).
