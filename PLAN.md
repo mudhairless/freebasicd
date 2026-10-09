@@ -36,7 +36,7 @@
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
   | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
-  | M23 — fbc parser diagnostics: block structure, statements, warnings (backlog) | backlog |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (block structure landed) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
 
 ## 2. What exists (condensed)
@@ -366,12 +366,12 @@
      project's **artifact kind** and **main module** are facts only the user can
      supply. M21 takes both as optional config with defaults that keep today's
      behavior.
-  6. **Our diagnostic codes are our own, not fbc's.** fbc's whole catalog is
-     data in its source — `error.bas` at tag `1.10.2`, 328 errors and 49
-     warnings whose *array position is the printed number* (FreeBASIC.md §13)
-     — so a reader who knows `error 42` learns nothing from our output. M21
-     turns that table into generated, checked-in data with a staleness test
-     rather than prose.
+  6. **Most diagnostic codes are still our own, not fbc's.** The catalog is
+     data (M21 step 6: `tools/fbc_catalog.tsv` → `src/fbc_diagnostics.inc`,
+     byte-checked by `fbc_diagnostics_checks`) and the block-closer family
+     already reports fbc's number and links its wiki page. The statement,
+     placement, and warning families and the whole resolve layer still report
+     our codes — M23 and M24.
   7. **Diagnostics are not version-aware** (M21, second half). Nothing records
      which fbc version a finding assumes, there is no `fbc.path`/`fbc.version`
      config, and the two sites that locate `fbc` are independent:
@@ -584,21 +584,25 @@ suggesting it.
   keeps the default; an early `Dim As T` offers reorder/include, never an alias.
 - `ctest` green, changed files clang-format clean.
 
-### M23 — fbc parser diagnostics: block structure, statements, warnings (backlog)
+### M23 — fbc parser diagnostics: statements, placement, warnings (backlog)
 
 The parser-reachable half of fbc's catalog, reported with fbc's own numbers and
-texts from M21's generated catalog. Gated on M21 (the catalog) and on §5's
+texts from M21's generated catalog (landed). Gated on the parser's
 false-positive fixes: adding checks on top of a parser that rejects valid
-FreeBASIC makes the server worse, so the parser bugs land first.
+FreeBASIC makes the server worse, so the parser bugs land first. A re-run
+against the pinned fbc suite finds **148 files fbc accepts and the parser
+rejects**, nearly all block-structure shapes (`function = expr` result
+assignment, a self-type parameter in a `Type` body's `Declare`,
+`static`/bitfield members, `/'…'/` block comments, `virtual`/`const` procedure
+prefixes, and more); eliminating those is the first work of this milestone.
 
-- **Block structure.** We already detect the shapes but collapse them into
-  generic codes; emit the specific message keyed on the opener token: expected
-  closer (`13/29/30/32/35/60/95/121/124/125–130`), closer without opener
-  (`106/107/108/110/111`), `33 ILLEGALEND`, and the mismatched procedure closers
-  (`127/129/130`). Data is already in `src/language.cpp`
-  (`kBlockOpeners`/`kCloserOnly`, `expectedCloserAt`, `blockForOpener`). This is
-  also the family behind the block-structure false positives, which the fixes
-  address.
+- **Block structure — landed (2026-10-09).** Expected closer
+  (`13/19/29/30/32/35/45/60/74/95/121/124/125–130`), closer without opener
+  (`106`–`118`), `33 ILLEGALEND`, and the mismatched-closer family now carry
+  fbc's number and the `CompilerErrMsg` wiki link, keyed on the specific
+  closer by `fbcExpectedCloserError`/`fbcCloserWithoutOpenerError` in
+  `src/language.cpp`. The coarse routing code stays internal so one quick fix
+  covers the whole family — see [`CHANGELOG.md`](CHANGELOG.md).
 - **Statements.** The `select` family (`62/34/118/111/246/242/250/323`), the
   `for`/`do` families (`EXPECTEDNEXT`, `NEXTWITHOUTFOR 107`, `FORNEXTVARIABLEMISMATCH
   283`, `WHILE/WEND`), `EXIT`/`CONTINUE` outside a legal block (`251/252`), the
@@ -623,9 +627,10 @@ FreeBASIC makes the server worse, so the parser bugs land first.
 Dialect gates (`146/147/150`, `*ONLYVALIDINLANG`) stay out until a non-`fb`
 dialect is modeled: only `fb` is parsed today.
 
-Acceptance: each new message carries fbc's number and text; the no-cascade rule
-has a test; a warning-level change moves the `resultId`; `ctest` green, changed
-files clang-format clean.
+Acceptance: each new message carries fbc's number and the catalog's wiki link
+(the human-readable text stays a translatable `trf` string, not fbc's verbatim
+English); the no-cascade rule has a test; a warning-level change moves the
+`resultId`; `ctest` green, changed files clang-format clean.
 
 ### M24 — Resolve-layer type model + fbc semantic diagnostics (backlog)
 

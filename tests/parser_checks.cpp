@@ -43,6 +43,17 @@ static int diagnosticCount(const ParseResult &r, const char *code) {
   return n;
 }
 
+// The fbc number carried by the first diagnostic with this routing code, or 0
+// when the parse reported none (or reported one fbc has no number for).
+static int fbcErrorFor(const ParseResult &r, const char *code) {
+  for (const auto &d : r.diagnostics) {
+    if (d.code == code) {
+      return d.fbcError;
+    }
+  }
+  return 0;
+}
+
 static const Symbol *find(const std::vector<Symbol> &scope,
                           const std::string &key, SymbolKind k) {
   for (const auto &s : scope) {
@@ -384,6 +395,76 @@ int main() {
     ParseResult r = parseDocument("if a then\nend select\n");
     CHECK(diagnosticCount(r, "closer-mismatch") == 1);
     CHECK(diagnosticCount(r, "unterminated-block") == 1);
+  }
+
+  // Each of the block-closer diagnostics carries fbc's own number for the
+  // *specific* closer it names, so a reader who knows `error 125` learns
+  // something from our output and the session can link the catalog's wiki
+  // page. The numbers and spellings were re-probed against fbc 1.10.2:
+  // `tools/fbc_catalog.tsv` is the imported copy this mapping is read against.
+  {
+    CHECK(fbcErrorFor(parseDocument("sub foo()\n"), "unterminated-block") ==
+          125);
+    CHECK(fbcErrorFor(parseDocument("function foo()\n"),
+                      "unterminated-block") == 126);
+    CHECK(fbcErrorFor(parseDocument("type t\n  as integer i\n"),
+                      "unterminated-block") == 19);
+    CHECK(fbcErrorFor(parseDocument("union u\n  as integer i\n"),
+                      "unterminated-block") == 19);
+    CHECK(fbcErrorFor(parseDocument("enum e\n  a = 1\n"),
+                      "unterminated-block") == 74);
+    CHECK(fbcErrorFor(parseDocument("namespace n\n  dim x as integer\n"),
+                      "unterminated-block") == 121);
+    CHECK(fbcErrorFor(parseDocument("scope\n  dim x as integer\n"),
+                      "unterminated-block") == 95);
+    CHECK(fbcErrorFor(parseDocument("extern \"C\"\n  declare sub foo()\n"),
+                      "unterminated-block") == 124);
+    CHECK(fbcErrorFor(parseDocument("for i = 1 to 3\n  print i\n"),
+                      "unterminated-block") == 13);
+    CHECK(fbcErrorFor(parseDocument("while 1\n  print 1\n"),
+                      "unterminated-block") == 30);
+    CHECK(fbcErrorFor(parseDocument("do\n  print 1\n"), "unterminated-block") ==
+          29);
+    CHECK(fbcErrorFor(parseDocument("if a then\n  print 1\n"),
+                      "unterminated-block") == 32);
+    CHECK(fbcErrorFor(parseDocument("select case a\n  case 1\n"),
+                      "unterminated-block") == 35);
+    CHECK(fbcErrorFor(parseDocument("type t\n  as integer i\nend type\nwith t\n"
+                                    "  .i = 1\n"),
+                      "unterminated-block") == 60);
+    CHECK(fbcErrorFor(parseDocument("asm\n  nop\n"), "unterminated-block") ==
+          45);
+  }
+  {
+    // A closer with no opener: fbc names each one, and the record/union/enum
+    // spellings collapse onto `33 ILLEGALEND` because that is what fbc reports
+    // for a bare `end type`/`end enum` (probed: "error 33: Illegal 'END'").
+    CHECK(fbcErrorFor(parseDocument("next\n"), "stray-closer") == 107);
+    CHECK(fbcErrorFor(parseDocument("loop\n"), "stray-closer") == 106);
+    CHECK(fbcErrorFor(parseDocument("wend\n"), "stray-closer") == 108);
+    CHECK(fbcErrorFor(parseDocument("else\n"), "stray-closer") == 117);
+    CHECK(fbcErrorFor(parseDocument("elseif 1 then\n"), "stray-closer") == 116);
+    CHECK(fbcErrorFor(parseDocument("case 1\n"), "stray-closer") == 118);
+    CHECK(fbcErrorFor(parseDocument("end if\n"), "stray-closer") == 110);
+    CHECK(fbcErrorFor(parseDocument("end select\n"), "stray-closer") == 111);
+    CHECK(fbcErrorFor(parseDocument("end with\n"), "stray-closer") == 109);
+    CHECK(fbcErrorFor(parseDocument("end sub\n"), "stray-closer") == 112);
+    CHECK(fbcErrorFor(parseDocument("end namespace\n"), "stray-closer") == 114);
+    CHECK(fbcErrorFor(parseDocument("end scope\n"), "stray-closer") == 113);
+    CHECK(fbcErrorFor(parseDocument("end extern\n"), "stray-closer") == 115);
+    CHECK(fbcErrorFor(parseDocument("end type\n"), "stray-closer") == 33);
+    CHECK(fbcErrorFor(parseDocument("end enum\n"), "stray-closer") == 33);
+  }
+  {
+    // `END FOR`/`END WHILE` are an illegal `END` (error 33), and the block that
+    // the token proves is unterminated keeps its own expected-closer number.
+    CHECK(fbcErrorFor(parseDocument("for i = 1 to 3\nnext\nend for\n"),
+                      "invalid-end") == 33);
+    CHECK(fbcErrorFor(parseDocument("if a then\nend select\n"),
+                      "closer-mismatch") == 32);
+    // The preprocessor blocks are ours, not fbc's: its catalog covers neither
+    // #if nor #macro, so no number and no wiki link ride along.
+    CHECK(fbcErrorFor(parseDocument("#endif\n"), "stray-closer") == 0);
   }
 
   // Line structures: single-line IF needs no closer.

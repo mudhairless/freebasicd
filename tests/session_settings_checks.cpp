@@ -152,7 +152,7 @@ void TestDidChangeConfigurationDiagnosticsToggle() {
       mainUri + R"(","languageId":"basic","version":1,"text":"else\n"}}})";
   input->append(MakeLspFrame(openFrame.c_str()));
   std::string const first = WaitForPublishedUri(output, 1);
-  Expect(first.find("\"code\":\"stray-closer\"") != std::string::npos,
+  Expect(first.find("\"code\":\"fbc error: 117\"") != std::string::npos,
          "the open must publish the stray-closer Error");
 
   // Off: one empty publish per open buffer...
@@ -196,7 +196,7 @@ void TestDidChangeConfigurationDiagnosticsToggle() {
   std::string const restored =
       WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
   std::string const restoring = LastPublish(restored);
-  Expect(restoring.find("\"code\":\"stray-closer\"") != std::string::npos,
+  Expect(restoring.find("\"code\":\"fbc error: 118\"") != std::string::npos,
          "turning diagnostics on must re-publish the buffer's errors");
 
   session.stop();
@@ -463,7 +463,7 @@ void TestSettingsApplyPerRootOnly() {
          "the unchanged root must not re-publish its document");
   Expect(last.find("\"code\":\"include-not-found\"") == std::string::npos,
          "the changed root's include must now resolve");
-  Expect(last.find("\"code\":\"stray-closer\"") != std::string::npos,
+  Expect(last.find("\"code\":\"fbc error: 117\"") != std::string::npos,
          "the changed root's other errors must survive the re-publish");
   std::size_t remaining = 0;
   std::size_t rb = 0;

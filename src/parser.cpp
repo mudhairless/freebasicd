@@ -134,8 +134,8 @@ public:
     // Unterminated blocks, innermost first.
     for (auto it = blocks_.rbegin(); it != blocks_.rend(); ++it) {
       addDiagnostic(it->begOpen, it->endOpen, Severity::Error,
-                    "unterminated-block",
-                    trf("Expected '%s'", displayFor(*it)));
+                    "unterminated-block", trf("Expected '%s'", displayFor(*it)),
+                    fbcExpectedCloserError(it->kind));
     }
     // Close the leftover blocks at EOF (innermost first) so their symbols get
     // sane ranges extending to the end of the source. Without this, a block
@@ -304,12 +304,13 @@ private:
   }
 
   void addDiagnostic(uint32_t beg, uint32_t end, Severity sev, const char *code,
-                     std::string msg) {
+                     std::string msg, int fbcError = 0) {
     Diagnostic d;
     d.range.beg = beg;
     d.range.end = end;
     d.severity = sev;
     d.code = code;
+    d.fbcError = fbcError;
     d.message = std::move(msg);
     out_.diagnostics.push_back(std::move(d));
   }
@@ -453,6 +454,7 @@ private:
     d.range = SourceRange{b.begOpen, b.endOpen};
     d.severity = Severity::Error;
     d.code = "unterminated-block";
+    d.fbcError = fbcExpectedCloserError(b.kind);
     d.message = trf("Expected '%s'", displayFor(b));
     d.closerAt = end;
     out_.diagnostics.push_back(std::move(d));
@@ -822,8 +824,10 @@ private:
     }
     if (w == "else" || w == "elseif") {
       if (blocks_.empty() || blocks_.back().kind != BlockKind::If) {
+        // fbc numbers these apart: 117 ELSEWITHOUTIF, 116 ELSEIFWITHOUTIF.
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      trf("%s without %s", uppercase(w), "IF"));
+                      trf("%s without %s", uppercase(w), "IF"),
+                      w == "else" ? 117 : 116);
       } else {
         openBranchScope(w);
       }
@@ -834,7 +838,7 @@ private:
     if (w == "case") {
       if (blocks_.empty() || blocks_.back().kind != BlockKind::Select) {
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      trf("%s without %s", "CASE", "SELECT"));
+                      trf("%s without %s", "CASE", "SELECT"), 118);
       } else {
         openBranchScope("case");
       }
@@ -1652,7 +1656,7 @@ private:
     if (w == "for" || w == "while") {
       std::string const expected = w == "for" ? "NEXT" : "WEND";
       addDiagnostic(cur_.beg, cur_.end, Severity::Error, "invalid-end",
-                    trf("Expected '%s'", expected));
+                    trf("Expected '%s'", expected), 33 /* ILLEGALEND */);
       // No block can be closed by `END FOR` / `END WHILE` (fbc rejects both
       // with `error 33: Illegal 'END'`), so this token is itself the evidence
       // that the innermost block ends before it — fbc's `error 13: Expected
@@ -1675,7 +1679,8 @@ private:
 
     if (blocks_.empty()) {
       addDiagnostic(endTok.beg, cur_.end, Severity::Error, "stray-closer",
-                    trf("%s without %s", "END " + uppercase(w), uppercase(w)));
+                    trf("%s without %s", "END " + uppercase(w), uppercase(w)),
+                    fbcCloserWithoutOpenerError(c.kind));
       resetDoc();
       skipStatement();
       return;
@@ -1716,7 +1721,8 @@ private:
                                    BlockCloser const &c) {
     if (!isMemberBodyKind(top.kind)) {
       addDiagnostic(at, cur_.end, Severity::Error, "closer-mismatch",
-                    trf("Expected '%s'", displayFor(top)));
+                    trf("Expected '%s'", displayFor(top)),
+                    fbcExpectedCloserError(top.kind));
     }
     closeBlockUnterminated(at);
   }
@@ -1744,7 +1750,8 @@ private:
       }
       addDiagnostic(closerTok.beg, closerTok.end, Severity::Error,
                     "stray-closer",
-                    trf("%s without %s", uppercase(c.closeWord), openerName));
+                    trf("%s without %s", uppercase(c.closeWord), openerName),
+                    fbcCloserWithoutOpenerError(c.kind));
       resetDoc();
       skipStatement();
       return;

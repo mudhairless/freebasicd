@@ -26,6 +26,44 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-09 — Block closers carry fbc's own error numbers
+
+- **The block-structure diagnostics now report fbc's own number and link its
+  wiki.** An unterminated `Sub` is `fbc error: 125` (fbc's `EXPECTEDENDSUB`)
+  rather than a generic `unterminated-block`, a `Next` with no `For` is
+  `fbc error: 107`, and every mapped diagnostic carries
+  `codeDescription.href` = the `CompilerErrMsg` wiki page. The number is keyed
+  on the *specific* closer the parser wanted — `13` for `NEXT`, `19` for
+  `END TYPE`/`END UNION`, `45`/`60`/`74`/`95`/`121`/`124` for the rest,
+  `125`–`130` for the procedure family, and `33 ILLEGALEND` for
+  `END FOR`/`END WHILE` and the bare `end type`/`end union`/`end enum`/
+  `end asm` — so a reader who knows `error 125` learns something from our
+  output. The numbers came out of the compiler (`tools/fbc_catalog.tsv`, M21
+  step 6) and were re-probed against the pinned `/usr/bin/fbc` for every
+  spelling before they were wired in.
+- **Two fields, on purpose.** `Diagnostic.code` stays the parser's coarse
+  routing key (`unterminated-block`, `stray-closer`), which the quick-fix
+  table and the corpus goldens key on; a new `Diagnostic.fbcError` carries the
+  number, and `toLsDiagnostic` is the one place that turns it into the wire
+  `code` + `codeDescription`. That is what keeps a single `Insert 'END SUB'`
+  fix covering all six procedure spellings while the client still sees the
+  exact number: a fix keyed on the reported string would need one row per
+  block kind. The preprocessor blocks are deliberately unmapped — fbc's catalog
+  covers neither `#if` nor `#macro`, so they keep our code and carry no link.
+- `parser_checks` pins the mapping per closer kind (and the preprocessor
+  zero); `session_code_actions_checks` pins the wire code **and** the href on
+  the wire; the existing wire-code assertions moved to the numbers they now
+  see. `ctest` 19/19, changed files clang-format clean.
+
+**Deviation from the plan, and why.** The plan coupled this split with the
+parser false-positive fixes in one wave; this ships the split alone. The
+false-positive set turned out to be 148 files across a dozen shapes rather than
+a tidy list (re-run against the pinned suite: 148 files fbc accepts and we
+reject, all block-structure), which is an open-ended parser-correctness job,
+while the split is bounded and only relabels diagnostics that already fire. The
+coupling is preserved where it matters: the false-positive fixes stay ahead of
+any *new* fbc-coded check, and they are the next wave.
+
 ### 2026-10-08 — The outline tells the truth: anonymous names, scope subtrees, a selection inside the range
 
 - **A block written without a name now says so: `<anonymous enum>`,

@@ -99,14 +99,18 @@ void TestCodeActionInsertsMissingCloser() {
   server.registerHandlers();
   session.start(input, output);
 
-  // The SUB never closes, so the parser publishes `unterminated-block` at the
-  // opener and nothing else.
+  // The SUB never closes, so the parser publishes the missing-closer Error at
+  // the opener, as fbc's own `error 125: Expected 'END SUB'`, and nothing else.
   input->append(
       MakeLspFrame(OpenFrame(fix.mainUri, "sub main()\n  print 1\n").c_str()));
-  Expect(
-      WaitForPublishedUri(output, 1).find("\"code\":\"unterminated-block\"") !=
-          std::string::npos,
-      "an unterminated block must publish its diagnostic before it is fixable");
+  std::string const published = WaitForPublishedUri(output, 1);
+  Expect(published.find("\"code\":\"fbc error: 125\"") != std::string::npos,
+         "an unterminated block must publish its diagnostic before it is "
+         "fixable");
+  Expect(published.find(
+             "\"codeDescription\":{\"href\":\"https://www.freebasic.net/wiki/"
+             "CompilerErrMsg\"}") != std::string::npos,
+         "an fbc-numbered diagnostic must link the wiki that documents it");
 
   std::string const reply =
       PollRequest(input, output, "cacl", "Insert", [&](std::string const &id) {
@@ -141,10 +145,9 @@ void TestCodeActionInsertsMissingCloser() {
   // this also rides on keywords closing blocks whatever their case.
   input->append(
       MakeLspFrame(ReplaceFrame(fix.mainUri, 2, 0, 2, 0, "END SUB\n").c_str()));
-  Expect(
-      LastPublish(WaitForPublishedUri(output, 2)).find("unterminated-block") ==
-          std::string::npos,
-      "applying the closer fix must clear the diagnostic on re-parse");
+  Expect(LastPublish(WaitForPublishedUri(output, 2)).find("fbc error: 125") ==
+             std::string::npos,
+         "applying the closer fix must clear the diagnostic on re-parse");
 
   session.stop();
 }
@@ -217,7 +220,7 @@ void TestCodeActionOffersNothingUnfixable() {
   // also the request's whole range, so nothing may be offered for it.
   input->append(
       MakeLspFrame(OpenFrame(fix.mainUri, "end sub\nprint 1\n").c_str()));
-  Expect(WaitForPublishedUri(output, 1).find("\"code\":\"stray-closer\"") !=
+  Expect(WaitForPublishedUri(output, 1).find("\"code\":\"fbc error: 112\"") !=
              std::string::npos,
          "a stray closer must publish its diagnostic");
   std::string const unfixable = PollRequest(

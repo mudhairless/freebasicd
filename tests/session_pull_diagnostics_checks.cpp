@@ -270,7 +270,7 @@ void TestWorkspaceDiagnostic() {
       });
   Expect(first.find(badUri) != std::string::npos,
          "the workspace pull must report the file that carries diagnostics");
-  Expect(first.find("\"code\":\"stray-closer\"") != std::string::npos,
+  Expect(first.find("\"code\":\"fbc error: 117\"") != std::string::npos,
          "the full report must carry the file's diagnostics");
   Expect(first.find(cleanUri) == std::string::npos,
          "a clean file never reported must be skipped");
@@ -288,7 +288,7 @@ void TestWorkspaceDiagnostic() {
       });
   Expect(second.find("\"kind\":\"unchanged\"") != std::string::npos,
          "a listed file whose resultId matches must answer unchanged");
-  Expect(second.find("stray-closer") == std::string::npos,
+  Expect(second.find("fbc error: 117") == std::string::npos,
          "the unchanged workspace answer must not resend the items");
 
   // Open bad.bas with edited content under a real wire version: the stale id
@@ -338,7 +338,7 @@ void TestWorkspaceDiagnostic() {
       });
   Expect(gated.find("\"items\":[]") != std::string::npos,
          "a gated-off workspace report must answer an empty item list");
-  Expect(gated.find("stray-closer") == std::string::npos,
+  Expect(gated.find("fbc error: 117") == std::string::npos,
          "a gated-off report must carry no diagnostics");
   std::string const resultId3 = ResultIdOf(gated);
   Expect(!resultId3.empty() && resultId3 != resultId2,

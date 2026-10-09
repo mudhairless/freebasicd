@@ -1751,6 +1751,97 @@ std::string closerDisplay(const BlockCloser &closer) {
   return s;
 }
 
+// The fbc 1.10.2 numbers below were read back out of the compiler by
+// `tools/fbc_catalog.tsv` (this repo's imported copy) and re-probed with the
+// pinned `/usr/bin/fbc` for every spelling, including the ones the catalog
+// names once for a family (19 EXPECTEDENDTYPE covers both TYPE and UNION).
+int fbcExpectedCloserError(BlockKind kind) {
+  switch (kind) {
+  case BlockKind::Sub:
+    return 125; // EXPECTEDENDSUB
+  case BlockKind::Function:
+    return 126; // EXPECTEDENDFUNCTION
+  case BlockKind::Constructor:
+    return 127; // EXPECTEDENDCTOR
+  case BlockKind::Destructor:
+    return 128; // EXPECTEDENDDTOR
+  case BlockKind::Operator:
+    return 129; // EXPECTEDENDOPERATOR
+  case BlockKind::Property:
+    return 130; // EXPECTEDENDPROPERTY
+  case BlockKind::Type:
+  case BlockKind::Union:
+    return 19; // EXPECTEDENDTYPE, "Expected 'END TYPE' or 'END UNION'"
+  case BlockKind::Enum:
+    return 74; // EXPECTEDENDENUM
+  case BlockKind::Namespace:
+    return 121; // EXPECTEDENDNAMESPACE
+  case BlockKind::Scope:
+    return 95; // EXPECTEDENDSCOPE
+  case BlockKind::Extern:
+    return 124; // EXPECTEDENDEXTERN
+  case BlockKind::With:
+    return 60; // EXPECTEDENDWITH
+  case BlockKind::Select:
+    return 35; // EXPECTEDENDSELECT
+  case BlockKind::If:
+    return 32; // EXPECTEDENDIF
+  case BlockKind::For:
+    return 13; // EXPECTEDNEXT
+  case BlockKind::While:
+    return 30; // EXPECTEDWEND
+  case BlockKind::Do:
+    return 29; // EXPECTEDLOOP
+  case BlockKind::Asm:
+    return 45; // EXPECTEDENDASM
+  default:
+    // #if/#macro: fbc's catalog has no number for a preprocessor block, so
+    // these stay our own codes and the client sees no wiki link.
+    return 0;
+  }
+}
+
+int fbcCloserWithoutOpenerError(BlockKind kind) {
+  switch (kind) {
+  case BlockKind::Do:
+    return 106; // LOOPWITHOUTDO
+  case BlockKind::For:
+    return 107; // NEXTWITHOUTFOR
+  case BlockKind::While:
+    return 108; // WENDWITHOUTWHILE
+  case BlockKind::With:
+    return 109; // ENDWITHWITHOUTWITH
+  case BlockKind::If:
+    return 110; // ENDIFWITHOUTIF
+  case BlockKind::Select:
+    return 111; // ENDSELECTWITHOUTSELECT
+  case BlockKind::Sub:
+  case BlockKind::Function:
+  case BlockKind::Constructor:
+  case BlockKind::Destructor:
+  case BlockKind::Operator:
+  case BlockKind::Property:
+    return 112; // ENDSUBWITHOUTSUB (fbc names the whole procedure family once)
+  case BlockKind::Scope:
+    return 113; // ENDSCOPEWITHOUTSCOPE
+  case BlockKind::Namespace:
+    return 114; // ENDNAMESPACEWITHOUTNAMESPACE
+  case BlockKind::Extern:
+    return 115; // ENDEXTERNWITHOUTEXTERN
+  case BlockKind::Type:
+  case BlockKind::Union:
+  case BlockKind::Enum:
+  case BlockKind::Asm:
+    // fbc rejects a bare `end type`/`end union`/`end enum`/`end asm` as an
+    // illegal `END` outright (probed: "error 33: Illegal 'END'"), not as a
+    // closer-without-opener, so it shares ILLEGALEND with `end for`/`end
+    // while`.
+    return 33; // ILLEGALEND
+  default:
+    return 0;
+  }
+}
+
 namespace {
 
 // Does the statement carry a field's `As` clause? That is what makes a

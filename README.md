@@ -42,7 +42,7 @@ Implemented and advertised in the `initialize` reply:
 
 | Feature | Notes |
 |---|---|
-| Diagnostics | Parse errors, unterminated blocks, unresolved `#include`; pushed by default, or pulled on request (see below) |
+| Diagnostics | Parse errors (block-structure ones carry fbc's own error numbers), unresolved `#include`; pushed by default, or pulled on request (see below) |
 | Hover | Types and signatures; resolves member access through the base variable's declared type, including cross-file and `with`-implicit chains |
 | Go to definition | Same-file and cross-file, gated on FreeBASIC's `Shared` visibility rules |
 | Find references | Workspace-wide, following includes |

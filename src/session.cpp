@@ -6,6 +6,7 @@
 
 #include "session.h"
 
+#include "fbc_diagnostics.h"
 #include "i18n.h"
 #include "index.h"
 #include "inlay_hints.h"
@@ -390,16 +391,29 @@ void appendOutline(std::string_view content, fblang::Symbol const &s,
 
 // One language-layer diagnostic as the protocol carries it. The byte-offset
 // range becomes the UTF-16 range of the document it was reported against, and
-// the `code` rides along because M12's quick fixes key on it (and because a
-// client groups its lightbulb entries by code).
+// the code is fbc's own when the parser mapped the diagnostic to a catalog
+// number (`fbc error: 125`), otherwise our routing code. A mapped diagnostic
+// also carries `codeDescription.href`, the wiki page for the whole catalog —
+// the same page for every message, which is why it is one constant and not a
+// per-number table. The language-layer `code` is deliberately not what the
+// client sees: it stays the coarse routing key a fix and the corpus goldens
+// use, so a later split of the family does not have to revisit them.
 lsDiagnostic toLsDiagnostic(std::string_view content,
                             fblang::Diagnostic const &d) {
   lsDiagnostic diag;
   diag.range = fblang::utf16Range(content, d.range.beg, d.range.end);
   diag.severity = static_cast<lsDiagnosticSeverity>(d.severity);
-  if (!d.code.empty()) {
+  std::string code = d.code;
+  if (d.fbcError != 0) {
+    code = fblang::fbcCode(fblang::FbcMessageKind::Error, d.fbcError);
+  }
+  if (!code.empty()) {
     diag.code.emplace(
-        std::make_pair<optional<std::string>, optional<int>>(d.code, {}));
+        std::make_pair<optional<std::string>, optional<int>>(code, {}));
+  }
+  if (d.fbcError != 0) {
+    diag.codeDescription.emplace();
+    diag.codeDescription->href = std::string(fblang::fbcMessageDocsUrl());
   }
   diag.source.emplace(kServerName);
   diag.message = d.message;
