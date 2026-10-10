@@ -273,8 +273,8 @@ of them opens a body, and only `Type <name>` (± `Extends`) ever does:
 
 Reading the `As` as a name instead opens a record body no `end type` belongs
 to, and every statement below it then parses as a member list — that single
-misread is what produced ~96 phantom diagnostics in a real binding header
-(`drd/temp/inc/raylib.bi`), most of them anchored at EOF.
+misread is what produced ~96 phantom diagnostics in a real binding header,
+most of them anchored at EOF.
 
 Legal `ENUM` body members: `name`, `name = expr`, and comma-separated **lists**
 of them — `a, b, c = 5, d` on one line compiles, and a comma at the line end

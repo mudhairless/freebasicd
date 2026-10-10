@@ -105,6 +105,19 @@ struct Symbol {
   // Procedure/type/enum/const roots are storage-less and never gated.
   bool shared = false;
 
+  // True for a declaration that does not *define* storage: `Extern` and
+  // `Redim` (and `Common`, which a later `Dim` may redefine). fbc accepts
+  // these repeated and in combination with a `Dim` of the same name, so they
+  // must not take part in the duplicate-definition set (probed; FreeBASIC.md
+  // §8). A plain `Dim`/`Const`/`Static` does define and stays in the set.
+  bool declOnly = false;
+
+  // True for a `type x as y` alias declaration: a redefinition with the same
+  // target is legal in fbc (typedef/redefine.bas), and we cannot compare
+  // targets, so no alias ever enters the duplicate-definition set. A block
+  // type (`type x ... end type`) defines and stays in the set.
+  bool aliasType = false;
+
   // True for a `for <name> as <type> = ...` loop counter: a Dim local to the
   // loop, declared in the header. fbc ground truth (FreeBASIC.md §8): the
   // counter is invisible after `next`, and a header *without* `as` reuses an

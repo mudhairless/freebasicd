@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "lexer.h"
@@ -220,7 +221,9 @@ std::string expectedCloserAt(std::vector<Token> const &tokens,
 // it: the parser routes on this, and a record body must not end on `next as`
 // merely because `next` also closes a loop.
 bool isCloserStatement(std::vector<Token> const &stmt);
-bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt,
-                       std::string_view enclosingTypeKey);
+bool acceptsBodyMember(
+    BlockKind kind, std::vector<Token> const &stmt,
+    std::string_view enclosingTypeKey,
+    std::unordered_set<std::string> const *macroNames = nullptr);
 
 } // namespace fblang

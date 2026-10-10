@@ -36,7 +36,7 @@
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
   | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
-  | M23 — fbc parser diagnostics: statements, placement, warnings (block structure landed) | backlog |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (block structure + false-positive gate landed) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
 
 ## 2. What exists (condensed)
@@ -244,8 +244,9 @@
   `.`/`->`), `signatureHelp` (user declarations and built-in functions),
   `workspace/symbol` (aggregated across per-root indexes), `prepareRename`,
   `rename` (resolution-based workspace edits),
-  `codeAction` (M12 quick fixes: missing-include retarget + missing block
-  closer, answering from the diagnostics the next publish would carry),
+  `codeAction` (M12 quick fixes: missing-include retarget, missing block
+  closer, reserved-word member rename, ignored keyword suffix — answering
+  from the diagnostics the next publish would carry),
   `selectionRange` (M13 expand selection: token → statement → enclosing blocks →
   file, one chain per requested position),
   `prepareCallHierarchy` + `callHierarchy/outgoingCalls` + `callHierarchy/
@@ -587,15 +588,23 @@ suggesting it.
 ### M23 — fbc parser diagnostics: statements, placement, warnings (backlog)
 
 The parser-reachable half of fbc's catalog, reported with fbc's own numbers and
-texts from M21's generated catalog (landed). Gated on the parser's
-false-positive fixes: adding checks on top of a parser that rejects valid
-FreeBASIC makes the server worse, so the parser bugs land first. A re-run
-against the pinned fbc suite finds **148 files fbc accepts and the parser
-rejects**, nearly all block-structure shapes (`function = expr` result
-assignment, a self-type parameter in a `Type` body's `Declare`,
-`static`/bitfield members, `/'…'/` block comments, `virtual`/`const` procedure
-prefixes, and more); eliminating those is the first work of this milestone.
+texts from M21's generated catalog (landed).
 
+- **False-positive gate — cleared (2026-10-09).** The parser no longer rejects
+  FreeBASIC fbc accepts: the fb-dialect *error* false positives across the
+  pinned suite are **0** (was 100 files), and the 33 files that still report
+  error-severity diagnostics all fail fbc too. The sweep that bought it — a
+  `function = expr` result assignment, a bare `extern` declaration, a
+  self-typed `Declare` parameter and `virtual`/`const` prefixes, `dim T.x`, a
+  static field's leading `static as`, bitfields (`a : 7 as ulong`),
+  statement-position `type<T>(…)`, a suffixed `constructor()` *call* in a body,
+  `/'…'/` block comments, `_` + trailing comment, one-line `if…end if`, bare
+  `endif` — is recorded in the changelog. The dedupe set is built from
+  storage-class knowledge rather than "the first word is the definition", so
+  `extern` + `dim`, alias + alias, `const` + `const`, a reopened `namespace`,
+  `dim` under only one active `#if` branch, and `type<T>` / `constructor(` in
+  expression position stop being duplicates while the real duplicate (`dim a`
+  twice) still warns.
 - **Block structure — landed (2026-10-09).** Expected closer
   (`13/19/29/30/32/35/45/60/74/95/121/124/125–130`), closer without opener
   (`106`–`118`), `33 ILLEGALEND`, and the mismatched-closer family now carry
@@ -618,7 +627,11 @@ prefixes, and more); eliminating those is the first work of this milestone.
   SHIFTEXCEEDSBITSINDATATYPE`, `25 CONVOVERFLOW`, `46 CMDLINEIGNORED`, `15
   NOEXPLICITPARAMMODE`. The `-w` level model is exposed as a `freebasicd.toml`
   key whose default matches fbc (level 1; 45 of 49 on by default), and any gate
-  that changes the payload is folded into the M14 `resultId` hash.
+  that changes the payload is folded into the M14 `resultId` hash. The
+  keyword-suffix half of 44 already fires under the server's own
+  `keyword-suffix` routing code — the lexer skips the char, the diagnostic sits
+  on it, and a quick fix deletes it; the remaining work is transporting it and
+  the rest of the family under fbc's numbers.
 - **No cascades.** A single missing closer yields one diagnostic, not one per
   subsequent line; the existing `unterminated-block` handling is the model.
 - **Corpus.** Import the fbc-suite triggers into `tests/` as goldens rather than

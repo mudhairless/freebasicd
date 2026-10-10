@@ -207,6 +207,14 @@ Token Lexer::lexNext() {
       return t;
     }
 
+    // `/'` opens a multi-line block comment closed by `'/`. It nests, spans
+    // newlines, and *contents* are inert: a `'` or `$` inside is not a comment
+    // or a metacommand (FreeBASIC.md §1; fbc's own `error 132` is the
+    // unterminated case). Handled before the single-quote branch, because that
+    // one would read the whole first line as a line comment.
+    if (c == '/' && peekChar(1) == '\'') {
+      return lexBlockComment();
+    }
     if (c == '\'') {
       return lexComment();
     }
@@ -236,6 +244,34 @@ Token Lexer::lexComment() {
   t.kind = doc ? TokenKind::DocComment : TokenKind::Comment;
   t.beg = beg;
   t.end = static_cast<uint32_t>(p_ - src_.data());
+  t.data = src_.data() + beg;
+  return t;
+}
+
+// `/` ... `'/`, with `/'`/`'/` nesting as fbc does: an inner `/'` defers the
+// close, so `/' a /' b '/ c '/` is one comment. `terminated` is false when the
+// buffer ended first — fbc's `error 132`; the parser does not map that number
+// yet, so an unterminated comment is simply consumed to EOF here.
+Token Lexer::lexBlockComment() {
+  uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
+  p_ += 2; // opening `/'`
+  int depth = 1;
+  while (p_ < end_ && depth > 0) {
+    if (*p_ == '/' && p_ + 1 < end_ && *(p_ + 1) == '\'') {
+      ++depth;
+      p_ += 2;
+    } else if (*p_ == '\'' && p_ + 1 < end_ && *(p_ + 1) == '/') {
+      --depth;
+      p_ += 2;
+    } else {
+      ++p_;
+    }
+  }
+  Token t;
+  t.kind = TokenKind::Comment;
+  t.beg = beg;
+  t.end = static_cast<uint32_t>(p_ - src_.data());
+  t.terminated = depth == 0;
   t.data = src_.data() + beg;
   return t;
 }
@@ -282,10 +318,35 @@ Token Lexer::lexIdentifier() {
     while (q < end_ && isWhitespace(*q)) {
       ++q;
     }
+    // A trailing comment may sit between the continuation marker and the
+    // newline: fbc reads `_ ' note` as a continuation and joins the next line
+    // (FreeBASIC.md §1). Without this the `_` fell through as a Symbol and the
+    // parser called valid code `bad-continuation`.
+    if (q < end_ && *q == '\'') {
+      while (q < end_ && *q != '\n' && *q != '\r') {
+        ++q;
+      }
+    }
     if (q < end_ && (*q == '\n' || *q == '\r')) {
-      p_ = q;
-      consumeNewline();
-      return lexNext();
+      // A continuation never joins a preprocessor directive line: the
+      // preprocessor owns those before tokenizing, and inside a skipped `#if`
+      // region a `_` is inert rather than a joiner (pp/if-skip-1.bas). Leaving
+      // the newline in place lets the directive start its own line.
+      const char *r = q;
+      if (r < end_ && *r == '\r') {
+        ++r;
+      }
+      if (r < end_ && *r == '\n') {
+        ++r;
+      }
+      while (r < end_ && isWhitespace(*r)) {
+        ++r;
+      }
+      if (!(r < end_ && *r == '#')) {
+        p_ = q;
+        consumeNewline();
+        return lexNext();
+      }
     }
     Token t;
     t.kind = TokenKind::Symbol;
@@ -299,15 +360,32 @@ Token Lexer::lexIdentifier() {
                               static_cast<size_t>(baseEnd - baseStart));
   bool const isKeywordBase = isReservedWord(base);
 
-  // A directly-attached suffix char belongs to the identifier — unless the
-  // base is a reserved word (PRINT#1 is PRINT + "#1" channel, not a suffix).
-  if (!isKeywordBase && p_ < end_ && isSuffixChar(*p_)) {
+  // A directly-attached suffix char belongs to the identifier (foo$ is one
+  // symbol). A reserved word may also carry one — fbc warns "Suffix ignored"
+  // and keeps the bare keyword, so `end%` is `end` — with one exception: `#`
+  // is never a keyword suffix, because PRINT#1 is PRINT + "#1" (a file
+  // channel), not PRINT suffixed.
+  bool skippedKeywordSuffix = false;
+  if (p_ < end_ && isSuffixChar(*p_) && !(isKeywordBase && *p_ == '#')) {
+    if (isKeywordBase) {
+      skippedKeywordSuffix = true;
+    }
     ++p_;
   }
 
   uint32_t end = static_cast<uint32_t>(p_ - src_.data());
+  // A keyword's suffix is skipped, not folded into the token: callers match
+  // the bare word ("and" for AND%, "end" for END$). The combined-assignment
+  // merge below is the only thing allowed to extend a keyword past its base.
+  if (isKeywordBase) {
+    end = static_cast<uint32_t>(baseEnd - src_.data());
+  }
   // Combined assignment keywords lex as one token only when the '=' is
-  // directly attached (AND= works; "and =" stays two tokens).
+  // directly attached (AND= works; "and =" stays two tokens; and%= is the
+  // suffix-skipped AND followed by '=', so it folds too). The token spans the
+  // raw slice through the '=' — for `and%=` that is "and%=", because the
+  // suffix char sits between the base and the '=' and no single slice is
+  // "and="; isCombinedAssignKeyword strips the char before the '='.
   if (isKeywordBase && p_ < end_ && *p_ == '=') {
     if (base == "and" || base == "or" || base == "xor" || base == "eqv" ||
         base == "imp" || base == "mod" || base == "shl" || base == "shr") {
@@ -320,6 +398,12 @@ Token Lexer::lexIdentifier() {
   t.kind = isKeywordBase ? TokenKind::Keyword : TokenKind::Identifier;
   t.beg = beg;
   t.end = end;
+  t.suffixBeg = 0;
+  if (skippedKeywordSuffix) {
+    // `end%` has its skipped suffix at baseEnd; `and%=` folds the '=' into the
+    // token but the suffix stayed outside it, also at baseEnd.
+    t.suffixBeg = static_cast<uint32_t>(baseEnd - src_.data());
+  }
   t.data = src_.data() + beg;
   return t;
 }

@@ -205,6 +205,55 @@ void TestCodeActionRetargetsMissingInclude() {
   session.stop();
 }
 
+void TestCodeActionRemovesKeywordSuffix() {
+  CodeActionFixture fix;
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  // `print%` is PRINT with an ignored suffix (fbc warning 44), so the parser
+  // publishes a Warning on the suffix char alone.
+  input->append(MakeLspFrame(OpenFrame(fix.mainUri, "print% 1\n").c_str()));
+  std::string const published = WaitForPublishedUri(output, 1);
+  Expect(published.find("\"code\":\"keyword-suffix\"") != std::string::npos,
+         "a suffixed keyword must publish its warning before it is fixable");
+  Expect(published.find("\"severity\":2") != std::string::npos,
+         "the ignored suffix is a warning, as fbc's warning 44 is");
+  Expect(published.find("\"start\":{\"line\":0,\"character\":5},\"end\":"
+                        "{\"line\":0,\"character\":6}") != std::string::npos,
+         "the warning must sit on the suffix char alone");
+
+  // The request spans the whole line, so the warning's range is inside it.
+  std::string const reply = PollRequest(
+      input, output, "casfx", "Remove the", [&](std::string const &id) {
+        return CodeActionFrame(id, fix.mainUri, 0, {}, 1000);
+      });
+  Expect(reply.find("\"title\":\"Remove the '%' suffix\"") != std::string::npos,
+         "the fix must name the suffix it removes");
+  Expect(reply.find("\"kind\":\"quickfix\"") != std::string::npos,
+         "the suffix fix must carry the kind the client filters on");
+  Expect(reply.find("\"command\"") == std::string::npos,
+         "the suffix fix must ship as an edit, not a command");
+  Expect(reply.find("\"newText\":\"\"") != std::string::npos,
+         "removing a suffix is a pure deletion");
+  Expect(reply.find("\"" + fix.mainUri + "\":[{\"range\"") != std::string::npos,
+         "the suffix fix's edit must be keyed by the document URI");
+
+  // Applying the deletion clears the warning on re-parse.
+  input->append(
+      MakeLspFrame(ReplaceFrame(fix.mainUri, 0, 5, 0, 6, "").c_str()));
+  Expect(LastPublish(WaitForPublishedUri(output, 2)).find("keyword-suffix") ==
+             std::string::npos,
+         "removing the suffix must clear the warning on re-parse");
+
+  session.stop();
+}
+
 void TestCodeActionOffersNothingUnfixable() {
   CodeActionFixture fix;
   lsp::NullLog log;
@@ -324,6 +373,7 @@ namespace fbtest {
 void RunCodeActionsTests() {
   RUN_TEST(TestCodeActionInsertsMissingCloser);
   RUN_TEST(TestCodeActionRetargetsMissingInclude);
+  RUN_TEST(TestCodeActionRemovesKeywordSuffix);
   RUN_TEST(TestCodeActionOffersNothingUnfixable);
   RUN_TEST(TestMissingIncludePublishesDiagnostic);
 }

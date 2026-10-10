@@ -576,11 +576,91 @@ void MemberNameFixRefusesARangeThatIsNotAName() {
             .empty());
 }
 
+// The parser's warning sits on the suffix char alone, so the fix is a pure
+// deletion of that one byte: applied, the source regains the bare keyword the
+// parser always read. The merged combined-assignment slice (`and%=`) is the
+// same — the '%' goes, the '=' stays.
+void SuffixFixRemovesTheSuffixChar() {
+  std::string const src = "if% 1 then\nend% if\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  // The fix answers the *published* diagnostic, so drive it with the parser's
+  // own, not a hand-built one: the range is the suffix char, one byte.
+  CHECK(doc.parse.diagnostics.size() == 2);
+  Diagnostic const d = doc.parse.diagnostics.front();
+  CHECK(d.code == "keyword-suffix");
+  std::size_t const at = src.find('%');
+  CHECK(d.range.beg == at && d.range.end == at + 1);
+  std::vector<QuickFix> const fixes = fixesFor("keyword-suffix", d, ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() != 1) {
+    return;
+  }
+  CHECK(fixes[0].title == "Remove the '%' suffix");
+  CHECK(fixes[0].code == "keyword-suffix");
+  CHECK(fixes[0].diagRange.beg == d.range.beg);
+  CHECK(editText(fixes[0]) ==
+        std::to_string(at) + ":" + std::to_string(at + 1) + ">");
+  // Applying it regains the bare keyword; the other suffix's warning is all
+  // that is left.
+  TextEditBytes const &e = fixes[0].edits.front();
+  std::string const applied =
+      src.substr(0, e.range.beg) + e.newText + src.substr(e.range.end);
+  CHECK(applied == "if 1 then\nend% if\n");
+  CHECK(analyze(applied).parse.diagnostics.size() == 1);
+
+  // Merged slice: `and%=` carries its skipped '%' between the base and the
+  // '=', and the fix deletes exactly that byte, leaving `and=`.
+  std::string const merged = "i and%= 1\n";
+  AnalyzedDoc const mdoc = analyze(merged);
+  QuickFixContext const mctx = bareContext(merged, mdoc);
+  CHECK(mdoc.parse.diagnostics.size() == 1);
+  std::size_t const mAt = merged.find('%');
+  CHECK(mdoc.parse.diagnostics.front().range.beg == mAt);
+  std::vector<QuickFix> const mfixes =
+      fixesFor("keyword-suffix", mdoc.parse.diagnostics.front(), mctx);
+  CHECK(mfixes.size() == 1);
+  if (mfixes.size() == 1) {
+    TextEditBytes const &me = mfixes[0].edits.front();
+    CHECK(merged.substr(0, me.range.beg) + me.newText +
+              merged.substr(me.range.end) ==
+          "i and= 1\n");
+  }
+}
+
+// The fix writes nothing over its range, but the range must still *be* the
+// suffix char: a client can send the request against a buffer that moved on
+// since the diagnostic was published, and deleting those bytes would corrupt
+// whatever they spell. Only the four keyword-suffix bytes are ever edited.
+void SuffixFixRefusesARangeThatIsNotASuffix() {
+  std::string const src = "if% 1 then\nend if\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  std::size_t const at = src.find('%');
+  // A byte that is not one of the four suffix chars (the buffer moved under a
+  // stale range), an empty range, and a range past the buffer: all refused.
+  QuickFixContext const movedCtx = bareContext("ifx 1 then\nend if\n", doc);
+  CHECK(fixesFor("keyword-suffix",
+                 diagAt("keyword-suffix", static_cast<std::uint32_t>(at),
+                        static_cast<std::uint32_t>(at + 1)),
+                 movedCtx)
+            .empty());
+  CHECK(
+      fixesFor("keyword-suffix", diagAt("keyword-suffix", 2, 2), ctx).empty());
+  CHECK(fixesFor("keyword-suffix",
+                 diagAt("keyword-suffix",
+                        static_cast<std::uint32_t>(src.size() - 1),
+                        static_cast<std::uint32_t>(src.size() + 4)),
+                 ctx)
+            .empty());
+}
+
 void RegistryAnswersTheFixableCodes() {
-  CHECK(quickFixProviders().size() == 3);
+  CHECK(quickFixProviders().size() == 4);
   CHECK(quickFixProviderFor("unterminated-block") != nullptr);
   CHECK(quickFixProviderFor("invalid-member-name") != nullptr);
   CHECK(quickFixProviderFor("include-not-found") != nullptr);
+  CHECK(quickFixProviderFor("keyword-suffix") != nullptr);
   // Every registered code is a real diagnostic code, and the registry is
   // stable across calls (the session serves it from the handler pool).
   CHECK(quickFixProviders().data() == quickFixProviders().data());
@@ -605,6 +685,8 @@ int main() {
   UnresolvedIncludeDiagnosticsMatchTheEdges();
   MemberNameFixAppendsUnderscore();
   MemberNameFixRefusesARangeThatIsNotAName();
+  SuffixFixRemovesTheSuffixChar();
+  SuffixFixRefusesARangeThatIsNotASuffix();
   RegistryAnswersTheFixableCodes();
 
   if (failures == 0) {

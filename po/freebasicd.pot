@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-10-07 10:33-0500\n"
-"PO-Revision-Date: 2026-10-07 10:33-0500\n"
+"POT-Creation-Date: 2026-10-09 19:18-0500\n"
+"PO-Revision-Date: 2026-10-09 19:18-0500\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -38,7 +38,14 @@ msgstr ""
 msgid "Rename member to \"%s_\""
 msgstr ""
 
-#: src/code_actions.cpp:342
+#. TRANSLATORS: %s is the suffix character (%, &, ! or $); it is never
+#. translated and the placeholder is %s because only %s is substituted.
+#: src/code_actions.cpp:320
+#, c-format
+msgid "Remove the '%s' suffix"
+msgstr ""
+
+#: src/code_actions.cpp:374
 #, c-format
 msgid "include file not found: \"%s\""
 msgstr ""
@@ -47,14 +54,14 @@ msgstr ""
 #. "3 references". Keep the %s where the number goes; the plural form is
 #. selected by the catalog's plural rule, so do not merge the two forms
 #. into one.
-#: src/code_lens.cpp:80
+#: src/code_lens.cpp:85
 #, c-format
 msgid "%s reference"
 msgid_plural "%s references"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/parser.cpp:101
+#: src/parser.cpp:112
 #, c-format
 msgid "/// is not a %s comment; use '' for doc comments"
 msgstr ""
@@ -62,94 +69,99 @@ msgstr ""
 #. TRANSLATORS: %s = the proper noun "FreeBASIC" (never
 #. translated); the second %s is an example directive kept
 #. verbatim.
-#: src/parser.cpp:116
+#: src/parser.cpp:127
 #, c-format
 msgid ""
 "bare '$' is not a valid metacommand; %s metacommands are written as "
 "comments, e.g. %s"
 msgstr ""
 
-#: src/parser.cpp:138 src/parser.cpp:445 src/parser.cpp:1369
-#: src/parser.cpp:1433
+#: src/parser.cpp:148 src/parser.cpp:569 src/parser.cpp:1956
+#: src/parser.cpp:2021
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
 
-#: src/parser.cpp:164
+#: src/parser.cpp:179
 msgid "unterminated string literal"
 msgstr ""
 
-#: src/parser.cpp:183
+#: src/parser.cpp:194
+#, c-format
+msgid "Suffix ignored in '%s'"
+msgstr ""
+
+#: src/parser.cpp:220
 #, c-format
 msgid "dialect '%s' is not supported yet; parsing in '%s' mode"
 msgstr ""
 
-#: src/parser.cpp:359
+#: src/parser.cpp:474
 #, c-format
 msgid "duplicate definition: '%s'"
 msgstr ""
 
-#: src/parser.cpp:410
+#: src/parser.cpp:532
 #, c-format
 msgid ""
 "'%s' is a reserved word and cannot be a field name in a type with member "
 "functions"
 msgstr ""
 
-#: src/parser.cpp:486
+#: src/parser.cpp:610
 #, c-format
 msgid "'%s' is a reserved word and cannot be an enum member name"
 msgstr ""
 
-#: src/parser.cpp:550
+#: src/parser.cpp:707
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:605 src/parser.cpp:1283
+#: src/parser.cpp:805 src/parser.cpp:1860
 #, c-format
 msgid "'%s' is a reserved word and cannot be a field name"
 msgstr ""
 
-#: src/parser.cpp:775 src/parser.cpp:784 src/parser.cpp:1392
-#: src/parser.cpp:1461 src/parser.cpp:1509 src/parser.cpp:1516
+#: src/parser.cpp:1050 src/parser.cpp:1062 src/parser.cpp:1979
+#: src/parser.cpp:2050 src/parser.cpp:2119 src/parser.cpp:2126
 #, c-format
 msgid "%s without %s"
 msgstr ""
 
-#: src/session.cpp:921
+#: src/session.cpp:982
 #, c-format
 msgid "%s/freebasicd.toml is not valid TOML; keeping defaults"
 msgstr ""
 
-#: src/session.cpp:934
+#: src/session.cpp:995
 #, c-format
 msgid "workspace root: %s"
 msgstr ""
 
-#: src/session.cpp:960
+#: src/session.cpp:1021
 msgid "version-control marker"
 msgstr ""
 
-#: src/session.cpp:963
+#: src/session.cpp:1024
 #, c-format
 msgid "config file %s"
 msgstr ""
 
-#: src/session.cpp:966
+#: src/session.cpp:1027
 msgid "source/include directory"
 msgstr ""
 
-#: src/session.cpp:975
+#: src/session.cpp:1036
 #, c-format
 msgid "workspace root %s (detected via %s; no client root)"
 msgstr ""
 
-#: src/session.cpp:982
+#: src/session.cpp:1043
 #, c-format
 msgid "workspace root %s (detected via %s; client root %s)"
 msgstr ""
 
-#: src/session.cpp:1462
+#: src/session.cpp:1523
 #, c-format
 msgid ""
 "workspace root %s has no version-control marker or config file; index scope "

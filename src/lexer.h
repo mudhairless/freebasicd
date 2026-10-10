@@ -29,8 +29,15 @@ enum class TokenKind {
 
 struct Token {
   TokenKind kind = TokenKind::Eof;
-  uint32_t beg = 0;           // byte offset of the first character
-  uint32_t end = 0;           // byte offset one past the last character
+  uint32_t beg = 0; // byte offset of the first character
+  uint32_t end = 0; // byte offset one past the last character
+  // Reserved word: byte offset of a directly-attached suffix char (`$ % & !`)
+  // the lexer skipped, because fbc ignores it (warning 44) and the token must
+  // stay the bare keyword callers match. 0 when no suffix was skipped — a real
+  // suffix always follows at least one byte of keyword, so 0 cannot be one.
+  // Identifier suffixes (`foo$`) are folded into the identifier instead and
+  // leave this at 0, and `#` is never a keyword suffix (PRINT#1 channel).
+  uint32_t suffixBeg = 0;
   bool terminated = true;     // strings: false when clipped by end-of-line
   const char *data = nullptr; // == source.data() + beg
 
@@ -59,6 +66,7 @@ private:
   Token lexNumber();
   Token lexString();
   Token lexComment();
+  Token lexBlockComment();
   Token lexSymbol();
   bool atLineStart() const;
   char peekChar(size_t ahead = 0) const;

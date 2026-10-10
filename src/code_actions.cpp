@@ -296,6 +296,34 @@ std::vector<QuickFix> renameReservedMemberName(Diagnostic const &d,
   return {std::move(fix)};
 }
 
+// `keyword-suffix` -> delete the ignored suffix char.
+//
+// The parser's diagnostic sits on exactly the suffix character — one byte out
+// of `% & ! $` — so the fix is the diagnostic's own range replaced by nothing,
+// and the buffer fully determines it: the token already lexed as the bare
+// keyword, and deleting the char makes the source hold what fbc reads
+// (warning 44, "Suffix ignored"). No workspace knowledge is consulted, and any
+// range that is not one of those four bytes means the buffer moved under a
+// stale diagnostic: offer nothing, like the member rename does.
+std::vector<QuickFix> removeKeywordSuffix(Diagnostic const &d,
+                                          QuickFixContext const &ctx) {
+  if (d.range.end != d.range.beg + 1 || d.range.end > ctx.content.size()) {
+    return {};
+  }
+  char const c = ctx.content[d.range.beg];
+  if (c != '%' && c != '&' && c != '!' && c != '$') {
+    return {};
+  }
+  QuickFix fix;
+  // TRANSLATORS: %s is the suffix character (%, &, ! or $); it is never
+  // translated and the placeholder is %s because only %s is substituted.
+  fix.title = trf("Remove the '%s' suffix", std::string(1, c));
+  fix.code = d.code;
+  fix.diagRange = d.range;
+  fix.edits.push_back({d.range, ""});
+  return {std::move(fix)};
+}
+
 } // namespace
 
 std::vector<QuickFixRegistration> const &quickFixProviders() {
@@ -310,6 +338,10 @@ std::vector<QuickFixRegistration> const &quickFixProviders() {
       // M6: an `#include` edge that resolved nowhere (session.cpp publishes
       // these through unresolvedIncludeDiagnostics).
       {"include-not-found", retargetInclude},
+      // lexer.cpp/parser.cpp: a suffix char on a reserved word (fbc warning
+      // 44, "Suffix ignored") — the fix deletes the char the diagnostic sits
+      // on, leaving the bare keyword the parser already read.
+      {"keyword-suffix", removeKeywordSuffix},
   };
   return table;
 }

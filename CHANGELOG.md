@@ -26,6 +26,53 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-09 — Parser false positives cleared; keyword-suffix quick fix
+
+- **The parser no longer rejects FreeBASIC fbc accepts.** Re-running the §5
+  sweep (every file the parser flags, compiled with `/usr/bin/fbc -lang fb
+  -c`) over the pinned 1.10.2 suite collapses the fb-dialect *error* false
+  positives from 100 files to **0**; the 33 files that still report
+  error-severity diagnostics all fail fbc too. The sketch's 11 causes turned
+  out to be two dozen shapes (`function = expr` result assignment, a bare
+  `extern` declaration, a self-typed `Declare` parameter and `virtual`/`const`
+  procedure prefixes, `dim T.x`, a static field's leading `static as`, a
+  bitfield's `a : 7 as ulong`, statement-position `type<T>(…)`, a suffixed
+  `constructor()` *call* in a body, `/'…'/` block comments, `_` + trailing
+  comment, one-line `if…end if`, bare `endif`, and more) — the dedupe set is
+  now built from storage-class knowledge instead of "the first word is the
+  definition", so `extern` + `dim`, alias + alias, `const` + `const`, a
+  reopened `namespace`, `dim` under only one active `#if` branch, and
+  `type<T>` / `constructor(` in expression position all stop being duplicates
+  without the real duplicate (`dim a` twice) going quiet. Each cleared shape
+  is now pinned in `parser_checks`/`lexer_checks` as a fixture whose source is
+  inline in the test — the repro files lived outside the repo and a comment
+  once leaned on an external project, which a future reader cannot open.
+- **A bare `endif` closes an `if` block, and a bitfield colon is a statement
+  colon.** A closer spelled `endif` without a space now closes the block, and a
+  record-body colon after a member name ends the statement *except* when a
+  number follows it (bit width) — both are
+  `isCloserStatement` / `isBitfieldColon` facts in `language.cpp`, not parser
+  hacks.
+- **A suffix directly attached to a reserved word warns and can be fixed
+  away.** FreeBASIC ignores it (fbc warning 44, "Suffix ignored") and the
+  lexer keeps the token the bare keyword; the new `keyword-suffix` warning
+  sits on the suffix *byte* alone and `removeKeywordSuffix` deletes exactly
+  that byte as a `CodeAction` edit. The model had to be a seam change, not a
+  message tweak: `AND%=` folds into one token whose raw slice is `"and%="`
+  because the skipped `%` sits between the base and the `=`, so the message is
+  built from the source slice, never the token text (`isCombinedAssignKeyword`
+  strips the suffix before comparing, which is what the semantic-tokens
+  classifier does). Identifier suffixes (`foo$`) still fold into the
+  identifier and never warn, and `#` is never a keyword suffix (PRINT#1
+  channel). The two files the sweep leaves warning-only —
+  `warnings/suffix-fb.bas` (496) and `quirk/keyword-suffix.bas` (1) — are
+  fbc-accurate warning 44 and now one keypress from clean.
+- **Suffix warnings are suppressed inside skipped `#if`/`#macro` regions** —
+  those bodies are never parsed code, so their suffixed words warn nothing.
+- The keyword-suffix diagnosis ships under our own `keyword-suffix` routing
+  code; mapping it onto fbc's number 44 stays M23 work with the rest of the
+  warning family.
+
 ### 2026-10-09 — Block closers carry fbc's own error numbers
 
 - **The block-structure diagnostics now report fbc's own number and link its

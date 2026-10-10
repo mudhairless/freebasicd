@@ -30,9 +30,9 @@ char const *kHoverOnBodyFrame =
     R"FB({"jsonrpc":"2.0","id":"hov2","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file://{{tmp}}/hello.bas"},"position":{"line":5,"character":4}}})FB";
 
-// A WITH + FOR + IF document mirroring drd/temp/src/engine.bas: a block-local
-// `v1` used inside a `type(...)` initializer. Hovering the *usage* must show
-// v1's declaration, not the enclosing block.
+// A WITH + FOR + IF document mirroring a real-world UDT-literal initializer: a
+// block-local `v1` used inside a `type(...)` initializer. Hovering the *usage*
+// must show v1's declaration, not the enclosing block.
 char const kDidOpenHoverUsageFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
     R"FB({"uri":"file://{{tmp}}/hovuse.bas","languageId":"basic","version":1,)FB"
@@ -68,7 +68,7 @@ char const *kModuleDimHoverFrame =
     R"FB({"textDocument":{"uri":"file://{{tmp}}/resolve.bas"},"position":{"line":1,"character":0}}})FB";
 
 // Member-access hover (the reported regression): a WITH + inline UDT
-// document mirroring drd/temp's world.bi/engine.bas shape. Hovering
+// document with nested fields and indexed members. Hovering
 // `.walls`, `.sectors(i).floorHeight` or `w.v1` must show the *field*
 // declaration and its owning variable/type — never the enclosing sub.
 char const kDidOpenMemberHoverFrame[] =

@@ -60,8 +60,20 @@ struct Block {
 };
 
 struct Container {
-  Symbol *sym;                          // null for module scope
-  std::unordered_set<std::string> keys; // dedupe for names at this level
+  Symbol *sym; // null for module scope
+  // Dedupe tables, split the way fbc splits them (probed; FreeBASIC.md §8):
+  // UDT names (Type/Union/Enum) live apart from value names (Dim/Variable/
+  // Label/Const/Namespace), so `type T` and `dim t as integer` coexist while
+  // `dim a` + `dim a` and `type T` + `union T` still collide. Const and
+  // Namespace track their own class so a *redeclaration of the same class*
+  // can be exempted — a redundant `const a = <same value>` and a namespace
+  // reopen are both legal, while the same name in a different value class is
+  // fbc's error 4.
+  std::unordered_set<std::string> keys;      // value names
+  std::unordered_set<std::string> typeKeys;  // UDT names
+  std::unordered_set<std::string> constKeys; // value names added as Const
+  std::unordered_set<std::string>
+      namespaceKeys; // value names added as Namespace
   // Current access section inside a TYPE body (`Private:`/`Public:`/
   // `Protected:`, FreeBASIC.md §7 Access sections): gates every member
   // captured into this container until the next section keyword. Defaults
@@ -157,11 +169,30 @@ private:
   std::vector<Container> containers_;
   std::string docPending_;
   bool langWarned_ = false;
+  // Names declared by `#macro NAME`. A macro invocation is a plain identifier
+  // statement to us (we do not expand), so a TYPE body must be told these are
+  // opaque rather than a rejected member.
+  std::unordered_set<std::string> macroNames_;
 
   void advance() {
     if (cur_.kind == TokenKind::String && !cur_.terminated) {
       addDiagnostic(cur_.beg, cur_.end, Severity::Warning,
                     "unterminated-string", tr("unterminated string literal"));
+    }
+    // A suffix that rode on a reserved word is ignored (fbc warning 44) and
+    // the token has already shed it; the diagnostic sits on the suffix char
+    // itself, which is exactly what a quick fix deletes. Skipped `#if`/`#macro`
+    // bodies are never parsed code, so their suffixed words warn nothing. The
+    // word is the base slice out of the source — the token text can carry the
+    // suffix back inside a merged slice (`and%=`), which would double it.
+    if (cur_.kind == TokenKind::Keyword && cur_.suffixBeg != 0 &&
+        !insidePreprocBlock()) {
+      std::string wordWithSuffix(
+          src_.substr(cur_.beg, cur_.suffixBeg - cur_.beg));
+      wordWithSuffix.push_back(src_[cur_.suffixBeg]);
+      addDiagnostic(cur_.suffixBeg, cur_.suffixBeg + 1, Severity::Warning,
+                    "keyword-suffix",
+                    trf("Suffix ignored in '%s'", wordWithSuffix));
     }
     cur_ = lex_.next();
   }
@@ -169,6 +200,13 @@ private:
   // `$`-metacommand dialect detection inside a comment body. Metacommands are
   // written as comments in FreeBASIC (`'$LANG: "qb"`, `rem $LANG: "qb"`).
   void checkMetaLang() {
+    // A multi-line `/' ... '/` comment is inert: fbc never reads a `$`
+    // directive inside one (FreeBASIC.md §1), so a `$LANG` that happens to
+    // appear in its body must not switch the dialect.
+    std::string_view const text = cur_.text();
+    if (text.size() >= 2 && text[0] == '/' && text[1] == '\'') {
+      return;
+    }
     LangMode m;
     if (langFromMetaDirective(cur_.text(), &m)) {
       applyLangDirective(m, cur_.beg, cur_.end);
@@ -232,6 +270,50 @@ private:
   bool inRecordBody() const {
     return !blocks_.empty() && isMemberBodyKind(blocks_.back().kind) &&
            blocks_.back().kind != BlockKind::Enum;
+  }
+
+  // A procedure body: the blocks whose bodies are statement lists and whose
+  // keyword is also a result variable (`function = expr`, `operator = expr`,
+  // `property = expr`).
+  static bool isProcedureBlockKind(BlockKind k) {
+    switch (k) {
+    case BlockKind::Sub:
+    case BlockKind::Function:
+    case BlockKind::Property:
+    case BlockKind::Operator:
+    case BlockKind::Constructor:
+    case BlockKind::Destructor:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  // True when the innermost enclosing procedure block is `want`. Result
+  // assignment belongs to its own procedure, and may sit in a control block
+  // nested inside it, so the search walks past those to the nearest procedure.
+  // A `function = expr` inside a `sub` is fbc's `error 317`, not a result
+  // assignment, so the *nearest* procedure decides rather than any match.
+  bool nearestProcedureIs(BlockKind want) const {
+    for (auto it = blocks_.rbegin(); it != blocks_.rend(); ++it) {
+      if (isProcedureBlockKind(it->kind)) {
+        return it->kind == want;
+      }
+    }
+    return false;
+  }
+
+  // True anywhere inside a `#if`/`#macro` region. The preprocessor does not
+  // exist in our parser (we never evaluate a branch), so a region's body is
+  // parsed leniently: a `_` there is inert text, not a broken continuation.
+  bool insidePreprocBlock() const {
+    for (auto it = blocks_.rbegin(); it != blocks_.rend(); ++it) {
+      if (it->kind == BlockKind::PreprocIf ||
+          it->kind == BlockKind::PreprocMacro) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static SymbolKind declKindFor(const std::string &w) {
@@ -347,29 +429,58 @@ private:
     // enclosing container. Module scope and non-type containers keep the
     // default Public, so this is a no-op outside a TYPE body.
     s.access = containers_.empty() ? Access::Public : containers_.back().access;
+    bool const isTypeName = s.kind == SymbolKind::Type ||
+                            s.kind == SymbolKind::Union ||
+                            s.kind == SymbolKind::Enum;
+    bool const isValueName =
+        s.kind == SymbolKind::Dim || s.kind == SymbolKind::Variable ||
+        s.kind == SymbolKind::Label || s.kind == SymbolKind::Const ||
+        s.kind == SymbolKind::Namespace;
     bool const dedupe =
-        s.kind == SymbolKind::Dim || s.kind == SymbolKind::Const ||
-        s.kind == SymbolKind::Variable || s.kind == SymbolKind::Label ||
-        s.kind == SymbolKind::Type || s.kind == SymbolKind::Union ||
-        s.kind == SymbolKind::Enum || s.kind == SymbolKind::Namespace;
+        (isTypeName || isValueName) && !s.declOnly && !s.aliasType;
     if (dedupe && !containers_.empty() && !s.key.empty()) {
       // Empty key = an unnamed declaration (a bare `enum`). Only the
       // *declaration's own* key is skipped: every anonymous enum used to
-      // collide with the first on `''` — drd/temp/inc/raylib.bi warned
-      // `duplicate definition: ''` twenty times at 1:1 on that alone. The
+      // collide with the first on `''`, warning `duplicate definition: ''`
+      // once per anonymous enum. The
       // member keys inside it are ordinary non-empty keys in the enum's own
       // container, so the one shape fbc does call a duplicate — the same
       // member named twice *in one* enum, `error 4` (probed) — still reports,
       // while the shapes fbc calls clean (same member in two separate enums,
       // anonymous or not; against a module `dim`/`const`/`sub`) never reach
       // this set from a second container anyway.
-      auto &set = containers_.back().keys;
-      if (set.count(s.key) != 0) {
+      Container &cont = containers_.back();
+      auto &set = isTypeName ? cont.typeKeys : cont.keys;
+      // Same-class redeclarations fbc accepts (probed): a constant repeated
+      // with the same value — we cannot fold the value, so every Const-vs-Const
+      // outside an enum body is left alone rather than crying wolf on one fbc
+      // compiles (const/redundant-constants.bas; an enum member named twice
+      // *within one enum* is still fbc's error 4, so members keep deduping) —
+      // and any namespace reopen.
+      bool const inEnumBody =
+          !blocks_.empty() && blocks_.back().kind == BlockKind::Enum;
+      bool const exemptSame = (s.kind == SymbolKind::Const && !inEnumBody &&
+                               cont.constKeys.count(s.key) != 0) ||
+                              (s.kind == SymbolKind::Namespace &&
+                               cont.namespaceKeys.count(s.key) != 0);
+      // A variable declared in each branch of a multi-branch preprocessor
+      // conditional (`#if a = 1 : dim x ... #else : dim x ...`) is fbc-clean:
+      // only the active branch compiles, and we parse them all leniently
+      // (cpp/call-fbc.bas, math-torture). Suppress the report inside a
+      // conditional region.
+      if (set.count(s.key) != 0 && !exemptSame && !insidePreprocBlock()) {
         addDiagnostic(s.selection.beg, s.selection.end, Severity::Warning,
                       "duplicate-definition",
                       trf("duplicate definition: '%s'", s.name));
       }
-      set.insert(s.key);
+      if (set.count(s.key) == 0) {
+        set.insert(s.key);
+        if (s.kind == SymbolKind::Const) {
+          cont.constKeys.insert(s.key);
+        } else if (s.kind == SymbolKind::Namespace) {
+          cont.namespaceKeys.insert(s.key);
+        }
+      }
     }
     if (containers_.empty()) {
       out_.roots.push_back(std::move(s));
@@ -483,7 +594,7 @@ private:
                                      ? std::string_view(top.sym->key)
                                      : std::string_view();
     std::vector<Token> const stmt = statementTokens();
-    if (acceptsBodyMember(top.kind, stmt, key)) {
+    if (acceptsBodyMember(top.kind, stmt, key, &macroNames_)) {
       return false;
     }
     // An enum body rejected this because its first token is a reserved word
@@ -513,6 +624,15 @@ private:
            (t.kind == TokenKind::Symbol && t.text() == ":");
   }
 
+  // A record-body `:` is a bitfield width separator only when a number follows
+  // it: `a : 7 as ulong` is one member line, while `type t : a as integer : end
+  // type` uses `:` to separate members and its closer, and `:` before a name or
+  // a closer there ends the statement like any other (FreeBASIC.md §7).
+  bool isBitfieldColon(Token const &t, Token const &next) const {
+    return inRecordBody() && t.kind == TokenKind::Symbol && t.text() == ":" &&
+           next.kind == TokenKind::Number;
+  }
+
   // Can `t` continue a type chain after `As`? A builtin type word (`ptr`,
   // `pointer`, `integer`, `zstring`, …) or the `const` modifier: everything
   // `as integer ptr the_data` puts between the type and the field name
@@ -537,7 +657,7 @@ private:
     out.push_back(cur_);
     for (int i = 0; i < MAX_LINE_PEEK && out.size() < MAX_LINE_PEEK; ++i) {
       Token const t = lex_.peek(i);
-      if (endsStatement(t)) {
+      if (endsStatement(t) && !isBitfieldColon(t, lex_.peek(i + 1))) {
         break;
       }
       out.push_back(t);
@@ -569,11 +689,23 @@ private:
         return;
       }
       if (k == TokenKind::Symbol && cur_.text() == ":") {
-        return;
+        // A `:` in a record body may be a bitfield width separator — the one
+        // colon a member carries — and a width is a number, so `a : 7 as
+        // ulong` goes on, while `type t : a as integer : end type` ends its
+        // member and its closer at the `:`. Outside a record body every `:`
+        // separates statements (FreeBASIC.md §7).
+        if (!inRecord || lex_.peek(0).kind != TokenKind::Number) {
+          return;
+        }
       }
       if (k == TokenKind::Symbol && cur_.text() == "_") {
-        addDiagnostic(cur_.beg, cur_.end, Severity::Error, "bad-continuation",
-                      tr("expected a newline after '_'"));
+        // A `_` inside a skipped preprocessor region is inert text, not a
+        // broken continuation (pp/if-skip-1.bas: `#if 0` bodies may hold
+        // `print _` with no following expression line).
+        if (!insidePreprocBlock()) {
+          addDiagnostic(cur_.beg, cur_.end, Severity::Error, "bad-continuation",
+                        tr("expected a newline after '_'"));
+        }
       }
       if (inRecord && k == TokenKind::Symbol && cur_.text() == "(") {
         ++parenDepth;
@@ -605,8 +737,8 @@ private:
         if (!endsStatement(lex_.peek(0))) {
           // Type-first member: `as <type> name`. Skip the type name (builtin
           // keyword or user-defined type) so the *member* is captured, not the
-          // type — drd/temp/inc/world.bi's `as Wall walls(MAX_WALLS - 1)` used
-          // to register `wall`. The member's signature still covers the full
+          // type — `as Wall walls(MAX_WALLS - 1)` used to register `wall`. The
+          // member's signature still covers the full
           // line so the declared type survives for hover/resolve.
           advance();
           // The type is one name token; a keyword is consumed as part of the
@@ -648,6 +780,21 @@ private:
         }
       }
       if (captureMember && k == TokenKind::Keyword &&
+          toLowerChars(cur_.text()) == "static" && cur_.beg == stmtStart.beg &&
+          cur_.end == stmtStart.end &&
+          (lex_.peek(0).kind == TokenKind::Keyword &&
+           toLowerChars(lex_.peek(0).text()) == "as")) {
+        // A *leading* `static` on a field line is the static-field modifier,
+        // not a field named `static`: `static as const integer y` declares
+        // field `y` with the `Static` storage prefix (warnings/
+        // const-discard.bas). The name comes after the `as` chain, so capture
+        // stays armed and the `as` branch below picks up `y`; a `static`
+        // anywhere else on the line (`as integer static`) stays a legal field
+        // name (FreeBASIC.md §7).
+        advance();
+        continue;
+      }
+      if (captureMember && k == TokenKind::Keyword &&
           isNeverFieldName(toLowerChars(cur_.text()))) {
         // A reserved word fbc refuses as a field name outright: `as integer
         // and` is its `error 14`, and it declares no such field, so nothing is
@@ -657,6 +804,18 @@ private:
                       "invalid-member-name",
                       trf("'%s' is a reserved word and cannot be a field name",
                           cur_.text()));
+        captureMember = false;
+        advance();
+        continue;
+      }
+      if (captureMember && k == TokenKind::Identifier &&
+          macroNames_.count(toLowerChars(cur_.text())) != 0 &&
+          lex_.peek(0).kind == TokenKind::Symbol &&
+          lex_.peek(0).text() == "(") {
+        // A macro invocation in a record body is not a field: fbc expands it
+        // away before parsing, so capturing its name as a member makes every
+        // later use of the same macro a duplicate definition
+        // (pp/defined-udt.bas). Leave the line uncaptured.
         captureMember = false;
         advance();
         continue;
@@ -694,8 +853,11 @@ private:
       // one now on top, which is what makes nested records nest the failure.
     }
 
-    // Line label: Identifier directly followed by ':'.
-    if (cur_.kind == TokenKind::Identifier) {
+    // Line label: Identifier directly followed by ':'. A record body has no
+    // statement list, so `Identifier :` there is a bitfield field
+    // (`a : 7 as ulong`), never a label — reading it as one consumed the name
+    // and judged its bit-width tail as the next member (FreeBASIC.md §7).
+    if (!inRecordBody() && cur_.kind == TokenKind::Identifier) {
       Token const nxt = lex_.peek(0);
       if (nxt.kind == TokenKind::Symbol && nxt.text() == ":") {
         Symbol s;
@@ -741,6 +903,19 @@ private:
       return;
     }
 
+    // Procedure-definition modifiers: `virtual sub` / `const sub` / `const
+    // function` ... A `virtual`/`const` in front of a declaration keyword
+    // qualifies the procedure, not a variable, so it must not swallow the line
+    // (the `const` case below would otherwise read `sub T.const2` as a
+    // constant named `T` and leave `end sub` stray).
+    if ((w == "virtual" || w == "const") &&
+        lex_.peek(0).kind == TokenKind::Keyword &&
+        isDeclOpenerWord(toLowerChars(lex_.peek(0).text()))) {
+      advance();
+      handleStatement();
+      return;
+    }
+
     if (w == "private" || w == "public" || w == "export" || w == "static") {
       Token const nxt = lex_.peek(0);
       if (nxt.kind == TokenKind::Keyword &&
@@ -778,16 +953,61 @@ private:
         handleEnd();
         return;
       }
+      // Bare `endif` is the single-word spelling of `end if`, and fbc accepts
+      // both; only the two-word form goes through handleEnd's word reading.
+      if (w == "endif") {
+        handleEnd(true);
+        return;
+      }
       BlockCloser c;
       blockForCloser(w, &c);
       handlePlainCloser(c);
       return;
     }
     if (isDeclOpenerWord(w)) {
+      // `function = expr` / `operator = expr` / `property = expr` is the
+      // procedure's own result assignment, not a block opener: the keyword is
+      // the result variable and `=` assigns it (FreeBASIC.md §3). Only a plain
+      // `=` assigns the result — fbc's `error 61` rejects `function += 1`. The
+      // nearest enclosing procedure must be the matching one, so `function =`
+      // inside a `sub` still falls through to the opener path (fbc's
+      // `error 317: Result assignment outside of function`).
+      if ((w == "function" || w == "operator" || w == "property") &&
+          lex_.peek(0).kind == TokenKind::Symbol &&
+          lex_.peek(0).text() == "=") {
+        BlockKind const want = w == "function"   ? BlockKind::Function
+                               : w == "operator" ? BlockKind::Operator
+                                                 : BlockKind::Property;
+        if (nearestProcedureIs(want)) {
+          resetDoc();
+          skipStatement();
+          return;
+        }
+      }
+      // `constructor(...)` in statement position is a call inside a
+      // constructor body (a constructor may call its own overloads), not a
+      // nested declaration: only a name directly after the keyword opens a
+      // block (warnings/suffix-fb.bas `constructor%()`; fbc compiles it).
+      if (w == "constructor" && lex_.peek(0).kind == TokenKind::Symbol &&
+          lex_.peek(0).text() == "(") {
+        resetDoc();
+        skipStatement();
+        return;
+      }
       handleDeclBlock(w, declKindFor(w));
       return;
     }
     if (w == "type") {
+      // `type<T>(...)` in statement position is a constructor expression
+      // (`type<UDT>(0).i = 1`), not a record declaration: a `type` declaration
+      // has a name, never a `<` template list. Reading it as a declaration
+      // opened a record nothing closes.
+      if (lex_.peek(0).kind == TokenKind::Symbol &&
+          lex_.peek(0).text() == "<") {
+        resetDoc();
+        skipStatement();
+        return;
+      }
       handleType();
       return;
     }
@@ -815,7 +1035,8 @@ private:
         handleVarDecls(SymbolKind::Const);
         return;
       }
-      handleVarDecls(SymbolKind::Dim);
+      handleVarDecls(SymbolKind::Dim,
+                     /*declOnly=*/w == "redim" || w == "common");
       return;
     }
     if (w == "if") {
@@ -853,6 +1074,14 @@ private:
     }
     if (w == "for") {
       handleFor();
+      return;
+    }
+    if (w == "extern" && lex_.peek(0).kind != TokenKind::String) {
+      // `extern <name> [as <type>]` declares a variable, it does not open a
+      // block: only `extern "<lang>"` starts `Extern ... End Extern`
+      // (FreeBASIC.md §7). A bare `extern` with no name is fbc's `error 14`,
+      // never a block, so it must not open one either.
+      handleVarDecls(SymbolKind::Dim, /*declOnly=*/true);
       return;
     }
     if (isControlOpenerWord(w)) {
@@ -1117,6 +1346,25 @@ private:
     } else {
       s.name = anonymousDeclName(openWord);
     }
+    // `Namespace a.b.c`: open only the *leaf* of a dotted path — the head
+    // namespaces exist by their own declarations, and registering the head
+    // again collided with the real `namespace a` on every dotted open
+    // (namespace/cpp/fbmod.bas). The leaf lives in this container; the outer
+    // path is the resolution side's business.
+    if (k == SymbolKind::Namespace && cur_.kind == TokenKind::Symbol &&
+        cur_.text() == ".") {
+      while (cur_.kind == TokenKind::Symbol && cur_.text() == ".") {
+        advance();
+        if (cur_.kind == TokenKind::Identifier ||
+            cur_.kind == TokenKind::Keyword) {
+          s.name = std::string(cur_.text());
+          s.key = toLowerChars(s.name);
+          s.selection.beg = cur_.beg;
+          s.selection.end = cur_.end;
+          advance();
+        }
+      }
+    }
     // `Enum <name> explicit`: the optional `Explicit` keyword gates the members
     // behind qualified `Name.member` access (FreeBASIC.md §8, fbc-verified).
     // Consume it on the header line so skipStatement below does not register it
@@ -1228,9 +1476,9 @@ private:
     //     is `error 14: Expected identifier`.
     // Reading `as` as the name instead pushed a record body no `end type`
     // belonged to, and every statement below it was then parsed as a member
-    // list — drd/temp/inc/raylib.bi reported dozens of phantom
-    // invalid-member-name / duplicate-definition / unterminated-block errors
-    // starting at its first `type as <type> <name>` alias.
+    // list, producing dozens of phantom invalid-member-name /
+    // duplicate-definition / unterminated-block errors starting at the first
+    // `type as <type> <name>` alias.
     bool const asFirst = lex_.peek(0).kind == TokenKind::Keyword &&
                          toLowerChars(lex_.peek(0).text()) == "as";
     if (asFirst) {
@@ -1277,6 +1525,7 @@ private:
       if (!name.empty()) {
         Symbol s;
         s.kind = SymbolKind::Type;
+        s.aliasType = true;
         s.name = name;
         s.key = toLowerChars(name);
         s.selection.beg = nameBeg;
@@ -1367,6 +1616,7 @@ private:
     }
 
     if (alias) {
+      s.aliasType = true;
       s.range.end = currentLineEnd();
       addSymbol(std::move(s));
       // The tail of an alias line is only its type expression, never a member
@@ -1400,6 +1650,14 @@ private:
     // tools/probe_member_names.sh.
     armRecordBody();
     advance(); // past DECLARE
+    // `declare virtual sub ...` / `declare const sub ...`: the modifier sits
+    // between `declare` and the procedure keyword and belongs to the
+    // procedure, so step over it and keep modelling the member.
+    while (cur_.kind == TokenKind::Keyword &&
+           (toLowerChars(cur_.text()) == "virtual" ||
+            toLowerChars(cur_.text()) == "const")) {
+      advance();
+    }
     if (cur_.kind != TokenKind::Keyword) {
       resetDoc();
       // A prototype line (`declare constructor(...)`, `declare operator...`)
@@ -1442,11 +1700,11 @@ private:
     // After the signature the line holds only the return type and the
     // `lib`/`alias` clauses — a type expression, never a member. Capture-on
     // used to hunt a field name in `declare function f() as const zstring
-    // ptr` and report `ptr` as one (drd/temp/inc/raylib.bi).
+    // ptr` and report `ptr` as one.
     skipStatement(/*suppressMemberCapture=*/true);
   }
 
-  void handleVarDecls(SymbolKind k) {
+  void handleVarDecls(SymbolKind k, bool declOnly = false) {
     Token const openTok = cur_;
     std::string const doc = takeDoc();
     advance();
@@ -1468,11 +1726,10 @@ private:
         // paren depth 0. Inside a parenthesized initializer it is an argument
         // separator (`type(x, .sectors(i).h, y)`, `Foo(a, b)`); treating it as
         // a declaration separator registered `.sectors` and `y` as fake
-        // definitions, tripping false "duplicate definition" warnings
-        // (drd/temp/src/engine.bas). The same holds for an initializer's
-        // braces: `{ lgt.x, lgt.y, lgt.z }` separates *elements*, not names,
-        // and each comma used to re-arm the name scan so `lgt` was registered
-        // again per element (drd/temp/inc/rlights.bi).
+        // definitions, tripping false "duplicate definition" warnings. The
+        // same holds for an initializer's braces: `{ lgt.x, lgt.y, lgt.z }`
+        // separates *elements*, not names, and each comma used to re-arm the
+        // name scan so `lgt` was registered again per element.
         if (parenDepth == 0 && braceDepth == 0) {
           atName = true;
         }
@@ -1503,8 +1760,26 @@ private:
         advance();
         continue;
       }
-      if (atName) {
+      if (atName && parenDepth == 0) {
         if (tk == TokenKind::Identifier) {
+          // A dot-qualified declaration (`dim T.x as integer`, which defines a
+          // static member) declares the *member*, not `T`. Registering the head
+          // collided with `type T` and warned a duplicate fbc never reports.
+          // Consume the whole qualified name; the member is already known from
+          // the type body.
+          if (lex_.peek(0).kind == TokenKind::Symbol &&
+              lex_.peek(0).text() == ".") {
+            advance(); // the head (`T`)
+            while (cur_.kind == TokenKind::Symbol && cur_.text() == ".") {
+              advance(); // the '.'
+              if (cur_.kind == TokenKind::Identifier ||
+                  cur_.kind == TokenKind::Keyword) {
+                advance(); // the member
+              }
+            }
+            atName = false;
+            continue;
+          }
           Symbol s;
           s.kind = k;
           s.name = std::string(cur_.text());
@@ -1517,6 +1792,7 @@ private:
           // inside scope blocks is not supported, and const decls are
           // storage-less and always visible.
           s.shared = seenShared && blocks_.empty() && k == SymbolKind::Dim;
+          s.declOnly = declOnly;
           s.signature = headerText(openTok);
           if (first) {
             s.doc = doc;
@@ -1541,7 +1817,21 @@ private:
           if (cur_.kind == TokenKind::Identifier) {
             advance();
           }
-          while (isTypeChainWord(cur_)) {
+          // A user type in the chain is an *identifier* too: `as const t p`
+          // is the user type `t` with declared name `p`
+          // (const/make-typedef-const-2.bas), so identifiers are consumed
+          // while a name still follows, and `as udt name` ends the chain at
+          // `name`.
+          auto nameStillFollows = [&]() {
+            Token const n = lex_.peek(0);
+            if (n.kind == TokenKind::Identifier) {
+              return true;
+            }
+            return n.kind == TokenKind::Keyword &&
+                   toLowerChars(n.text()) != "as";
+          };
+          while (isTypeChainWord(cur_) ||
+                 (cur_.kind == TokenKind::Identifier && nameStillFollows())) {
             bool const danglingConst = !atName &&
                                        toLowerChars(cur_.text()) == "const" &&
                                        !isTypeChainWord(lex_.peek(0));
@@ -1605,17 +1895,16 @@ private:
       Token const firstAfter = tail[idxThen + 1];
       bool const colon =
           firstAfter.kind == TokenKind::Symbol && firstAfter.text() == ":";
-      bool inlineEndIf = false;
-      for (size_t i = idxThen + 1; i + 1 < tail.size(); ++i) {
-        if (tail[i].kind == TokenKind::Keyword &&
-            tail[i + 1].kind == TokenKind::Keyword &&
-            toLowerChars(tail[i].text()) == "end" &&
-            toLowerChars(tail[i + 1].text()) == "if") {
-          inlineEndIf = true;
-          break;
-        }
-      }
-      singleLine = !colon && !inlineEndIf;
+      // A one-line IF is one statement whether or not it carries its own
+      // closer: `if a then print 1` and `if 1 then print else print end if`
+      // are both single lines, and skipping them as one statement is all the
+      // structure they need. Only the colon form
+      // (`if a then : a : b : end if`) is a statement *list* with branches the
+      // block path must scope (parser_checks.cpp: "One-line block with END IF
+      // still matches"); the space-separated body must not push a block,
+      // because nothing after it on the line is a separate statement the block
+      // machinery could close (warnings/suffix-fb.bas).
+      singleLine = !colon;
     }
 
     if (singleLine) {
@@ -1642,20 +1931,27 @@ private:
     skipStatement();
   }
 
-  void handleEnd() {
+  // Closes an `END <word>` block, and — when `bareEndIf` — the single-word
+  // `ENDIF` spelling, which fbc accepts exactly like `END IF`: `if ... then
+  // ... endif` is the QB form every dialect carries
+  // (warnings/suffix-fb.bas). For the bare spelling the closer word is the
+  // ENDIF token itself, still cur_ on entry, so no separate word is consumed.
+  void handleEnd(bool bareEndIf = false) {
     Token const endTok = cur_;
-    advance(); // past END
-
-    if (cur_.kind != TokenKind::Keyword) {
-      resetDoc();
-      skipStatement();
-      return;
+    if (!bareEndIf) {
+      advance(); // past END
+      if (cur_.kind != TokenKind::Keyword) {
+        resetDoc();
+        skipStatement();
+        return;
+      }
     }
-    std::string const w = toLowerChars(cur_.text());
+    Token const word = bareEndIf ? endTok : cur_;
+    std::string const w = bareEndIf ? "if" : toLowerChars(word.text());
 
     if (w == "for" || w == "while") {
       std::string const expected = w == "for" ? "NEXT" : "WEND";
-      addDiagnostic(cur_.beg, cur_.end, Severity::Error, "invalid-end",
+      addDiagnostic(word.beg, word.end, Severity::Error, "invalid-end",
                     trf("Expected '%s'", expected), 33 /* ILLEGALEND */);
       // No block can be closed by `END FOR` / `END WHILE` (fbc rejects both
       // with `error 33: Illegal 'END'`), so this token is itself the evidence
@@ -1678,7 +1974,7 @@ private:
     }
 
     if (blocks_.empty()) {
-      addDiagnostic(endTok.beg, cur_.end, Severity::Error, "stray-closer",
+      addDiagnostic(endTok.beg, word.end, Severity::Error, "stray-closer",
                     trf("%s without %s", "END " + uppercase(w), uppercase(w)),
                     fbcCloserWithoutOpenerError(c.kind));
       resetDoc();
@@ -1688,7 +1984,7 @@ private:
 
     Block const &top = blocks_.back();
     if (top.kind == c.kind && top.needsEnd) {
-      closeBlock(cur_.end);
+      closeBlock(word.end);
       advance();
       resetDoc();
       skipStatement();
@@ -1701,7 +1997,7 @@ private:
       skipStatement();
       return;
     }
-    closeBlock(cur_.end);
+    closeBlock(word.end);
     advance();
     resetDoc();
     skipStatement();
@@ -1787,6 +2083,26 @@ private:
       b.endOpen = cur_.end;
       blocks_.push_back(b);
     } else if (w == "macro") {
+      // Record the macro name: a later invocation inside a TYPE body reads as
+      // an ordinary identifier statement, and fbc expands it away first.
+      std::string_view const line = cur_.text();
+      size_t i = line.find("macro");
+      if (i != std::string_view::npos) {
+        i += 5;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
+          ++i;
+        }
+        size_t const b = i;
+        while (i < line.size() &&
+               ((line[i] >= 'a' && line[i] <= 'z') ||
+                (line[i] >= 'A' && line[i] <= 'Z') ||
+                (line[i] >= '0' && line[i] <= '9') || line[i] == '_')) {
+          ++i;
+        }
+        if (i > b) {
+          macroNames_.insert(toLowerChars(std::string(line.substr(b, i - b))));
+        }
+      }
       Block b;
       b.kind = BlockKind::PreprocMacro;
       b.close = "#endmacro";

@@ -1933,6 +1933,16 @@ bool isSelfReferentialField(std::vector<Token> const &stmt,
   if (head == "static" || head == "const") {
     return false;
   }
+  // A member-procedure declaration or definition is not a field: its `As`
+  // clauses type parameters, not storage. `declare sub f(byref x as T)` inside
+  // `type T` is ordinary code, not fbc's `error 88` (which is about a field
+  // holding its own record by value). Without this every self-typed parameter
+  // in a `Declare` popped the record body and left `end type` stray.
+  if (head == "declare" || head == "sub" || head == "function" ||
+      head == "property" || head == "operator" || head == "constructor" ||
+      head == "destructor") {
+    return false;
+  }
   for (std::size_t i = 0; i + 1 < stmt.size(); ++i) {
     if (stmt[i].kind != TokenKind::Keyword ||
         toLowerChars(std::string(stmt[i].text())) != "as") {
@@ -1967,7 +1977,7 @@ bool isCloserStatement(std::vector<Token> const &stmt) {
     return false;
   }
   std::string const w = toLowerChars(std::string(stmt.front().text()));
-  if (w != "end" && w != "next" && w != "wend" && w != "loop") {
+  if (w != "end" && w != "endif" && w != "next" && w != "wend" && w != "loop") {
     return false;
   }
   // The one statement that starts with a closer word and is not one: a field
@@ -1980,7 +1990,8 @@ bool isCloserStatement(std::vector<Token> const &stmt) {
 }
 
 bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt,
-                       std::string_view enclosingTypeKey) {
+                       std::string_view enclosingTypeKey,
+                       std::unordered_set<std::string> const *macroNames) {
   if (kind != BlockKind::Type && kind != BlockKind::Union &&
       kind != BlockKind::Enum) {
     // A procedure body is a statement list and accepts everything, which is
@@ -1992,6 +2003,13 @@ bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt,
     return true; // nothing to judge: a blank or comment-only line
   }
   Token const &first = stmt.front();
+  // A macro invocation is not a member and not a statement: fbc expands it
+  // away before parsing, so a `#macro` call inside a TYPE body (pp/defined-udt)
+  // must not end the body. The parser supplies the names it saw declared.
+  if (macroNames != nullptr && first.kind == TokenKind::Identifier &&
+      macroNames->count(toLowerChars(std::string(first.text()))) != 0) {
+    return true;
+  }
   if (kind == BlockKind::Enum) {
     // An enum body is `name`, `name = expr` — a name and at most an `=`,
     // nothing else. A reserved word is a legal name for 230 of the 365 (the
@@ -2133,9 +2151,20 @@ std::vector<std::string_view> symbolOperators() {
 }
 
 bool isCombinedAssignKeyword(std::string_view wordLower) {
-  return wordLower == "and=" || wordLower == "or=" || wordLower == "xor=" ||
-         wordLower == "eqv=" || wordLower == "imp=" || wordLower == "mod=" ||
-         wordLower == "shl=" || wordLower == "shr=";
+  // A merged keyword-suffix slice keeps the skipped char (`and%=`): the '='
+  // folds into the token and the suffix sits between the base and it, so no
+  // single slice is "and=". Strip a suffix char that precedes the trailing
+  // '=' before comparing; a plain "and=" has no char to strip and matches
+  // as-is.
+  std::string w(wordLower);
+  if (w.size() >= 3 && w.back() == '=') {
+    char const c = w[w.size() - 2];
+    if (c == '%' || c == '&' || c == '!' || c == '$') {
+      w.erase(w.size() - 2, 1);
+    }
+  }
+  return w == "and=" || w == "or=" || w == "xor=" || w == "eqv=" ||
+         w == "imp=" || w == "mod=" || w == "shl=" || w == "shr=";
 }
 
 bool langFromDirective(std::string_view line, LangMode *out) {

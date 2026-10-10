@@ -54,7 +54,7 @@ Implemented and advertised in the `initialize` reply:
 | Folding ranges | Blocks and multi-line constructs |
 | Semantic tokens | Full, delta, and range requests; drives client-side highlighting |
 | Inlay hints | Inferred types and block closers |
-| Code actions | Quick fixes for a missing `#include` target and for an unclosed block |
+| Code actions | Quick fixes for a missing `#include` target, an unclosed block, a reserved word used as a member name, and an ignored keyword suffix |
 | Selection ranges | Token → statement → enclosing blocks → file |
 | Call hierarchy | Outgoing calls and incoming call sites, through the include closure |
 | Type definition | The type a variable, a field, or a `Type.name` member belongs to |

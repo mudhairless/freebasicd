@@ -92,6 +92,202 @@ static void checkShapeInvariants(const std::vector<Symbol> &scope) {
   }
 }
 
+static void TestKeywordSuffixWarning() {
+  // A suffix directly attached to a reserved word is ignored (fbc warning 44)
+  // and the token stays the bare keyword: the block form with a suffixed
+  // opener and closer still parses as a block, with one warning per suffix and
+  // no structure error.
+  ParseResult const block = parseDocument("if% 1 then\nend% if\n");
+  CHECK(diagnosticCount(block, "keyword-suffix") == 2);
+  CHECK(diagnosticCount(block, "stray-closer") == 0);
+  CHECK(diagnosticCount(block, "unterminated-block") == 0);
+  // The warning sits on the suffix char alone, which is exactly what the
+  // `keyword-suffix` quick fix deletes, and the message names the word the
+  // way fbc prints it.
+  if (block.diagnostics.size() == 2) {
+    CHECK(block.diagnostics.front().range.beg == 2);
+    CHECK(block.diagnostics.front().range.end == 3);
+    CHECK(block.diagnostics.front().message == "Suffix ignored in 'if%'");
+  }
+
+  // A suffix on a variable is part of the identifier (`x%` and `x` are two
+  // variables in FreeBASIC), so it is not a keyword warning.
+  ParseResult const ident = parseDocument("dim x% as integer\nx% = 1\n");
+  CHECK(diagnosticCount(ident, "keyword-suffix") == 0);
+
+  // `#` is never a keyword suffix: PRINT#1 is a file channel, and an
+  // identifier's `#` folds in, so neither warns.
+  ParseResult const hash = parseDocument("print#1,\ndone# = 1\n");
+  CHECK(diagnosticCount(hash, "keyword-suffix") == 0);
+
+  // A skipped `#if` body is never parsed code, so its suffixed words are
+  // inert and do not warn.
+  ParseResult const pp = parseDocument("#if 0\nprint%\n#endif\n");
+  CHECK(diagnosticCount(pp, "keyword-suffix") == 0);
+}
+
+static int errorDiagnosticCount(const ParseResult &r) {
+  int n = 0;
+  for (const auto &d : r.diagnostics) {
+    if (d.severity == Severity::Error) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+// Step 2b false-positive clearing, verified against fbc 1.10.2. Every shape
+// here previously produced an error-level diagnostic on code fbc accepts;
+// v8 is the control proving the dedupe still catches a real duplicate.
+static void TestStep2bParsingFixes() {
+  // Bare `endif` closes an `if` block.
+  {
+    ParseResult const r = parseDocument("if 1 then\n"
+                                        "  print 1\n"
+                                        "endif\n");
+    CHECK(r.diagnostics.empty());
+  }
+  // The one-line `if` with `else`/`end if` all on one line; a suffix on the
+  // opener is warning 44, not a structure error.
+  {
+    ParseResult const r = parseDocument("if 1 then print else print end if\n");
+    CHECK(r.diagnostics.empty());
+  }
+  {
+    ParseResult const r = parseDocument("if% 1 then print else print end if\n");
+    CHECK(errorDiagnosticCount(r) == 0);
+    CHECK(diagnosticCount(r, "keyword-suffix") == 1);
+  }
+  // A member line with the object's own type as a `byref` parameter, and the
+  // `virtual` / `const` Declare modifiers (the class body that follows).
+  {
+    ParseResult const r = parseDocument("type T\n"
+                                        "  x as integer\n"
+                                        "  declare sub s(byref v as T)\n"
+                                        "  declare virtual sub sv()\n"
+                                        "  declare const sub sc()\n"
+                                        "end type\n");
+    CHECK(r.diagnostics.empty());
+  }
+  // The qualified module-scope `dim` of an object member (`dim T.x`) is a
+  // declaration fbc accepts, not a second definition of T.
+  {
+    ParseResult const r = parseDocument("type T\n"
+                                        "  x as integer\n"
+                                        "end type\n"
+                                        "dim T.x as integer\n");
+    CHECK(r.diagnostics.empty());
+  }
+  // A module-scope `extern` and a `dim` of a different name are both plain
+  // declarations.
+  {
+    ParseResult const r = parseDocument("extern x as integer\n"
+                                        "dim y as integer\n");
+    CHECK(r.diagnostics.empty());
+  }
+  // Only one branch of `#if a / #else` is active: the same name in each is
+  // not a duplicate. (The inactive copy is not parsed code at all.)
+  {
+    ParseResult const r = parseDocument("#if a\n"
+                                        "  dim x as integer\n"
+                                        "#else\n"
+                                        "  dim x as integer\n"
+                                        "#endif\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+  }
+  // A record member's bit width is a numeric literal after the `:` — the
+  // colon ends the member, not the record body.
+  {
+    ParseResult const r = parseDocument("type W\n"
+                                        "  a : 7 as ulong\n"
+                                        "  b : 3 as ulong\n"
+                                        "end type\n");
+    CHECK(r.diagnostics.empty());
+  }
+  // The control: what fbc *does* reject — the same name twice at one scope —
+  // still warns, so the dedupe above is not a silence-all.
+  {
+    ParseResult const r = parseDocument("dim a as integer\n"
+                                        "dim a as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 1);
+  }
+  // Names that fbc allows to recur: an `extern` matches its later `dim`, a
+  // `type <name> as <type>` alias may be redeclared, a `const` may be
+  // redefined, and re-opening a `namespace` is not a duplicate.
+  {
+    ParseResult const r = parseDocument("extern z as integer\n"
+                                        "dim z as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("type mybyte as byte\n"
+                                        "type mybyte as byte\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("const c = 1\n"
+                                        "const c = 1\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("namespace n\n"
+                                        "end namespace\n"
+                                        "namespace n\n"
+                                        "end namespace\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+    CHECK(find(r.roots, "n", SymbolKind::Namespace) != nullptr);
+  }
+  // A suffixed constructor *call* inside a constructor body is not a second
+  // definition — `constructor%()` calls, `property% =` assigns the result.
+  // fbc compiles this whole namespace; warning 44 is the accurate residue.
+  {
+    ParseResult const r = parseDocument("namespace parser_proccall\n"
+                                        "  type Q\n"
+                                        "    n as integer\n"
+                                        "    declare constructor()\n"
+                                        "  end type\n"
+                                        "  type T extends Q\n"
+                                        "    x as Q\n"
+                                        "    declare constructor()\n"
+                                        "    declare property P() as integer\n"
+                                        "    declare function F() as integer\n"
+                                        "  end type\n"
+                                        "  constructor Q()\n"
+                                        "    constructor%()\n"
+                                        "  end constructor\n"
+                                        "  constructor T()\n"
+                                        "    base%()\n"
+                                        "    x.constructor%()\n"
+                                        "    base%.constructor%()\n"
+                                        "  end constructor\n"
+                                        "  property T.P() as integer\n"
+                                        "    property% = 1\n"
+                                        "  end property\n"
+                                        "  function T.F() as integer\n"
+                                        "    function% = 1\n"
+                                        "  end function\n"
+                                        "  operator not( byref x as T ) as T\n"
+                                        "    operator% = x\n"
+                                        "  end operator\n"
+                                        "end namespace\n");
+    CHECK(errorDiagnosticCount(r) == 0);
+    CHECK(diagnosticCount(r, "keyword-suffix") == 8);
+  }
+  // A macro invocation in a record body is not a field member: fbc expands
+  // the macro away before parsing (`#macro m` + `m(1)` in the body), so the
+  // line must not be captured or rejected.
+  {
+    ParseResult const r = parseDocument("#macro m(x)\n"
+                                        "  dim as integer x\n"
+                                        "#endmacro\n"
+                                        "type T\n"
+                                        "  m(1)\n"
+                                        "  as integer y\n"
+                                        "end type\n");
+    CHECK(r.diagnostics.empty());
+  }
+}
+
 static void TestAnonymousDeclarationsNameAndSelect() {
   // The ProPgTypeUnion nesting: a named type, an anonymous union, and the
   // anonymous type inside that union (fbc compiles exactly this spelling).
@@ -134,8 +330,7 @@ static void TestAnonymousDeclarationsNameAndSelect() {
             "the field did not leak into the enclosing type");
 
   // Two anonymous enums in one file are two declarations, not a duplicate of
-  // each other (the `''`-key collision that warned twenty times in
-  // drd/temp/inc/raylib.bi).
+  // each other (the `''`-key collision used to warn once per anonymous enum).
   ParseResult const two = parseDocument("enum\n  a = 1\nend enum\n"
                                         "enum\n  b = 2\nend enum\n");
   CHECK(two.diagnostics.empty());
@@ -603,12 +798,11 @@ int main() {
   }
 
   // Commas inside a parenthesized initializer are *argument* separators, not
-  // declaration-list separators. The UDT-literal / member-access pattern from
-  // drd/temp/src/engine.bas (`dim as Vector3 b = type(a.x, .sectors(0).h,
-  // a.y)`) produced 37 false "duplicate definition" warnings because every `,`
-  // (even at paren depth > 0) re-armed the atName state, registering
-  // `.sectors` and the second `a` as new definitions. Only the declared
-  // names may land in the symbol tree.
+  // declaration-list separators. A UDT-literal / member-access initializer
+  // (`dim as Vector3 b = type(a.x, .sectors(0).h, a.y)`) produced false
+  // "duplicate definition" warnings because every `,` (even at paren depth > 0)
+  // re-armed the atName state, registering `.sectors` and the second `a` as
+  // new definitions. Only the declared names may land in the symbol tree.
   {
     ParseResult r = parseDocument("dim as single a = 1\n"
                                   "dim as Vector3 b = type(a.x, "
@@ -1622,9 +1816,9 @@ int main() {
   }
 
   {
-    // `TYPE AS ...` spellings, fbc 1.10.2 probed — the root of every phantom
-    // report in drd/temp/inc/raylib.bi (~96 at its worst): reading `as` as a
-    // *name* pushed a record body no `end type` belonged to, so every
+    // `TYPE AS ...` spellings, fbc 1.10.2 probed — the root of a cascade of
+    // phantom reports: reading `as` as a *name* pushed a record body no
+    // `end type` belonged to, so every
     // statement below it parsed as a member list.
     //   module scope: `type as <type> <name>` is an alias named after the
     //     type; `type as long` with no name behind it is fbc error 14 and
@@ -1726,7 +1920,7 @@ int main() {
     // An initializer's braces separate elements, not declarations: every
     // comma inside `{ ... }` used to re-arm the name scan, so
     // `dim x(0 to 2) as single = { lgt, lgt, lgt }` registered `lgt` once
-    // per element and warned duplicate (drd/temp/inc/rlights.bi).
+    // per element and warned duplicate.
     ParseResult const br = parseDocument("sub f()\n"
                                          "  dim as single lgt = 1\n"
                                          "  dim x(0 to 2) as single = { lgt, "
@@ -1766,6 +1960,8 @@ int main() {
     CHECK(diagnosticCount(sameBranch, "duplicate-definition") == 1);
   }
 
+  TestStep2bParsingFixes();
+  TestKeywordSuffixWarning();
   TestAnonymousDeclarationsNameAndSelect();
 
   if (failures == 0) {

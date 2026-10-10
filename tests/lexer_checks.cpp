@@ -91,11 +91,50 @@ int main() {
     CHECK(std::string(ts[0].text()) == "End");
     CHECK(std::string(ts[1].text()) == "Sub");
   }
-  // Keywords do not swallow suffix chars; longer words are plain identifiers.
+  // Keywords swallow a directly-attached suffix char (warning 44 in fbc: the
+  // suffix is ignored, the word stays the bare keyword); `#` is the exception
+  // because PRINT#1 is PRINT + "#1" channel. Longer words are plain
+  // identifiers, and a spaced `%` is its own symbol.
   checkKinds("ifx % then",
              {TokenKind::Identifier, TokenKind::Symbol, TokenKind::Keyword});
   checkKinds("print#1,", {TokenKind::Keyword, TokenKind::Symbol,
                           TokenKind::Number, TokenKind::Symbol});
+  {
+    auto ts = tokensOf("end% if$ for & while # done#");
+    CHECK(ts.size() == 8); // 7 tokens + Eof
+    // The suffix is skipped, not folded in: the token stays the bare keyword.
+    CHECK(ts[0].kind == TokenKind::Keyword);
+    CHECK(std::string(ts[0].text()) == "end");
+    CHECK(ts[1].kind == TokenKind::Keyword);
+    CHECK(std::string(ts[1].text()) == "if");
+    CHECK(ts[2].kind == TokenKind::Keyword);
+    CHECK(std::string(ts[2].text()) == "for");
+    // `&` is the LONG suffix plus a space: it is its own symbol here.
+    CHECK(ts[3].kind == TokenKind::Symbol);
+    CHECK(ts[4].kind == TokenKind::Keyword);
+    CHECK(std::string(ts[4].text()) == "while");
+    // `#` after a keyword is never a suffix (PRINT#1), so this one is a
+    // Symbol; `done` is an identifier, so its directly-attached `#` folds in.
+    CHECK(ts[5].kind == TokenKind::Symbol);
+    CHECK(ts[6].kind == TokenKind::Identifier);
+    CHECK(std::string(ts[6].text()) == "done#");
+  }
+  // The suffix-skipped keyword still folds into a combined assignment: and%=
+  // is AND% + '=', i.e. AND=. The merged token spans the raw slice through
+  // the '=' — "and%=", because the skipped '%' sits between the base and the
+  // '=' — and isCombinedAssignKeyword strips it before comparing, which is
+  // what the semantic-tokens classifier does.
+  {
+    auto ts = tokensOf("i and%= 1 and= 2");
+    CHECK(ts.size() == 6);
+    CHECK(ts[1].kind == TokenKind::Keyword);
+    CHECK(std::string(ts[1].text()) == "and%=");
+    CHECK(ts[1].suffixBeg == 5);
+    CHECK(fblang::isCombinedAssignKeyword("and%="));
+    CHECK(ts[3].kind == TokenKind::Keyword);
+    CHECK(std::string(ts[3].text()) == "and=");
+    CHECK(fblang::isCombinedAssignKeyword("and="));
+  }
 
   // Identifier suffixes.
   {
@@ -153,6 +192,23 @@ int main() {
     CHECK(mid[4].kind == TokenKind::Comment);
   }
 
+  // `/'` ... `'/` is a multi-line block comment, and it nests: contents are
+  // inert (a `'` inside is not a line comment), so one token spans the whole
+  // thing. An unterminated one is consumed to EOF with `terminated` false.
+  {
+    auto ts = tokensOf("print 1 /' note '/ print 2");
+    CHECK(ts.size() == 6); // print 1 <comment> print 2 + Eof
+    CHECK(ts[2].kind == TokenKind::Comment);
+    CHECK(ts[2].terminated);
+    auto nested = tokensOf("/' a /' b '/ c '/");
+    CHECK(nested.size() == 2);
+    CHECK(nested[0].kind == TokenKind::Comment);
+    CHECK(std::string(nested[0].text()) == "/' a /' b '/ c '/");
+    auto open = tokensOf("/' unterminated");
+    CHECK(open[0].kind == TokenKind::Comment);
+    CHECK(!open[0].terminated);
+  }
+
   // A line-leading `Rem` is a comment whether or not anything follows it. The
   // bare form is the one that is easy to get wrong, because "end of line" is a
   // newline and not one of the blanks `isWhitespace` covers: `rem note` lexed
@@ -197,6 +253,28 @@ int main() {
       }
     }
     CHECK(!foundNewline);
+
+    // A trailing comment may sit between `_` and the newline: fbc reads
+    // `_ ' note` as a continuation and joins the next line, so neither the
+    // comment nor the newline survives.
+    auto note = tokensOf("a = 1 _ ' note\n+ 2");
+    CHECK(note.size() == 6); // a = 1 + 2 + Eof
+    CHECK(std::string(note[3].text()) == "+");
+  }
+
+  // A continuation never joins a preprocessor directive line: the `_` stays a
+  // Symbol and the newline survives, so `#if` starts its own line.
+  {
+    auto pp = tokensOf("a = 1 _\n#if 0\n#endif\n");
+    CHECK(pp[3].kind == TokenKind::Symbol);
+    CHECK(std::string(pp[3].text()) == "_");
+    bool sawPreproc = false;
+    for (const auto &t : pp) {
+      if (t.kind == TokenKind::Preprocessor) {
+        sawPreproc = true;
+      }
+    }
+    CHECK(sawPreproc);
   }
 
   // Operators and punctuation.
