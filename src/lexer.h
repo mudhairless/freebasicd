@@ -71,6 +71,11 @@ private:
   bool atLineStart() const;
   char peekChar(size_t ahead = 0) const;
   char advance();
+  // True when the directive line [beg, end) ends with a `_` continuation
+  // marker: the marker is the line's last code character, after which only
+  // whitespace and a trailing `'` comment may remain. A `_` inside a string
+  // literal or inside a comment does not continue the line.
+  bool directiveEndsWithContinuation(uint32_t beg, uint32_t end) const;
 
   std::string_view src_;
   const char *p_ = nullptr;

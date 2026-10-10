@@ -9,6 +9,7 @@
 #include "i18n.h"
 #include "language.h"
 #include "lexer.h"
+#include "preproc.h"
 #include "symbols.h"
 
 #include <algorithm>
@@ -101,17 +102,26 @@ public:
         advance();
         continue;
       case TokenKind::Comment:
-        checkMetaLang();
-        resetDoc();
-        advance();
-        continue;
       case TokenKind::DocComment:
+        if (!preproc_.active()) {
+          // A comment inside a skipped region must neither collect a doc
+          // comment for a declaration that never parses nor leak one past the
+          // region onto the next live declaration.
+          resetDoc();
+          advance();
+          continue;
+        }
         checkMetaLang();
-        collectDoc();
-        if (!cur_.text().empty() && cur_.text()[0] == '/') {
-          addDiagnostic(cur_.beg, cur_.end, Severity::Information, "doc-slash",
-                        trf("/// is not a %s comment; use '' for doc comments",
-                            "FreeBASIC"));
+        if (cur_.kind == TokenKind::DocComment) {
+          collectDoc();
+          if (!cur_.text().empty() && cur_.text()[0] == '/') {
+            addDiagnostic(
+                cur_.beg, cur_.end, Severity::Information, "doc-slash",
+                trf("/// is not a %s comment; use '' for doc comments",
+                    "FreeBASIC"));
+          }
+        } else {
+          resetDoc();
         }
         advance();
         continue;
@@ -120,14 +130,16 @@ public:
         advance();
         continue;
       case TokenKind::Meta:
-        addDiagnostic(
-            cur_.beg, cur_.end, Severity::Information, "meta-directive",
-            // TRANSLATORS: %s = the proper noun "FreeBASIC" (never
-            // translated); the second %s is an example directive kept
-            // verbatim.
-            trf("bare '$' is not a valid metacommand; %s metacommands are "
-                "written as comments, e.g. %s",
-                "FreeBASIC", "'$LANG: \"qb\"'"));
+        if (preproc_.active()) {
+          addDiagnostic(
+              cur_.beg, cur_.end, Severity::Information, "meta-directive",
+              // TRANSLATORS: %s = the proper noun "FreeBASIC" (never
+              // translated); the second %s is an example directive kept
+              // verbatim.
+              trf("bare '$' is not a valid metacommand; %s metacommands are "
+                  "written as comments, e.g. %s",
+                  "FreeBASIC", "'$LANG: \"qb\"'"));
+        }
         advance();
         continue;
       case TokenKind::Symbol:
@@ -135,9 +147,19 @@ public:
           advance();
           continue;
         }
+        if (!preproc_.active()) {
+          // A skipped region's tokens are decorations: no statements, no
+          // strings to warn about, no symbols to declare.
+          advance();
+          continue;
+        }
         handleStatement();
         continue;
       default:
+        if (!preproc_.active()) {
+          advance();
+          continue;
+        }
         handleStatement();
         continue;
       }
@@ -173,9 +195,15 @@ private:
   // statement to us (we do not expand), so a TYPE body must be told these are
   // opaque rather than a rejected member.
   std::unordered_set<std::string> macroNames_;
+  // The preprocessor: `#define`/`#macro` table, intrinsic `__FB_*` defines,
+  // and the reachability state that gates every token past a conditional
+  // directive. Reachable defines are published as `Define` symbols by
+  // registerDefine; everything the preprocessor cannot decide is skipped.
+  Preprocessor preproc_;
 
   void advance() {
-    if (cur_.kind == TokenKind::String && !cur_.terminated) {
+    if (cur_.kind == TokenKind::String && !cur_.terminated &&
+        preproc_.active()) {
       addDiagnostic(cur_.beg, cur_.end, Severity::Warning,
                     "unterminated-string", tr("unterminated string literal"));
     }
@@ -186,7 +214,7 @@ private:
     // word is the base slice out of the source — the token text can carry the
     // suffix back inside a merged slice (`and%=`), which would double it.
     if (cur_.kind == TokenKind::Keyword && cur_.suffixBeg != 0 &&
-        !insidePreprocBlock()) {
+        preproc_.active()) {
       std::string wordWithSuffix(
           src_.substr(cur_.beg, cur_.suffixBeg - cur_.beg));
       wordWithSuffix.push_back(src_[cur_.suffixBeg]);
@@ -298,19 +326,6 @@ private:
     for (auto it = blocks_.rbegin(); it != blocks_.rend(); ++it) {
       if (isProcedureBlockKind(it->kind)) {
         return it->kind == want;
-      }
-    }
-    return false;
-  }
-
-  // True anywhere inside a `#if`/`#macro` region. The preprocessor does not
-  // exist in our parser (we never evaluate a branch), so a region's body is
-  // parsed leniently: a `_` there is inert text, not a broken continuation.
-  bool insidePreprocBlock() const {
-    for (auto it = blocks_.rbegin(); it != blocks_.rend(); ++it) {
-      if (it->kind == BlockKind::PreprocIf ||
-          it->kind == BlockKind::PreprocMacro) {
-        return true;
       }
     }
     return false;
@@ -463,12 +478,12 @@ private:
                                cont.constKeys.count(s.key) != 0) ||
                               (s.kind == SymbolKind::Namespace &&
                                cont.namespaceKeys.count(s.key) != 0);
-      // A variable declared in each branch of a multi-branch preprocessor
-      // conditional (`#if a = 1 : dim x ... #else : dim x ...`) is fbc-clean:
-      // only the active branch compiles, and we parse them all leniently
-      // (cpp/call-fbc.bas, math-torture). Suppress the report inside a
-      // conditional region.
-      if (set.count(s.key) != 0 && !exemptSame && !insidePreprocBlock()) {
+      // This used to also suppress the report inside a `#if` region,
+      // because both arms were parsed leniently. Branch-aware parsing means
+      // only one arm ever reaches here (an undecidable condition skips the
+      // whole chain), so a duplicate that survives is a duplicate fbc sees
+      // too — the suppression is gone with the lenient parse.
+      if (set.count(s.key) != 0 && !exemptSame) {
         addDiagnostic(s.selection.beg, s.selection.end, Severity::Warning,
                       "duplicate-definition",
                       trf("duplicate definition: '%s'", s.name));
@@ -699,13 +714,11 @@ private:
         }
       }
       if (k == TokenKind::Symbol && cur_.text() == "_") {
-        // A `_` inside a skipped preprocessor region is inert text, not a
-        // broken continuation (pp/if-skip-1.bas: `#if 0` bodies may hold
-        // `print _` with no following expression line).
-        if (!insidePreprocBlock()) {
-          addDiagnostic(cur_.beg, cur_.end, Severity::Error, "bad-continuation",
-                        tr("expected a newline after '_'"));
-        }
+        // Inactive preprocessor regions never reach here (their tokens are
+        // consumed by the main loop), so a `_` this statement parsing sees
+        // really is a broken continuation in live code.
+        addDiagnostic(cur_.beg, cur_.end, Severity::Error, "bad-continuation",
+                      tr("expected a newline after '_'"));
       }
       if (inRecord && k == TokenKind::Symbol && cur_.text() == "(") {
         ++parenDepth;
@@ -2072,9 +2085,101 @@ private:
     skipStatement();
   }
 
+  // `#undef NAME`: close every still-open Define symbol of that key, walking
+  // containers outward. The evaluator's table is file-global (FreeBASIC.md
+  // §12 — we do not scope defines to the block they are written in), so an
+  // `#undef` inside a procedure removes a module-level define too; closing
+  // every open window is the symbol-tree mirror of that. A use after the
+  // `#undef` then resolves to nothing, exactly as the table no longer holds
+  // the name.
+  void handleUndef() {
+    std::string_view const text = cur_.text();
+    std::string_view const w = preprocessorWord(text);
+    std::size_t i = 1;
+    while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) {
+      ++i;
+    }
+    i += w.size();
+    while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) {
+      ++i;
+    }
+    std::size_t const b = i;
+    while (i < text.size() && ((text[i] >= 'a' && text[i] <= 'z') ||
+                               (text[i] >= 'A' && text[i] <= 'Z') ||
+                               (text[i] >= '0' && text[i] <= '9') ||
+                               text[i] == '_' || isSuffixChar(text[i]))) {
+      ++i;
+    }
+    if (i == b) {
+      return; // nothing after the word: nothing to remove
+    }
+    closeOpenDefines(toLowerChars(std::string(text.substr(b, i - b))),
+                     cur_.beg);
+  }
+
+  // Close every open (`defineEnd == UINT32_MAX`) Define of `key` from the
+  // innermost container outward at `end`. A redefinition is a replacement, so
+  // the earlier symbol stops serving uses at the new definition; an `#undef`
+  // closes the same way. Scan order does not matter — all of them go.
+  void closeOpenDefines(std::string const &key, std::uint32_t end) {
+    for (auto it = containers_.rbegin(); it != containers_.rend(); ++it) {
+      std::vector<Symbol> &list =
+          it->sym == nullptr ? out_.roots : it->sym->children;
+      for (Symbol &s : list) {
+        if (s.kind == SymbolKind::Define && s.key == key &&
+            s.defineEnd == UINT32_MAX) {
+          s.defineEnd = end;
+        }
+      }
+    }
+  }
+
+  // Publish one reachable `#define`/`#macro` as a `Define` symbol. The
+  // selection is the name token (hover/refs/goto target); the range is the
+  // whole directive — a multi-line continuation joins up to its last line.
+  // `defineEnd` is left open (UINT32_MAX) and truncated by a same-scope
+  // redefinition or `#undef`, so a use earlier than the definition or after
+  // the name is gone never matches (the positional window, resolved in-file
+  // by declAt/visibleSymbols).
+  void registerDefine(PreprocDefine const &d) {
+    Symbol s;
+    s.kind = SymbolKind::Define;
+    s.name = d.name;
+    s.key = d.key;
+    s.isMacro = d.isMacro;
+    s.range.beg = cur_.beg;
+    s.range.end = cur_.end;
+    s.selection.beg = cur_.beg + d.nameBeg;
+    s.selection.end = cur_.beg + d.nameEnd;
+    s.signature = d.signature;
+    s.doc = takeDoc();
+    closeOpenDefines(d.key, cur_.beg);
+    addSymbol(std::move(s));
+    if (d.isMacro) {
+      // A later invocation inside a TYPE body reads as an ordinary identifier
+      // statement, and fbc expands it away first — the body is opaque to us.
+      macroNames_.insert(d.key);
+    }
+  }
+
   void handlePreprocessor() {
     std::string const w = toLowerChars(preprocessorWord(cur_.text()));
+
+    // A `#macro` body is opaque text: neither the parser nor the preprocessor
+    // sees a directive inside it — only `#endmacro` exits.
+    if (preproc_.inMacroBody() && w != "endmacro") {
+      return;
+    }
+
+    bool const wasActive = preproc_.active();
+    PreprocFeedResult const f = preproc_.feed(cur_.text());
+
     if (w == "if" || w == "ifdef" || w == "ifndef") {
+      // Which arm is reachable is the Preprocessor's decision (its frame
+      // tracks `taken`/`undecided`/`curActive`). The parser's block exists
+      // for folding and unterminated-region diagnosis and is pushed for
+      // every `#if` — the `#endif` that closes it must exist whatever the
+      // branches decided, and skipping it would mis-diagnose the chain.
       Block b;
       b.kind = BlockKind::PreprocIf;
       b.close = "#endif";
@@ -2083,26 +2188,6 @@ private:
       b.endOpen = cur_.end;
       blocks_.push_back(b);
     } else if (w == "macro") {
-      // Record the macro name: a later invocation inside a TYPE body reads as
-      // an ordinary identifier statement, and fbc expands it away first.
-      std::string_view const line = cur_.text();
-      size_t i = line.find("macro");
-      if (i != std::string_view::npos) {
-        i += 5;
-        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
-          ++i;
-        }
-        size_t const b = i;
-        while (i < line.size() &&
-               ((line[i] >= 'a' && line[i] <= 'z') ||
-                (line[i] >= 'A' && line[i] <= 'Z') ||
-                (line[i] >= '0' && line[i] <= '9') || line[i] == '_')) {
-          ++i;
-        }
-        if (i > b) {
-          macroNames_.insert(toLowerChars(std::string(line.substr(b, i - b))));
-        }
-      }
       Block b;
       b.kind = BlockKind::PreprocMacro;
       b.close = "#endmacro";
@@ -2114,21 +2199,40 @@ private:
       if (!blocks_.empty() && blocks_.back().kind == BlockKind::PreprocIf) {
         closeBlock(cur_.end);
       } else {
+        // fbc 1.10.2: "error 44: Illegal outside a compound statement"
+        // (probed; the preprocessor shares ILLEGALOUTSIDECOMP with `else`).
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      trf("%s without %s", "#" + uppercase(w), "#IF"));
+                      trf("%s without %s", "#" + uppercase(w), "#IF"), 44);
       }
     } else if (w == "endmacro") {
       if (!blocks_.empty() && blocks_.back().kind == BlockKind::PreprocMacro) {
         closeBlock(cur_.end);
       } else {
+        // fbc: "error 17: Syntax error, found 'endmacro'".
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      trf("%s without %s", "#" + uppercase(w), "#MACRO"));
+                      trf("%s without %s", "#" + uppercase(w), "#MACRO"), 17);
       }
     } else if (w == "lang") {
       LangMode m;
       if (langFromDirective(cur_.text(), &m)) {
         applyLangDirective(m, cur_.beg, cur_.end);
       }
+    } else if (w == "undef") {
+      // The table update is feed's; the symbol window close is ours. Both
+      // happen only in reachable code — an `#undef` in a skipped arm removes
+      // nothing (matching fbc) and must not close a live define's window.
+      if (wasActive) {
+        handleUndef();
+      }
+    } else if (f.strayCloser) {
+      // #else / #elseif / #elseifdef / #elseifndef with no open #if: fbc
+      // 1.10.2 error 44, ILLEGALOUTSIDECOMP (probed for #else and #elseif).
+      addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
+                    trf("%s without %s", "#" + uppercase(w), "#IF"), 44);
+    }
+
+    if (f.define) {
+      registerDefine(*f.define);
     }
   }
 };

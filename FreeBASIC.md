@@ -143,8 +143,14 @@ Documentation: https://www.freebasic.net/wiki/ProPgLineContinuation
 Documentation: https://www.freebasic.net/wiki/ProPgLineSeparator
 
 - Line continuation: trailing `_` (whitespace-tolerant), must not follow an
-  identifier/word without a space. Statements split on `:`. `$`/`#` lines
-  cannot continue.
+  identifier/word without a space. What counts as a word is probed: a letter-
+  or `_`-start word absorbs later digits and underscores (`foo2_`,
+  `__FB_DEBUG__` — no continuation), while a number literal never absorbs a
+  `_` (`5_`, `5 _` do continue; `5_10` is the number `5` plus the identifier
+  `_10` — probed via `#define 5_10 510`, fbc `error 14: Expected identifier,
+  found '_10'`). Preprocessor directives continue under the same rule (a
+  multi-line `#define`, probed). Statements split on `:`. `$` metacommands
+  live on comment lines and never continue.
 - Line labels: identifier followed by `:` at statement position — `GOTO`/
   `GOSUB` targets; distinct from inline `:` statement separators.
 - `.bas`/`.bi` sources may open with a UTF-8 BOM, or UTF-16/32 LE/BE BOM
@@ -750,22 +756,38 @@ survives only as far as the compiler and linker allow.
 
 Documentation: https://www.freebasic.net/wiki/CatPgPreProcess
 
-- Preprocessor lines start with `#` at line start (not continuable):
+- Preprocessor lines start with `#` at line start:
   `#include [once]`, `#inclib`, `#define`, `#undef`, `#if/#elseif/#else/
   #endif`, `#ifdef/#ifndef`, `#assert`, `#error`, `#lang`, `#libpath`, `#line`,
   `#pragma`, `#cmdline`, `#print`, `#macro/#endmacro` `(wiki)`.
 - `#define` names (and macros) are scoped: visible from the definition to the
   end of the block/file; `namespace` does **not** affect define visibility
-  `(wiki)`.
+  `(wiki)`. This server models the window as a symbol: a `#define` or
+  `#macro` is a `SymbolKind::Define` serving the byte window
+  `[name.beg, defineEnd)` — the name token to where `#undef` or a same-name
+  redefinition closed it — so hover/definition shows the definition line on a
+  usage, completion offers it (LSP kind `Constant`), and a use after `#undef`
+  resolves to nothing. `#undef` acts only in reachable code: one inside a
+  skipped arm removes nothing.
 - Macros: `#define id(params) body`; arguments substituted unmodified; `##`
-  concatenates adjacent tokens. Multi-line bodies use `#macro` `(wiki)`.
+  concatenates adjacent tokens. Multi-line bodies use `#macro` `(wiki)`; a
+  `#macro` body is never parsed code, so hover on the macro shows the opener
+  line only (`#macro name(params)`) — the body may contain anything. Bodies
+  continue across a `_`-ended line just like other directives (§6).
 
 ### Conditional compilation
 
 - `#if`/`#elseif`/`#else`/`#endif` over numeric compile-time constants
   (arithmetic/comparison/`and`/`or`/`not`), including `#define`'d values and
   built-in `__FB_*` compilation constants; skipped branches are not parsed for
-  syntax `(wiki, ProPgConditionalCompilation)`.
+  syntax `(wiki, ProPgConditionalCompilation)`. This server seeds fbc 1.10.2's
+  built-in set (value and *definedness* — `__FB_DEBUG__` exists with value 0 on
+  a plain `fbc file.bas` run) and parses only reachable arms: a dead `#if 0`
+  arm or a never-substituted `#macro` body contributes no symbols and no
+  diagnostics. An unknown identifier in `#if <expr>` is **undecidable** and
+  skips the whole chain (§12.22); `#ifdef`/`#ifndef` are always decidable — a
+  name the table does not know is decidably *undefined*, so the else-arm runs,
+  exactly as fbc chooses.
 
 ## 11. Dialects
 
@@ -1143,6 +1165,28 @@ to "the language is what the lexer does":
     it is recorded rather than patched: the fix belongs with scope resolution
     (`visibleSymbols`/`declAt`), not the member chain, and was deliberately
     untouched by the anonymous-block wave.
+22. **An unknown identifier in `#if <expr>` makes the whole chain
+    unreachable.** fbc 1.10.2 folds an unknown name to 0 and runs the `#else`
+    arm; this implementation treats "an identifier the define table does not
+    know" as undecidable and skips the entire `#if`…`#endif` chain — no arm
+    parses, nothing in it declares. Deliberate (user rule over fbc). The two
+    probes to keep apart: `#if 0` is decidable-false and runs the else-arm in
+    both, while `#ifdef`/`#ifndef` never go undecidable because they ask a
+    question the table always answers (§10, Conditional compilation).
+23. **A `#define` redefinition is silent here.** fbc 1.10.2 accepts an
+    *identical* redefinition and rejects a value-changing one (`error 4`,
+    DUPDEFINITION). This implementation replaces the symbol — a new Define
+    with a fresh window, no duplicated-definition warning — so a
+    value-changing redefinition draws no error where fbc rejects the file.
+    The corpus pins the identical form (`preproc_define_redef.bas`); the
+    value-changing form is a unit test and stays out of the corpus (the
+    driver's fail files must emit a diagnostic, which this deliberately does
+    not).
+24. **A `#define` whose name is not an identifier is silent.** `#define
+    5_10 510` is fbc `error 14` ("Expected identifier, found '_10'"); here
+    the name scan publishes no define and no diagnostic. A miss, consistent
+    with the parser's general leniency, not a false report — no user-visible
+    diagnostic hangs on it.
 
 ## 13. Where the diagnostics come from (compiler source)
 

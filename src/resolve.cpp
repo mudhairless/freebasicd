@@ -100,6 +100,7 @@ bool isScopeKind(SymbolKind kind) {
   case SymbolKind::Label:
   case SymbolKind::Parameter:
   case SymbolKind::Variable:
+  case SymbolKind::Define:
     return false;
   }
   return false;
@@ -134,6 +135,23 @@ Token const *tokenAt(std::vector<Token> const &tokens, std::uint32_t off) {
 }
 
 SourceRange rangeOf(Token const &t) { return {t.beg, t.end}; }
+
+// A `#define`/`#macro` symbol is visible only inside its positional window:
+// at or after the definition's name, and before any `#undef` or same-key
+// redefinition closed it (`defineEnd`). A use cannot precede its own
+// definition (fbc expands top-to-bottom), and after the name is gone the
+// table no longer holds it. UINT32_MAX means the window is still open.
+// Only in-file candidates are gated — a cross-file use is measured against
+// that file's bytes, not this one's offsets.
+bool defineActiveAt(Symbol const &c, std::uint32_t off) {
+  if (c.kind != SymbolKind::Define) {
+    return true;
+  }
+  if (off < c.selection.beg) {
+    return false;
+  }
+  return c.defineEnd == UINT32_MAX || off < c.defineEnd;
+}
 
 // Module-level name candidates of `roots`, in a fixed order: every root
 // (declaration order), then the members of each *non-explicit* Enum. A plain
@@ -183,7 +201,7 @@ Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
   for (Symbol const *cur = siteScope;;) {
     if (cur != nullptr) {
       for (auto const &c : cur->children) {
-        if (c.key.empty() || c.key != key) {
+        if (c.key.empty() || c.key != key || !defineActiveAt(c, off)) {
           continue;
         }
         return &c;
@@ -192,7 +210,7 @@ Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
       // Module level: the roots plus the members of non-explicit enums
       // (module-scope constants, FreeBASIC.md §8).
       for (Symbol const *c : moduleLevelCandidates(parse.roots)) {
-        if (c->key.empty() || c->key != key) {
+        if (c->key.empty() || c->key != key || !defineActiveAt(*c, off)) {
           continue;
         }
         bool const gated =
@@ -583,14 +601,14 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
   for (Symbol const *cur = siteScope;;) {
     if (cur != nullptr) {
       for (auto const &c : cur->children) {
-        if (c.key.empty()) {
+        if (c.key.empty() || !defineActiveAt(c, off)) {
           continue;
         }
         out.push_back(&c);
       }
     } else {
       for (Symbol const *c : moduleLevelCandidates(parse.roots)) {
-        if (c->key.empty()) {
+        if (c->key.empty() || !defineActiveAt(*c, off)) {
           continue;
         }
         // §12.2 gate: from inside a procedure body, module-level Dim-kind

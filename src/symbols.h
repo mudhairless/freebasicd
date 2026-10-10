@@ -58,7 +58,11 @@ enum class SymbolKind {
   Dim,
   Label,
   Parameter,
-  Variable
+  Variable,
+  // A preprocessor `#define NAME` / `#macro NAME(...)`. Published as an
+  // LSP `Constant` and positioned by `Symbol::defineEnd` (see below) — a
+  // define is not a scope kind and never carries storage.
+  Define
 };
 
 // Member visibility as gated by an access section inside a TYPE body
@@ -137,6 +141,18 @@ struct Symbol {
   // procedure of the same type, and `resolveMemberAccess` still resolves them
   // (hover/references do not gate) — fbc reports error 202 on outside access.
   Access access = Access::Public;
+
+  // Preprocessor symbols. `isMacro` marks `#macro ... #endmacro` (hover
+  // shows the opener line only; the body is opaque text, not a declaration).
+  // `defineEnd` closes the positional visibility window of a Define: a use is
+  // resolved to it only while `selection.beg <= off < defineEnd`, so a use
+  // before the definition never matches, a `#undef` or a redefinition in the
+  // same scope truncates it, and UINT32_MAX means it is still open (a
+  // module-level define runs to end of file, matching fbc's preprocessor
+  // state). Only declAt/visibleSymbols consult it, and only in-file — a
+  // cross-file use is a window the local offset cannot be measured against.
+  bool isMacro = false;
+  std::uint32_t defineEnd = UINT32_MAX;
 
   // M15 type graph. Two edges, both of which the parser had no room for, and
   // both of which a type hierarchy and a go-to-implementation need.

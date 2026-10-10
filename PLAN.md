@@ -27,7 +27,10 @@
   covers roadmap, architecture, and the remaining work.
 
   Milestones M1–M15, M19, and M20 are `done`; their entries, with dates and
-  lessons, are in [`CHANGELOG.md`](CHANGELOG.md). What is left:
+  lessons, are in [`CHANGELOG.md`](CHANGELOG.md). The same is true of the
+  unnumbered waves since: anonymous outline nodes and scope subtrees, fbc
+  block-closer numbers, the false-positive clears, and the preprocessor wave
+  (defines/macros as symbols, branch-aware `#if`, 2026-10-09). What is left:
 
   | Milestone | Status |
   |-----------|--------|
@@ -45,10 +48,21 @@
   (its changelog entry carries the design; this list carries the map):
 
   - `src/lexer.{h,cpp}` — tokenizer over the full FB surface (byte offsets,
-    continuation-aware logical lines). `Token`, `TokenKind`, `Lexer`.
+    continuation-aware logical lines; a directive whose code tail is a fresh
+    `_` joins the next physical line into one Preprocessor token). `Token`,
+    `TokenKind`, `Lexer`.
   - `src/parser.{h,cpp}` — `parseDocument(src) -> ParseResult`
     (`roots`, `diagnostics`, `blockRanges`, `lang`); decl extraction, block
     matching, dialect detection, doc comments.
+  - `src/preproc.{h,cpp}` — the free-standing preprocessor: the seeded
+    `__FB_*` and `#define`/`#undef`/`#macro` tables, `#if`-expression
+    evaluation (numbers and the string-valued `__FB_*`, `and`/`or`/`not`
+    bitwise like fbc), the feed the parser drives (`PreprocFeedResult`:
+    active, undecided, define to publish — an unknown `#if` identifier is
+    undecidable and the whole chain is skipped, FreeBASIC.md §12.22), plus
+    `firstLineSignature` (what a define/macro hover shows) and
+    `normalizedValue`. A define is a `SymbolKind::Define` whose byte window
+    `[name.beg, defineEnd)` `#undef`/redefinition closes.
   - `src/language.{h,cpp}` — reserved-word catalog, block-closer facts, wiki doc
     URLs, dialect detection helpers, `isSuffixChar`, and the 247-row `Intrinsic`
     catalog (`intrinsicFor`, `intrinsics`, `intrinsicDocsUrl`,
@@ -238,10 +252,12 @@
   Implemented LSP methods: `initialize`/`shutdown`/`exit`,
   `didOpen`/`didChange`/ `didSave`/`didClose`, `publishDiagnostics`,
   `documentSymbol`, `hover` (symbols + member access + intrinsic signatures +
-  keyword wiki links), `foldingRange`, `definition`, `references`,
+  keyword wiki links + preprocessor `#define`/`#macro` definitions),
+  `foldingRange`, `definition`, `references`,
   `documentHighlight`, `completion` (keywords + `END`-block snippets + in-scope
-  symbols + intrinsic catalog + context-aware UDT member filtering after
-  `.`/`->`), `signatureHelp` (user declarations and built-in functions),
+  symbols + intrinsic catalog + preprocessor defines/macros + context-aware UDT
+  member filtering after `.`/`->`), `signatureHelp` (user declarations and
+  built-in functions),
   `workspace/symbol` (aggregated across per-root indexes), `prepareRename`,
   `rename` (resolution-based workspace edits),
   `codeAction` (M12 quick fixes: missing-include retarget, missing block
@@ -323,9 +339,13 @@
 ## 4. Gaps — what is yet needed
 
   1. Include-once *guard states* are not evaluated — `#include once` /
-     `#pragma once` / `#ifndef` are processed as recorded metadata, not macros
-     (FreeBASIC.md §12.6) — and `#inclib` is not treated as a source include.
-     Force-disabling the fbc system include search (step ⑥) also remains open.
+     `#pragma once` are processed as recorded metadata, not macros
+     (FreeBASIC.md §12.6), and a header's `#ifndef` guard does not make a
+     second `#include` of it a no-op. (Within-file `#ifdef`/`#ifndef`
+     reachability *is* evaluated since the preprocessor wave; the include
+     graph simply does not use guard states for dedupe.) `#inclib` is not
+     treated as a source include. Force-disabling the fbc system include
+     search (step ⑥) also remains open.
   2. The install tree is **not relocatable**: `FBLANG_LOCALEDIR_INSTALL` is
      `${CMAKE_INSTALL_PREFIX}/share/locale` baked in at configure time
      (`src/i18n.cpp`'s probe order: `FBLANG_LOCALEDIR` env override, then the

@@ -64,6 +64,7 @@ add_library(freebasicd_lang STATIC
     src/language.cpp
     src/lexer.cpp
     src/parser.cpp
+    src/preproc.cpp
     src/resolve.cpp
     src/selection.cpp
     src/semantic_tokens.cpp
@@ -445,6 +446,7 @@ add_executable(session_integration
     tests/session_indexes_checks.cpp
     tests/session_navigation_checks.cpp
     tests/session_pull_diagnostics_checks.cpp
+    tests/session_preproc_checks.cpp
     tests/session_rename_checks.cpp
     tests/session_semantic_tokens_checks.cpp
     tests/session_settings_checks.cpp

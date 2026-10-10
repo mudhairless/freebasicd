@@ -358,6 +358,232 @@ static void TestAnonymousDeclarationsNameAndSelect() {
             "the anonymous union's field keeps the section it was written in");
 }
 
+// Preprocessor: `#define`/`#macro` publish as Define symbols, conditional
+// branches parse with the live arm only, and the positional window
+// (redefinition / `#undef`) truncates a define's reachable region.
+static void TestPreprocessorSymbolsAndBranches() {
+  // A reachable `#define` publishes as a Define root carrying everything hover
+  // and completion need: original-case name, lowercase key, the directive's
+  // first line as the signature, the selection on the name token, and an open
+  // (UINT32_MAX) positional window.
+  {
+    ParseResult const r = parseDocument("#define MAX_CACHED_TEXTURES 19\n"
+                                        "print MAX_CACHED_TEXTURES\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *d = find(r.roots, "max_cached_textures", SymbolKind::Define);
+    CHECK(d != nullptr);
+    if (d != nullptr) {
+      CHECK(d->name == "MAX_CACHED_TEXTURES");
+      CHECK(d->key == "max_cached_textures");
+      CHECK(d->signature == "#define MAX_CACHED_TEXTURES 19");
+      CHECK(!d->isMacro);
+      CHECK(d->defineEnd == UINT32_MAX); // open until #undef/redefinition
+      CHECK(d->selection.beg == 8);      // `#define ` is eight bytes
+      CHECK(d->selection.end == 8 + 19);
+    }
+  }
+
+  // A `''` doc comment above a define becomes its hover text, exactly as for
+  // procedure declarations.
+  {
+    ParseResult const r = parseDocument("'' Max cached textures\n"
+                                        "#define MAX_CACHED_TEXTURES 19\n");
+    const Symbol *d = find(r.roots, "max_cached_textures", SymbolKind::Define);
+    CHECK(d != nullptr && d->doc == " Max cached textures");
+  }
+
+  // A `#macro` publishes with isMacro and a signature holding only the opener
+  // line — the parameters, never the body.
+  {
+    ParseResult const r = parseDocument("#macro say_it(w)\n"
+                                        "  print w\n"
+                                        "#endmacro\n"
+                                        "say_it(\"hi\")\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *d = find(r.roots, "say_it", SymbolKind::Define);
+    CHECK(d != nullptr);
+    if (d != nullptr) {
+      CHECK(d->isMacro);
+      CHECK(d->signature == "#macro say_it(w)");
+      CHECK(std::string(d->signature).find("print") == std::string::npos);
+      CHECK(d->selection.beg == 7); // `#macro ` is seven bytes
+      CHECK(d->selection.end == 7 + 6);
+    }
+  }
+
+  // A decidable condition activates exactly the live arm's symbols: `#if 1`
+  // parses the then-arm, `#if 0` parses the else-arm.
+  {
+    ParseResult const r = parseDocument("#if 1\n"
+                                        "  dim x as integer\n"
+                                        "#else\n"
+                                        "  dim y as integer\n"
+                                        "#endif\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(find(r.roots, "x", SymbolKind::Dim) != nullptr);
+    CHECK(find(r.roots, "y", SymbolKind::Dim) == nullptr);
+  }
+  {
+    ParseResult const r = parseDocument("#if 0\n"
+                                        "  dim x as integer\n"
+                                        "#else\n"
+                                        "  dim y as integer\n"
+                                        "#endif\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(find(r.roots, "x", SymbolKind::Dim) == nullptr);
+    CHECK(find(r.roots, "y", SymbolKind::Dim) != nullptr);
+  }
+
+  // Inactive arms are skipped wholesale: their content neither declares
+  // symbols nor reports diagnostics, however hostile it is (an unterminated
+  // string, a collision that would duplicate, a suffixed reserved word).
+  {
+    ParseResult const r = parseDocument("#if 0\n"
+                                        "  print \"unterminated\n"
+                                        "  dim dim dim as\n"
+                                        "  print%\n"
+                                        "#else\n"
+                                        "  dim y as integer\n"
+                                        "#endif\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(find(r.roots, "x", SymbolKind::Dim) == nullptr);
+    CHECK(find(r.roots, "y", SymbolKind::Dim) != nullptr);
+  }
+  {
+    ParseResult const r = parseDocument("#macro opaque\n"
+                                        "  if if if\n"
+                                        "  dim dim dim as\n"
+                                        "#endmacro\n"
+                                        "print 1\n");
+    CHECK(r.diagnostics.empty());
+  }
+
+  // An undecidable condition skips the whole chain — neither arm is
+  // reachable, by the documented divergence (fbc folds unknowns to 0 and runs
+  // the else-arm; the user's rule is not-reachable for the whole chain).
+  {
+    ParseResult const r = parseDocument("#if NO_SUCH_THING\n"
+                                        "  dim x as integer\n"
+                                        "#else\n"
+                                        "  dim y as integer\n"
+                                        "#endif\n"
+                                        "print 1\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(find(r.roots, "x", SymbolKind::Dim) == nullptr);
+    CHECK(find(r.roots, "y", SymbolKind::Dim) == nullptr);
+  }
+  // `#ifdef`/`#ifndef` ask a question the define table always answers — an
+  // unknown name is definably NOT defined, so the else-arm runs (exactly what
+  // fbc does). Undecidable is a `#if <expr>` property: an unknown identifier
+  // inside an expression has no value to fold.
+  {
+    ParseResult const r = parseDocument("#ifdef NO_SUCH_THING\n"
+                                        "  dim x as integer\n"
+                                        "#else\n"
+                                        "  dim y as integer\n"
+                                        "#endif\n");
+    CHECK(find(r.roots, "x", SymbolKind::Dim) == nullptr);
+    CHECK(find(r.roots, "y", SymbolKind::Dim) != nullptr);
+  }
+
+  // A built-in define is decidable: `#ifdef` against a seeded platform flag
+  // picks the arm fbc picks.
+  {
+    ParseResult const r = parseDocument("#ifdef __FB_DEBUG__\n"
+                                        "  dim x as integer\n"
+                                        "#else\n"
+                                        "  dim y as integer\n"
+                                        "#endif\n");
+    const Symbol *d = find(r.roots, "x", SymbolKind::Dim);
+    CHECK_MSG(d != nullptr, "a seeded define decides the branch");
+    CHECK(find(r.roots, "y", SymbolKind::Dim) == nullptr);
+  }
+
+  // The evaluator folds a defined value into `#if`: a decidable comparison
+  // activates the true arm. (This is the regression pin for the nameEnd/value
+  // offset mishap — a define whose value was read from a wrong offset folded
+  // nothing and skipped the whole chain.)
+  {
+    ParseResult const r = parseDocument("#define V 5\n"
+                                        "#if V = 5\n"
+                                        "  dim q as integer\n"
+                                        "#else\n"
+                                        "  dim r as integer\n"
+                                        "#endif\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(find(r.roots, "q", SymbolKind::Dim) != nullptr);
+    CHECK(find(r.roots, "r", SymbolKind::Dim) == nullptr);
+  }
+
+  // A continued directive is one Preprocessor token, so the define's range
+  // spans both physical lines and its value folds across the join.
+  {
+    std::string const src = "#define WIDE 5 _\n  + 1\nprint 1\n";
+    ParseResult const r = parseDocument(src);
+    CHECK(r.diagnostics.empty());
+    const Symbol *d = find(r.roots, "wide", SymbolKind::Define);
+    CHECK(d != nullptr);
+    if (d != nullptr) {
+      CHECK(d->range.end ==
+            static_cast<uint32_t>(src.find("+ 1") + 3)); // end of line two
+    }
+  }
+  {
+    ParseResult const r = parseDocument("#define WIDE 5 _\n"
+                                        "  + 1\n"
+                                        "#if WIDE = 6\n"
+                                        "  dim w as integer\n"
+                                        "#endif\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(find(r.roots, "w", SymbolKind::Dim) != nullptr);
+  }
+
+  // `#undef` closes the define's window: defineEnd lands on the directive.
+  // (`#define A 1\nprint A\n` is 20 bytes; the `#undef` starts there.)
+  {
+    ParseResult const r = parseDocument("#define A 1\nprint A\n#undef A\n");
+    const Symbol *d = find(r.roots, "a", SymbolKind::Define);
+    CHECK(d != nullptr && d->defineEnd == 20);
+  }
+
+  // A redefinition is a replacement: two Define symbols for one key, the
+  // first one's window closed at the second's position, and no
+  // duplicate-definition diagnostic — value equality is not folded, so the
+  // dedupe stays silent (FreeBASIC.md §12).
+  {
+    ParseResult const r = parseDocument("#define A 1\n"
+                                        "#define A 1\n"
+                                        "print A\n");
+    int count = 0;
+    const Symbol *first = nullptr;
+    const Symbol *second = nullptr;
+    for (const Symbol &s : r.roots) {
+      if (s.key == "a" && s.kind == SymbolKind::Define) {
+        if (count == 0) {
+          first = &s;
+        } else {
+          second = &s;
+        }
+        ++count;
+      }
+    }
+    CHECK(count == 2);
+    if (first != nullptr && second != nullptr) {
+      CHECK(first->defineEnd == second->range.beg);
+      CHECK(second->defineEnd == UINT32_MAX);
+    }
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+  }
+
+  // A suffix on a define name is part of its canonical key, like any other
+  // identifier.
+  {
+    ParseResult const r = parseDocument("#define FOO$ \"x\"\n");
+    const Symbol *d = find(r.roots, "foo$", SymbolKind::Define);
+    CHECK(d != nullptr && d->name == "FOO$");
+  }
+}
+
 int main() {
   // A realistic multi-construct program must parse with zero diagnostics.
   {
@@ -657,9 +883,18 @@ int main() {
                       "invalid-end") == 33);
     CHECK(fbcErrorFor(parseDocument("if a then\nend select\n"),
                       "closer-mismatch") == 32);
-    // The preprocessor blocks are ours, not fbc's: its catalog covers neither
-    // #if nor #macro, so no number and no wiki link ride along.
-    CHECK(fbcErrorFor(parseDocument("#endif\n"), "stray-closer") == 0);
+    // The preprocessor closers carry the numbers fbc names for them: a stray
+    // #else/#endif is 44 ILLEGALOUTSIDECOMP, a stray #endmacro is 17
+    // SYNTAXERROR, and an unterminated chain keeps its expected-closer number
+    // (290 EXPECTEDPPENDIF, 134 EXPECTEDMACRO) — all probed against 1.10.2 and
+    // present in tools/fbc_catalog.tsv.
+    CHECK(fbcErrorFor(parseDocument("#endif\n"), "stray-closer") == 44);
+    CHECK(fbcErrorFor(parseDocument("#else\n"), "stray-closer") == 44);
+    CHECK(fbcErrorFor(parseDocument("#endmacro\n"), "stray-closer") == 17);
+    CHECK(fbcErrorFor(parseDocument("#if 1\nprint 1\n"),
+                      "unterminated-block") == 290);
+    CHECK(fbcErrorFor(parseDocument("#macro m\nprint 1\n"),
+                      "unterminated-block") == 134);
   }
 
   // Line structures: single-line IF needs no closer.
@@ -1963,6 +2198,7 @@ int main() {
   TestStep2bParsingFixes();
   TestKeywordSuffixWarning();
   TestAnonymousDeclarationsNameAndSelect();
+  TestPreprocessorSymbolsAndBranches();
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

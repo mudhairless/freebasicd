@@ -34,6 +34,28 @@ bool isWhitespace(char c) {
   return c == ' ' || c == '\t' || c == '\v' || c == '\f';
 }
 
+// Does this physical line carry any code? A comment-only or whitespace-only
+// line does not — a `#define x 5 _` followed by such a line cannot extend the
+// directive (fbc joins the comment into the directive and the logical line
+// ends there), so the join must stop at the underscore's own line. A string
+// literal counts as code, and Basic strings cannot span lines, so the fresh
+// per-line scan needs no escape state.
+bool lineHasCode(std::string_view line) {
+  for (std::size_t i = 0; i < line.size(); ++i) {
+    char const c = line[i];
+    if (c == '\'') {
+      return false; // the rest of the line is a comment
+    }
+    if (c == '"') {
+      return true; // a string literal is code
+    }
+    if (!isWhitespace(c)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool isRadixPrefix(char c) {
   return c == 'h' || c == 'H' || c == 'o' || c == 'O' || c == 'b' || c == 'B';
 }
@@ -67,6 +89,95 @@ bool Lexer::atLineStart() const {
     ++q;
   }
   return q == p_;
+}
+
+// Does the accumulated directive text `[beg, end)` end in a line-continuation
+// `_`? fbc's rule (FreeBASIC.md §6 — "must not follow an identifier/word
+// without a space"): a trailing `_` continues the line unless it is the tail
+// of an identifier. The discriminator is the word's start: a letter or `_`
+// begins an identifier and absorbs later digits/underscores (`foo2_`,
+// `__FB_DEBUG__` are one word, no continuation); a digit begins a number
+// literal, which a `_` never extends — `5_` stops the number and the `_` is a
+// fresh token, so at end of line it continues (probed: `#define X 5_` joins
+// the next line; `#define X ABC_` does not; `#define 5_10` errors "expected
+// identifier, found '_10'"). Comment- and string-aware: a `'` runs to the end
+// of its own physical line only (in a joined directive it must not hide the
+// code that follows), and a `_` inside a string literal is data.
+bool Lexer::directiveEndsWithContinuation(uint32_t beg, uint32_t end) const {
+  uint32_t codeEnd = beg;
+  bool inString = false;
+  bool inWord = false;          // inside an identifier or numeric word
+  bool wordIsNumber = false;    // that word began with a digit
+  bool freshUnderscore = false; // last code char was a non-absorbed `_`
+  for (uint32_t i = beg; i < end; ++i) {
+    char const ch = src_[i];
+    if (inString) {
+      if (ch == '"') {
+        if (i + 1 < end && src_[i + 1] == '"') {
+          ++i; // `""` escape: stay in the string
+        } else {
+          inString = false;
+          // The closing quote is the last code char of the literal.
+          freshUnderscore = false;
+          codeEnd = i + 1;
+        }
+      }
+      continue;
+    }
+    if (ch == '"') {
+      inString = true;
+      inWord = false;
+      wordIsNumber = false;
+      // A string literal is code, and its closing quote (or a dangling open
+      // one) can be the line's last code char.
+      freshUnderscore = false;
+      codeEnd = i + 1;
+    } else if (ch == '\'') {
+      // A comment runs to the end of its physical line only. In an
+      // accumulated multi-line directive (`..._ ' note` + next line) it must
+      // not hide the code that follows it, so skip past the line instead of
+      // ending the scan. On the last line there is no newline and the scan
+      // simply ends.
+      while (i < end && src_[i] != '\n' && src_[i] != '\r') {
+        ++i;
+      }
+      inWord = false;
+      wordIsNumber = false;
+    } else if (isIdentStart(ch) && ch != '_') {
+      // A letter begins (or resumes) an identifier word.
+      inWord = true;
+      wordIsNumber = false;
+      freshUnderscore = false;
+      codeEnd = i + 1;
+    } else if (ch == '_') {
+      // Extends an identifier (`foo_`, `__FB_DEBUG__`); after a number or
+      // anything non-word it begins a fresh token, and a fresh trailing `_`
+      // is the continuation.
+      freshUnderscore = !inWord || wordIsNumber;
+      inWord = true;
+      wordIsNumber = false;
+      codeEnd = i + 1;
+    } else if (isDigit(ch)) {
+      if (!inWord) {
+        inWord = true;
+        wordIsNumber = true;
+      }
+      freshUnderscore = false;
+      codeEnd = i + 1;
+    } else if (ch == '\n' || ch == '\r' || isWhitespace(ch)) {
+      // A line or space break ends the current word; it is not code, so the
+      // continuation status of a preceding `_` survives.
+      inWord = false;
+      wordIsNumber = false;
+    } else {
+      // Any other symbol ends the word and is code.
+      inWord = false;
+      wordIsNumber = false;
+      freshUnderscore = false;
+      codeEnd = i + 1;
+    }
+  }
+  return codeEnd > beg && src_[codeEnd - 1] == '_' && freshUnderscore;
 }
 
 void Lexer::skipHorizontalWs() {
@@ -139,13 +250,52 @@ Token Lexer::lexNext() {
     // Line-leading '#' is a preprocessor directive (swallows the line).
     if (c == '#' && atLineStart()) {
       uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
-      while (p_ < end_ && *p_ != '\n' && *p_ != '\r') {
-        ++p_;
+      uint32_t tokEnd = beg;
+      for (;;) {
+        while (p_ < end_ && *p_ != '\n' && *p_ != '\r') {
+          ++p_;
+        }
+        tokEnd = static_cast<uint32_t>(p_ - src_.data());
+        // A directive line whose code tail is a `_` continues onto the next
+        // line: fbc reads the whole continuation as one directive, so a
+        // multi-line `#define max(a,b) _` body arrives as one Preprocessor
+        // token and the preprocessor sees one value. Comment- and
+        // string-aware — `_ ' note` still continues, a `_` inside a string or
+        // comment does not, and an identifier tail (`#define X abc_`) never
+        // does — see directiveEndsWithContinuation.
+        if (!directiveEndsWithContinuation(beg, tokEnd)) {
+          break;
+        }
+        bool consumed = false;
+        if (p_ < end_ && *p_ == '\r') {
+          ++p_;
+          consumed = true;
+        }
+        if (p_ < end_ && *p_ == '\n') {
+          ++p_;
+          consumed = true;
+        }
+        // A dangling `_` with no newline after it (the source ends right
+        // there) has nothing to join with: stop instead of looping forever.
+        if (!consumed) {
+          break;
+        }
+        // A continuation joins the next physical line only if that line
+        // carries code; a comment-only or blank line ends the directive, so
+        // the token stops at the underscore's own line.
+        uint32_t const nextBeg = static_cast<uint32_t>(p_ - src_.data());
+        while (p_ < end_ && *p_ != '\n' && *p_ != '\r') {
+          ++p_;
+        }
+        if (!lineHasCode(std::string_view(src_.data() + nextBeg,
+                                          p_ - src_.data() - nextBeg))) {
+          break;
+        }
       }
       Token t;
       t.kind = TokenKind::Preprocessor;
       t.beg = beg;
-      t.end = static_cast<uint32_t>(p_ - src_.data());
+      t.end = tokEnd;
       t.data = src_.data() + beg;
       return t;
     }

@@ -193,6 +193,10 @@ Classification classify(Token const &t, AnalyzedDoc const &doc) {
       }
       return {true, kVariable, mods};
     }
+    case SymbolKind::Define:
+      // The name a `#define`/`#macro` backs reads as a macro token — the
+      // same type the directive line itself already carries.
+      return {true, kMacro, mods};
     default:
       return {true, kVariable, mods}; // Dim, Label, Variable, Scope
     }

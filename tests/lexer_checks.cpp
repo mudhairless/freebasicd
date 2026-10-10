@@ -277,6 +277,46 @@ int main() {
     CHECK(sawPreproc);
   }
 
+  // The reverse join: a `#` directive whose code tail is `_` continues onto
+  // the next line, so ONE Preprocessor token spans both lines and the parser
+  // folds a single value out of them (fbc reads a continued define as one
+  // directive).
+  {
+    auto ts = tokensOf("#define mx(a, b) _\n  ((a) + (b))\nprint 1\n");
+    CHECK(ts.size() == 6); // Preprocessor, Newline, print, 1, Newline, Eof
+    CHECK(ts[0].kind == TokenKind::Preprocessor);
+    CHECK(std::string(ts[0].text()).find("((a) + (b))") !=
+          std::string::npos); // the continuation line is inside the token
+    CHECK(ts[1].kind == TokenKind::Newline); // no newline splits the join
+  }
+
+  // A trailing comment may sit between the directive's `_` and the newline,
+  // exactly as for a code-line continuation.
+  {
+    auto ts = tokensOf("#define x 5 _ ' note\n+ 2\nprint 2\n");
+    CHECK(ts[0].kind == TokenKind::Preprocessor);
+    CHECK(std::string(ts[0].text()).find("+ 2") != std::string::npos);
+    CHECK(ts[1].kind == TokenKind::Newline);
+  }
+
+  // A `_` inside a string literal is data, not a continuation: the directive
+  // ends at the line's quote.
+  {
+    auto ts = tokensOf("#print \"a_\"\nprint 1\n");
+    CHECK(ts[0].kind == TokenKind::Preprocessor);
+    CHECK(std::string(ts[0].text()) == "#print \"a_\"");
+    CHECK(ts[1].kind == TokenKind::Newline);
+    CHECK(std::string(ts[2].text()) == "print");
+  }
+
+  // A `_` inside a trailing comment is data too.
+  {
+    auto ts = tokensOf("#define x 5 ' trailing_\nprint 2\n");
+    CHECK(ts[0].kind == TokenKind::Preprocessor);
+    CHECK(std::string(ts[0].text()) == "#define x 5 ' trailing_");
+    CHECK(ts[1].kind == TokenKind::Newline);
+  }
+
   // Operators and punctuation.
   checkKinds("x = 1 + 2",
              {TokenKind::Identifier, TokenKind::Symbol, TokenKind::Number,

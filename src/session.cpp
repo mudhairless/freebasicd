@@ -321,6 +321,10 @@ lsSymbolKind toLspSymbolKind(fblang::SymbolKind kind) {
     return lsSymbolKind::Namespace;
   case fblang::SymbolKind::Label:
     return lsSymbolKind::Unknown;
+  case fblang::SymbolKind::Define:
+    // A preprocessor `#define`/`#macro` is macro-like data; Constant is the
+    // closest LSP kind and paints it distinctly from variables.
+    return lsSymbolKind::Constant;
   }
   return lsSymbolKind::Unknown;
 }
@@ -647,6 +651,8 @@ lsCompletionItemKind completionKindFor(fblang::SymbolKind kind) {
   case fblang::SymbolKind::Scope:
   case fblang::SymbolKind::Label:
     return lsCompletionItemKind::Text;
+  case fblang::SymbolKind::Define:
+    return lsCompletionItemKind::Constant;
   }
   return lsCompletionItemKind::Text;
 }
@@ -771,6 +777,10 @@ std::string symbolKindLine(fblang::Symbol const *decl,
     return std::string(procKindName(decl->kind)) + ".";
   case fblang::SymbolKind::Scope:
     return "Declaration scope.";
+  case fblang::SymbolKind::Define:
+    // The line itself is the definition; this string sits under it. A macro
+    // is called out so the two `#` forms read distinctly.
+    return decl->isMacro ? "Preprocessor macro." : "Preprocessor define.";
   }
   return "Declaration.";
 }

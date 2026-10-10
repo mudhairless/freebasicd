@@ -26,6 +26,59 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-09 — Preprocessor defines/macros: hover, completion, branch-aware parsing
+
+- **`#define` and `#macro` are first-class symbols.** Both publish a
+  `SymbolKind::Define` (LSP kind `Constant`) whose byte window runs
+  `[name.beg, defineEnd)` — the definition's name token to where `#undef` or a
+  same-name redefinition closed it — so hover on a usage shows the definition
+  line, hover on a macro shows the opener only (`#macro name(params)`, never
+  the body), completion offers both, and a use after `#undef` resolves to
+  nothing (top-to-bottom, as fbc's "Variable not declared").
+- **Conditional compilation is branch-aware.** The evaluator seeds fbc 1.10.2's
+  built-in `__FB_*` set — value *and* definedness, so `__FB_DEBUG__` exists
+  with value 0 on a plain `fbc file.bas` run — and parses only reachable
+  arms: a dead `#if 0` arm or a never-substituted `#macro` body contributes
+  no symbols and no diagnostics. An unknown identifier in `#if <expr>` is
+  *undecidable* and skips the whole chain (the user rule over fbc, which
+  folds unknowns to 0 and runs the else-arm — FreeBASIC.md §12.22);
+  `#ifdef`/`#ifndef` always decide (an unknown name is decidably undefined).
+- **The `_` continuation was misreading identifier tails.** A directive line
+  ending in an identifier-tail `_` (`#ifdef __FB_DEBUG__`, `#define X ABC_`)
+  was read as a continuation, one Preprocessor token swallowed the rest of the
+  file, and `#ifdef` of a builtin skipped every arm. The rule is now the word
+  model the probes pin (FreeBASIC.md §6): a letter or `_` starts an identifier
+  word that absorbs later digits/underscores, a number never absorbs a `_`
+  (`5_`/`5 _` continue), and `5_10` is a number plus an identifier.
+  `firstLineSignature`/`normalizedValue` (`src/preproc.cpp`) use the same
+  discriminator when stripping a trailing marker, so `#define MAX_` keeps its
+  underscore and `#define X 5_` drops it. A continuation meets a comment-only
+  or blank line ends the directive (fbc-probed: the comment absorbs and the
+  logical line ends), and a `_` with nothing to join (EOF, unterminated
+  string) stops instead of looping.
+- **Preprocessor block closers carry fbc's numbers** — `290
+  EXPECTEDPPENDIF`, `134 EXPECTEDMACRO`, and `44 ILLEGALOUTSIDECOMP` /
+  `17 SYNTAXERROR` for a stray `#else`-family / `#endmacro` — superseding the
+  "preprocessor blocks are deliberately unmapped" note in the closers entry
+  below: reading the catalog again found the two process-messages after all.
+- **The window rules are as probed.** `#undef` closes a window only in
+  reachable code (one in a skipped arm removes nothing, matching fbc); a
+  redefinition replaces the symbol with a fresh window, silently — fbc's
+  `error 4` on a value-changing redefinition and `error 14` on a non-
+  identifier name stay silent here, both recorded (FreeBASIC.md §12.23/24)
+  and pinned as unit tests rather than corpus fails, because a corpus fail
+  file must emit a diagnostic.
+- Tests and corpus: `tests/session_preproc_checks.cpp` (hover on a define
+  usage, hover on a macro opener, completion offering both), `resolve_checks`'
+  `TestPreprocessorDefineWindows` (use-before-define, `#undef`, redefinition,
+  completion visibility), and seven corpus files agreeing with fbc on the
+  seven shapes (`preproc_if_skip`, `preproc_if_dead`, `preproc_undef`,
+  `preproc_define_cont`, `preproc_define_redef`, `preproc_macro_dead`,
+  `err_stray_else`). A locate bug on the way: the name inside `#define AMT 19`
+  is part of the directive's single Preprocessor token, not a resolvable
+  identifier, so the resolve test asserts the window through the *usage* and
+  the occurrence sweep instead of the name token.
+
 ### 2026-10-09 — Parser false positives cleared; keyword-suffix quick fix
 
 - **The parser no longer rejects FreeBASIC fbc accepts.** Re-running the §5

@@ -1910,6 +1910,92 @@ static void TestAnonymousBlocksPublishIntoOwner() {
             "`y.` completes the anonymous enum only");
 }
 
+static void TestPreprocessorDefineWindows() {
+  // A use before the definition resolves to nothing (the preprocessor works
+  // top-to-bottom; fbc 1.10.2 says "Variable not declared").
+  {
+    std::string const src = "print AMT\n#define AMT 19\n";
+    AnalyzedDoc const doc = analyze(src);
+    std::size_t const use = src.find("AMT");
+    CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(use)) == nullptr,
+              "a use before its #define must not resolve");
+  }
+
+  // A use after the definition resolves to the Define — at module level and
+  // from inside a procedure that follows it.
+  {
+    std::string const src = "#define AMT 19\nprint AMT\n";
+    AnalyzedDoc const doc = analyze(src);
+    std::size_t const use = src.find("print AMT") + 6;
+    Symbol const *u = resolveAt(doc, static_cast<std::uint32_t>(use));
+    CHECK(u != nullptr && u->kind == SymbolKind::Define && u->name == "AMT");
+    // The name inside the `#define` line is part of the directive's single
+    // Preprocessor token, so it is not itself a resolvable identifier; the
+    // guarantee is that the *usage* resolves to the define, and the module
+    // level occurrence sweep agrees with the on-demand lookup.
+    bool sawUse = false;
+    for (auto const &o : occurrencesOf(doc, *u)) {
+      sawUse = sawUse || o.range.beg == use;
+    }
+    CHECK_MSG(sawUse, "the module-level usage is an occurrence of the Define");
+  }
+  {
+    std::string const src = "#define AMT 19\nsub f()\n  print AMT\nend sub\n";
+    AnalyzedDoc const doc = analyze(src);
+    std::size_t const use = src.find("print AMT") + 6;
+    Symbol const *u = resolveAt(doc, static_cast<std::uint32_t>(use));
+    CHECK(u != nullptr && u->kind == SymbolKind::Define && u->name == "AMT");
+  }
+
+  // `#undef` closes the window: a use after it resolves to nothing while the
+  // ones before it still hit the define.
+  {
+    std::string const src = "#define AMT 1\nprint AMT\n#undef AMT\nprint AMT\n";
+    AnalyzedDoc const doc = analyze(src);
+    std::size_t const first = src.find("print AMT") + 6;
+    std::size_t const second = src.rfind("print AMT") + 6;
+    CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(first)) != nullptr,
+              "a use before #undef resolves");
+    CHECK_MSG(resolveAt(doc, static_cast<std::uint32_t>(second)) == nullptr,
+              "a use after #undef must not resolve");
+  }
+
+  // A redefinition replaces: the earlier symbol stops serving uses at the new
+  // definition, and later uses resolve to the new one.
+  {
+    std::string const src =
+        "#define AMT 1\nprint AMT\n#define AMT 1\nprint AMT\n";
+    AnalyzedDoc const doc = analyze(src);
+    std::size_t const first = src.find("print AMT") + 6;
+    std::size_t const second = src.rfind("print AMT") + 6;
+    Symbol const *a = resolveAt(doc, static_cast<std::uint32_t>(first));
+    Symbol const *b = resolveAt(doc, static_cast<std::uint32_t>(second));
+    CHECK(a != nullptr && a->kind == SymbolKind::Define);
+    CHECK(b != nullptr && b->kind == SymbolKind::Define);
+    CHECK_MSG(a != b, "uses after the redefinition resolve to the new Define");
+  }
+
+  // visibleSymbols (completion's in-file source) obeys the same window.
+  {
+    std::string const src = "print AMT\n#define AMT 19\nprint AMT\n";
+    AnalyzedDoc const doc = analyze(src);
+    auto before =
+        visibleSymbols(doc, static_cast<std::uint32_t>(src.find("print AMT")));
+    auto after =
+        visibleSymbols(doc, static_cast<std::uint32_t>(src.rfind("print AMT")));
+    auto sawDefine = [&](auto const &v) {
+      for (Symbol const *s : v) {
+        if (s->kind == SymbolKind::Define && s->key == "amt") {
+          return true;
+        }
+      }
+      return false;
+    };
+    CHECK_MSG(!sawDefine(before), "the define is not offered before it exists");
+    CHECK_MSG(sawDefine(after), "the define is offered after it is defined");
+  }
+}
+
 int main() {
   TestScopingResolvesCorrectly();
   TestUnknownAndNonIdentifiersResolveNull();
@@ -1936,6 +2022,7 @@ int main() {
   TestTypeOfResolvesTheTypeOfAUsage();
   TestDeclaredTypeNameScansPastPunctuation();
   TestOccurrencesAcrossCrossFile();
+  TestPreprocessorDefineWindows();
   std::printf("resolve_checks: %s\n", failures == 0 ? "PASS" : "FAIL");
   return failures == 0 ? 0 : 1;
 }

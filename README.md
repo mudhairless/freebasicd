@@ -42,15 +42,15 @@ Implemented and advertised in the `initialize` reply:
 
 | Feature | Notes |
 |---|---|
-| Diagnostics | Parse errors (block-structure ones carry fbc's own error numbers), unresolved `#include`; pushed by default, or pulled on request (see below) |
-| Hover | Types and signatures; resolves member access through the base variable's declared type, including cross-file and `with`-implicit chains |
+| Diagnostics | Parse errors (block-structure and preprocessor ones carry fbc's own error numbers), unresolved `#include`; pushed by default, or pulled on request (see below) |
+| Hover | Types and signatures; resolves member access through the base variable's declared type, including cross-file and `with`-implicit chains; `#define`/`#macro` definitions on their usages |
 | Go to definition | Same-file and cross-file, gated on FreeBASIC's `Shared` visibility rules |
 | Find references | Workspace-wide, following includes |
 | Document highlight | Read/write occurrences of the symbol under the cursor |
 | Rename | `prepareRename` plus a workspace `rename` that respects scope |
-| Completion | Keywords, intrinsics, locals, and context-aware UDT and enum members after `.` or `->` |
+| Completion | Keywords, intrinsics, locals, preprocessor defines/macros, and context-aware UDT and enum members after `.` or `->` |
 | Signature help | For calls and subs, with parameter labels |
-| Document symbols | Symbols, subs, functions, types, enums, and macros per file |
+| Document symbols | Symbols, subs, functions, types, enums, defines, and macros per file |
 | Folding ranges | Blocks and multi-line constructs |
 | Semantic tokens | Full, delta, and range requests; drives client-side highlighting |
 | Inlay hints | Inferred types and block closers |

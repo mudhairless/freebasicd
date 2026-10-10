@@ -1794,9 +1794,11 @@ int fbcExpectedCloserError(BlockKind kind) {
     return 29; // EXPECTEDLOOP
   case BlockKind::Asm:
     return 45; // EXPECTEDENDASM
+  case BlockKind::PreprocIf:
+    return 290; // EXPECTEDPPENDIF, "Expected '#ENDIF'" (fbc 1.10.2, probed)
+  case BlockKind::PreprocMacro:
+    return 134; // EXPECTEDMACRO, "Expected 'ENDMACRO'"
   default:
-    // #if/#macro: fbc's catalog has no number for a preprocessor block, so
-    // these stay our own codes and the client sees no wiki link.
     return 0;
   }
 }
