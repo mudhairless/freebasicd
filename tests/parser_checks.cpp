@@ -584,6 +584,191 @@ static void TestPreprocessorSymbolsAndBranches() {
   }
 }
 
+// M21 step 1: module constructors and destructors. `Sub name() Constructor
+// [priority]` is a procedure body that runs before its module's own code
+// (FreeBASIC.md §9). These cases pin fbc 1.10.2's own numbers for the malformed
+// forms — the argument count (1), the declaration-line decorator (3), the
+// priority range (189), and the non-static member sub (17) — plus the shapes
+// fbc accepts.
+static void TestModuleConstructors() {
+  // The accepted shapes. `Sub Init() Constructor` is an ordinary Sub carrying
+  // the run-before-main timing; the marker and the optional priority are
+  // consumed, not left to capture as members.
+  {
+    ParseResult r = parseDocument("sub Init() constructor\nend sub\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *s = find(r.roots, "init", SymbolKind::Sub);
+    CHECK(s != nullptr && s->isModuleConstructor);
+    CHECK(s != nullptr && !s->isModuleDestructor);
+    CHECK(s != nullptr && s->constructorPriority == 0);
+  }
+  // No parens, and the optional priority: 101 and 65535 are the range ends.
+  {
+    ParseResult r = parseDocument("sub Init constructor 101\nend sub\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *s = find(r.roots, "init", SymbolKind::Sub);
+    CHECK(s != nullptr && s->constructorPriority == 101);
+  }
+  {
+    ParseResult r = parseDocument("sub Init() constructor 65535\nend sub\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *s = find(r.roots, "init", SymbolKind::Sub);
+    CHECK(s != nullptr && s->constructorPriority == 65535);
+  }
+  // An integer literal is an integer whatever its spelling: hex `&h65` is 101,
+  // and an integer suffix is accepted (both probed against fbc 1.10.2).
+  {
+    ParseResult r = parseDocument("sub Init() constructor &h65\nend sub\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *s = find(r.roots, "init", SymbolKind::Sub);
+    CHECK(s != nullptr && s->constructorPriority == 101);
+  }
+  {
+    ParseResult r = parseDocument("sub Init() constructor 101%\nend sub\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *s = find(r.roots, "init", SymbolKind::Sub);
+    CHECK(s != nullptr && s->constructorPriority == 101);
+  }
+  // The destructor form; the body still closes with `end sub`.
+  {
+    ParseResult r = parseDocument("sub d() destructor\nend sub\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *s = find(r.roots, "d", SymbolKind::Sub);
+    CHECK(s != nullptr && s->isModuleDestructor);
+    CHECK(s != nullptr && !s->isModuleConstructor);
+  }
+  // `Static` and a trailing comment are the two tails fbc accepts; a `:` is the
+  // ordinary statement separator (all probed).
+  for (char const *src : {"sub f() constructor static\nend sub\n",
+                          "sub f() constructor ' note\nend sub\n",
+                          "sub f() constructor : print 1 : end sub\n"}) {
+    ParseResult r = parseDocument(src);
+    if (!r.diagnostics.empty()) {
+      std::printf("FAIL ctor tail \"%s\": %zu diagnostic(s), first %s\n", src,
+                  r.diagnostics.size(), r.diagnostics.front().code.c_str());
+      ++failures;
+    }
+  }
+
+  // A parameter list: fbc's `error 1: Argument count mismatch`, reported and
+  // not followed by a second complaint about the (now absent) priority.
+  {
+    ParseResult r =
+        parseDocument("sub Bad(x as integer) constructor\nend sub\n");
+    CHECK(fbcErrorFor(r, "module-ctor-params") == 1);
+    CHECK(diagnosticCount(r, "module-ctor-params") == 1);
+    CHECK(diagnosticCount(r, "module-ctor-priority") == 0);
+    CHECK(diagnosticCount(r, "module-ctor-tail") == 0);
+    // The same argument-count rule for a destructor.
+    ParseResult d = parseDocument("sub d(x as integer) destructor\nend sub\n");
+    CHECK(fbcErrorFor(d, "module-ctor-params") == 1);
+  }
+  // Priority outside 101..65535, and a non-integer literal, are both
+  // `error 189: Invalid priority attribute` (probed).
+  for (char const *src : {"sub f() constructor 100\nend sub\n",
+                          "sub f() constructor 65536\nend sub\n",
+                          "sub f() constructor 101.0\nend sub\n",
+                          "sub f() constructor 101!\nend sub\n"}) {
+    ParseResult r = parseDocument(src);
+    if (fbcErrorFor(r, "module-ctor-priority") != 189) {
+      std::printf("FAIL ctor priority \"%s\": fbc %d, want 189\n", src,
+                  fbcErrorFor(r, "module-ctor-priority"));
+      ++failures;
+    }
+  }
+  // A tail fbc cannot parse is `error 3: Expected End-of-Line` — a word, a
+  // sign, or a second number after the priority.
+  for (char const *src : {"sub Init() constructor abc\nend sub\n",
+                          "sub Init() constructor -5\nend sub\n",
+                          "sub Init() constructor 101 102\nend sub\n"}) {
+    ParseResult r = parseDocument(src);
+    if (fbcErrorFor(r, "module-ctor-tail") != 3) {
+      std::printf("FAIL ctor tail \"%s\": fbc %d, want 3\n", src,
+                  fbcErrorFor(r, "module-ctor-tail"));
+      ++failures;
+    }
+  }
+  // `Export` after the marker is `error 17` (fbc's global-ctor check), not 3.
+  {
+    ParseResult r = parseDocument("sub f() constructor export\nend sub\n");
+    CHECK(fbcErrorFor(r, "module-ctor-export") == 17);
+  }
+
+  // `Constructor`/`Destructor`/`Export` on a `Declare` line is `error 3` in
+  // both the plain (probed `ctordecl.bas`) and UDT-member (`udtctor.bas`)
+  // spellings; a legal `Declare` line stays silent, including the
+  // `declare constructor()` prototype the parser does not model.
+  {
+    ParseResult r = parseDocument("declare sub Init() constructor\n");
+    CHECK(fbcErrorFor(r, "decl-decorator") == 3);
+  }
+  {
+    ParseResult r = parseDocument("declare sub Init() destructor\n");
+    CHECK(fbcErrorFor(r, "decl-decorator") == 3);
+  }
+  {
+    ParseResult r = parseDocument("declare sub f() export\n");
+    CHECK(fbcErrorFor(r, "decl-decorator") == 3);
+  }
+  {
+    ParseResult r = parseDocument("type t\n"
+                                  "  x as integer\n"
+                                  "  declare constructor()\n"
+                                  "  declare function f() as integer\n"
+                                  "end type\n");
+    CHECK(r.diagnostics.empty());
+  }
+
+  // A `Static` UDT member procedure may be a module constructor (probed
+  // `udtctor3.bas` compiles); a non-static one is fbc's `error 17`. The check
+  // only answers when the owner type and its prototype are both in this file.
+  {
+    ParseResult r = parseDocument("type t\n"
+                                  "  x as integer\n"
+                                  "  declare static sub Init()\n"
+                                  "end type\n"
+                                  "sub t.Init() constructor\n"
+                                  "end sub\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *impl = find(r.roots, "init", SymbolKind::Sub);
+    CHECK(impl != nullptr && impl->ownerKey == "t");
+    CHECK(impl != nullptr && impl->isModuleConstructor);
+  }
+  {
+    ParseResult r = parseDocument("type t\n"
+                                  "  x as integer\n"
+                                  "  declare sub Init()\n"
+                                  "end type\n"
+                                  "sub t.Init() constructor\n"
+                                  "end sub\n");
+    CHECK(fbcErrorFor(r, "module-ctor-nonstatic") == 17);
+  }
+  {
+    ParseResult r = parseDocument("type t\n"
+                                  "  x as integer\n"
+                                  "  declare sub Init()\n"
+                                  "end type\n"
+                                  "sub t.Init() destructor\n"
+                                  "end sub\n");
+    CHECK(fbcErrorFor(r, "module-ctor-nonstatic") == 17);
+  }
+  // The owner type or its prototype in another file: the check stays silent
+  // rather than guessing (a header cannot be seen from here).
+  {
+    ParseResult r = parseDocument("sub t.Init() constructor\nend sub\n");
+    CHECK(diagnosticCount(r, "module-ctor-nonstatic") == 0);
+  }
+
+  // A `Function` tail is left unconsumed on purpose (FreeBASIC.md §12): fbc's
+  // error for `Function f() Constructor` is ambiguous between 17 and 147, so
+  // this parser reports nothing rather than picking one.
+  {
+    ParseResult r = parseDocument("function f() constructor\nend function\n");
+    CHECK(diagnosticCount(r, "module-ctor-tail") == 0);
+    CHECK(diagnosticCount(r, "module-ctor-params") == 0);
+  }
+}
+
 int main() {
   // A realistic multi-construct program must parse with zero diagnostics.
   {
@@ -2233,6 +2418,7 @@ int main() {
   TestKeywordSuffixWarning();
   TestAnonymousDeclarationsNameAndSelect();
   TestPreprocessorSymbolsAndBranches();
+  TestModuleConstructors();
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

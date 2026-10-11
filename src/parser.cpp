@@ -1341,6 +1341,156 @@ private:
     return c;
   }
 
+  // The value of an integer numeric literal written as a constructor priority,
+  // or -1 when the token is not an integer literal at all (`101.0`, `101!`,
+  // `1e2`). fbc reads the token's *type*: a non-integer literal and an
+  // out-of-range integer are both `error 189: Invalid priority attribute`
+  // (probed), so the caller treats the two the same. The base prefixes
+  // `&h`/`&o`/`&b` and the integer suffixes `%`/`&` are accepted, because fbc's
+  // lexer types `&h65` and `101%` as integers (probed: both compile).
+  static long long priorityLiteralValue(std::string_view text) {
+    std::string_view t = text;
+    int base = 10;
+    if (t.size() >= 2 && t[0] == '&') {
+      char const c = t[1];
+      if (c == 'h' || c == 'H') {
+        base = 16;
+      } else if (c == 'o' || c == 'O') {
+        base = 8;
+      } else if (c == 'b' || c == 'B') {
+        base = 2;
+      } else {
+        return -1;
+      }
+      t.remove_prefix(2);
+    }
+    while (!t.empty() && (t.back() == '%' || t.back() == '&')) {
+      t.remove_suffix(1);
+    }
+    if (t.empty()) {
+      return -1;
+    }
+    long long value = 0;
+    for (char const c : t) {
+      int d;
+      if (c >= '0' && c <= '9') {
+        d = c - '0';
+      } else if (base == 16 && c >= 'a' && c <= 'f') {
+        d = c - 'a' + 10;
+      } else if (base == 16 && c >= 'A' && c <= 'F') {
+        d = c - 'A' + 10;
+      } else {
+        return -1; // a `.`, an exponent, or a float suffix: not an integer
+      }
+      if (d >= base) {
+        return -1;
+      }
+      value = value * base + d;
+      if (value > 0x7fffffffLL) {
+        return value; // saturates above the 65535 ceiling; still reported
+      }
+    }
+    return value;
+  }
+
+  // Is `member` a `Static` member procedure of `owner` (a type or union), as
+  // declared in *this* file? Only a static member may be a module constructor
+  // (FreeBASIC.md §9); a non-static one is fbc's `error 17`. The answer is
+  // deliberately `true` (silent) when the owner type or the member prototype is
+  // not in this file: a header the parser cannot see would otherwise make every
+  // `Sub T.Init() Constructor` a false report. A type that is present but has
+  // no matching prototype is the same silence — fbc's complaint there is about
+  // the missing prototype (error 3), not the member's staticness.
+  bool memberIsStatic(const std::string &ownerKey,
+                      const std::string &memberKey) const {
+    for (Symbol const &root : out_.roots) {
+      if ((root.kind != SymbolKind::Type && root.kind != SymbolKind::Union) ||
+          root.key != ownerKey) {
+        continue;
+      }
+      for (Symbol const &child : root.children) {
+        if (child.kind == SymbolKind::Sub && child.key == memberKey) {
+          return child.isStatic;
+        }
+      }
+      return true;
+    }
+    return true;
+  }
+
+  // `Sub name() Constructor [priority]` / `... Destructor [priority]`
+  // (FreeBASIC.md §9): the explicit "run before `main`" form. Consume the
+  // marker and its optional priority, and report fbc's own numbers for the
+  // malformed forms — a parameter list (`error 1`), a priority outside
+  // 101..65535 or a non-integer one (`error 189`), a tail fbc cannot accept
+  // (`error 3`), an `Export` on the marked body (`error 17`), and a
+  // non-`Static` UDT member sub (`error 17`). Only a `Sub` takes the form; a
+  // `Function` tail is deliberately left unconsumed, because fbc's error for it
+  // is ambiguous between 17 and 147 (FreeBASIC.md §12) and a wrong guess is
+  // worse than a miss.
+  void takeModuleConstructorSuffix(Symbol &s, bool hasParams) {
+    if (s.kind != SymbolKind::Sub || cur_.kind != TokenKind::Keyword) {
+      return;
+    }
+    std::string const marker = toLowerChars(cur_.text());
+    if (marker != "constructor" && marker != "destructor") {
+      return;
+    }
+    if (marker == "constructor") {
+      s.isModuleConstructor = true;
+    } else {
+      s.isModuleDestructor = true;
+    }
+    Token const markerTok = cur_;
+    advance();
+    if (hasParams) {
+      // fbc reports the argument-count mismatch and looks no further.
+      addDiagnostic(markerTok.beg, markerTok.end, Severity::Error,
+                    "module-ctor-params",
+                    trf("a module %s cannot take parameters", marker), 1);
+      return;
+    }
+    if (cur_.kind == TokenKind::Number) {
+      long long const value = priorityLiteralValue(cur_.text());
+      if (value < 101 || value > 65535) {
+        addDiagnostic(
+            cur_.beg, cur_.end, Severity::Error, "module-ctor-priority",
+            tr("invalid priority attribute; expected 101 to 65535"), 189);
+      } else {
+        s.constructorPriority = static_cast<int>(value);
+      }
+      advance();
+    }
+    // fbc's own tail order (`parser-proc.bas`): `STATIC? EXPORT?`, then end of
+    // line. A `Static` after the marker is the static-locals attribute and is
+    // accepted; `Export` on a marked body is `error 17` (`FB_SYMBSTATS_
+    // GLOBALCTOR`); anything else is `error 3`.
+    if (cur_.kind == TokenKind::Keyword &&
+        toLowerChars(cur_.text()) == "static") {
+      advance();
+    }
+    if (cur_.kind == TokenKind::Keyword &&
+        toLowerChars(cur_.text()) == "export") {
+      addDiagnostic(cur_.beg, cur_.end, Severity::Error, "module-ctor-export",
+                    trf("a module %s cannot be exported", marker), 17);
+      return;
+    }
+    if (!endsStatement(cur_)) {
+      addDiagnostic(cur_.beg, cur_.end, Severity::Error, "module-ctor-tail",
+                    trf("Expected end of line after a module %s", marker), 3);
+      return;
+    }
+    // A UDT member sub may be one only when it is `Static`; a module-level
+    // procedure has no owner and needs no check.
+    if (!s.ownerKey.empty() && !memberIsStatic(s.ownerKey, s.key)) {
+      addDiagnostic(
+          markerTok.beg, markerTok.end, Severity::Error,
+          "module-ctor-nonstatic",
+          trf("a non-static member procedure cannot be a module %s", marker),
+          17);
+    }
+  }
+
   void handleDeclBlock(const std::string &openWord, SymbolKind k) {
     Token const openTok = cur_;
     // Arm the enclosing record before the push: a member procedure body or a
@@ -1404,7 +1554,15 @@ private:
     s.doc = takeDoc();
 
     if (cur_.kind == TokenKind::Symbol && cur_.text() == "(") {
+      bool hasParams = true;
+      Token const after = lex_.peek(0);
+      if (after.kind == TokenKind::Symbol && after.text() == ")") {
+        hasParams = false;
+      }
       populateParams(s);
+      takeModuleConstructorSuffix(s, hasParams);
+    } else {
+      takeModuleConstructorSuffix(s, false);
     }
 
     Symbol *psym = addSymbol(std::move(s));
@@ -1674,13 +1832,25 @@ private:
     // tools/probe_member_names.sh.
     armRecordBody();
     advance(); // past DECLARE
-    // `declare virtual sub ...` / `declare const sub ...`: the modifier sits
-    // between `declare` and the procedure keyword and belongs to the
-    // procedure, so step over it and keep modelling the member.
-    while (cur_.kind == TokenKind::Keyword &&
-           (toLowerChars(cur_.text()) == "virtual" ||
-            toLowerChars(cur_.text()) == "const")) {
-      advance();
+    // `declare virtual sub ...` / `declare const sub ...` / `declare static
+    // sub ...`: the modifier sits between `declare` and the procedure keyword
+    // and belongs to the procedure, so step over it and keep modelling the
+    // member. `Static` is recorded: only a static UDT member procedure may be a
+    // module constructor at its definition (FreeBASIC.md §9), and the parser
+    // needs the flag to answer that when it reaches `Sub T.Init() Constructor`.
+    bool isStatic = false;
+    while (cur_.kind == TokenKind::Keyword) {
+      std::string const mod = toLowerChars(cur_.text());
+      if (mod == "virtual" || mod == "const") {
+        advance();
+        continue;
+      }
+      if (mod == "static") {
+        isStatic = true;
+        advance();
+        continue;
+      }
+      break;
     }
     if (cur_.kind != TokenKind::Keyword) {
       resetDoc();
@@ -1705,6 +1875,7 @@ private:
     } else {
       s.kind = SymbolKind::Property;
     }
+    s.isStatic = isStatic;
     advance();
     if (cur_.kind == TokenKind::Identifier || cur_.kind == TokenKind::Keyword) {
       s.name = std::string(cur_.text());
@@ -1719,6 +1890,19 @@ private:
     s.doc = takeDoc();
     if (cur_.kind == TokenKind::Symbol && cur_.text() == "(") {
       populateParams(s);
+    }
+    // `Constructor`/`Destructor`/`Export` mark a procedure *body*, never a
+    // declaration: `Declare Sub Init() Constructor` is fbc's `error 3:
+    // Expected End-of-Line` (FreeBASIC.md §9). The return type and the
+    // `lib`/`alias` clauses are legal here, so only these three words are
+    // refused.
+    if (cur_.kind == TokenKind::Keyword) {
+      std::string const tail = toLowerChars(cur_.text());
+      if (tail == "constructor" || tail == "destructor" || tail == "export") {
+        addDiagnostic(cur_.beg, cur_.end, Severity::Error, "decl-decorator",
+                      trf("'%s' is not allowed on a declaration line", tail),
+                      3);
+      }
     }
     addSymbol(std::move(s));
     // After the signature the line holds only the return type and the

@@ -446,6 +446,7 @@ diagnostics it implies fbc's numbers instead of ours. Gating milestone for M18.
    (`error 1`), appearing on a `Declare` line (`error 3`), and `priority`
    outside 101–65535 (`error 189`). A `Static` UDT member procedure may be a
    module constructor and a non-`Static` one may not (`error 17`).
+   **Landed (2026-10-11).**
 2. **A constructor is a procedure body**, so §8 applies inside one: a plain
    module-level `Dim` is invisible there and reading it is `error 42`. The fix
    is adding `Shared`, and we can offer it because both halves are known — this

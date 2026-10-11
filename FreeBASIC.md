@@ -1222,6 +1222,31 @@ to "the language is what the lexer does":
     a problem this server diagnoses as an error already renders as one, so
     `warningLevel = "error"` is an unknown string → `none`.
 
+28. **Module-constructor parsing reports fbc's numbers, but three shapes stay
+    silent.** `Sub name() Constructor [priority]` / `Destructor` is now parsed
+    (§9) and each malformed form carries fbc's own code: a parameter list is
+    `error 1`, `Constructor`/`Destructor`/`Export` on a `Declare` line is
+    `error 3`, a priority outside 101–65535 or a non-integer one is `error
+    189`, `Export` after the marker is `error 17`, and a non-`Static` UDT
+    member sub is `error 17`. Three shapes fbc rejects are left undiagnosed,
+    each a miss rather than a false report:
+    - **`Function f() Constructor`** (and the `... as Integer Constructor`
+      spelling): fbc's number is not one rule — `Function f() Constructor` is
+      `error 147` and `Function f() as Integer Constructor` is `error 17`
+      (both probed) — so the marker is left unconsumed instead of guessing
+      one. The `Sub`-only bound is deliberate.
+    - **`Sub f() Export Constructor`**: fbc's `error 3` (the `Export` is
+      consumed, after which the statement must end). This parser reads the
+      `Export` as an ordinary definition-line specifier and never looks for a
+      marker behind it.
+    - **A UDT member sub whose owner or prototype is not in the parsed file.**
+      The non-`Static` member's `error 17` is raised only when the owning type
+      and the member's `Declare` are both local; when either lives in a header
+      the check stays silent, because a false `error 17` on every cross-file
+      `Sub T.Init() Constructor` would be worse than the miss. A missing
+      prototype, and a module-level `Static Sub` (fbc's `error 258`), are the
+      same silence — neither is modelled.
+
 ## 13. Where the diagnostics come from (compiler source)
 
 Every `error N` / `warning N` in this file is a real fbc message, and fbc's

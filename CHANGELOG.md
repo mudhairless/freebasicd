@@ -26,6 +26,35 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-11 — Module constructors and destructors parse, with fbc's codes (M21 step 1)
+
+- **`Sub name() Constructor [priority]` / `Destructor` is lexed and parsed.**
+  The marker sits after the parameter list on the procedure *body*, and the
+  symbol stays an ordinary `Sub` carrying two flags (`isModuleConstructor` /
+  `isModuleDestructor`) plus the optional `priority` (FreeBASIC.md §9) — it is
+  still callable, and nothing re-keys it. Each malformed form reports fbc's own
+  number: a non-empty parameter list is `error 1`, a `priority` outside
+  101–65535 or a non-integer one is `error 189`, a tail fbc cannot accept
+  (`abc`, `-5`, a second number) is `error 3`, and an `Export` after the marker
+  is `error 17`.
+- **`Constructor`/`Destructor`/`Export` on a `Declare` line is `error 3`** in
+  both the plain and the UDT-member spelling: the specifier marks a body, so a
+  declaration line cannot carry it.
+- **A `Static` UDT member sub is recorded, and a non-`Static` one is `error
+  17`.** `handleDeclare` used to skip `declare static sub` entirely, so the
+  parser had no way to answer the definition's `Sub T.Init() Constructor`; it
+  now consumes the modifier and stamps `isStatic` on the member, and the
+  definition's own handler checks it when the owning type and prototype are
+  local.
+- **Not one config key is needed**, and three shapes fbc rejects stay silent —
+  `Function f() Constructor` (its number is ambiguous between 147 and 17), a
+  definition spelling `Export` before the marker, and a member sub whose owner
+  or prototype lives in a header. All three, with their reasons, are recorded
+  in FreeBASIC.md §12.28.
+- `parser_checks` gains `TestModuleConstructors`, pinning every accepted form
+  and every code above against fbc 1.10.2 probes; the six new messages are in
+  `po/freebasicd.pot`. `ctest` 19/19, changed files clang-format clean.
+
 ### 2026-10-10 — `suppress` tolerates a wire-code paste (M23)
 
 - **Changed: a `suppress` entry copied from a diagnostic's `code` is reduced to

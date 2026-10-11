@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-10-10 20:52-0500\n"
-"PO-Revision-Date: 2026-10-10 20:52-0500\n"
+"POT-Creation-Date: 2026-10-11 14:08-0500\n"
+"PO-Revision-Date: 2026-10-11 14:08-0500\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -76,8 +76,8 @@ msgid ""
 "comments, e.g. %s"
 msgstr ""
 
-#: src/parser.cpp:171 src/parser.cpp:593 src/parser.cpp:1980
-#: src/parser.cpp:2045
+#: src/parser.cpp:171 src/parser.cpp:593 src/parser.cpp:2164
+#: src/parser.cpp:2229
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
@@ -117,16 +117,45 @@ msgstr ""
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:828 src/parser.cpp:1883
+#: src/parser.cpp:828 src/parser.cpp:2067
 #, c-format
 msgid "'%s' is a reserved word and cannot be a field name"
 msgstr ""
 
-#: src/parser.cpp:1074 src/parser.cpp:1086 src/parser.cpp:2003
-#: src/parser.cpp:2074 src/parser.cpp:2217 src/parser.cpp:2225
-#: src/parser.cpp:2243
+#: src/parser.cpp:1074 src/parser.cpp:1086 src/parser.cpp:2187
+#: src/parser.cpp:2258 src/parser.cpp:2401 src/parser.cpp:2409
+#: src/parser.cpp:2427
 #, c-format
 msgid "%s without %s"
+msgstr ""
+
+#: src/parser.cpp:1450
+#, c-format
+msgid "a module %s cannot take parameters"
+msgstr ""
+
+#: src/parser.cpp:1458
+msgid "invalid priority attribute; expected 101 to 65535"
+msgstr ""
+
+#: src/parser.cpp:1475
+#, c-format
+msgid "a module %s cannot be exported"
+msgstr ""
+
+#: src/parser.cpp:1480
+#, c-format
+msgid "Expected end of line after a module %s"
+msgstr ""
+
+#: src/parser.cpp:1489
+#, c-format
+msgid "a non-static member procedure cannot be a module %s"
+msgstr ""
+
+#: src/parser.cpp:1903
+#, c-format
+msgid "'%s' is not allowed on a declaration line"
 msgstr ""
 
 #: src/session.cpp:1063

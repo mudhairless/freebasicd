@@ -131,6 +131,27 @@ struct Symbol {
   // declares. Distinguishes the iterator from a plain Dim in the loop body.
   bool loopVar = false;
 
+  // Module constructors/destructors (M21, FreeBASIC.md §9). The explicit form
+  // is a `Sub` *definition* carrying `Constructor`/`Destructor` after its
+  // parameter list — `Sub name() Constructor [priority]` — which runs before
+  // the module's own module-level code. The symbol keeps kind `Sub` (the
+  // procedure is ordinary and callable); these flags mark the run-before
+  // timing fbc gives it. The record-member spelling (`Constructor t()` ...
+  // `End Constructor`) is a different construct, modelled as the
+  // SymbolKind::Constructor block. `constructorPriority` is 0 when no priority
+  // was written, else the 101..65535 value fbc accepts.
+  bool isModuleConstructor = false;
+  bool isModuleDestructor = false;
+  int constructorPriority = 0;
+
+  // A member procedure declared with the `Static` storage prefix
+  // (`Declare Static Sub Init()` inside a TYPE). FreeBASIC.md §9: only that
+  // form may be a module constructor when it is defined (`Sub Widget.Init()
+  // Constructor`) — fbc's `error 17` rejects a non-Static one. Stamped by the
+  // parser on a `declare`d member; a module-level `Static Sub` is fbc's own
+  // `error 258` and does not make this true.
+  bool isStatic = false;
+
   // True on an Enum root declared `enum <name> explicit` (FreeBASIC.md §8,
   // KeyPgEnum): its members are reachable only through qualified access
   // (`Name.member`), never as bare module names. A plain `enum <name>`
