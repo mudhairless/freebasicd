@@ -26,6 +26,40 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-10 — Pre-existing diagnostics mapped onto fbc's numbers
+
+- **The diagnostics that predate the closer split now carry fbc's number,
+  warning kind included.** `keyword-suffix` → `fbc warning: 44`
+  (SUFFIXIGNORED), `unterminated-string` → `fbc warning: 12` (NOCLOSINGQUOTE),
+  `duplicate-definition` → `fbc error: 4` (DUPDEFINITION),
+  `include-not-found` → `fbc error: 23` (FILENOTFOUND), and
+  `invalid-member-name` splits by trigger — `error 14` (EXPECTEDIDENTIFIER)
+  for a field fbc refuses outright, `error 238`
+  (KEYWORDFIELDSNOTALLOWEDINCLASSES) for a conditional field in a TYPE that
+  holds member functions, `error 3` for an enum member (fbc anchors its report
+  on the name). Every number was re-probed against `/usr/bin/fbc` 1.10.2
+  before wiring. A `Diagnostic` now carries `fbcKind` next to `fbcError` — a
+  field, not a derivation from `severity` — so a warning renders as
+  `fbc warning: N` and a later warning-level gate can render a mapped warning
+  as a Hint without touching the mapping.
+- **`duplicate-definition` keeps its Warning severity while naming fbc's
+  error.** fbc rejects the file (`error 4`); this server deliberately stays a
+  Warning — a re-declaration is ordinary mid-edit — so the wire shows
+  `fbc error: 4` at `severity: 2`. The two are independent by design, which is
+  the whole reason `fbcKind` exists; recorded FreeBASIC.md §12.25.
+- **`bad-continuation` was probed a false positive and is deliberately *not*
+  mapped.** The doc's sketch proposed `3 EXPECTEDEOL`, but a probe of the
+  trigger shape showed fbc *accepts* the very line the server flags:
+  `print 1 _ 2` compiles (`_` is a joiner anywhere, not only at end of line),
+  while fbc's `error 3` belongs to a continuation-*joined* statement — a shape
+  this parser joins silently. Mapping `error 3` onto our trigger would have
+  shipped fbc's number on a diagnostic fbc would not raise. Recorded
+  FreeBASIC.md §12.26, left unmapped.
+- Tests: the wire assertions that named routing codes now name the fbc codes
+  (`session_core`, `session_settings`, `session_code_actions`,
+  `session_pull_diagnostics`), and `parser_checks` pins each number plus the
+  warning kind.
+
 ### 2026-10-09 — Preprocessor defines/macros: hover, completion, branch-aware parsing
 
 - **`#define` and `#macro` are first-class symbols.** Both publish a

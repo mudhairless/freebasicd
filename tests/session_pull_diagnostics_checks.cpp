@@ -117,7 +117,7 @@ void TestPullDiagnosticsFullAndUnchanged() {
       });
   Expect(full.find("\"kind\":\"full\"") != std::string::npos,
          "the first pull must answer the full arm");
-  Expect(full.find("\"code\":\"duplicate-definition\"") != std::string::npos,
+  Expect(full.find("\"code\":\"fbc error: 4\"") != std::string::npos,
          "the full report must carry the document's diagnostics");
   Expect(full.find("\"start\":{\"line\":1,\"character\":4}") !=
              std::string::npos,
@@ -135,7 +135,7 @@ void TestPullDiagnosticsFullAndUnchanged() {
       });
   Expect(unchanged.find("\"kind\":\"unchanged\"") != std::string::npos,
          "a matching previousResultId must answer the unchanged arm");
-  Expect(unchanged.find("duplicate-definition") == std::string::npos,
+  Expect(unchanged.find("fbc error: 4") == std::string::npos,
          "the unchanged report must not resend the cached items");
   Expect(!ResultIdOf(unchanged).empty(),
          "the unchanged report must still name its resultId");
@@ -205,7 +205,7 @@ void TestPullDiagnosticsRelatedDocuments() {
          "a pull on an including document must surface relatedDocuments");
   Expect(reply.find(errUri) != std::string::npos,
          "the related report must be keyed by the included file's uri");
-  Expect(reply.find("\"code\":\"duplicate-definition\"") != std::string::npos,
+  Expect(reply.find("\"code\":\"fbc error: 4\"") != std::string::npos,
          "the related report must carry the header's own diagnostics");
   Expect(reply.find("\"kind\":\"full\"") != std::string::npos,
          "the request document's report must be full");

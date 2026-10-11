@@ -69,8 +69,8 @@ void TestDidChangeConfigurationIncludePathResolves() {
       ToJsonString(mainText) + "\"}}}";
   input->append(MakeLspFrame(openFrame.c_str()));
   std::string const first = WaitForPublishedUri(output, 1);
-  Expect(first.find("\"code\":\"include-not-found\"") != std::string::npos,
-         "an unreachable include must publish include-not-found");
+  Expect(first.find("\"code\":\"fbc error: 23\"") != std::string::npos,
+         "an unreachable include must publish with fbc's own code");
 
   // Write the config and signal the change; the notification carries no
   // settings of its own (the payload is ignored, the file is the truth).
@@ -85,8 +85,7 @@ void TestDidChangeConfigurationIncludePathResolves() {
   std::string const republished =
       WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
   std::string const lastPublish = LastPublish(republished);
-  Expect(lastPublish.find("\"code\":\"include-not-found\"") ==
-             std::string::npos,
+  Expect(lastPublish.find("\"code\":\"fbc error: 23\"") == std::string::npos,
          "the re-published diagnostics must no longer report the include as "
          "missing");
   Expect(lastPublish.find("\"diagnostics\":[]") != std::string::npos,
@@ -434,7 +433,7 @@ void TestSettingsApplyPerRootOnly() {
   Expect(CountPublished(both) == 2, "both opens must publish diagnostics");
   std::size_t notFoundA = 0;
   std::size_t ra = 0;
-  while ((ra = both.find("\"code\":\"include-not-found\"", ra)) !=
+  while ((ra = both.find("\"code\":\"fbc error: 23\"", ra)) !=
          std::string::npos) {
     ++notFoundA;
     ra += 1;
@@ -461,13 +460,13 @@ void TestSettingsApplyPerRootOnly() {
          "the re-published buffer must be the changed root's document");
   Expect(last.find(bUri) == std::string::npos,
          "the unchanged root must not re-publish its document");
-  Expect(last.find("\"code\":\"include-not-found\"") == std::string::npos,
+  Expect(last.find("\"code\":\"fbc error: 23\"") == std::string::npos,
          "the changed root's include must now resolve");
   Expect(last.find("\"code\":\"fbc error: 117\"") != std::string::npos,
          "the changed root's other errors must survive the re-publish");
   std::size_t remaining = 0;
   std::size_t rb = 0;
-  while ((rb = after.find("\"code\":\"include-not-found\"", rb)) !=
+  while ((rb = after.find("\"code\":\"fbc error: 23\"", rb)) !=
          std::string::npos) {
     ++remaining;
     rb += 1;

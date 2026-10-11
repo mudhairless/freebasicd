@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "fbc_diagnostics.h"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -213,6 +215,16 @@ struct Diagnostic {
   // names the *specific* closer fbc would name (125 EXPECTEDENDSUB, 13
   // EXPECTEDNEXT, ...) rather than the coarse family.
   int fbcError = 0;
+
+  // Which half of the catalog `fbcError` numbers into, because a warning must
+  // render as `fbc warning: N`: `keyword-suffix` (44) and `unterminated-string`
+  // (12) are warnings, everything else we map is an error. It is a field rather
+  // than something derived from `severity`, because the two are deliberately
+  // independent: a duplicated definition is fbc's `error 4` but our Warning
+  // (a re-declaration is normal mid-edit), and a later warning-level gate may
+  // render an fbc warning as a Hint. `fbcError == 0` means no number, so this
+  // is never read.
+  FbcMessageKind fbcKind = FbcMessageKind::Error;
 
   std::string message;
 

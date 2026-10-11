@@ -29,8 +29,9 @@
   Milestones M1–M15, M19, and M20 are `done`; their entries, with dates and
   lessons, are in [`CHANGELOG.md`](CHANGELOG.md). The same is true of the
   unnumbered waves since: anonymous outline nodes and scope subtrees, fbc
-  block-closer numbers, the false-positive clears, and the preprocessor wave
-  (defines/macros as symbols, branch-aware `#if`, 2026-10-09). What is left:
+  block-closer numbers, the false-positive clears, the preprocessor wave
+  (defines/macros as symbols, branch-aware `#if`, 2026-10-09), and the
+  code-identity migration (2026-10-10). What is left:
 
   | Milestone | Status |
   |-----------|--------|
@@ -39,7 +40,7 @@
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
   | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
-  | M23 — fbc parser diagnostics: statements, placement, warnings (block structure + false-positive gate landed) | backlog |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (block structure + false-positive gate + code identity landed) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
 
 ## 2. What exists (condensed)
@@ -632,6 +633,13 @@ texts from M21's generated catalog (landed).
   closer by `fbcExpectedCloserError`/`fbcCloserWithoutOpenerError` in
   `src/language.cpp`. The coarse routing code stays internal so one quick fix
   covers the whole family — see [`CHANGELOG.md`](CHANGELOG.md).
+- **Code identity — landed (2026-10-10).** The diagnostics that predate the
+  closer split carry fbc's number too, with a `fbcKind` field so warnings
+  render as `fbc warning: N`: `keyword-suffix` → `44`, `unterminated-string` →
+  `12`, `duplicate-definition` → `4` (severity stays Warning, FreeBASIC.md
+  §12.25), `include-not-found` → `23`, and `invalid-member-name` →
+  `14`/`238`/`3` by trigger. `bad-continuation` was probed a false positive
+  (fbc accepts a mid-line `_`) and stays unmapped (FreeBASIC.md §12.26).
 - **Statements.** The `select` family (`62/34/118/111/246/242/250/323`), the
   `for`/`do` families (`EXPECTEDNEXT`, `NEXTWITHOUTFOR 107`, `FORNEXTVARIABLEMISMATCH
   283`, `WHILE/WEND`), `EXIT`/`CONTINUE` outside a legal block (`251/252`), the
@@ -647,11 +655,10 @@ texts from M21's generated catalog (landed).
   SHIFTEXCEEDSBITSINDATATYPE`, `25 CONVOVERFLOW`, `46 CMDLINEIGNORED`, `15
   NOEXPLICITPARAMMODE`. The `-w` level model is exposed as a `freebasicd.toml`
   key whose default matches fbc (level 1; 45 of 49 on by default), and any gate
-  that changes the payload is folded into the M14 `resultId` hash. The
-  keyword-suffix half of 44 already fires under the server's own
-  `keyword-suffix` routing code — the lexer skips the char, the diagnostic sits
-  on it, and a quick fix deletes it; the remaining work is transporting it and
-  the rest of the family under fbc's numbers.
+  that changes the payload is folded into the M14 `resultId` hash. `44` and
+  `12` already carry their numbers (code-identity bullet above); the remaining
+  work is the gate model itself — the level key, the severity mapping, and the
+  `resultId` fold.
 - **No cascades.** A single missing closer yields one diagnostic, not one per
   subsequent line; the existing `unterminated-block` handling is the model.
 - **Corpus.** Import the fbc-suite triggers into `tests/` as goldens rather than

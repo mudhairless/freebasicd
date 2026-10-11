@@ -396,7 +396,8 @@ void appendOutline(std::string_view content, fblang::Symbol const &s,
 // One language-layer diagnostic as the protocol carries it. The byte-offset
 // range becomes the UTF-16 range of the document it was reported against, and
 // the code is fbc's own when the parser mapped the diagnostic to a catalog
-// number (`fbc error: 125`), otherwise our routing code. A mapped diagnostic
+// number (`fbc error: 125`, or `fbc warning: 44` for a warning), otherwise our
+// routing code. A mapped diagnostic
 // also carries `codeDescription.href`, the wiki page for the whole catalog —
 // the same page for every message, which is why it is one constant and not a
 // per-number table. The language-layer `code` is deliberately not what the
@@ -409,7 +410,7 @@ lsDiagnostic toLsDiagnostic(std::string_view content,
   diag.severity = static_cast<lsDiagnosticSeverity>(d.severity);
   std::string code = d.code;
   if (d.fbcError != 0) {
-    code = fblang::fbcCode(fblang::FbcMessageKind::Error, d.fbcError);
+    code = fblang::fbcCode(d.fbcKind, d.fbcError);
   }
   if (!code.empty()) {
     diag.code.emplace(

@@ -205,7 +205,8 @@ private:
     if (cur_.kind == TokenKind::String && !cur_.terminated &&
         preproc_.active()) {
       addDiagnostic(cur_.beg, cur_.end, Severity::Warning,
-                    "unterminated-string", tr("unterminated string literal"));
+                    "unterminated-string", tr("unterminated string literal"),
+                    12, FbcMessageKind::Warning);
     }
     // A suffix that rode on a reserved word is ignored (fbc warning 44) and
     // the token has already shed it; the diagnostic sits on the suffix char
@@ -220,7 +221,8 @@ private:
       wordWithSuffix.push_back(src_[cur_.suffixBeg]);
       addDiagnostic(cur_.suffixBeg, cur_.suffixBeg + 1, Severity::Warning,
                     "keyword-suffix",
-                    trf("Suffix ignored in '%s'", wordWithSuffix));
+                    trf("Suffix ignored in '%s'", wordWithSuffix), 44,
+                    FbcMessageKind::Warning);
     }
     cur_ = lex_.next();
   }
@@ -401,13 +403,15 @@ private:
   }
 
   void addDiagnostic(uint32_t beg, uint32_t end, Severity sev, const char *code,
-                     std::string msg, int fbcError = 0) {
+                     std::string msg, int fbcError = 0,
+                     FbcMessageKind fbcKind = FbcMessageKind::Error) {
     Diagnostic d;
     d.range.beg = beg;
     d.range.end = end;
     d.severity = sev;
     d.code = code;
     d.fbcError = fbcError;
+    d.fbcKind = fbcKind;
     d.message = std::move(msg);
     out_.diagnostics.push_back(std::move(d));
   }
@@ -484,9 +488,13 @@ private:
       // whole chain), so a duplicate that survives is a duplicate fbc sees
       // too — the suppression is gone with the lenient parse.
       if (set.count(s.key) != 0 && !exemptSame) {
+        // fbc reports `error 4: Duplicated definition`; we keep Error severity
+        // off deliberately (a re-declaration is ordinary while typing) and
+        // carry the number anyway, so the code names fbc's rule without the
+        // squiggle shouting.
         addDiagnostic(s.selection.beg, s.selection.end, Severity::Warning,
                       "duplicate-definition",
-                      trf("duplicate definition: '%s'", s.name));
+                      trf("duplicate definition: '%s'", s.name), 4);
       }
       if (set.count(s.key) == 0) {
         set.insert(s.key);
@@ -546,7 +554,8 @@ private:
                     "invalid-member-name",
                     trf("'%s' is a reserved word and cannot be a field name in "
                         "a type with member functions",
-                        m.name));
+                        m.name),
+                    238 /* KEYWORDFIELDSNOTALLOWEDINCLASSES */);
       kids.erase(kids.begin() + static_cast<std::ptrdiff_t>(i));
     }
   }
@@ -624,7 +633,8 @@ private:
                     "invalid-member-name",
                     trf("'%s' is a reserved word and cannot be an enum member "
                         "name",
-                        stmt.front().text()));
+                        stmt.front().text()),
+                    3 /* EXPECTEDEOL: fbc anchors its report on the name */);
     }
     closeBlockUnterminated(cur_.beg);
     return true;
@@ -816,7 +826,8 @@ private:
         addDiagnostic(cur_.beg, cur_.end, Severity::Error,
                       "invalid-member-name",
                       trf("'%s' is a reserved word and cannot be a field name",
-                          cur_.text()));
+                          cur_.text()),
+                      14 /* EXPECTEDIDENTIFIER */);
         captureMember = false;
         advance();
         continue;
@@ -1871,7 +1882,8 @@ private:
                           "invalid-member-name",
                           trf("'%s' is a reserved word and cannot be a field "
                               "name",
-                              cur_.text()));
+                              cur_.text()),
+                          14 /* EXPECTEDIDENTIFIER */);
           }
           advance();
         }

@@ -464,6 +464,7 @@ void UnresolvedIncludeDiagnosticsMatchTheEdges() {
   CHECK(diags.size() == 1);
   if (diags.size() == 1) {
     CHECK(diags[0].code == "include-not-found");
+    CHECK(diags[0].fbcError == 23);
     CHECK(diags[0].severity == Severity::Error);
     CHECK(diags[0].range.beg == 11 && diags[0].range.end == 20);
     CHECK(diags[0].message == "include file not found: \"missing.bi\"");

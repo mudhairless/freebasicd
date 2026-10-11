@@ -896,6 +896,40 @@ int main() {
     CHECK(fbcErrorFor(parseDocument("#macro m\nprint 1\n"),
                       "unterminated-block") == 134);
   }
+  {
+    // The diagnostics that predate the closer split now carry fbc's number for
+    // their specific trigger too, each re-probed against fbc 1.10.2: a suffix
+    // on a keyword is warning 44, an unterminated string warning 12, a
+    // duplicate definition error 4, and a reserved word as a member name is
+    // 14 (a field), 238 (a field in a TYPE that has member functions), or 3
+    // (an enum member — fbc anchors its report on the name, not a missing
+    // closer).
+    CHECK(fbcErrorFor(parseDocument("print% 1\n"), "keyword-suffix") == 44);
+    CHECK(fbcErrorFor(parseDocument("print \"abc\n"), "unterminated-string") ==
+          12);
+    CHECK(fbcErrorFor(parseDocument("dim x as integer\ndim x as integer\n"),
+                      "duplicate-definition") == 4);
+    CHECK(fbcErrorFor(parseDocument("type t\n  as integer and\nend type\n"),
+                      "invalid-member-name") == 14);
+    CHECK(fbcErrorFor(
+              parseDocument("type t\n  declare sub f()\n  as integer next\n"
+                            "end type\n"),
+              "invalid-member-name") == 238);
+    CHECK(fbcErrorFor(parseDocument("enum e\n  next = 1\nend enum\n"),
+                      "invalid-member-name") == 3);
+    // The two warnings number into the warning catalog: without fbcKind they
+    // would render as `fbc error: 44` / `fbc error: 12` on the wire.
+    for (char const *src : {"print% 1\n", "print \"abc\n"}) {
+      ParseResult const r = parseDocument(src);
+      bool sawWarningKind = false;
+      for (auto const &d : r.diagnostics) {
+        if (d.fbcKind == FbcMessageKind::Warning) {
+          sawWarningKind = true;
+        }
+      }
+      CHECK_MSG(sawWarningKind, "mapped warnings must carry the warning kind");
+    }
+  }
 
   // Line structures: single-line IF needs no closer.
   {
