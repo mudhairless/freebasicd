@@ -56,6 +56,22 @@ Settings parseSettings(std::string_view tomlText, bool *ok) {
   if (auto const v = root["codeLensOn"].value<bool>()) {
     s.codeLensOn = *v;
   }
+  // warningLevel: one of fbc's `-w` option names, English only (never
+  // translated), matched case-sensitively like the compiler's own option
+  // parser. An unknown string keeps the default — `-w none` — as does any
+  // non-string value (value<std::string> fails and leaves the default).
+  // fbc's `-w error` is deliberately not in the accepted set (see Settings).
+  if (auto const v = root["warningLevel"].value<std::string>()) {
+    if (*v == "all" || *v == "constness" || *v == "funcptr") {
+      s.warningLevel = 0;
+    } else if (*v == "none") {
+      s.warningLevel = 4;
+    } else if (*v == "pedantic" || *v == "param" || *v == "escape" ||
+               *v == "next" || *v == "suffix" || *v == "upcast") {
+      s.warningLevel = 1;
+    }
+    // else: invalid — stays at the default (`-w none`).
+  }
   return s;
 }
 

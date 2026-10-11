@@ -26,6 +26,48 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-10 — The `-w` warning level is a config key (M23)
+
+- **Added: `warningLevel` in `freebasicd.toml`.** It takes fbc's own `-w`
+  option names — `all`, `none`, `param`, `escape`, `pedantic`, `next`,
+  `funcptr`, `constness`, `suffix`, `upcast` — and an absent, unknown, or
+  non-string value means `-w none`. The default is **none**, so the two
+  warnings the server already maps (`44 SUFFIXIGNORED`, `12 NOCLOSINGQUOTE`)
+  no longer publish until a root opts in; a named level otherwise keeps fbc's
+  exact threshold on the catalog's `level` column (`all`/`constness`/`funcptr`
+  → 0, the family options and `pedantic` → 1). The strings are English only and
+  are never translated. `-w error` is deliberately not accepted: a mapped
+  warning stays a `Warning` on the wire, and a problem this server diagnoses as
+  an error already renders as one. See FreeBASIC.md §12.27 for the divergence
+  from fbc's leading default of level 1.
+- **The gate is applied where the payload is built, not where the parser
+  runs.** The parser still records every language-layer diagnostic — it is a
+  fact about the bytes — and the delivery layer (`gatedDiagnostic` in
+  `session.cpp`) drops a mapped warning whose catalog level misses the
+  threshold. The catalog's `level` column is read at the gate, so no diagnostic
+  carries a second copy of a number the catalog owns.
+- **The gate is part of the M14 `resultId`.** A level flip drops or re-adds
+  warnings, so it folds into `diagnosticsResultId` alongside `diagnosticsOn` —
+  a client caching by id must be told the report changed, not answered
+  `unchanged`. In push mode a flip re-publishes the open buffers
+  (`warningGateChanged` joins `flippedOn`/`includeChanged` in the
+  `didChangeConfiguration` reconcile); in pull mode one refresh hint covers it,
+  as before.
+- **Tests.** `settings_checks` pins the vocabulary and every fallback
+  (unknown string, wrong case, wrong type → `none`); `session_settings_checks`
+  drives default→`all`→`error`→`bogus` over the wire in push mode;
+  `session_pull_diagnostics_checks` pins the `resultId` fold, including that
+  the level returns the identity to its `none` value. The M12 suffix quick-fix
+  test now roots its sandbox with `warningLevel = "all"`, because the warning
+  it fixes is off by default — which is itself the feature.
+- **One defect, and it is the recorded class.** The new push test's `didOpen`
+  frame was missing a closing brace, so the JSON never parsed, no publish ever
+  arrived, and the first assertion passed *vacuously* (no publish ⇒ no code).
+  A malformed frame wears a wrong answer's clothes — the same lesson as the
+  `R"(","value":"")"` truncations, in a test written after that lesson was
+  recorded. Read the frame, and make a negative assertion prove a positive
+  first (the publish count).
+
 ### 2026-10-10 — Pre-existing diagnostics mapped onto fbc's numbers
 
 - **The diagnostics that predate the closer split now carry fbc's number,

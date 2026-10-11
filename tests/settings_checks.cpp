@@ -46,10 +46,14 @@ static void TestParseDefaults() {
   CHECK(s.semanticTokensOn);
   CHECK(s.inlayHintsOn);
   CHECK(s.codeLensOn);
+  // M23: no warnings until a config enables them (`-w none`), unlike fbc's
+  // driver default of level 1.
+  CHECK(s.warningLevel == 4);
 
   Settings const s2 = parseSettings("# comment only\n");
   CHECK(s2.includePaths.empty());
   CHECK(s2.diagnosticsOn);
+  CHECK(s2.warningLevel == 4);
 }
 
 static void TestParseFullSettings() {
@@ -57,7 +61,8 @@ static void TestParseFullSettings() {
                                    "diagnosticsOn = false\n"
                                    "semanticTokensOn = false\n"
                                    "inlayHintsOn = false\n"
-                                   "codeLensOn = false\n");
+                                   "codeLensOn = false\n"
+                                   "warningLevel = \"all\"\n");
   CHECK(s.includePaths.size() == 2);
   CHECK_EQ(s.includePaths[0], "inc");
   CHECK_EQ(s.includePaths[1], "lib/x");
@@ -65,6 +70,35 @@ static void TestParseFullSettings() {
   CHECK(!s.semanticTokensOn);
   CHECK(!s.inlayHintsOn);
   CHECK(!s.codeLensOn);
+  CHECK(s.warningLevel == 0);
+}
+
+// M23: the vocabulary is fbc's `-w` option names, English only, matched
+// case-sensitively like the compiler's own option parser. Each maps to the
+// level threshold fbc's driver would set (`all`/`constness`/`funcptr` → 0,
+// `pedantic` and the family options → 1, `none` → 4); anything else — an
+// unknown string, a wrong case, a wrong type — is `-w none`. fbc's `-w error`
+// is deliberately not accepted (a mapped warning stays a warning).
+static void TestWarningLevelParsing() {
+  struct LevelCase {
+    char const *text;
+    int level;
+  };
+  LevelCase const cases[] = {
+      {"all", 0},    {"constness", 0}, {"funcptr", 0}, {"pedantic", 1},
+      {"param", 1},  {"escape", 1},    {"next", 1},    {"suffix", 1},
+      {"upcast", 1}, {"none", 4},      {"error", 4},   {"ALL", 4},
+      {"Suffix", 4}, {"bogus", 4},     {"", 4},        {"3", 4},
+  };
+  for (LevelCase const &c : cases) {
+    Settings const s =
+        parseSettings(std::string("warningLevel = \"") + c.text + "\"\n");
+    CHECK(s.warningLevel == c.level);
+  }
+
+  // A non-string value (even a valid-looking number) keeps the default.
+  Settings const s = parseSettings("warningLevel = 1\n");
+  CHECK(s.warningLevel == 4);
 }
 
 static void TestUnknownKeysIgnored() {
@@ -135,6 +169,7 @@ int main() {
   TestParseFullSettings();
   TestUnknownKeysIgnored();
   TestMalformedKeepsDefaults();
+  TestWarningLevelParsing();
   TestConfigFileMarkerAndLoad();
 
   if (failures != 0) {

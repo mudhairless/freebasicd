@@ -1207,6 +1207,19 @@ to "the language is what the lexer does":
     newline + `print 1` → "Expected End-of-Line, found 'print'") — a shape
     this parser joins silently and never flags. Fixing it means treating a
     mid-line `_` as fbc does; tracked here rather than silently renamed.
+27. **The server's default warning level is `-w none`, and `-w error` is not
+    accepted.** fbc's driver starts at `FB_WARNINGMSGS_DEFAULT_LEVEL = 1`
+    (45 of 49 warnings on), and a warning shows iff its catalog level `>=
+    errReportWarnEx`'s `env.clopt.warninglevel` floor. `freebasicd.toml`'s
+    `warningLevel` takes fbc's `-w` names — `all`/`constness`/`funcptr` → 0,
+    `pedantic`/`param`/`escape`/`next`/`suffix`/`upcast` → 1, `none` → 4 —
+    but an absent or unknown value is `none`, so this server surfaces no
+    warnings until a root opts in, while a config that names a level gets
+    fbc's exact threshold behavior. fbc's `-w error` (warnings counted as
+    failures, printed `error warning N`) is deliberately dropped: a mapped
+    warning is the language's own warning and stays `Warning` on the wire, and
+    a problem this server diagnoses as an error already renders as one, so
+    `warningLevel = "error"` is an unknown string → `none`.
 
 ## 13. Where the diagnostics come from (compiler source)
 

@@ -203,6 +203,100 @@ void TestDidChangeConfigurationDiagnosticsToggle() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+// M23: the warning `-w` level gates which mapped warnings the wire answers.
+// The parser still records every language-layer diagnostic; the payload obeys
+// the root's `warningLevel` (fbc's option names, English only — missing or
+// invalid is `-w none`, so the server surfaces no warnings until configured).
+// A level flip re-publishes the open buffers; fbc's `-w error` is not accepted.
+void TestDidChangeConfigurationWarningLevel() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::create_directories(sandbox);
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "warningLevel = \"none\"\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const mainUri = FileUri(sandbox / "main.bas");
+  std::string const rootUri = FileUri(sandbox);
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  // `print%` is a suffixed keyword (fbc warning 44) and `print "abc` is an
+  // unterminated string (fbc warning 12): two level-1 warnings, no errors.
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      mainUri +
+      R"(","languageId":"basic","version":1,"text":"print% 1\nprint \"abc\n"}}})";
+  input->append(MakeLspFrame(openFrame.c_str()));
+  std::string const first = WaitForPublishedUri(output, 1);
+  Expect(first.find("\"code\":\"fbc warning:") == std::string::npos,
+         "the default (-w none) must not publish any mapped warning");
+
+  // `-w all` re-publishes both warnings, at Warning severity.
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "warningLevel = \"all\"\n";
+  }
+  input->append(MakeLspFrame(kDidChangeConfigurationFrame));
+  std::string const withAll =
+      WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
+  std::string const allPublish = LastPublish(withAll);
+  Expect(allPublish.find("\"code\":\"fbc warning: 44\"") != std::string::npos,
+         "a suffixed keyword must publish under -w all");
+  Expect(allPublish.find("\"code\":\"fbc warning: 12\"") != std::string::npos,
+         "an unterminated string must publish under -w all");
+  Expect(allPublish.find("\"severity\":2") != std::string::npos,
+         "a level-1 warning keeps Warning severity under -w all");
+
+  // `-w error` is not accepted (a mapped warning stays a warning), so it is an
+  // unknown string and falls back to `-w none`: nothing publishes.
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "warningLevel = \"error\"\n";
+  }
+  input->append(MakeLspFrame(kDidChangeConfigurationFrame));
+  std::string const withError =
+      WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
+  Expect(LastPublish(withError).find("\"code\":\"fbc warning:") ==
+             std::string::npos,
+         "-w error is not accepted and must fall back to -w none");
+
+  // An invalid level is `-w none` too: nothing publishes.
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "warningLevel = \"bogus\"\n";
+  }
+  input->append(MakeLspFrame(kDidChangeConfigurationFrame));
+  std::string const withBogus =
+      WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
+  std::string const bogusPublish = LastPublish(withBogus);
+  Expect(bogusPublish.find("\"code\":\"fbc warning:") == std::string::npos,
+         "an invalid warning level must fall back to -w none");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
 // M11: semanticTokensOn / inlayHintsOn gate their features per root while the
 // capabilities stay advertised. A root that disables them serves empty results
 // (full/delta/range all keep a fresh resultId; inlay an empty result), a root
@@ -485,6 +579,7 @@ namespace fbtest {
 void RunSettingsTests() {
   RUN_TEST(TestDidChangeConfigurationIncludePathResolves);
   RUN_TEST(TestDidChangeConfigurationDiagnosticsToggle);
+  RUN_TEST(TestDidChangeConfigurationWarningLevel);
   RUN_TEST(TestSemanticTokensAndInlayHintsGates);
   RUN_TEST(TestSettingsApplyPerRootOnly);
 }

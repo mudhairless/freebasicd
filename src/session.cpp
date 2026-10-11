@@ -425,12 +425,47 @@ lsDiagnostic toLsDiagnostic(std::string_view content,
   return diag;
 }
 
+// M23: the `-w` warning gate one diagnostics payload answers to, pulled from
+// the owning root's Settings. `on` is the M11 master switch (empties
+// everything); a mapped warning otherwise surfaces iff its catalog level
+// reaches the configured warning level.
+struct DiagnosticsGate {
+  bool on = true;
+  int warningLevel = 4; // fbc `-w none`; the config default
+};
+
+DiagnosticsGate gateFor(fblang::Settings const &s) {
+  return DiagnosticsGate{s.diagnosticsOn, s.warningLevel};
+}
+
+// One language-layer diagnostic through the gate. A mapped warning below the
+// configured level is dropped — the parser still records it (it is a language
+// fact), but the wire answers the `-w` gate; the catalog's `level` column is
+// fbc's own, so the gate needs no per-diagnostic copy. An error is never gated:
+// what this server diagnoses as an error stays an error, and a mapped warning
+// keeps its Warning severity (fbc's `-w error` is not accepted; see Settings).
+std::optional<lsDiagnostic> gatedDiagnostic(std::string_view content,
+                                            fblang::Diagnostic const &d,
+                                            DiagnosticsGate const &gate) {
+  if (d.fbcError != 0 && d.fbcKind == fblang::FbcMessageKind::Warning) {
+    fblang::FbcCatalogEntry const *const entry =
+        fblang::fbcMessage(fblang::FbcMessageKind::Warning, d.fbcError);
+    if (entry == nullptr || entry->level < gate.warningLevel) {
+      return std::nullopt;
+    }
+  }
+  return toLsDiagnostic(content, d);
+}
+
 std::vector<lsDiagnostic> convertDiagnostics(std::string_view content,
-                                             fblang::ParseResult const &parse) {
+                                             fblang::ParseResult const &parse,
+                                             DiagnosticsGate const &gate) {
   std::vector<lsDiagnostic> out;
   out.reserve(parse.diagnostics.size());
   for (auto const &d : parse.diagnostics) {
-    out.push_back(toLsDiagnostic(content, d));
+    if (std::optional<lsDiagnostic> ls = gatedDiagnostic(content, d, gate)) {
+      out.push_back(std::move(*ls));
+    }
   }
   return out;
 }
@@ -450,16 +485,18 @@ void appendIncludeDiagnostics(std::string_view content,
   }
 }
 
-// The diagnostics payload one document carries: the parse diagnostics plus the
-// unresolved include edges of the index entry that describes it (M6's
-// include-not-found). One definition shared by the push path and both pull
-// handlers, so a client that negotiated either delivery can never see a
-// different answer for the same bytes — the M12 rule ("the fix keys on the
-// range the publish reports") extended to the pull model.
-std::vector<lsDiagnostic>
-documentDiagnostics(std::string_view content, fblang::ParseResult const &parse,
-                    fblang::IndexedFile const *entry) {
-  std::vector<lsDiagnostic> diags = convertDiagnostics(content, parse);
+// The diagnostics payload one document carries: the parse diagnostics (through
+// the `-w` gate) plus the unresolved include edges of the index entry that
+// describes it (M6's include-not-found). One definition shared by the push
+// path and both pull handlers, so a client that negotiated either delivery can
+// never see a different answer for the same bytes — the M12 rule ("the fix
+// keys on the range the publish reports") extended to the pull model, and the
+// M23 gate ("the level the config set is the level the wire answers").
+std::vector<lsDiagnostic> documentDiagnostics(std::string_view content,
+                                              fblang::ParseResult const &parse,
+                                              fblang::IndexedFile const *entry,
+                                              DiagnosticsGate const &gate) {
+  std::vector<lsDiagnostic> diags = convertDiagnostics(content, parse, gate);
   if (entry) {
     appendIncludeDiagnostics(content, *entry, &diags);
   }
@@ -468,10 +505,10 @@ documentDiagnostics(std::string_view content, fblang::ParseResult const &parse,
 
 // The identity of the diagnostics payload of one document: the content bytes
 // (parse diagnostics), the resolved include-edge targets (include-not-found
-// answers from disk/config state, not just bytes), and the diagnostics gate —
-// a gate flip must change the id, or a client caching by resultId would be
-// told "unchanged" the moment the report was emptied. Equal ids promise equal
-// payloads; nothing else is folded in, so a re-request with a matching
+// answers from disk/config state, not just bytes), and the gates — a gate flip
+// must change the id, or a client caching by resultId would be told "unchanged"
+// the moment the report was emptied or a warning was dropped. Equal ids promise
+// equal payloads; nothing else is folded in, so a re-request with a matching
 // previousResultId never recomputes the report (the client keeps its copy).
 std::uint64_t diagnosticsFnv(std::string_view bytes, std::uint64_t hash) {
   for (char c : bytes) {
@@ -482,7 +519,8 @@ std::uint64_t diagnosticsFnv(std::string_view bytes, std::uint64_t hash) {
 }
 
 std::string diagnosticsResultId(std::string_view content,
-                                fblang::IndexedFile const *entry, bool on) {
+                                fblang::IndexedFile const *entry,
+                                DiagnosticsGate const &gate) {
   std::uint64_t hash = fblang::AnalysisCache::hashContent(content);
   if (entry) {
     for (fblang::IncludeEdge const &edge : entry->includes) {
@@ -491,8 +529,11 @@ std::string diagnosticsResultId(std::string_view content,
       hash ^= edge.once ? 0x9e : 0x00;
     }
   }
-  if (!on) {
+  if (!gate.on) {
     hash ^= 0x55;
+  }
+  if (gate.warningLevel != 4) {
+    hash ^= static_cast<std::uint64_t>(gate.warningLevel + 1) * 0x01010101ull;
   }
   char buf[32];
   std::snprintf(buf, sizeof(buf), "pd%016llx",
@@ -1788,6 +1829,10 @@ void FreeBasicServer::onDidChangeConfiguration(
     bool const includeChanged = fresh.includePaths != old.includePaths;
     bool const flippedOff = old.diagnosticsOn && !fresh.diagnosticsOn;
     bool const flippedOn = fresh.diagnosticsOn && !old.diagnosticsOn;
+    // The `-w` gate is part of the diagnostics payload: a level flip drops or
+    // re-adds warnings, so it is a re-publish (push) / refresh (pull) event
+    // like the master switch.
+    bool const warningGateChanged = fresh.warningLevel != old.warningLevel;
     // Adopt the new settings for the whole root...
     index->applySettings(fresh);
     if (pullDiagnostics_) {
@@ -1803,12 +1848,12 @@ void FreeBasicServer::onDidChangeConfiguration(
     // ...and reconcile the root's open buffers with the gates. Private state
     // diffs drive only the work that matters: turning diagnostics off
     // publishes a single empty result per open buffer (publishDiagnostics has
-    // no tombstones; the empty publish is the clear), turning them on
-    // re-publishes what the buffers hold now, and an include-path change
-    // re-resolves the buffers' include edges so a newly reachable header
-    // resolves without an edit.
+    // no tombstones; the empty publish is the clear), turning them on — or
+    // changing the `-w` warning level — re-publishes what the buffers hold
+    // now, and an include-path change re-resolves the buffers' include edges
+    // so a newly reachable header resolves without an edit.
     std::string const normRoot = fblang::normalizePath(index->root());
-    bool const rePublish = flippedOn || includeChanged;
+    bool const rePublish = flippedOn || includeChanged || warningGateChanged;
     for (std::string const &normFile : openFiles_) {
       if (!isWithinNormalized(normFile, normRoot)) {
         continue; // belongs to another root (or to no root's open set)
@@ -1936,7 +1981,9 @@ void FreeBasicServer::reparseAndPublish(
                          /*fromBuffer=*/true, /*insert=*/true);
   std::string_view const content = cached->content;
   fblang::AnalyzedDoc const &doc = cached->analysis;
-  std::vector<lsDiagnostic> diags = convertDiagnostics(content, doc.parse);
+  DiagnosticsGate const gate = gateFor(settingsForDocument(normPath));
+  std::vector<lsDiagnostic> diags =
+      convertDiagnostics(content, doc.parse, gate);
 
   std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
   if (index) {
@@ -3905,8 +3952,9 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
   std::shared_ptr<fblang::IndexedFile const> const entry =
       index ? index->fileAt(normPath) : nullptr;
   bool const on = settingsForDocument(normPath).diagnosticsOn;
+  DiagnosticsGate const gate = gateFor(settingsForDocument(normPath));
   std::string const resultId =
-      diagnosticsResultId(dc->content, entry.get(), on);
+      diagnosticsResultId(dc->content, entry.get(), gate);
 
   // The client's previousResultId names the report it already holds: when it
   // still matches the current one, answer `unchanged` (kind + resultId only)
@@ -3921,7 +3969,7 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
   rsp.result.first->resultId.emplace(resultId);
   if (on) {
     rsp.result.first->items =
-        documentDiagnostics(dc->content, dc->analysis.parse, entry.get());
+        documentDiagnostics(dc->content, dc->analysis.parse, entry.get(), gate);
   }
 
   // relatedDocuments: the include closure, what `interFileDependencies`
@@ -3939,13 +3987,15 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
       }
       std::shared_ptr<fblang::IndexedFile const> const relatedEntry =
           index->fileAt(relatedPath);
-      bool const relatedOn = settingsForDocument(relatedPath).diagnosticsOn;
+      DiagnosticsGate const relatedGate =
+          gateFor(settingsForDocument(relatedPath));
       RelatedDocumentDiagnosticReport report;
-      report.resultId.emplace(
-          diagnosticsResultId(related->content, relatedEntry.get(), relatedOn));
-      if (relatedOn) {
-        report.items = documentDiagnostics(
-            related->content, related->analysis.parse, relatedEntry.get());
+      report.resultId.emplace(diagnosticsResultId(
+          related->content, relatedEntry.get(), relatedGate));
+      if (relatedGate.on) {
+        report.items =
+            documentDiagnostics(related->content, related->analysis.parse,
+                                relatedEntry.get(), relatedGate);
       }
       if (!rsp.result.first->relatedDocuments) {
         rsp.result.first->relatedDocuments.emplace();
@@ -3984,17 +4034,17 @@ workspace_diagnostic::response FreeBasicServer::onWorkspaceDiagnostic(
       if (!dc) {
         continue; // vanished between the scan and the pull
       }
-      bool const on = settingsForDocument(entry->path).diagnosticsOn;
+      DiagnosticsGate const gate = gateFor(settingsForDocument(entry->path));
       std::string const resultId =
-          diagnosticsResultId(dc->content, entry.get(), on);
+          diagnosticsResultId(dc->content, entry.get(), gate);
       lsDocumentUri const uri(AbsolutePath(entry->path));
       auto const known = previous.find(uri.raw_uri_);
       if (known == previous.end()) {
-        if (!on) {
+        if (!gate.on) {
           continue; // gate off: the empty report has nothing to say
         }
-        std::vector<lsDiagnostic> items =
-            documentDiagnostics(dc->content, dc->analysis.parse, entry.get());
+        std::vector<lsDiagnostic> items = documentDiagnostics(
+            dc->content, dc->analysis.parse, entry.get(), gate);
         if (items.empty()) {
           continue; // nothing new to surface for a file never reported
         }
@@ -4016,9 +4066,9 @@ workspace_diagnostic::response FreeBasicServer::onWorkspaceDiagnostic(
       }
       doc.report.first.emplace();
       doc.report.first->resultId.emplace(resultId);
-      if (on) {
-        doc.report.first->items =
-            documentDiagnostics(dc->content, dc->analysis.parse, entry.get());
+      if (gate.on) {
+        doc.report.first->items = documentDiagnostics(
+            dc->content, dc->analysis.parse, entry.get(), gate);
       }
       // Open buffers carry the wire version so the client can correlate the
       // report with the document generation it displayed; disk files have

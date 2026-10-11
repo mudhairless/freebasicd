@@ -349,6 +349,129 @@ void TestWorkspaceDiagnostic() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+// M23: the `-w` warning level is part of a report's identity, like the master
+// diagnostics gate. A level flip changes the resultId so a client caching by id
+// re-pulls; the level itself decides which mapped warnings the items carry,
+// while errors always surface.
+void TestWarningLevelFoldsIntoResultId() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::create_directories(sandbox);
+  {
+    // A config marker makes the client root a real workspace root, so the
+    // workspace scan covers probe.bas eagerly at the configured level. The
+    // level starts at none — the default — and a later flip is what changes
+    // the report's identity.
+    std::ofstream marker(sandbox / "freebasicd.toml");
+    marker << "warningLevel = \"none\"\n";
+    std::ofstream out(sandbox / "probe.bas");
+    // One never-gated Error (the stray closer) plus two level-1 warnings
+    // (the suffix and the unterminated string), so every state of the gate
+    // still has a report to answer with.
+    out << "else\nprint% 1\nprint \"abc\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const rootUri = FileUri(sandbox);
+  std::string const probeUri = FileUri(sandbox / "probe.bas");
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri +
+      R"(","capabilities":{"textDocument":{"diagnostic":{"relatedDocumentSupport":true}},)"
+      R"("workspace":{"diagnostics":{"refreshSupport":true}}}}})";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"diagnosticProvider\"") != std::string::npos,
+         "initialize must advertise the pull provider");
+
+  // First ask, -w none: the file answers full with the error alone — the two
+  // level-1 warnings are dropped from the items.
+  std::string const first = PollRequest(
+      input, output, "pwl", "\"kind\":\"full\"", [&](std::string const &id) {
+        return std::string(R"({"jsonrpc":"2.0","id":")" + id +
+                           R"(","method":"workspace/diagnostic","params":{}})");
+      });
+  Expect(first.find(probeUri) != std::string::npos,
+         "the workspace pull must report the probe file");
+  Expect(first.find("fbc error: 117") != std::string::npos,
+         "an error is never gated by the warning level");
+  Expect(first.find("\"code\":\"fbc warning:") == std::string::npos,
+         "-w none must drop the mapped warnings from the items");
+  std::string const idNone = ResultIdOf(first);
+  Expect(!idNone.empty(), "the none report must carry a resultId");
+
+  // -w all: the same file re-answers full (its id changed), now with both
+  // warnings at Warning severity.
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "warningLevel = \"all\"\n";
+  }
+  input->append(MakeLspFrame(kDidChangeConfigurationFrame));
+  std::string const withAll = PollRequest(
+      input, output, "pwl2", "\"code\":\"fbc warning: 44\"",
+      [&](std::string const &id) {
+        return std::string(
+                   R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"workspace/diagnostic","params":{"previousResultIds":[{"uri":")") +
+               probeUri + R"(","value":")" + idNone + "\"}]}}";
+      });
+  Expect(withAll.find("\"code\":\"fbc warning: 12\"") != std::string::npos,
+         "-w all must surface the unterminated-string warning too");
+  Expect(withAll.find("\"severity\":2") != std::string::npos,
+         "a level-1 warning keeps Warning severity under -w all");
+  std::string const idAll = ResultIdOf(withAll);
+  Expect(!idAll.empty() && idAll != idNone,
+         "a warning-level flip must change the report identity");
+
+  // fbc's `-w error` is not accepted: it is an unknown string, so it falls
+  // back to `-w none` and the warnings drop again. (The push suite covers the
+  // fallback over the wire; settings_checks pins the parse.)
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "warningLevel = \"error\"\n";
+  }
+  input->append(MakeLspFrame(kDidChangeConfigurationFrame));
+  std::string const withError =
+      PollRequest(input, output, "pwl3", idNone, [&](std::string const &id) {
+        return std::string(
+                   R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"workspace/diagnostic","params":{"previousResultIds":[{"uri":")") +
+               probeUri + R"(","value":")" + idAll + "\"}]}}";
+      });
+  Expect(withError.find("\"code\":\"fbc warning:") == std::string::npos,
+         "-w error is not accepted and must fall back to -w none");
+  std::string const idError = ResultIdOf(withError);
+  Expect(idError == idNone,
+         "an unknown level must return the identity to the none report");
+
+  // And that identity is stable: a re-ask naming it answers unchanged.
+  std::string const stable = PollRequest(
+      input, output, "pwl4", "\"kind\":\"unchanged\"",
+      [&](std::string const &id) {
+        return std::string(
+                   R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"workspace/diagnostic","params":{"previousResultIds":[{"uri":")") +
+               probeUri + R"(","value":")" + idError + "\"}]}}";
+      });
+  Expect(stable.find("\"kind\":\"unchanged\"") != std::string::npos,
+         "a matching resultId must still answer unchanged after the flips");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
 // The refresh hint: every diagnostic-relevant change asks a pull client to
 // re-pull exactly once, and a client without refresh support is never sent the
 // request (it re-pulls on its own schedule).
@@ -416,6 +539,7 @@ void RunPullDiagnosticsTests() {
   RUN_TEST(TestPullDiagnosticsFullAndUnchanged);
   RUN_TEST(TestPullDiagnosticsRelatedDocuments);
   RUN_TEST(TestWorkspaceDiagnostic);
+  RUN_TEST(TestWarningLevelFoldsIntoResultId);
   RUN_TEST(TestPullDiagnosticsRefresh);
 }
 

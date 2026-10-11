@@ -165,12 +165,22 @@ diagnosticsOn = true
 semanticTokensOn = true
 inlayHintsOn = true
 codeLensOn = true
+warningLevel = "none"                    # fbc's -w names; see below
 ```
 
 Each key has a default, unknown keys are ignored, and a malformed file keeps
 the defaults and logs an error rather than degrading the session. The file is
 re-read on `workspace/didChangeConfiguration`; the notification payload is
 ignored, the file is the truth.
+
+`warningLevel` gates which fbc-numbered warnings the server reports. It takes
+fbc's own `-w` option names — `all`, `none`, `param`, `escape`, `pedantic`,
+`next`, `funcptr`, `constness`, `suffix`, `upcast` — and an absent, unknown, or
+non-string value means `-w none`. The default is `none`, so warnings stay
+silent until a root opts in; each named level otherwise keeps fbc's exact
+threshold (`all`/`constness`/`funcptr` show every warning, the rest show the
+level-1 set). fbc's `-w error` is not accepted: a mapped warning stays a
+warning. These strings are English only and are never translated.
 
 ## How it is put together
 

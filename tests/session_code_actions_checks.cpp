@@ -206,6 +206,13 @@ void TestCodeActionRetargetsMissingInclude() {
 
 void TestCodeActionRemovesKeywordSuffix() {
   CodeActionFixture fix;
+  // The suffix warning is gated behind `-w all` (the config default is
+  // `-w none`, which surfaces no warnings until configured), so the sandbox
+  // root must opt in — the same shape a real workspace uses.
+  {
+    std::ofstream out(fix.sandbox / "freebasicd.toml");
+    out << "warningLevel = \"all\"\n";
+  }
   lsp::NullLog log;
   lsp::LanguageSession session(log);
   auto input = std::make_shared<FeedableIStream>();
@@ -214,6 +221,13 @@ void TestCodeActionRemovesKeywordSuffix() {
   FreeBasicServer server(session);
   server.registerHandlers();
   session.start(input, output);
+
+  std::string const rootUri = FileUri(fix.sandbox);
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  WaitForOutputContaining(output, "\"id\":\"init\"");
 
   // `print%` is PRINT with an ignored suffix (fbc warning 44), so the parser
   // publishes a Warning on the suffix char alone.

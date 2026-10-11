@@ -35,11 +35,28 @@ struct Settings {
   bool inlayHintsOn = true;
   bool codeLensOn = true;
 
+  // fbc's `-w` warning level, as the threshold on the catalog's level column:
+  // a mapped warning surfaces iff its level >= warningLevel (fbc's own rule,
+  // `errReportWarnEx` in error.bas). The config accepts fbc's `-w` option
+  // names, one per value, English only — never translated:
+  // `all`/`constness`/`funcptr` → 0, `pedantic`/`param`/`escape`/`next`/
+  // `suffix`/`upcast` → 1, `none` → 4. 4 is `-w none` (the highest catalog
+  // level is 3) and is both the default and the invalid-value fallback: this
+  // server surfaces no warnings until a config enables them, unlike fbc whose
+  // driver default is level 1.
+  //
+  // fbc's `-w error` (warnings counted as failures) is deliberately not
+  // accepted: a mapped warning is the language's own warning and stays one on
+  // the wire, and an error this server can diagnose already renders as an
+  // error. `warningLevel = "error"` is an unknown string → `-w none`.
+  int warningLevel = 4;
+
   bool operator==(Settings const &other) const {
     return includePaths == other.includePaths &&
            diagnosticsOn == other.diagnosticsOn &&
            semanticTokensOn == other.semanticTokensOn &&
-           inlayHintsOn == other.inlayHintsOn && codeLensOn == other.codeLensOn;
+           inlayHintsOn == other.inlayHintsOn &&
+           codeLensOn == other.codeLensOn && warningLevel == other.warningLevel;
   }
 };
 

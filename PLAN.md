@@ -653,12 +653,20 @@ texts from M21's generated catalog (landed).
 - **Warnings.** The parser-reachable set: `12 NOCLOSINGQUOTE`, `44
   SUFFIXIGNORED`, `26 NEXTVARMEANINGLESS`, `32 IFFOUNDAFTERELSE`, `33
   SHIFTEXCEEDSBITSINDATATYPE`, `25 CONVOVERFLOW`, `46 CMDLINEIGNORED`, `15
-  NOEXPLICITPARAMMODE`. The `-w` level model is exposed as a `freebasicd.toml`
-  key whose default matches fbc (level 1; 45 of 49 on by default), and any gate
-  that changes the payload is folded into the M14 `resultId` hash. `44` and
-  `12` already carry their numbers (code-identity bullet above); the remaining
-  work is the gate model itself — the level key, the severity mapping, and the
-  `resultId` fold.
+  NOEXPLICITPARAMMODE`.
+- **Warning `-w` level model — landed (2026-10-10).** `freebasicd.toml`'s
+  `warningLevel` takes fbc's `-w` option names, English only, and an absent or
+  unknown value is `-w none` — a deliberate divergence from fbc's leading
+  default of level 1 (FreeBASIC.md §12.27): the server reports no warnings
+  until a root opts in. A named level keeps fbc's exact threshold
+  (`all`/`constness`/`funcptr` → 0, `pedantic`/`param`/`escape`/`next`/
+  `suffix`/`upcast` → 1), read against the catalog's `level` column at delivery
+  so the parser still records every language fact. `-w error` is dropped: a
+  mapped warning stays `Warning`. The gate joins `diagnosticsOn` in the M14
+  `resultId` fold, and a level flip re-publishes (push) / refreshes (pull).
+  `44` and `12` already carry their numbers (code-identity bullet above); the
+  remaining work is the rest of the set — `26`, `32`, `33`, `25`, `46`, `15`
+  — which now inherit the gate for free.
 - **No cascades.** A single missing closer yields one diagnostic, not one per
   subsequent line; the existing `unterminated-block` handling is the model.
 - **Corpus.** Import the fbc-suite triggers into `tests/` as goldens rather than
