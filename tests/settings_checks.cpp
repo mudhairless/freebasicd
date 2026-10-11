@@ -49,20 +49,25 @@ static void TestParseDefaults() {
   // M23: no warnings until a config enables them (`-w none`), unlike fbc's
   // driver default of level 1.
   CHECK(s.warningLevel == 4);
+  CHECK(s.suppress.empty());
 
   Settings const s2 = parseSettings("# comment only\n");
   CHECK(s2.includePaths.empty());
   CHECK(s2.diagnosticsOn);
   CHECK(s2.warningLevel == 4);
+  CHECK(s2.suppress.empty());
 }
 
 static void TestParseFullSettings() {
-  Settings const s = parseSettings("includePaths = [\"inc\", \"lib/x\"]\n"
-                                   "diagnosticsOn = false\n"
-                                   "semanticTokensOn = false\n"
-                                   "inlayHintsOn = false\n"
-                                   "codeLensOn = false\n"
-                                   "warningLevel = \"all\"\n");
+  Settings const s = parseSettings(
+      "includePaths = [\"inc\", \"lib/x\"]\n"
+      "diagnosticsOn = false\n"
+      "semanticTokensOn = false\n"
+      "inlayHintsOn = false\n"
+      "codeLensOn = false\n"
+      "warningLevel = \"all\"\n"
+      "suppress = [\"Unterminated-String\", \"bad-continuation\",\n"
+      "            \"bad-continuation\", 7]\n");
   CHECK(s.includePaths.size() == 2);
   CHECK_EQ(s.includePaths[0], "inc");
   CHECK_EQ(s.includePaths[1], "lib/x");
@@ -71,6 +76,10 @@ static void TestParseFullSettings() {
   CHECK(!s.inlayHintsOn);
   CHECK(!s.codeLensOn);
   CHECK(s.warningLevel == 0);
+  // Lowercased, deduped, sorted; the non-string element is skipped.
+  CHECK(s.suppress.size() == 2);
+  CHECK_EQ(s.suppress[0], "bad-continuation");
+  CHECK_EQ(s.suppress[1], "unterminated-string");
 }
 
 // M23: the vocabulary is fbc's `-w` option names, English only, matched
@@ -99,6 +108,26 @@ static void TestWarningLevelParsing() {
   // A non-string value (even a valid-looking number) keeps the default.
   Settings const s = parseSettings("warningLevel = 1\n");
   CHECK(s.warningLevel == 4);
+}
+
+// M23: `suppress` is a set of our routing keys — lowercased, sorted, deduped at
+// parse time, so ordering and case are not part of the value (two configs that
+// name the same set compare equal and answer the same resultId). A non-array
+// value keeps the default, and non-string elements are skipped.
+static void TestSuppressParsing() {
+  Settings const a = parseSettings("suppress = [\"b\", \"A\", \"b\"]\n");
+  Settings const b = parseSettings("suppress = [\"a\", \"b\"]\n");
+  CHECK(a.suppress.size() == 2);
+  CHECK_EQ(a.suppress[0], "a");
+  CHECK_EQ(a.suppress[1], "b");
+  CHECK(a == b);
+
+  Settings const nonArray = parseSettings("suppress = \"bad-continuation\"\n");
+  CHECK(nonArray.suppress.empty());
+  Settings const mixed = parseSettings("suppress = [true, \"\", \"x\"]\n");
+  CHECK(mixed.suppress.size() == 2); // "" and "x" are both strings
+  CHECK_EQ(mixed.suppress[0], "");
+  CHECK_EQ(mixed.suppress[1], "x");
 }
 
 static void TestUnknownKeysIgnored() {
@@ -170,6 +199,7 @@ int main() {
   TestUnknownKeysIgnored();
   TestMalformedKeepsDefaults();
   TestWarningLevelParsing();
+  TestSuppressParsing();
   TestConfigFileMarkerAndLoad();
 
   if (failures != 0) {

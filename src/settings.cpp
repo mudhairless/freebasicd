@@ -8,9 +8,12 @@
 
 #include <toml++/toml.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <string>
+
+#include "symbols.h" // toLowerChars
 
 namespace fblang {
 
@@ -71,6 +74,20 @@ Settings parseSettings(std::string_view tomlText, bool *ok) {
       s.warningLevel = 1;
     }
     // else: invalid — stays at the default (`-w none`).
+  }
+  // suppress: an array of our routing keys (see Settings). Each string is
+  // ASCII-lowercased and the result is sorted and deduped, so the value is a
+  // set — ordering and case are not part of it. Non-string elements are
+  // skipped, and a wrong-typed (non-array) key keeps the default.
+  if (toml::array const *const arr = root["suppress"].as_array()) {
+    for (toml::node const &el : *arr) {
+      if (auto const str = el.value<std::string>()) {
+        s.suppress.push_back(toLowerChars(*str));
+      }
+    }
+    std::sort(s.suppress.begin(), s.suppress.end());
+    s.suppress.erase(std::unique(s.suppress.begin(), s.suppress.end()),
+                     s.suppress.end());
   }
   return s;
 }

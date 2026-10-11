@@ -667,6 +667,19 @@ texts from M21's generated catalog (landed).
   `44` and `12` already carry their numbers (code-identity bullet above); the
   remaining work is the rest of the set — `26`, `32`, `33`, `25`, `46`, `15`
   — which now inherit the gate for free.
+- **Suppression — landed (2026-10-10).** `freebasicd.toml`'s `suppress` is a
+  list of routing keys (`Diagnostic::code`, the same identifier quick fixes
+  register on — `bad-continuation`, `unterminated-block`, `include-not-found`,
+  never fbc's wire number). A named diagnostic is dropped at delivery, next to
+  the `-w` gate and sharing its M14 `resultId` fold and re-publish/refresh
+  behavior; the parser still records it. Entries are lowercased and the list
+  sorted/deduped at parse time, so case and order are not part of the value.
+  **Future: a per-line source comment** — clang-tidy's `' ignore: <key>` and
+  `' ignore-next-line: <key>` (FreeBASIC comment forms are `'` and `REM`) —
+  suppresses a line or the next line from the source side. That lands as the
+  same delivery-gate shape with a line/range predicate, computed against the
+  parse the payload is built from (a comment is a language fact like any
+  other), and must fold the comment-derived suppressions into `resultId` too.
 - **No cascades.** A single missing closer yields one diagnostic, not one per
   subsequent line; the existing `unterminated-block` handling is the model.
 - **Corpus.** Import the fbc-suite triggers into `tests/` as goldens rather than

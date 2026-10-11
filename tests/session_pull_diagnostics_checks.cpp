@@ -472,6 +472,99 @@ void TestWarningLevelFoldsIntoResultId() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+// M23: `suppress` is part of a report's identity. The list starts with the
+// stray closer suppressed, so the first report carries only the unterminated
+// sub; removing the suppression re-adds the closer and moves the resultId.
+void TestSuppressFoldsIntoResultId() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::create_directories(sandbox);
+  {
+    std::ofstream marker(sandbox / "freebasicd.toml");
+    marker << "suppress = [\"stray-closer\"]\n";
+    std::ofstream out(sandbox / "probe.bas");
+    // A suppressed Error (the stray `else`, fbc error 117) plus a survivor
+    // (the dangling `sub foo()`, fbc error 125) — the survivor keeps the report
+    // non-empty, so the suppressed item's absence is not an empty report.
+    out << "else\nsub foo()\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const rootUri = FileUri(sandbox);
+  std::string const probeUri = FileUri(sandbox / "probe.bas");
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri +
+      R"(","capabilities":{"textDocument":{"diagnostic":{}},"workspace":{"diagnostics":{"refreshSupport":true}}}}})";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"diagnosticProvider\"") != std::string::npos,
+         "initialize must advertise the pull provider");
+
+  // First ask with the suppression in place: the survivor is there, the
+  // suppressed error is not.
+  std::string const first = PollRequest(
+      input, output, "psu", "\"kind\":\"full\"", [&](std::string const &id) {
+        return std::string(R"({"jsonrpc":"2.0","id":")" + id +
+                           R"(","method":"workspace/diagnostic","params":{}})");
+      });
+  Expect(first.find("fbc error: 125") != std::string::npos,
+         "a diagnostic not suppressed must still be reported");
+  Expect(first.find("fbc error: 117") == std::string::npos,
+         "a suppressed routing key must be dropped from the items");
+  std::string const idSuppressed = ResultIdOf(first);
+  Expect(!idSuppressed.empty(), "the suppressed report must carry a resultId");
+
+  // Dropping the suppression re-adds the error: the report moves to full and
+  // its identity changes. The re-added code is the positive needle, so a stale
+  // pre-flip answer can never satisfy the poll.
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "# suppression removed\n";
+  }
+  input->append(MakeLspFrame(kDidChangeConfigurationFrame));
+  std::string const readded = PollRequest(
+      input, output, "psu2", "fbc error: 117", [&](std::string const &id) {
+        return std::string(
+                   R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"workspace/diagnostic","params":{"previousResultIds":[{"uri":")") +
+               probeUri + R"(","value":")" + idSuppressed + "\"}]}}";
+      });
+  Expect(readded.find("fbc error: 125") != std::string::npos,
+         "the survivor must remain after the suppression is removed");
+  std::string const idRead = ResultIdOf(readded);
+  Expect(!idRead.empty() && idRead != idSuppressed,
+         "a suppression change must change the report identity");
+
+  // And the new identity is stable: a re-ask naming it answers unchanged.
+  std::string const stable = PollRequest(
+      input, output, "psu3", "\"kind\":\"unchanged\"",
+      [&](std::string const &id) {
+        return std::string(
+                   R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"workspace/diagnostic","params":{"previousResultIds":[{"uri":")") +
+               probeUri + R"(","value":")" + idRead + "\"}]}}";
+      });
+  Expect(
+      stable.find("\"kind\":\"unchanged\"") != std::string::npos,
+      "a matching resultId must answer unchanged after the suppression flip");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
 // The refresh hint: every diagnostic-relevant change asks a pull client to
 // re-pull exactly once, and a client without refresh support is never sent the
 // request (it re-pulls on its own schedule).
@@ -540,6 +633,7 @@ void RunPullDiagnosticsTests() {
   RUN_TEST(TestPullDiagnosticsRelatedDocuments);
   RUN_TEST(TestWorkspaceDiagnostic);
   RUN_TEST(TestWarningLevelFoldsIntoResultId);
+  RUN_TEST(TestSuppressFoldsIntoResultId);
   RUN_TEST(TestPullDiagnosticsRefresh);
 }
 

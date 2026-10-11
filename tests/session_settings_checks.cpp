@@ -297,6 +297,102 @@ void TestDidChangeConfigurationWarningLevel() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+// M23: `suppress` drops a diagnostic by its routing key. A suppression is a
+// payload change, so it re-publishes the root's open buffers the same way a
+// `-w` flip does; a diagnostic not named keeps publishing. The list reaches
+// every delivery path — the parse diagnostics and the index's own
+// include-not-found edges share the gate.
+void TestDidChangeConfigurationSuppress() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::create_directories(sandbox);
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "# no suppressions yet\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const mainUri = FileUri(sandbox / "main.bas");
+  std::string const rootUri = FileUri(sandbox);
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  // Three errors, all on by default: an unresolved include (fbc error 23, from
+  // the index, routing key `include-not-found`), a mid-line `_` (routing key
+  // `bad-continuation`, no fbc number, so the wire code is that string), and
+  // the dangling `sub foo()` (fbc error 125).
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      mainUri +
+      R"(","languageId":"basic","version":1,"text":"#include \"missing.bi\"\nprint 1 _ 2\nsub foo()\n"}}})";
+  input->append(MakeLspFrame(openFrame.c_str()));
+  std::string const first = WaitForPublishedUri(output, 1);
+  std::string const firstPublish = LastPublish(first);
+  Expect(firstPublish.find("\"code\":\"fbc error: 23\"") != std::string::npos,
+         "the unresolved include must publish by default");
+  Expect(firstPublish.find("\"code\":\"bad-continuation\"") !=
+             std::string::npos,
+         "the mid-line `_` must publish bad-continuation by default");
+  Expect(firstPublish.find("\"code\":\"fbc error: 125\"") != std::string::npos,
+         "the dangling sub must publish unterminated-block by default");
+
+  // Suppressing the routing key drops exactly that diagnostic: the survivors
+  // prove the publish happened rather than the assertion passing vacuously.
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "suppress = [\"bad-continuation\"]\n";
+  }
+  input->append(MakeLspFrame(kDidChangeConfigurationFrame));
+  std::string const suppressed =
+      WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
+  std::string const suppressedPublish = LastPublish(suppressed);
+  Expect(suppressedPublish.find("\"code\":\"bad-continuation\"") ==
+             std::string::npos,
+         "a suppressed routing key must not reach the wire");
+  Expect(suppressedPublish.find("\"code\":\"fbc error: 23\"") !=
+             std::string::npos,
+         "a diagnostic not named by suppress must keep publishing");
+  Expect(suppressedPublish.find("\"code\":\"fbc error: 125\"") !=
+             std::string::npos,
+         "a diagnostic not named by suppress must keep publishing");
+
+  // The list covers the index's own diagnostics too: suppressing
+  // `include-not-found` drops the include edge's report, not just the parser's.
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "suppress = [\"bad-continuation\", \"include-not-found\"]\n";
+  }
+  input->append(MakeLspFrame(kDidChangeConfigurationFrame));
+  std::string const both =
+      WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
+  std::string const bothPublish = LastPublish(both);
+  Expect(bothPublish.find("\"code\":\"fbc error: 23\"") == std::string::npos,
+         "include-not-found is dropped by the same gate as the parser's codes");
+  Expect(bothPublish.find("\"code\":\"fbc error: 125\"") != std::string::npos,
+         "the unterminated-block must survive both suppressions");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
 // M11: semanticTokensOn / inlayHintsOn gate their features per root while the
 // capabilities stay advertised. A root that disables them serves empty results
 // (full/delta/range all keep a fresh resultId; inlay an empty result), a root
@@ -580,6 +676,7 @@ void RunSettingsTests() {
   RUN_TEST(TestDidChangeConfigurationIncludePathResolves);
   RUN_TEST(TestDidChangeConfigurationDiagnosticsToggle);
   RUN_TEST(TestDidChangeConfigurationWarningLevel);
+  RUN_TEST(TestDidChangeConfigurationSuppress);
   RUN_TEST(TestSemanticTokensAndInlayHintsGates);
   RUN_TEST(TestSettingsApplyPerRootOnly);
 }

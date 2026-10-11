@@ -166,6 +166,7 @@ semanticTokensOn = true
 inlayHintsOn = true
 codeLensOn = true
 warningLevel = "none"                    # fbc's -w names; see below
+suppress = ["bad-continuation"]          # drop diagnostics by routing key
 ```
 
 Each key has a default, unknown keys are ignored, and a malformed file keeps
@@ -181,6 +182,13 @@ silent until a root opts in; each named level otherwise keeps fbc's exact
 threshold (`all`/`constness`/`funcptr` show every warning, the rest show the
 level-1 set). fbc's `-w error` is not accepted: a mapped warning stays a
 warning. These strings are English only and are never translated.
+
+`suppress` is a list of diagnostic identifiers the server drops from its
+output entirely. The identifier is the diagnostic's own routing key — the
+stable name quick fixes use, such as `bad-continuation`, `unterminated-block`,
+or `include-not-found` — not the fbc number the wire may show instead of it.
+The list is matched case-insensitively and order does not matter. It is a
+root-wide setting; a per-line source comment (`' ignore: <key>`) is planned.
 
 ## How it is put together
 

@@ -425,28 +425,40 @@ lsDiagnostic toLsDiagnostic(std::string_view content,
   return diag;
 }
 
-// M23: the `-w` warning gate one diagnostics payload answers to, pulled from
-// the owning root's Settings. `on` is the M11 master switch (empties
-// everything); a mapped warning otherwise surfaces iff its catalog level
-// reaches the configured warning level.
+// M23: the gates one diagnostics payload answers to, pulled from the owning
+// root's Settings. `on` is the M11 master switch (empties everything); a mapped
+// warning otherwise surfaces iff its catalog level reaches the configured
+// warning level; and any diagnostic whose routing key is in `suppressed` is
+// dropped outright.
 struct DiagnosticsGate {
   bool on = true;
   int warningLevel = 4; // fbc `-w none`; the config default
+  // Lowercased, sorted, deduped (Settings::suppress) — the wire drops any
+  // diagnostic whose `code` is in here.
+  std::vector<std::string> suppressed;
 };
 
 DiagnosticsGate gateFor(fblang::Settings const &s) {
-  return DiagnosticsGate{s.diagnosticsOn, s.warningLevel};
+  return DiagnosticsGate{s.diagnosticsOn, s.warningLevel, s.suppress};
 }
 
-// One language-layer diagnostic through the gate. A mapped warning below the
-// configured level is dropped — the parser still records it (it is a language
-// fact), but the wire answers the `-w` gate; the catalog's `level` column is
-// fbc's own, so the gate needs no per-diagnostic copy. An error is never gated:
-// what this server diagnoses as an error stays an error, and a mapped warning
-// keeps its Warning severity (fbc's `-w error` is not accepted; see Settings).
+// One language-layer diagnostic through the gate. A root-wide suppression wins
+// over everything: the config names this diagnostic's own routing key, so it
+// never reaches the wire (the parser still recorded it). Otherwise a mapped
+// warning below the configured level is dropped — the parser still records it
+// (it is a language fact), but the wire answers the `-w` gate; the catalog's
+// `level` column is fbc's own, so the gate needs no per-diagnostic copy. An
+// error is never gated by level: what this server diagnoses as an error stays
+// an error, and a mapped warning keeps its Warning severity (fbc's `-w error`
+// is not accepted; see Settings).
 std::optional<lsDiagnostic> gatedDiagnostic(std::string_view content,
                                             fblang::Diagnostic const &d,
                                             DiagnosticsGate const &gate) {
+  if (!gate.suppressed.empty() &&
+      std::binary_search(gate.suppressed.begin(), gate.suppressed.end(),
+                         fblang::toLowerChars(d.code))) {
+    return std::nullopt;
+  }
   if (d.fbcError != 0 && d.fbcKind == fblang::FbcMessageKind::Warning) {
     fblang::FbcCatalogEntry const *const entry =
         fblang::fbcMessage(fblang::FbcMessageKind::Warning, d.fbcError);
@@ -478,10 +490,13 @@ std::vector<lsDiagnostic> convertDiagnostics(std::string_view content,
 // on the code addresses exactly the range the publish reported.
 void appendIncludeDiagnostics(std::string_view content,
                               fblang::IndexedFile const &entry,
+                              DiagnosticsGate const &gate,
                               std::vector<lsDiagnostic> *out) {
   for (fblang::Diagnostic const &d :
        fblang::unresolvedIncludeDiagnostics(entry.includes, content.size())) {
-    out->push_back(toLsDiagnostic(content, d));
+    if (std::optional<lsDiagnostic> ls = gatedDiagnostic(content, d, gate)) {
+      out->push_back(std::move(*ls));
+    }
   }
 }
 
@@ -498,7 +513,7 @@ std::vector<lsDiagnostic> documentDiagnostics(std::string_view content,
                                               DiagnosticsGate const &gate) {
   std::vector<lsDiagnostic> diags = convertDiagnostics(content, parse, gate);
   if (entry) {
-    appendIncludeDiagnostics(content, *entry, &diags);
+    appendIncludeDiagnostics(content, *entry, gate, &diags);
   }
   return diags;
 }
@@ -534,6 +549,17 @@ std::string diagnosticsResultId(std::string_view content,
   }
   if (gate.warningLevel != 4) {
     hash ^= static_cast<std::uint64_t>(gate.warningLevel + 1) * 0x01010101ull;
+  }
+  // Suppressions are part of the payload's identity too: dropping or
+  // re-adding a diagnostic must move the id. The list is lowercased, sorted,
+  // and deduped (Settings), so folding it in order is deterministic and
+  // order- and case-independent — the same property the value has.
+  if (!gate.suppressed.empty()) {
+    hash = diagnosticsFnv("\x1fsuppress", hash);
+    for (std::string const &code : gate.suppressed) {
+      hash = diagnosticsFnv(code, hash);
+      hash ^= 0x1c;
+    }
   }
   char buf[32];
   std::snprintf(buf, sizeof(buf), "pd%016llx",
@@ -1829,10 +1855,11 @@ void FreeBasicServer::onDidChangeConfiguration(
     bool const includeChanged = fresh.includePaths != old.includePaths;
     bool const flippedOff = old.diagnosticsOn && !fresh.diagnosticsOn;
     bool const flippedOn = fresh.diagnosticsOn && !old.diagnosticsOn;
-    // The `-w` gate is part of the diagnostics payload: a level flip drops or
-    // re-adds warnings, so it is a re-publish (push) / refresh (pull) event
-    // like the master switch.
-    bool const warningGateChanged = fresh.warningLevel != old.warningLevel;
+    // The `-w` level and the suppression list are part of the diagnostics
+    // payload: either flip drops or re-adds diagnostics, so it is a
+    // re-publish (push) / refresh (pull) event like the master switch.
+    bool const gateChanged = fresh.warningLevel != old.warningLevel ||
+                             fresh.suppress != old.suppress;
     // Adopt the new settings for the whole root...
     index->applySettings(fresh);
     if (pullDiagnostics_) {
@@ -1849,11 +1876,12 @@ void FreeBasicServer::onDidChangeConfiguration(
     // diffs drive only the work that matters: turning diagnostics off
     // publishes a single empty result per open buffer (publishDiagnostics has
     // no tombstones; the empty publish is the clear), turning them on — or
-    // changing the `-w` warning level — re-publishes what the buffers hold
-    // now, and an include-path change re-resolves the buffers' include edges
-    // so a newly reachable header resolves without an edit.
+    // changing the `-w` warning level or the suppression list — re-publishes
+    // what the buffers hold now, and an include-path change re-resolves the
+    // buffers' include edges so a newly reachable header resolves without an
+    // edit.
     std::string const normRoot = fblang::normalizePath(index->root());
-    bool const rePublish = flippedOn || includeChanged || warningGateChanged;
+    bool const rePublish = flippedOn || includeChanged || gateChanged;
     for (std::string const &normFile : openFiles_) {
       if (!isWithinNormalized(normFile, normRoot)) {
         continue; // belongs to another root (or to no root's open set)
@@ -2002,7 +2030,7 @@ void FreeBasicServer::reparseAndPublish(
       fblang::IndexedFile entry = fblang::indexedFileFromAnalysis(
           normPath, mtime, size, doc, index->root(), false,
           index->includeDirs());
-      appendIncludeDiagnostics(content, entry, &diags);
+      appendIncludeDiagnostics(content, entry, gate, &diags);
       index->upsert(std::move(entry));
     }
   }

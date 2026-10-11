@@ -51,12 +51,27 @@ struct Settings {
   // error. `warningLevel = "error"` is an unknown string → `-w none`.
   int warningLevel = 4;
 
+  // Diagnostics dropped from the wire entirely, named by their own routing key
+  // (`Diagnostic::code` — `bad-continuation`, `unterminated-block`, ... — the
+  // stable identifier quick fixes register on, never fbc's number the wire may
+  // show instead). Entries are ASCII-lowercased and the list is sorted and
+  // deduped at parse time, so neither ordering nor case is part of the value.
+  // A suppressed diagnostic is dropped at delivery for the same reason the
+  // `-w` gate is: the parser still records it (a fact about the bytes), the
+  // wire obeys the config.
+  //
+  // This is the root-wide list. A per-line source comment (clang-tidy's
+  // `' ignore:` / `' ignore-next-line:`) is future work and will feed the same
+  // delivery gate; see PLAN.md M23.
+  std::vector<std::string> suppress;
+
   bool operator==(Settings const &other) const {
     return includePaths == other.includePaths &&
            diagnosticsOn == other.diagnosticsOn &&
            semanticTokensOn == other.semanticTokensOn &&
            inlayHintsOn == other.inlayHintsOn &&
-           codeLensOn == other.codeLensOn && warningLevel == other.warningLevel;
+           codeLensOn == other.codeLensOn &&
+           warningLevel == other.warningLevel && suppress == other.suppress;
   }
 };
 

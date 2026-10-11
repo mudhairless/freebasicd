@@ -26,6 +26,36 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-10 — Diagnostics suppression is a config key (M23)
+
+- **Added: `suppress` in `freebasicd.toml`.** A list of routing keys — the
+  diagnostic's own stable identifier, the same one quick fixes register on
+  (`bad-continuation`, `unterminated-block`, `include-not-found`), never the
+  fbc number the wire may show in its place. A named diagnostic is dropped at
+  delivery; the parser still records it. The list is lowercased and sorted and
+  deduped at parse time, so case and ordering are not part of the value (two
+  configs naming the same set compare equal and answer the same `resultId`).
+- **It rides the same delivery seam as the `-w` gate.** `gatedDiagnostic` in
+  `session.cpp` checks a suppression before the level, and both the parse
+  diagnostics and the index's own `include-not-found` edges funnel through it
+  (`appendIncludeDiagnostics` now takes the gate too, so the two delivery paths
+  cannot disagree). The list folds into the M14 `resultId` and a change
+  re-publishes (push) / refreshes (pull) like a `-w` flip.
+- **Tests.** `settings_checks` pins the parse (case/order/set equality, a
+  non-array value, mixed-type elements); `session_settings_checks` drives
+  default→`bad-continuation`→`bad-continuation`+`include-not-found` over the
+  wire and keeps a survivor in each publish so no negative assertion passes
+  vacuously; `session_pull_diagnostics_checks` pins the `resultId` fold and its
+  stability.
+- **One wrong probe, caught by the survivor assertion.** The first draft
+  asserted the dangling `sub foo()` publishes `fbc error: 126`; the number is
+  `125` (EXPECTEDENDSUB) — `126` is EXPECTEDENDFUNCTION, for a `function`. A
+  negative assertion alone would have passed while the positive one failed,
+  which is exactly what the survivor is for.
+- **Noted for future work.** A per-line source comment (clang-tidy's
+  `' ignore: <key>` / `' ignore-next-line: <key>`) will suppress from the source
+  side through the same gate; recorded in PLAN.md M23.
+
 ### 2026-10-10 — The `-w` warning level is a config key (M23)
 
 - **Added: `warningLevel` in `freebasicd.toml`.** It takes fbc's own `-w`
