@@ -64,6 +64,12 @@ struct Settings {
   // `' ignore:` / `' ignore-next-line:`) and a config allow-list counterpart
   // (a whitelist that keeps only the named keys) are future work and will feed
   // the same delivery gate; see PLAN.md M23.
+  //
+  // An entry copied from a diagnostic's *wire* code (`key, fbc error: N`) is
+  // reduced to the routing key at load time, so the copy/paste a client's
+  // diagnostics invite keeps working. The config file is never rewritten; the
+  // load path reports the entry so the session can warn the user instead (see
+  // SuppressNote).
   std::vector<std::string> suppress;
 
   bool operator==(Settings const &other) const {
@@ -76,6 +82,18 @@ struct Settings {
   }
 };
 
+// A `suppress` entry that named more than a routing key: a wire
+// `Diagnostic.code` copied verbatim, fbc half and all
+// (`include-not-found, fbc error: 23`). A routing key never contains a comma,
+// so the loader reduces such an entry to the key before the first one and
+// reports the pair here — `entry` as written, `key` what it reduces to — for
+// the caller to warn about. Parsing never rewrites the config file; the warning
+// asks the user to.
+struct SuppressNote {
+  std::string entry;
+  std::string key;
+};
+
 // True when `dir/freebasicd.toml` exists as a regular file — the marker that
 // `dir` is a workspace root.
 bool hasConfigFile(std::filesystem::path const &dir);
@@ -86,11 +104,16 @@ bool hasConfigFile(std::filesystem::path const &dir);
 // is non-null it is set to false only when the document is malformed TOML
 // (wrong-typed keys keep defaults and leave `*ok` true) — the caller uses it
 // to log an error instead of silently treating a broken config as defaults.
-Settings parseSettings(std::string_view tomlText, bool *ok = nullptr);
+// When `notes` is non-null it receives one SuppressNote per `suppress` entry
+// that carried more than a routing key, in file order.
+Settings parseSettings(std::string_view tomlText, bool *ok = nullptr,
+                       std::vector<SuppressNote> *notes = nullptr);
 
 // Settings for `dir`: parsed from `dir/freebasicd.toml` when it exists,
-// else the defaults. `ok` is forwarded to parseSettings (false only for
-// malformed TOML; a missing file or an empty/comment-only one is fine).
-Settings settingsForDir(std::filesystem::path const &dir, bool *ok = nullptr);
+// else the defaults. `ok` and `notes` are forwarded to parseSettings (false
+// only for malformed TOML; a missing file or an empty/comment-only one is
+// fine).
+Settings settingsForDir(std::filesystem::path const &dir, bool *ok = nullptr,
+                        std::vector<SuppressNote> *notes = nullptr);
 
 } // namespace fblang

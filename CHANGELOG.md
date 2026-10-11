@@ -26,6 +26,33 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-10 — `suppress` tolerates a wire-code paste (M23)
+
+- **Changed: a `suppress` entry copied from a diagnostic's `code` is reduced to
+  its routing key at load time.** A routing key never contains a comma, so the
+  loader keeps the text before the first one — `include-not-found, fbc error:
+  23` becomes `include-not-found`, and blanks before the comma go with the tail
+  — and the entry suppresses exactly what the bare key would. This matters
+  because the entry above made the wire code the composed string, which is the
+  string a client shows and a user copies; before this it matched no routing key
+  and suppressed nothing, silently.
+- **The config file is never rewritten; the loader warns instead.** Each reduced
+  entry logs one stderr line naming what was written and what it should be
+  (`... suppress entry "include-not-found, fbc error: 23" should be
+  "include-not-found"; remove the fbc code`), so the file gets cleaned up by the
+  user, not by us. The suffix is dropped from the *value*, not the bytes: two
+  configs differing only in the suffix compare equal, so such an edit moves no
+  `resultId` and publishes nothing.
+- **Tests.** `settings_checks` pins the parse — the reduced keys, the reported
+  note, whitespace before the comma, and bare-vs-composed equality;
+  `session_settings_checks` drives a composed entry over the wire and checks the
+  named diagnostic is dropped, a survivor stays, and the file on disk is
+  untouched. `ctest` 19/19, format clean.
+- **The pot is current again.** Regenerating it for the new message also picked
+  up line-number drift the committed copy had accumulated (the msgids never
+  changed, so `i18n_checks` stayed green); that churn is the generated file
+  catching up, and `po/*.po` still lag it as usual.
+
 ### 2026-10-10 — The wire code leads with our identifier (M23)
 
 - **Changed: a diagnostic's `code` now names our routing key, and appends

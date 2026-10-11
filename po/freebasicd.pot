@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-10-09 19:18-0500\n"
-"PO-Revision-Date: 2026-10-09 19:18-0500\n"
+"POT-Creation-Date: 2026-10-10 20:52-0500\n"
+"PO-Revision-Date: 2026-10-10 20:52-0500\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -45,7 +45,7 @@ msgstr ""
 msgid "Remove the '%s' suffix"
 msgstr ""
 
-#: src/code_actions.cpp:374
+#: src/code_actions.cpp:378
 #, c-format
 msgid "include file not found: \"%s\""
 msgstr ""
@@ -61,7 +61,7 @@ msgid_plural "%s references"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/parser.cpp:112
+#: src/parser.cpp:120
 #, c-format
 msgid "/// is not a %s comment; use '' for doc comments"
 msgstr ""
@@ -69,99 +69,107 @@ msgstr ""
 #. TRANSLATORS: %s = the proper noun "FreeBASIC" (never
 #. translated); the second %s is an example directive kept
 #. verbatim.
-#: src/parser.cpp:127
+#: src/parser.cpp:139
 #, c-format
 msgid ""
 "bare '$' is not a valid metacommand; %s metacommands are written as "
 "comments, e.g. %s"
 msgstr ""
 
-#: src/parser.cpp:148 src/parser.cpp:569 src/parser.cpp:1956
-#: src/parser.cpp:2021
+#: src/parser.cpp:171 src/parser.cpp:593 src/parser.cpp:1980
+#: src/parser.cpp:2045
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
 
-#: src/parser.cpp:179
+#: src/parser.cpp:208
 msgid "unterminated string literal"
 msgstr ""
 
-#: src/parser.cpp:194
+#: src/parser.cpp:224
 #, c-format
 msgid "Suffix ignored in '%s'"
 msgstr ""
 
-#: src/parser.cpp:220
+#: src/parser.cpp:251
 #, c-format
 msgid "dialect '%s' is not supported yet; parsing in '%s' mode"
 msgstr ""
 
-#: src/parser.cpp:474
+#: src/parser.cpp:497
 #, c-format
 msgid "duplicate definition: '%s'"
 msgstr ""
 
-#: src/parser.cpp:532
+#: src/parser.cpp:555
 #, c-format
 msgid ""
 "'%s' is a reserved word and cannot be a field name in a type with member "
 "functions"
 msgstr ""
 
-#: src/parser.cpp:610
+#: src/parser.cpp:634
 #, c-format
 msgid "'%s' is a reserved word and cannot be an enum member name"
 msgstr ""
 
-#: src/parser.cpp:707
+#: src/parser.cpp:731
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:805 src/parser.cpp:1860
+#: src/parser.cpp:828 src/parser.cpp:1883
 #, c-format
 msgid "'%s' is a reserved word and cannot be a field name"
 msgstr ""
 
-#: src/parser.cpp:1050 src/parser.cpp:1062 src/parser.cpp:1979
-#: src/parser.cpp:2050 src/parser.cpp:2119 src/parser.cpp:2126
+#: src/parser.cpp:1074 src/parser.cpp:1086 src/parser.cpp:2003
+#: src/parser.cpp:2074 src/parser.cpp:2217 src/parser.cpp:2225
+#: src/parser.cpp:2243
 #, c-format
 msgid "%s without %s"
 msgstr ""
 
-#: src/session.cpp:982
+#: src/session.cpp:1063
 #, c-format
 msgid "%s/freebasicd.toml is not valid TOML; keeping defaults"
 msgstr ""
 
-#: src/session.cpp:995
+#: src/session.cpp:1075
+#, c-format
+msgid ""
+"%s/freebasicd.toml: suppress entry \"%s\" should be \"%s\"; remove the fbc "
+"code"
+msgstr ""
+
+#: src/session.cpp:1089
 #, c-format
 msgid "workspace root: %s"
 msgstr ""
 
-#: src/session.cpp:1021
+#: src/session.cpp:1115
 msgid "version-control marker"
 msgstr ""
 
-#: src/session.cpp:1024
+#: src/session.cpp:1118
 #, c-format
 msgid "config file %s"
 msgstr ""
 
-#: src/session.cpp:1027
+#: src/session.cpp:1121
 msgid "source/include directory"
 msgstr ""
 
-#: src/session.cpp:1036
+#: src/session.cpp:1130
 #, c-format
 msgid "workspace root %s (detected via %s; no client root)"
 msgstr ""
 
-#: src/session.cpp:1043
+#: src/session.cpp:1137
 #, c-format
 msgid "workspace root %s (detected via %s; client root %s)"
 msgstr ""
 
-#: src/session.cpp:1523
+#: src/session.cpp:1617
 #, c-format
 msgid ""
 "workspace root %s has no version-control marker or config file; index scope "

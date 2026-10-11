@@ -399,6 +399,91 @@ void TestDidChangeConfigurationSuppress() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+// M23: the `suppress` list accepts an entry copied from a diagnostic's wire
+// code (`include-not-found, fbc error: 23`). The loader keeps the routing key
+// and warns on stderr — a log line this suite does not capture — so the entry
+// suppresses exactly what the bare key would: the copy/paste a client's
+// diagnostics invite does not need hand-editing, and the config file is left as
+// the user wrote it. The first publish (no suppression) is the positive
+// control that keeps the negative assertion from passing vacuously.
+void TestDidChangeConfigurationSuppressWireCode() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::create_directories(sandbox);
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "# no suppressions yet\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const mainUri = FileUri(sandbox / "main.bas");
+  std::string const rootUri = FileUri(sandbox);
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"workspaceSymbolProvider\":") != std::string::npos,
+         "initialize must advertise workspace/symbol");
+
+  // An unresolved include (the entry's named diagnostic) plus a dangling sub
+  // as the survivor that proves each publish carried more than nothing.
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      mainUri +
+      R"(","languageId":"basic","version":1,"text":"#include \"missing.bi\"\nsub foo()\n"}}})";
+  input->append(MakeLspFrame(openFrame.c_str()));
+  std::string const first = WaitForPublishedUri(output, 1);
+  std::string const firstPublish = LastPublish(first);
+  Expect(firstPublish.find("\"code\":\"include-not-found") != std::string::npos,
+         "the unresolved include must publish before it can be suppressed");
+  Expect(firstPublish.find("\"code\":\"unterminated-block") !=
+             std::string::npos,
+         "the dangling sub must publish as the survivor");
+
+  // The composed wire code, copied verbatim, must suppress the same diagnostic
+  // the bare key names.
+  {
+    std::ofstream out(sandbox / "freebasicd.toml");
+    out << "suppress = [\"include-not-found, fbc error: 23\"]\n";
+  }
+  input->append(MakeLspFrame(kDidChangeConfigurationFrame));
+  std::string const suppressed =
+      WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
+  std::string const suppressedPublish = LastPublish(suppressed);
+  Expect(suppressedPublish.find("\"code\":\"include-not-found") ==
+             std::string::npos,
+         "a wire-copied suppress entry must drop the diagnostic it names");
+  Expect(suppressedPublish.find("\"code\":\"unterminated-block") !=
+             std::string::npos,
+         "a diagnostic the entry does not name must keep publishing");
+
+  // The loader reduced the entry in memory only.
+  {
+    std::ifstream in(sandbox / "freebasicd.toml");
+    std::string const text{std::istreambuf_iterator<char>(in),
+                           std::istreambuf_iterator<char>()};
+    Expect(text.find("include-not-found, fbc error: 23") != std::string::npos,
+           "the loader must not rewrite the user's config file");
+  }
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
 // M11: semanticTokensOn / inlayHintsOn gate their features per root while the
 // capabilities stay advertised. A root that disables them serves empty results
 // (full/delta/range all keep a fresh resultId; inlay an empty result), a root
@@ -683,6 +768,7 @@ void RunSettingsTests() {
   RUN_TEST(TestDidChangeConfigurationDiagnosticsToggle);
   RUN_TEST(TestDidChangeConfigurationWarningLevel);
   RUN_TEST(TestDidChangeConfigurationSuppress);
+  RUN_TEST(TestDidChangeConfigurationSuppressWireCode);
   RUN_TEST(TestSemanticTokensAndInlayHintsGates);
   RUN_TEST(TestSettingsApplyPerRootOnly);
 }

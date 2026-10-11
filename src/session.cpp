@@ -1055,12 +1055,26 @@ void FreeBasicServer::setExitHandler(std::function<void()> exitHandler) {
 // instead of silently treating a broken config as defaults.
 fblang::Settings settingsForDirLogged(std::filesystem::path const &dir) {
   bool ok = true;
-  fblang::Settings const s = fblang::settingsForDir(dir, &ok);
+  std::vector<fblang::SuppressNote> notes;
+  fblang::Settings const s = fblang::settingsForDir(dir, &ok, &notes);
   if (!ok) {
     (void)std::fprintf(
         stderr, "[freebasicd] %s\n",
         fblang::trf("%s/freebasicd.toml is not valid TOML; keeping defaults",
                     fblang::normalizePath(dir))
+            .c_str());
+  }
+  // A `suppress` entry copied from a diagnostic's wire code names the fbc
+  // number as well (`include-not-found, fbc error: 23`). Only the routing key
+  // is meaningful to the gate, so the loader drops the rest and the entry still
+  // suppresses — but it warns, so a config that was never cleaned up does not
+  // stay quietly wrong.
+  for (fblang::SuppressNote const &note : notes) {
+    (void)std::fprintf(
+        stderr, "[freebasicd] %s\n",
+        fblang::trf("%s/freebasicd.toml: suppress entry \"%s\" should be "
+                    "\"%s\"; remove the fbc code",
+                    fblang::normalizePath(dir), note.entry, note.key)
             .c_str());
   }
   return s;

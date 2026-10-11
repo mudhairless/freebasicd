@@ -130,6 +130,44 @@ static void TestSuppressParsing() {
   CHECK_EQ(mixed.suppress[1], "x");
 }
 
+// M23: a `suppress` entry copied from a diagnostic's wire code carries the fbc
+// half after the routing key (`include-not-found, fbc error: 23`). A key never
+// contains a comma, so the loader keeps the text before the first one and
+// reports the entry through `notes` for the session to warn about; the config
+// file itself is never rewritten. The suffix is not part of the value, so the
+// composed form compares equal to the bare key — a suffix-only edit is not a
+// settings change and moves no resultId.
+static void TestSuppressWireSuffix() {
+  std::vector<SuppressNote> notes;
+  Settings const s = parseSettings(
+      "suppress = [\"include-not-found, fbc error: 23\",\n"
+      "            \"keyword-suffix, fbc warning: 44\", \"stray-closer\"]\n",
+      nullptr, &notes);
+  CHECK(s.suppress.size() == 3);
+  CHECK_EQ(s.suppress[0], "include-not-found");
+  CHECK_EQ(s.suppress[1], "keyword-suffix");
+  CHECK_EQ(s.suppress[2], "stray-closer");
+  CHECK(notes.size() == 2);
+  CHECK_EQ(notes[0].entry, "include-not-found, fbc error: 23");
+  CHECK_EQ(notes[0].key, "include-not-found");
+  CHECK_EQ(notes[1].entry, "keyword-suffix, fbc warning: 44");
+  CHECK_EQ(notes[1].key, "keyword-suffix");
+
+  Settings const bare =
+      parseSettings("suppress = [\"include-not-found\", \"keyword-suffix\", "
+                    "\"stray-closer\"]\n");
+  CHECK(s == bare);
+
+  // Whitespace before the comma belongs to the dropped tail, not the key.
+  std::vector<SuppressNote> spaced;
+  Settings const w = parseSettings("suppress = [\"bad-continuation , x\"]\n",
+                                   nullptr, &spaced);
+  CHECK(w.suppress.size() == 1);
+  CHECK_EQ(w.suppress[0], "bad-continuation");
+  CHECK(spaced.size() == 1);
+  CHECK_EQ(spaced[0].key, "bad-continuation");
+}
+
 static void TestUnknownKeysIgnored() {
   // Forward-compatible: keys the server does not know must be ignored, and the
   // known keys around them still parse. (Keys after a [table] header belong to
@@ -200,6 +238,7 @@ int main() {
   TestMalformedKeepsDefaults();
   TestWarningLevelParsing();
   TestSuppressParsing();
+  TestSuppressWireSuffix();
   TestConfigFileMarkerAndLoad();
 
   if (failures != 0) {

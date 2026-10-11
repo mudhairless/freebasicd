@@ -680,7 +680,10 @@ texts from M21's generated catalog (landed).
   diagnostic is dropped at delivery, next to
   the `-w` gate and sharing its M14 `resultId` fold and re-publish/refresh
   behavior; the parser still records it. Entries are lowercased and the list
-  sorted/deduped at parse time, so case and order are not part of the value.
+  sorted/deduped at parse time, so case and order are not part of the value. An
+  entry copied from the wire code in full (`key, fbc error: N`) is reduced to
+  the key at load time — a key never contains a comma — and logs a warning
+  asking the user to remove the tail; the file itself is never rewritten.
   **Future: a per-line source comment** — clang-tidy's `' ignore: <key>` and
   `' ignore-next-line: <key>` (FreeBASIC comment forms are `'` and `REM`) —
   suppresses a line or the next line from the source side. That lands as the
