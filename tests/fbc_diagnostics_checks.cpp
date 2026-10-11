@@ -11,7 +11,9 @@
 // The freshness half regenerates the include in memory through the same
 // emitter `gen_fbc_catalog` writes with, then byte-diffs the committed copy;
 // the reader half pins the numbers a fbc user recognizes (42, 14, warning 12)
-// and the code identity the LSP carries (`fbc error: 42`). The catalog is
+// and the fbc half the session composes into the LSP code (`fbc error: 42`; the
+// wire code is our routing key then that, e.g. `include-not-found, fbc error:
+// 23`). The catalog is
 // imported, not read from the compiler tree, so this test has no external
 // dependency (AGENTS.md, "import appropriate corpus checks into our tests").
 

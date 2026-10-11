@@ -1191,10 +1191,11 @@ to "the language is what the lexer does":
     rejects a repeated declaration (`error 4: Duplicated definition`); this
     server reports `duplicate-definition` at Warning severity (pinned in
     `session_core_checks`) while still naming fbc's rule on the wire
-    (`fbc error: 4`, `severity: 2`). The severity is deliberate — a
-    re-declaration is ordinary mid-edit — so the code and the severity are
-    independent, which is exactly why `Diagnostic` carries `fbcKind` next to
-    `fbcError` instead of deriving the message kind from the severity.
+    (`duplicate-definition, fbc error: 4`, `severity: 2`). The severity is
+    deliberate — a re-declaration is ordinary mid-edit — so the code and the
+    severity are independent, which is exactly why `Diagnostic` carries
+    `fbcKind` next to `fbcError` instead of deriving the message kind from the
+    severity.
 26. **A bare `_` in the middle of a line is accepted by fbc and flagged
     here.** fbc 1.10.2 reads `_` as a joiner anywhere, not just at end of
     line: `print 1 _ 2`, `print 1 _ ' note`, and `print 1 _` + newline +

@@ -198,22 +198,24 @@ struct Diagnostic {
   Severity severity = Severity::Error;
 
   // The parser's own routing key for this diagnostic, stable per *kind* of
-  // problem (`unterminated-block`, `stray-closer`, ...). Quick fixes and the
-  // corpus goldens key on it, and it is deliberately coarse: splitting a
-  // family onto fbc's numbers changes `fbcError` below, never this string, so
-  // a fix registered once keeps covering every number the family can report.
-  // When `fbcError` is 0 this is also the code the client sees.
+  // problem (`unterminated-block`, `stray-closer`, ...). Quick fixes, the
+  // suppression/whitelist config, and the corpus goldens key on it, and it is
+  // deliberately coarse: splitting a family onto fbc's numbers changes
+  // `fbcError` below, never this string, so a fix registered once keeps
+  // covering every number the family can report. The wire always carries this
+  // key (as the leading part of the code; see `fbcError`).
   std::string code;
 
   // fbc's own message number for this diagnostic (its `error N`), or 0 for a
   // diagnostic fbc has no number for (our conventions, and every preprocessor
   // shape: fbc's catalog covers neither). When set, the session reports the
-  // code as `fbcCode(Error, fbcError)` ("fbc error: 42") and links
-  // `codeDescription.href` to the wiki page that documents the whole catalog —
-  // `code` above stays the routing key, so the two are not the same field by
-  // design. The number is keyed off the block kind at each report site, so it
-  // names the *specific* closer fbc would name (125 EXPECTEDENDSUB, 13
-  // EXPECTEDNEXT, ...) rather than the coarse family.
+  // code as our routing key followed by fbc's number —
+  // `<code>, fbc error: N` (`include-not-found, fbc error: 23`) — and links
+  // `codeDescription.href` to the wiki page that documents the whole catalog.
+  // When 0, the wire code is the routing key alone (`bad-continuation`). The
+  // number is keyed off the block kind at each report site, so it names the
+  // *specific* closer fbc would name (125 EXPECTEDENDSUB, 13 EXPECTEDNEXT, ...)
+  // rather than the coarse family.
   int fbcError = 0;
 
   // Which half of the catalog `fbcError` numbers into, because a warning must

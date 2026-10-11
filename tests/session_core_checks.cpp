@@ -62,7 +62,8 @@ void TestDiagnosticsRespectDeclarationScopes() {
   input->append(MakeLspFrame(kDidOpenScopeDupFrame));
   std::string const output_all = WaitForPublishedUri(output, 1);
 
-  Expect(output_all.find("\"code\":\"fbc error: 4\"") == std::string::npos,
+  Expect(output_all.find("\"code\":\"duplicate-definition") ==
+             std::string::npos,
          "a block-local Dim shadowing an outer Dim is not a duplicate");
   Expect(output_all.find("\"diagnostics\":[]") != std::string::npos,
          "a shadowing block must publish a healthy diagnostic list");
@@ -187,8 +188,13 @@ void TestDiagnosticsReflectParseErrors() {
   input->append(MakeLspFrame(kDidOpenDupFrame));
   std::string const output_all = WaitForPublishedUri(output, 1);
 
-  Expect(output_all.find("\"code\":\"fbc error: 4\"") != std::string::npos,
-         "duplicate dims must be reported with fbc's own code");
+  // The wire code is our routing key followed by fbc's number, so this pins the
+  // composed format: our identifier is always present and addressable, and the
+  // number is the mapping half. Only a test of the mapping looks for the
+  // number.
+  Expect(output_all.find("\"code\":\"duplicate-definition, fbc error: 4\"") !=
+             std::string::npos,
+         "duplicate dims must be reported under our key and fbc's number");
   Expect(output_all.find("duplicate definition: 'x'") != std::string::npos,
          "duplicate dims must be reported with the offending name");
   Expect(output_all.find("\"severity\":2") != std::string::npos,

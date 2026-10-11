@@ -394,15 +394,16 @@ void appendOutline(std::string_view content, fblang::Symbol const &s,
 }
 
 // One language-layer diagnostic as the protocol carries it. The byte-offset
-// range becomes the UTF-16 range of the document it was reported against, and
-// the code is fbc's own when the parser mapped the diagnostic to a catalog
-// number (`fbc error: 125`, or `fbc warning: 44` for a warning), otherwise our
-// routing code. A mapped diagnostic
-// also carries `codeDescription.href`, the wiki page for the whole catalog —
-// the same page for every message, which is why it is one constant and not a
-// per-number table. The language-layer `code` is deliberately not what the
-// client sees: it stays the coarse routing key a fix and the corpus goldens
-// use, so a later split of the family does not have to revisit them.
+// range becomes the UTF-16 range of the document it was reported against. The
+// code always names our own routing key first — the stable identifier a
+// suppression/whitelist config and the quick fixes key on, so a diagnostic is
+// never addressable only by a number that may not exist. When the parser also
+// mapped it to an fbc catalog number, that follows after a comma:
+// `include-not-found, fbc error: 23`, `keyword-suffix, fbc warning: 44`. A
+// diagnostic fbc has no number for carries the key alone (`bad-continuation`).
+// A mapped diagnostic also carries `codeDescription.href`, the wiki page for
+// the whole catalog — the same page for every message, which is why it is one
+// constant and not a per-number table.
 lsDiagnostic toLsDiagnostic(std::string_view content,
                             fblang::Diagnostic const &d) {
   lsDiagnostic diag;
@@ -410,7 +411,8 @@ lsDiagnostic toLsDiagnostic(std::string_view content,
   diag.severity = static_cast<lsDiagnosticSeverity>(d.severity);
   std::string code = d.code;
   if (d.fbcError != 0) {
-    code = fblang::fbcCode(d.fbcKind, d.fbcError);
+    std::string const fbc = fblang::fbcCode(d.fbcKind, d.fbcError);
+    code = code.empty() ? fbc : code + ", " + fbc;
   }
   if (!code.empty()) {
     diag.code.emplace(

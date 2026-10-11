@@ -104,7 +104,7 @@ void TestCodeActionInsertsMissingCloser() {
   input->append(
       MakeLspFrame(OpenFrame(fix.mainUri, "sub main()\n  print 1\n").c_str()));
   std::string const published = WaitForPublishedUri(output, 1);
-  Expect(published.find("\"code\":\"fbc error: 125\"") != std::string::npos,
+  Expect(published.find("\"code\":\"unterminated-block") != std::string::npos,
          "an unterminated block must publish its diagnostic before it is "
          "fixable");
   Expect(published.find(
@@ -145,9 +145,10 @@ void TestCodeActionInsertsMissingCloser() {
   // this also rides on keywords closing blocks whatever their case.
   input->append(
       MakeLspFrame(ReplaceFrame(fix.mainUri, 2, 0, 2, 0, "END SUB\n").c_str()));
-  Expect(LastPublish(WaitForPublishedUri(output, 2)).find("fbc error: 125") ==
-             std::string::npos,
-         "applying the closer fix must clear the diagnostic on re-parse");
+  Expect(
+      LastPublish(WaitForPublishedUri(output, 2)).find("unterminated-block") ==
+          std::string::npos,
+      "applying the closer fix must clear the diagnostic on re-parse");
 
   session.stop();
 }
@@ -173,7 +174,7 @@ void TestCodeActionRetargetsMissingInclude() {
   // A mistyped extension: `config.bai` resolves nowhere, `inc/config.bi` does.
   input->append(MakeLspFrame(
       OpenFrame(fix.mainUri, "#include \"config.bai\"\nprint 1\n").c_str()));
-  Expect(WaitForPublishedUri(output, 1).find("\"code\":\"fbc error: 23\"") !=
+  Expect(WaitForPublishedUri(output, 1).find("\"code\":\"include-not-found") !=
              std::string::npos,
          "an unresolvable include must publish before it is fixable");
 
@@ -197,9 +198,10 @@ void TestCodeActionRetargetsMissingInclude() {
 
   input->append(MakeLspFrame(
       ReplaceFrame(fix.mainUri, 0, 10, 0, 20, "inc/config.bi").c_str()));
-  Expect(LastPublish(WaitForPublishedUri(output, 2)).find("fbc error: 23") ==
-             std::string::npos,
-         "retargeting the include must clear the diagnostic on re-parse");
+  Expect(
+      LastPublish(WaitForPublishedUri(output, 2)).find("include-not-found") ==
+          std::string::npos,
+      "retargeting the include must clear the diagnostic on re-parse");
 
   session.stop();
 }
@@ -233,7 +235,7 @@ void TestCodeActionRemovesKeywordSuffix() {
   // publishes a Warning on the suffix char alone.
   input->append(MakeLspFrame(OpenFrame(fix.mainUri, "print% 1\n").c_str()));
   std::string const published = WaitForPublishedUri(output, 1);
-  Expect(published.find("\"code\":\"fbc warning: 44\"") != std::string::npos,
+  Expect(published.find("\"code\":\"keyword-suffix") != std::string::npos,
          "a suffixed keyword must publish its warning before it is fixable");
   Expect(published.find("\"severity\":2") != std::string::npos,
          "the ignored suffix is a warning, as fbc's warning 44 is");
@@ -260,7 +262,7 @@ void TestCodeActionRemovesKeywordSuffix() {
   // Applying the deletion clears the warning on re-parse.
   input->append(
       MakeLspFrame(ReplaceFrame(fix.mainUri, 0, 5, 0, 6, "").c_str()));
-  Expect(LastPublish(WaitForPublishedUri(output, 2)).find("fbc warning: 44") ==
+  Expect(LastPublish(WaitForPublishedUri(output, 2)).find("keyword-suffix") ==
              std::string::npos,
          "removing the suffix must clear the warning on re-parse");
 
@@ -282,7 +284,7 @@ void TestCodeActionOffersNothingUnfixable() {
   // also the request's whole range, so nothing may be offered for it.
   input->append(
       MakeLspFrame(OpenFrame(fix.mainUri, "end sub\nprint 1\n").c_str()));
-  Expect(WaitForPublishedUri(output, 1).find("\"code\":\"fbc error: 112\"") !=
+  Expect(WaitForPublishedUri(output, 1).find("\"code\":\"stray-closer") !=
              std::string::npos,
          "a stray closer must publish its diagnostic");
   std::string const unfixable = PollRequest(
@@ -343,8 +345,8 @@ void TestMissingIncludePublishesDiagnostic() {
       ToJsonString("#include \"missing.bi\"\nprint \"hi\"\n") + "\"}}}";
   input->append(MakeLspFrame(badOpenFrame.c_str()));
   std::string const published = WaitForPublishedUri(output, 1);
-  Expect(published.find("\"code\":\"fbc error: 23\"") != std::string::npos,
-         "a missing include must be reported with fbc's own code");
+  Expect(published.find("\"code\":\"include-not-found") != std::string::npos,
+         "a missing include must be reported under its routing key");
   Expect(published.find("include file not found") != std::string::npos,
          "a missing include must carry a readable message");
   Expect(published.find("missing.bi") != std::string::npos,
@@ -367,7 +369,7 @@ void TestMissingIncludePublishesDiagnostic() {
   std::string const both = WaitForPublishedUri(output, 2);
   std::size_t notFound = 0;
   std::size_t pos = 0;
-  while ((pos = both.find("\"code\":\"fbc error: 23\"", pos)) !=
+  while ((pos = both.find("\"code\":\"include-not-found", pos)) !=
          std::string::npos) {
     ++notFound;
     pos += 1;

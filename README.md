@@ -186,9 +186,13 @@ warning. These strings are English only and are never translated.
 `suppress` is a list of diagnostic identifiers the server drops from its
 output entirely. The identifier is the diagnostic's own routing key — the
 stable name quick fixes use, such as `bad-continuation`, `unterminated-block`,
-or `include-not-found` — not the fbc number the wire may show instead of it.
-The list is matched case-insensitively and order does not matter. It is a
-root-wide setting; a per-line source comment (`' ignore: <key>`) is planned.
+or `include-not-found`. That key is also the leading half of the `code` the
+server reports: `<key>, fbc error: <n>` (`include-not-found, fbc error: 23`)
+when the parser mapped the diagnostic onto an fbc message, or the key alone
+(`bad-continuation`) when fbc has no number for it. The list is matched
+case-insensitively and order does not matter. It is a root-wide setting; a
+per-line source comment (`' ignore: <key>`) and a config allow-list
+counterpart are planned.
 
 ## How it is put together
 

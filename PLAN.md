@@ -633,9 +633,15 @@ texts from M21's generated catalog (landed).
   closer by `fbcExpectedCloserError`/`fbcCloserWithoutOpenerError` in
   `src/language.cpp`. The coarse routing code stays internal so one quick fix
   covers the whole family — see [`CHANGELOG.md`](CHANGELOG.md).
-- **Code identity — landed (2026-10-10).** The diagnostics that predate the
-  closer split carry fbc's number too, with a `fbcKind` field so warnings
-  render as `fbc warning: N`: `keyword-suffix` → `44`, `unterminated-string` →
+- **Code identity — landed (2026-10-10).** Every diagnostic the wire reports
+  leads with our routing code; a diagnostic the parser also mapped onto an fbc
+  message appends the number — `<key>, fbc error: N` (`include-not-found, fbc
+  error: 23`) or `fbc warning: N` for the warning half (`keyword-suffix, fbc
+  warning: 44`) — with a `fbcKind` field so the two number independently. An
+  unmapped diagnostic (`bad-continuation`, the preprocessor shapes) carries the
+  key alone, so our identifier is always addressable: a suppression/whitelist
+  config keys on the routing code, which the number-only form hid. Mapped
+  today: `keyword-suffix` → `44`, `unterminated-string` →
   `12`, `duplicate-definition` → `4` (severity stays Warning, FreeBASIC.md
   §12.25), `include-not-found` → `23`, and `invalid-member-name` →
   `14`/`238`/`3` by trigger. `bad-continuation` was probed a false positive
@@ -669,8 +675,9 @@ texts from M21's generated catalog (landed).
   — which now inherit the gate for free.
 - **Suppression — landed (2026-10-10).** `freebasicd.toml`'s `suppress` is a
   list of routing keys (`Diagnostic::code`, the same identifier quick fixes
-  register on — `bad-continuation`, `unterminated-block`, `include-not-found`,
-  never fbc's wire number). A named diagnostic is dropped at delivery, next to
+  register on — `bad-continuation`, `unterminated-block`, `include-not-found`;
+  the wire appends fbc's number to it, but the list names our key). A named
+  diagnostic is dropped at delivery, next to
   the `-w` gate and sharing its M14 `resultId` fold and re-publish/refresh
   behavior; the parser still records it. Entries are lowercased and the list
   sorted/deduped at parse time, so case and order are not part of the value.
@@ -680,6 +687,13 @@ texts from M21's generated catalog (landed).
   same delivery-gate shape with a line/range predicate, computed against the
   parse the payload is built from (a comment is a language fact like any
   other), and must fold the comment-derived suppressions into `resultId` too.
+  **Also future, with it: a whitelist counterpart in the config** — an
+  allow-list option (e.g. `allow = [...]`) that is the inverse gate: when
+  non-empty, only the named routing keys may surface, so a root can run with a
+  narrow curated set instead of enumerating every code to drop. It needs the
+  same `resultId` fold and re-publish semantics as `suppress`, and the comment
+  form should grow a matching allow direction rather than the two features
+  diverging.
 - **No cascades.** A single missing closer yields one diagnostic, not one per
   subsequent line; the existing `unterminated-block` handling is the model.
 - **Corpus.** Import the fbc-suite triggers into `tests/` as goldens rather than

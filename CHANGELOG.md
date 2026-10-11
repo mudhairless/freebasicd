@@ -26,12 +26,32 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-10 — The wire code leads with our identifier (M23)
+
+- **Changed: a diagnostic's `code` now names our routing key, and appends
+  fbc's number when there is one.** The format is `<key>, fbc error: N` (or
+  `fbc warning: N`) — `include-not-found, fbc error: 23`, `keyword-suffix, fbc
+  warning: 44` — and a diagnostic fbc has no number for carries the key alone
+  (`bad-continuation`). Before this a mapped diagnostic's code was *only* `fbc
+  error: N`, so our identifier never reached the client.
+- **Why compose them.** `suppress` (and the planned whitelist and comment
+  forms) addresses a diagnostic by its routing code, so the code the client
+  sees and the key the config uses have to be the same string: a diagnostic
+  addressable only by a number could never be named. Fbc's number still follows
+  for a reader who knows `error 23`, but it is no longer the whole identity.
+- **Tests now assert the identifier, except where the mapping is the subject.**
+  The suppression, `-w` gate, code-action, and include tests match
+  `"code":"<key>"` (the key leads, so a prefix match matches); the one mapping
+  test in `session_core_checks` pins the composed
+  `"code":"duplicate-definition, fbc error: 4"`, and `fbc_diagnostics_checks`
+  keeps `fbcCode`'s unit-level number. `ctest` 19/19, format clean.
+
 ### 2026-10-10 — Diagnostics suppression is a config key (M23)
 
 - **Added: `suppress` in `freebasicd.toml`.** A list of routing keys — the
   diagnostic's own stable identifier, the same one quick fixes register on
-  (`bad-continuation`, `unterminated-block`, `include-not-found`), never the
-  fbc number the wire may show in its place. A named diagnostic is dropped at
+  (`bad-continuation`, `unterminated-block`, `include-not-found`) — the key the
+  wire code leads with (see the entry above). A named diagnostic is dropped at
   delivery; the parser still records it. The list is lowercased and sorted and
   deduped at parse time, so case and ordering are not part of the value (two
   configs naming the same set compare equal and answer the same `resultId`).

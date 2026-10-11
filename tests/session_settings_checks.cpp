@@ -69,8 +69,8 @@ void TestDidChangeConfigurationIncludePathResolves() {
       ToJsonString(mainText) + "\"}}}";
   input->append(MakeLspFrame(openFrame.c_str()));
   std::string const first = WaitForPublishedUri(output, 1);
-  Expect(first.find("\"code\":\"fbc error: 23\"") != std::string::npos,
-         "an unreachable include must publish with fbc's own code");
+  Expect(first.find("\"code\":\"include-not-found") != std::string::npos,
+         "an unreachable include must publish under its routing key");
 
   // Write the config and signal the change; the notification carries no
   // settings of its own (the payload is ignored, the file is the truth).
@@ -85,7 +85,7 @@ void TestDidChangeConfigurationIncludePathResolves() {
   std::string const republished =
       WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
   std::string const lastPublish = LastPublish(republished);
-  Expect(lastPublish.find("\"code\":\"fbc error: 23\"") == std::string::npos,
+  Expect(lastPublish.find("\"code\":\"include-not-found") == std::string::npos,
          "the re-published diagnostics must no longer report the include as "
          "missing");
   Expect(lastPublish.find("\"diagnostics\":[]") != std::string::npos,
@@ -151,7 +151,7 @@ void TestDidChangeConfigurationDiagnosticsToggle() {
       mainUri + R"(","languageId":"basic","version":1,"text":"else\n"}}})";
   input->append(MakeLspFrame(openFrame.c_str()));
   std::string const first = WaitForPublishedUri(output, 1);
-  Expect(first.find("\"code\":\"fbc error: 117\"") != std::string::npos,
+  Expect(first.find("\"code\":\"stray-closer") != std::string::npos,
          "the open must publish the stray-closer Error");
 
   // Off: one empty publish per open buffer...
@@ -195,7 +195,7 @@ void TestDidChangeConfigurationDiagnosticsToggle() {
   std::string const restored =
       WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
   std::string const restoring = LastPublish(restored);
-  Expect(restoring.find("\"code\":\"fbc error: 118\"") != std::string::npos,
+  Expect(restoring.find("\"code\":\"stray-closer") != std::string::npos,
          "turning diagnostics on must re-publish the buffer's errors");
 
   session.stop();
@@ -248,7 +248,8 @@ void TestDidChangeConfigurationWarningLevel() {
       R"(","languageId":"basic","version":1,"text":"print% 1\nprint \"abc\n"}}})";
   input->append(MakeLspFrame(openFrame.c_str()));
   std::string const first = WaitForPublishedUri(output, 1);
-  Expect(first.find("\"code\":\"fbc warning:") == std::string::npos,
+  Expect(first.find("\"code\":\"keyword-suffix") == std::string::npos &&
+             first.find("\"code\":\"unterminated-string") == std::string::npos,
          "the default (-w none) must not publish any mapped warning");
 
   // `-w all` re-publishes both warnings, at Warning severity.
@@ -260,9 +261,9 @@ void TestDidChangeConfigurationWarningLevel() {
   std::string const withAll =
       WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
   std::string const allPublish = LastPublish(withAll);
-  Expect(allPublish.find("\"code\":\"fbc warning: 44\"") != std::string::npos,
+  Expect(allPublish.find("\"code\":\"keyword-suffix") != std::string::npos,
          "a suffixed keyword must publish under -w all");
-  Expect(allPublish.find("\"code\":\"fbc warning: 12\"") != std::string::npos,
+  Expect(allPublish.find("\"code\":\"unterminated-string") != std::string::npos,
          "an unterminated string must publish under -w all");
   Expect(allPublish.find("\"severity\":2") != std::string::npos,
          "a level-1 warning keeps Warning severity under -w all");
@@ -276,8 +277,10 @@ void TestDidChangeConfigurationWarningLevel() {
   input->append(MakeLspFrame(kDidChangeConfigurationFrame));
   std::string const withError =
       WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
-  Expect(LastPublish(withError).find("\"code\":\"fbc warning:") ==
-             std::string::npos,
+  std::string const errorPublish = LastPublish(withError);
+  Expect(errorPublish.find("\"code\":\"keyword-suffix") == std::string::npos &&
+             errorPublish.find("\"code\":\"unterminated-string") ==
+                 std::string::npos,
          "-w error is not accepted and must fall back to -w none");
 
   // An invalid level is `-w none` too: nothing publishes.
@@ -289,7 +292,9 @@ void TestDidChangeConfigurationWarningLevel() {
   std::string const withBogus =
       WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
   std::string const bogusPublish = LastPublish(withBogus);
-  Expect(bogusPublish.find("\"code\":\"fbc warning:") == std::string::npos,
+  Expect(bogusPublish.find("\"code\":\"keyword-suffix") == std::string::npos &&
+             bogusPublish.find("\"code\":\"unterminated-string") ==
+                 std::string::npos,
          "an invalid warning level must fall back to -w none");
 
   session.stop();
@@ -345,12 +350,13 @@ void TestDidChangeConfigurationSuppress() {
   input->append(MakeLspFrame(openFrame.c_str()));
   std::string const first = WaitForPublishedUri(output, 1);
   std::string const firstPublish = LastPublish(first);
-  Expect(firstPublish.find("\"code\":\"fbc error: 23\"") != std::string::npos,
+  Expect(firstPublish.find("\"code\":\"include-not-found") != std::string::npos,
          "the unresolved include must publish by default");
   Expect(firstPublish.find("\"code\":\"bad-continuation\"") !=
              std::string::npos,
          "the mid-line `_` must publish bad-continuation by default");
-  Expect(firstPublish.find("\"code\":\"fbc error: 125\"") != std::string::npos,
+  Expect(firstPublish.find("\"code\":\"unterminated-block") !=
+             std::string::npos,
          "the dangling sub must publish unterminated-block by default");
 
   // Suppressing the routing key drops exactly that diagnostic: the survivors
@@ -366,10 +372,10 @@ void TestDidChangeConfigurationSuppress() {
   Expect(suppressedPublish.find("\"code\":\"bad-continuation\"") ==
              std::string::npos,
          "a suppressed routing key must not reach the wire");
-  Expect(suppressedPublish.find("\"code\":\"fbc error: 23\"") !=
+  Expect(suppressedPublish.find("\"code\":\"include-not-found") !=
              std::string::npos,
          "a diagnostic not named by suppress must keep publishing");
-  Expect(suppressedPublish.find("\"code\":\"fbc error: 125\"") !=
+  Expect(suppressedPublish.find("\"code\":\"unterminated-block") !=
              std::string::npos,
          "a diagnostic not named by suppress must keep publishing");
 
@@ -383,9 +389,9 @@ void TestDidChangeConfigurationSuppress() {
   std::string const both =
       WaitForPublishedUri(output, CountPublished(output->snapshot()) + 1);
   std::string const bothPublish = LastPublish(both);
-  Expect(bothPublish.find("\"code\":\"fbc error: 23\"") == std::string::npos,
+  Expect(bothPublish.find("\"code\":\"include-not-found") == std::string::npos,
          "include-not-found is dropped by the same gate as the parser's codes");
-  Expect(bothPublish.find("\"code\":\"fbc error: 125\"") != std::string::npos,
+  Expect(bothPublish.find("\"code\":\"unterminated-block") != std::string::npos,
          "the unterminated-block must survive both suppressions");
 
   session.stop();
@@ -623,7 +629,7 @@ void TestSettingsApplyPerRootOnly() {
   Expect(CountPublished(both) == 2, "both opens must publish diagnostics");
   std::size_t notFoundA = 0;
   std::size_t ra = 0;
-  while ((ra = both.find("\"code\":\"fbc error: 23\"", ra)) !=
+  while ((ra = both.find("\"code\":\"include-not-found", ra)) !=
          std::string::npos) {
     ++notFoundA;
     ra += 1;
@@ -650,13 +656,13 @@ void TestSettingsApplyPerRootOnly() {
          "the re-published buffer must be the changed root's document");
   Expect(last.find(bUri) == std::string::npos,
          "the unchanged root must not re-publish its document");
-  Expect(last.find("\"code\":\"fbc error: 23\"") == std::string::npos,
+  Expect(last.find("\"code\":\"include-not-found") == std::string::npos,
          "the changed root's include must now resolve");
-  Expect(last.find("\"code\":\"fbc error: 117\"") != std::string::npos,
+  Expect(last.find("\"code\":\"stray-closer") != std::string::npos,
          "the changed root's other errors must survive the re-publish");
   std::size_t remaining = 0;
   std::size_t rb = 0;
-  while ((rb = after.find("\"code\":\"fbc error: 23\"", rb)) !=
+  while ((rb = after.find("\"code\":\"include-not-found", rb)) !=
          std::string::npos) {
     ++remaining;
     rb += 1;

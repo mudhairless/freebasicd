@@ -117,7 +117,7 @@ void TestPullDiagnosticsFullAndUnchanged() {
       });
   Expect(full.find("\"kind\":\"full\"") != std::string::npos,
          "the first pull must answer the full arm");
-  Expect(full.find("\"code\":\"fbc error: 4\"") != std::string::npos,
+  Expect(full.find("\"code\":\"duplicate-definition") != std::string::npos,
          "the full report must carry the document's diagnostics");
   Expect(full.find("\"start\":{\"line\":1,\"character\":4}") !=
              std::string::npos,
@@ -135,7 +135,7 @@ void TestPullDiagnosticsFullAndUnchanged() {
       });
   Expect(unchanged.find("\"kind\":\"unchanged\"") != std::string::npos,
          "a matching previousResultId must answer the unchanged arm");
-  Expect(unchanged.find("fbc error: 4") == std::string::npos,
+  Expect(unchanged.find("duplicate-definition") == std::string::npos,
          "the unchanged report must not resend the cached items");
   Expect(!ResultIdOf(unchanged).empty(),
          "the unchanged report must still name its resultId");
@@ -205,7 +205,7 @@ void TestPullDiagnosticsRelatedDocuments() {
          "a pull on an including document must surface relatedDocuments");
   Expect(reply.find(errUri) != std::string::npos,
          "the related report must be keyed by the included file's uri");
-  Expect(reply.find("\"code\":\"fbc error: 4\"") != std::string::npos,
+  Expect(reply.find("\"code\":\"duplicate-definition") != std::string::npos,
          "the related report must carry the header's own diagnostics");
   Expect(reply.find("\"kind\":\"full\"") != std::string::npos,
          "the request document's report must be full");
@@ -270,7 +270,7 @@ void TestWorkspaceDiagnostic() {
       });
   Expect(first.find(badUri) != std::string::npos,
          "the workspace pull must report the file that carries diagnostics");
-  Expect(first.find("\"code\":\"fbc error: 117\"") != std::string::npos,
+  Expect(first.find("\"code\":\"stray-closer") != std::string::npos,
          "the full report must carry the file's diagnostics");
   Expect(first.find(cleanUri) == std::string::npos,
          "a clean file never reported must be skipped");
@@ -288,7 +288,7 @@ void TestWorkspaceDiagnostic() {
       });
   Expect(second.find("\"kind\":\"unchanged\"") != std::string::npos,
          "a listed file whose resultId matches must answer unchanged");
-  Expect(second.find("fbc error: 117") == std::string::npos,
+  Expect(second.find("stray-closer") == std::string::npos,
          "the unchanged workspace answer must not resend the items");
 
   // Open bad.bas with edited content under a real wire version: the stale id
@@ -338,7 +338,7 @@ void TestWorkspaceDiagnostic() {
       });
   Expect(gated.find("\"items\":[]") != std::string::npos,
          "a gated-off workspace report must answer an empty item list");
-  Expect(gated.find("fbc error: 117") == std::string::npos,
+  Expect(gated.find("stray-closer") == std::string::npos,
          "a gated-off report must carry no diagnostics");
   std::string const resultId3 = ResultIdOf(gated);
   Expect(!resultId3.empty() && resultId3 != resultId2,
@@ -404,9 +404,10 @@ void TestWarningLevelFoldsIntoResultId() {
       });
   Expect(first.find(probeUri) != std::string::npos,
          "the workspace pull must report the probe file");
-  Expect(first.find("fbc error: 117") != std::string::npos,
+  Expect(first.find("stray-closer") != std::string::npos,
          "an error is never gated by the warning level");
-  Expect(first.find("\"code\":\"fbc warning:") == std::string::npos,
+  Expect(first.find("\"code\":\"keyword-suffix") == std::string::npos &&
+             first.find("\"code\":\"unterminated-string") == std::string::npos,
          "-w none must drop the mapped warnings from the items");
   std::string const idNone = ResultIdOf(first);
   Expect(!idNone.empty(), "the none report must carry a resultId");
@@ -419,14 +420,14 @@ void TestWarningLevelFoldsIntoResultId() {
   }
   input->append(MakeLspFrame(kDidChangeConfigurationFrame));
   std::string const withAll = PollRequest(
-      input, output, "pwl2", "\"code\":\"fbc warning: 44\"",
+      input, output, "pwl2", "\"code\":\"keyword-suffix",
       [&](std::string const &id) {
         return std::string(
                    R"({"jsonrpc":"2.0","id":")" + id +
                    R"(","method":"workspace/diagnostic","params":{"previousResultIds":[{"uri":")") +
                probeUri + R"(","value":")" + idNone + "\"}]}}";
       });
-  Expect(withAll.find("\"code\":\"fbc warning: 12\"") != std::string::npos,
+  Expect(withAll.find("\"code\":\"unterminated-string") != std::string::npos,
          "-w all must surface the unterminated-string warning too");
   Expect(withAll.find("\"severity\":2") != std::string::npos,
          "a level-1 warning keeps Warning severity under -w all");
@@ -449,7 +450,9 @@ void TestWarningLevelFoldsIntoResultId() {
                    R"(","method":"workspace/diagnostic","params":{"previousResultIds":[{"uri":")") +
                probeUri + R"(","value":")" + idAll + "\"}]}}";
       });
-  Expect(withError.find("\"code\":\"fbc warning:") == std::string::npos,
+  Expect(withError.find("\"code\":\"keyword-suffix") == std::string::npos &&
+             withError.find("\"code\":\"unterminated-string") ==
+                 std::string::npos,
          "-w error is not accepted and must fall back to -w none");
   std::string const idError = ResultIdOf(withError);
   Expect(idError == idNone,
@@ -519,9 +522,9 @@ void TestSuppressFoldsIntoResultId() {
         return std::string(R"({"jsonrpc":"2.0","id":")" + id +
                            R"(","method":"workspace/diagnostic","params":{}})");
       });
-  Expect(first.find("fbc error: 125") != std::string::npos,
+  Expect(first.find("unterminated-block") != std::string::npos,
          "a diagnostic not suppressed must still be reported");
-  Expect(first.find("fbc error: 117") == std::string::npos,
+  Expect(first.find("stray-closer") == std::string::npos,
          "a suppressed routing key must be dropped from the items");
   std::string const idSuppressed = ResultIdOf(first);
   Expect(!idSuppressed.empty(), "the suppressed report must carry a resultId");
@@ -535,13 +538,13 @@ void TestSuppressFoldsIntoResultId() {
   }
   input->append(MakeLspFrame(kDidChangeConfigurationFrame));
   std::string const readded = PollRequest(
-      input, output, "psu2", "fbc error: 117", [&](std::string const &id) {
+      input, output, "psu2", "stray-closer", [&](std::string const &id) {
         return std::string(
                    R"({"jsonrpc":"2.0","id":")" + id +
                    R"(","method":"workspace/diagnostic","params":{"previousResultIds":[{"uri":")") +
                probeUri + R"(","value":")" + idSuppressed + "\"}]}}";
       });
-  Expect(readded.find("fbc error: 125") != std::string::npos,
+  Expect(readded.find("unterminated-block") != std::string::npos,
          "the survivor must remain after the suppression is removed");
   std::string const idRead = ResultIdOf(readded);
   Expect(!idRead.empty() && idRead != idSuppressed,

@@ -61,8 +61,9 @@ struct Settings {
   // wire obeys the config.
   //
   // This is the root-wide list. A per-line source comment (clang-tidy's
-  // `' ignore:` / `' ignore-next-line:`) is future work and will feed the same
-  // delivery gate; see PLAN.md M23.
+  // `' ignore:` / `' ignore-next-line:`) and a config allow-list counterpart
+  // (a whitelist that keeps only the named keys) are future work and will feed
+  // the same delivery gate; see PLAN.md M23.
   std::vector<std::string> suppress;
 
   bool operator==(Settings const &other) const {

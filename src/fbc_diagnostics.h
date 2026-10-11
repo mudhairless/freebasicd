@@ -39,9 +39,11 @@ FbcCatalogEntry const *fbcMessage(FbcMessageKind kind, int number);
 // How many messages of `kind` the catalog holds.
 int fbcMessageCount(FbcMessageKind kind);
 
-// The LSP `Diagnostic.code` for a catalog message: `fbc error: 42` /
-// `fbc warning: 5`. Returns an empty string when the message is not in the
-// catalog.
+// The fbc half of an LSP `Diagnostic.code` for a catalog message: `fbc error:
+// 42` / `fbc warning: 5`. The session composes the full code as our routing key
+// followed by this (`include-not-found, fbc error: 23`), so our identifier is
+// always present; the number alone is what tests that pin the mapping match.
+// Returns an empty string when the message is not in the catalog.
 std::string fbcCode(FbcMessageKind kind, int number);
 
 // The wiki page documenting the compiler's diagnostics, for the LSP
