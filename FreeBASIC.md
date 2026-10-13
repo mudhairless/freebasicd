@@ -491,20 +491,47 @@ Four storage categories `(wiki)`, visibility probe-verified `(fbc)`:
 | `Dim` (local, innermost block) | declaring block + nested blocks only; **not** outside it |
 | `Dim` at module level (no `Shared`) | module-level code at/after the declaration, incl. `SCOPE` blocks; **NOT inside procedures** |
 | `Dim Shared` at module level | everywhere in the module, **including procedures** |
+| `Extern name` at module level | a shared name (visible inside procedures whether or not `Shared` is written) that **declares external linkage**: it is fulfilled by one defining `Dim`/`Redim` in the module where the name is defined — see probes below |
+| `Const` at module level | everywhere in the module, **including procedures** — storage-less, hence always visible |
 | `Common name` at module level | other modules at module level; **NOT inside procedures** |
 | `Common Shared name` at module level | everywhere, including procedures in all modules |
 
 Probe results:
 - `Dim total` + procedure write → `error 42: Variable not declared, total`
   (`vis.bas`); with `Dim Shared` the program ran and printed `2` (`vis2.bas`).
+- `Extern ext1` + procedure read → compiles; so do `#print typeof(.ext1)` and
+  `#print typeof(ext1)`. An `Extern` is shared regardless of a `Shared` keyword,
+  and `Extern Shared` is fbc `error 4: Duplicated definition`.
+- `Const c1` + procedure read → compiles; so do `#print typeof(.c1)` and
+  `#print typeof(c1)`. `Const` needs an initializer (`error 10` without one) and
+  rejects `Shared` (`error 4`), because a module-level constant is already
+  visible like a shared name.
 - `Common Shared m` visible in a `Sub` → printed `5` (`mcs.bas`).
 - `Dim outer` at module level is visible inside a `SCOPE` block; `Dim inner`
   inside the `SCOPE` is **not** visible after it → `error 42: Variable not
   declared, inner` (`sc.bas`).
 
+External linkage (multi-module, `fbc a.bas b.bas`; KeyPgExtern — "can be
+(re)defined only in a single external module"):
+- The defining module declares `Extern x` and then `Dim x` (the wiki's example
+  shape); the exported object symbol is then global (`nm`: `D X`). A lone
+  `Dim Shared x` does **not** export (`d X` — local), so an `Extern x` in
+  another module links against nothing: `undefined reference to 'X'`.
+- The same externally-linked name defined in two modules fails the link with
+  `multiple definition of 'X'`.
+- Both are **link-time** rules; a single-file parse cannot see the second
+  module, so the server neither models linkage nor flags them (§12.29).
+- Same module: `Extern x` *after* any definition of `x` (`Dim`, `Dim Shared`,
+  `Static`, `Var`, `Common`, `Redim`, `Const`) is fbc `error 4: Duplicated
+  definition`; `extern x` repeated, and `Extern` followed by a defining `Dim`,
+  both compile. `Redim` may repeat itself (`redim x(3)` + `redim x(4)`
+  compiles) but `Common` is a plain definition (`common c` twice is `error 4`,
+  probed).
+
 So: **scope blocks nest and inherit; procedure bodies do not see module-level
-plain `Dim`/`Common`** — only `Shared`/`Common Shared` module names plus their
-own locals and enclosing-in-procedure block names.
+plain `Dim`/`Common`** — only `Shared`/`Extern`/`Common Shared` module names
+plus their own locals and enclosing-in-procedure block names. (A name declared
+`Extern` is shared, and module-level `Const` is always visible.)
 
 Each **branch** inside a control block is its own scope, not merely the block
 (probed `(fbc 1.10.2)`):
@@ -1244,9 +1271,21 @@ to "the language is what the lexer does":
     module-level scoped block's local (`scope` / `dim inner` / `end scope`, then
     a procedure read → fbc 42), where `Shared` is itself illegal (fbc
     `error 96`), so no fix exists and, per the M12 rule that a diagnostic never
-    ships without its fix, none is offered. `Extern`/`Const` module declarations
-    are never gated: fbc keeps `extern` visible inside procedures, and neither
-    accepts `Shared` (`Dim`/`Redim`/`Common`/`Static`/`Var` do). The bare read
+    ships without its fix, none is offered. `Extern` and module-level `Const`
+    are never gated: an `Extern` name is shared whether or not `Shared` is
+    written (§8), and a module `Const` is storage-less and always visible.
+    Neither accepts a `Shared` keyword (`Dim`/`Redim`/`Common`/`Static`/`Var`
+    do — `Extern Shared` and `Const Shared` are fbc `error 4`). The linkage
+    half of `Extern` (KeyPgExtern: a name declared external may be (re)defined
+    in only one module) is a link-time rule invisible to a single-file parse,
+    so none of these are reported: a second external definition (`multiple
+    definition` at link), an `Extern` with no definition (`undefined
+    reference`), and `Dim Shared` alone exporting nothing for an `Extern` to
+    resolve against. In one file an `Extern` following a definition of the same
+    name, a repeated `Common`, and a `Common`/`Dim` collision are reported as
+    `duplicate-definition` (fbc 4, probed); `Redim` after a `Dim` shares that
+    number but stays silent (pre-existing — `Redim` repeats legally and the
+    dynamic-array `dim x()` + `redim x(3)` case is array-shape-dependent). The bare read
     and the bare `typeof(name)` shape additionally require no visible
     declaration of the name, so a local or parameter that shadows the module
     name is legal and silent. A trailing `'` comment on a directive is stripped

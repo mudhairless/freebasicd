@@ -103,19 +103,24 @@ struct Symbol {
   bool moduleScope = false;
   std::vector<Occurrence> occurrences;
 
-  // M7 storage tagging (FreeBASIC.md §8/§12.2): true only for a module-level
-  // `Dim`-kind declaration carrying the `Shared` modifier (`Dim Shared`,
-  // `Redim Shared`, `Common Shared`, `[Static] Var Shared`). Module-scope
-  // plain `Dim`/`Common` stay false. Inside any block, module-scope Dim-kind
-  // candidates require `shared`; at module level everything is visible.
+  // M7 storage tagging (FreeBASIC.md §8/§12.2): the storage gate. True for a
+  // module-level `Dim`-kind declaration with shared storage — the `Shared`
+  // modifier (`Dim Shared`, `Redim Shared`, `Common Shared`, `[Static] Var
+  // Shared`), or `Extern`, which implies it (an `Extern` variable is shared
+  // whether or not `Shared` is written). Module-scope plain `Dim`/`Common`
+  // stay false. Inside any block, module-scope Dim-kind candidates require
+  // `shared`; at module level everything is visible.
   // Procedure/type/enum/const roots are storage-less and never gated.
   bool shared = false;
 
-  // True for a declaration that does not *define* storage: `Extern` and
-  // `Redim` (and `Common`, which a later `Dim` may redefine). fbc accepts
-  // these repeated and in combination with a `Dim` of the same name, so they
-  // must not take part in the duplicate-definition set (probed; FreeBASIC.md
-  // §8). A plain `Dim`/`Const`/`Static` does define and stays in the set.
+  // True for a declaration-only form: `Extern` and `Redim` do not collide
+  // with a same-form re-declaration (fbc accepts `extern x` twice and
+  // `redim x(3)` + `redim x(4)` — probed), so they stay out of the
+  // duplicate-definition keys. They are not interchangeable with a definition:
+  // fbc rejects `extern` after a definition (`error 4`, reported where the
+  // `Extern` is read) and `Redim` after a `Dim` (`error 4`, still unreported).
+  // A plain `Dim`/`Const`/`Static`/`Common` defines and stays in the set
+  // (FreeBASIC.md §8).
   bool declOnly = false;
 
   // True for a `type x as y` alias declaration: a redefinition with the same

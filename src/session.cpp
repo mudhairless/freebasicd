@@ -804,7 +804,7 @@ std::string symbolKindLine(fblang::Symbol const *decl,
              " `" + proc->name + "`" + blockSuffix() + ".";
     }
     return "Module-level variable" +
-           (decl->shared ? std::string(" — `Shared` (visible inside "
+           (decl->shared ? std::string(" — shared storage (visible inside "
                                        "procedures)")
                          : std::string()) +
            blockSuffix() + ".";

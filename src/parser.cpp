@@ -1059,8 +1059,11 @@ private:
         handleVarDecls(SymbolKind::Const);
         return;
       }
-      handleVarDecls(SymbolKind::Dim,
-                     /*declOnly=*/w == "redim" || w == "common");
+      // `Common` is a definition like `Dim` (fbc error 4 on a repeated or
+      // colliding name — probed), so only `Redim` is the repeatable
+      // declaration-only form: fbc accepts `redim x(3)` + `redim x(4)` but
+      // rejects `dim x` + `redim x` (FreeBASIC.md §8).
+      handleVarDecls(SymbolKind::Dim, /*declOnly=*/w == "redim");
       return;
     }
     if (w == "if") {
@@ -1104,8 +1107,11 @@ private:
       // `extern <name> [as <type>]` declares a variable, it does not open a
       // block: only `extern "<lang>"` starts `Extern ... End Extern`
       // (FreeBASIC.md §7). A bare `extern` with no name is fbc's `error 14`,
-      // never a block, so it must not open one either.
-      handleVarDecls(SymbolKind::Dim, /*declOnly=*/true);
+      // never a block, so it must not open one either. An `Extern` variable
+      // has shared storage whether or not `Shared` is written, so it is
+      // visible inside procedures like a `Dim Shared` (FreeBASIC.md §8).
+      handleVarDecls(SymbolKind::Dim, /*declOnly=*/true,
+                     /*impliedShared=*/true);
       return;
     }
     if (isControlOpenerWord(w)) {
@@ -1912,7 +1918,8 @@ private:
     skipStatement(/*suppressMemberCapture=*/true);
   }
 
-  void handleVarDecls(SymbolKind k, bool declOnly = false) {
+  void handleVarDecls(SymbolKind k, bool declOnly = false,
+                      bool impliedShared = false) {
     Token const openTok = cur_;
     std::string const doc = takeDoc();
     advance();
@@ -1994,12 +2001,27 @@ private:
           s.key = toLowerChars(s.name);
           s.selection.beg = s.range.beg = cur_.beg;
           s.selection.end = s.range.end = cur_.end;
-          // Storage tagging (§12.2 gate): the `Shared` modifier marks
-          // a module-level var decl as visible inside procedures.
-          // Honored only at module level (FreeBASIC.md §8): Shared
-          // inside scope blocks is not supported, and const decls are
-          // storage-less and always visible.
-          s.shared = seenShared && blocks_.empty() && k == SymbolKind::Dim;
+          // Storage tagging (§12.2 gate): a module-level var decl is
+          // visible inside procedures when it has shared storage. That is
+          // the `Shared` modifier, or `Extern`, which implies it — an
+          // `Extern` variable is shared regardless of whether `Shared`
+          // appears (FreeBASIC.md §8). Honored only at module level:
+          // Shared inside scope blocks is not supported, and const decls
+          // are storage-less and always visible.
+          s.shared = blocks_.empty() && k == SymbolKind::Dim &&
+                     (seenShared || impliedShared);
+          // `Extern` declares a name for another module's definition; a
+          // definition of the same name already in this container makes it
+          // fbc's `error 4: Duplicated definition` (§8, probed). The two
+          // legal partners — `extern x` repeated, `extern x` before a
+          // defining `Dim` — never reach this branch, because `Extern` is
+          // declaration-only and never enters the dedupe keys.
+          if (impliedShared && !s.key.empty() &&
+              containers_.back().keys.count(s.key) != 0) {
+            addDiagnostic(s.selection.beg, s.selection.end, Severity::Warning,
+                          "duplicate-definition",
+                          trf("duplicate definition: '%s'", s.name), 4);
+          }
           s.declOnly = declOnly;
           s.signature = headerText(openTok);
           if (first) {

@@ -2140,17 +2140,49 @@ static void TestModuleVarNotSharedDiagnostics() {
     CHECK_MSG(d.parse.diagnostics.empty(),
               "a with-target leading dot is legal");
   }
-  // `extern` keeps the name visible in a procedure, so it is never gated, and a
-  // keyword `Shared` may not follow it — the candidate refuses it.
+  // `Extern` implies shared storage: the name stays visible inside a procedure
+  // and is never gated, and a keyword `Shared` may not follow it — the
+  // candidate refuses it. A module-level `Const` is storage-less and visible
+  // for the same reason. fbc accepts both, in a bare read and in a `typeof`
+  // directive (probed; FreeBASIC.md §8).
   {
     std::string const ext = "extern ext1 as integer\n"
                             "sub s()\n"
                             "    print ext1\n"
+                            "    #print typeof(.ext1)\n"
+                            "    #print typeof(ext1)\n"
                             "end sub\n";
     AnalyzedDoc const d = analyze(ext);
     CHECK_MSG(d.parse.diagnostics.empty(),
               "an extern module variable is visible inside a procedure");
+    Symbol const *decl =
+        resolveAt(d, static_cast<std::uint32_t>(ext.find("extern ext1") + 7));
+    Symbol const *use =
+        resolveAt(d, static_cast<std::uint32_t>(ext.find("print ext1") + 6));
+    CHECK_MSG(decl != nullptr && use == decl,
+              "an extern use resolves to its declaration inside a procedure");
+    if (decl != nullptr) {
+      CHECK_MSG(decl->shared, "an extern declaration has shared storage");
+    }
     CHECK(moduleSharedCandidate(d.parse, ext, "ext1") == nullptr);
+  }
+  {
+    std::string const cst = "const c1 as integer = 5\n"
+                            "sub s()\n"
+                            "    print c1\n"
+                            "    #print typeof(.c1)\n"
+                            "    #print typeof(c1)\n"
+                            "end sub\n";
+    AnalyzedDoc const d = analyze(cst);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "a module const is visible inside a procedure");
+    Symbol const *decl =
+        resolveAt(d, static_cast<std::uint32_t>(cst.find("const c1") + 6));
+    Symbol const *use =
+        resolveAt(d, static_cast<std::uint32_t>(cst.find("print c1") + 6));
+    CHECK_MSG(decl != nullptr && use == decl,
+              "a module const use resolves to its declaration in a procedure");
+    CHECK(moduleSharedCandidate(d.parse, cst, "c1") == nullptr);
   }
   // A module-level control block's local is not fixable by adding `Shared`, so
   // it is not a candidate and its gated use reports nothing.

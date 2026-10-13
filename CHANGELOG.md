@@ -85,6 +85,28 @@ history use; they are kept here so an entry can be traced back.
   both the push and pull paths and applies the fix, checking the family clears
   on re-parse. `po/freebasicd.pot` regenerated. `ctest` 19/19, changed files
   clang-format clean.
+- **`Extern` was nongated in the doc but gated in the code — the doc was
+  wrong, and fixing it surfaced the linkage rule.** An `Extern` declaration
+  implies shared storage (KeyPgExtern), so the parser now tags it `shared` and
+  the name resolves inside a procedure; the hover text no longer claims a
+  literal `Shared` keyword was written. The *linkage* half of `Extern` — the
+  name may be (re)defined in only one module — is a link-time rule: probed,
+  two modules defining the same external name fail the link (`multiple
+  definition`), and a lone `Dim Shared` never exports a symbol for an `Extern`
+  in another module to resolve (`undefined reference`). A single-file parse
+  cannot see the second module, so that half stays unmodeled (FreeBASIC.md
+  §8/§12.29).
+- **The same-module part of the rule is now reported.** `Extern` following a
+  definition of the same name is fbc `error 4: Duplicated definition` (probed
+  against each defining form), while `extern x` repeated, and `Extern` followed
+  by a defining `Dim`, compile. `Common` becomes a plain definition (`common c`
+  twice, and a `Common`/`Dim` collision, report `error 4`); `Redim` stays
+  repeatable, and `Redim` after a `Dim` shares fbc's number but remains silent
+  — `dim x()` + `redim x(3)` compiles, so the rule is array-shape-dependent.
+- **Module-level `Const` is verified visible in a procedure** — a bare read,
+  a `.x` access, and both `typeof` directive shapes compile (probed), and the
+  name resolves from inside a procedure like a shared one; `Const Shared` is
+  fbc `error 4`.
 
 ### 2026-10-11 — Module constructors and destructors parse, with fbc's codes (M21 step 1)
 

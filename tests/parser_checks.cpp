@@ -219,6 +219,44 @@ static void TestStep2bParsingFixes() {
                                         "dim z as integer\n");
     CHECK(diagnosticCount(r, "duplicate-definition") == 0);
   }
+  // The converse order fbc rejects (probed; FreeBASIC.md §8): an `Extern` may
+  // not follow a definition of the same name — `extern x` declares a name for
+  // another module's definition, it is not a re-declaration of one. Both a
+  // plain `Dim` and a `Dim Shared` trigger `error 4`, while `extern` repeated
+  // stays legal (it is declaration-only).
+  {
+    ParseResult const r = parseDocument("dim z as integer\n"
+                                        "extern z as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("dim shared z as integer\n"
+                                        "extern z as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("extern z as integer\n"
+                                        "extern z as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+  }
+  // `Common` is a definition like `Dim` (fbc `error 4`, probed): repeated,
+  // and in collision with a `Dim` or a later `Extern`. Only `Redim` may repeat
+  // itself (`redim x(3)` + `redim x(4)` compiles), because it re-dimensions.
+  {
+    ParseResult const r = parseDocument("common c as integer\n"
+                                        "common c as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("common c as integer\n"
+                                        "extern c as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("redim q(3) as integer\n"
+                                        "redim q(4) as integer\n");
+    CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+  }
   {
     ParseResult const r = parseDocument("type mybyte as byte\n"
                                         "type mybyte as byte\n");
