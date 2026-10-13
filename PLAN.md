@@ -42,6 +42,7 @@
   | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
   | M23 — fbc parser diagnostics: statements, placement, warnings (block structure + false-positive gate + code identity landed) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
+  | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
 
 ## 2. What exists (condensed)
 
@@ -346,7 +347,8 @@
      reachability *is* evaluated since the preprocessor wave; the include
      graph simply does not use guard states for dedupe.) `#inclib` is not
      treated as a source include. Force-disabling the fbc system include
-     search (step ⑥) also remains open.
+     search (step ⑥) also remains open. (M25 evaluates the once-guards and
+     dedupes the closure; the `#inclib` and step-⑥ items stay open.)
   2. The install tree is **not relocatable**: `FBLANG_LOCALEDIR_INSTALL` is
      `${CMAKE_INSTALL_PREFIX}/share/locale` baked in at configure time
      (`src/i18n.cpp`'s probe order: `FBLANG_LOCALEDIR` env override, then the
@@ -402,6 +404,17 @@
      `std::system("fbc -version …")` in `tests/corpus_checks.cpp`. The measured
      basis for the shape: `error.bas` is byte-identical across 1.10.0–1.10.3,
      so versioning belongs on *behavior*, not on message identity.
+  8. **The name view and the single-file diagnostic gates see one file.** A
+     document's name layer — `declAt`, `visibleSymbols`, plain-name completion —
+     answers from the file's own parse, so a declaration that enters a program
+     through `#include` (a header's `Extern`, `Dim Shared`, procedure, or type)
+     is invisible to resolution and suggestions until a member walk reaches it.
+     The single-file family gates cannot see it either: the M21 shared-gate
+     shapes and the extern-in-`.bi` false reports of FreeBASIC.md §12.29 fire
+     against a definition the compiler does see. (Diagnostics for included
+     files already exist on the pull path — `relatedDocuments` +
+     `workspace/diagnostic` — and push publishes open buffers only.) Closing
+     this is M25.
 
 ## 5. Forward plan
 
@@ -731,6 +744,68 @@ warnings (`1–5`, `10`, `13`, `40–43`, `49`).
 Acceptance: the covered set reports fbc's numbers and texts; a resolve gate
 cannot leave a stale M14 `resultId`; `ctest` green, changed files clang-format
 clean.
+
+### M25 — Include-point parsing: the closure joins the name view (backlog, ordering undecided)
+
+FreeBASIC.md §3 says cross-file visibility exists **only through the `#include`
+closure** of a document. Today the *name* layer of a document — `declAt`,
+`visibleSymbols`, plain-name completion, and the single-file diagnostic gates —
+sees only the file's own parse, so a name a header contributes is invisible
+until a member walk reaches it, and the M21 gate family reports declarations
+the compiler sees through an include (the extern-in-`.bi` gap, §12.29). This
+milestone makes the name view closure-aware and delivers included-file
+diagnostics on both deliveries. **Ordering vs M22/M24 deliberately undecided:**
+M25 supplies the include-point visibility M22's include-order rule needs, and
+M24's resolve model (currently "the index only parses") would want it either
+before or alongside; both orders are workable.
+
+**Core, in order** — each step is independently testable:
+
+1. **Locate and parse at the include point.** A document's include edges are
+   resolved (`resolveIncludeTarget`) and each target's analysis is available
+   before name resolution, so a fresh include never waits on the background
+   scan: warm the closure synchronously for the requesting document (extend
+   `ensureRequestClosure`, today member-access-only, to the name view) and
+   keep it warm across `didChange` as edges re-resolve.
+2. **The name view sees the closure.** `declAt`/`visibleSymbols`/plain-name
+   completion gain the transitive include closure's module-level declarations,
+   in include order, behind the includes that introduce them — so hover,
+   definition, references, and completion reach header declarations, and the
+   gates that keyed on "declared in this file" become closure-aware:
+   `moduleSharedCandidate`/`hasSharedModuleRoot`/`declAt` see an
+   `Extern`/`Dim Shared`/`Shared` declaration reached through an include,
+   closing the §12.29 false-report gap. Cross-file replies still convert
+   against the *target* file's content (§3 byte-offset rule).
+3. **Evaluate include-once guards and dedupe the closure** (§4.1 first half):
+   `#include once`, `#pragma once`, and `#ifndef` guard states make a second
+   pull a no-op and dedupe the closure, so a header reached twice contributes
+   one declaration set, not `duplicate-definition` noise.
+4. **Diagnostics for included files, indexed-project files only.** The pull
+   path already answers each transitive include via `relatedDocuments` and
+   iterates every indexed file under `workspace/diagnostic`. This step (a)
+   gates both to included files that are **indexed workspace entries** — an
+   included header resolved through the fbc system folder (step ⑥) or an
+   out-of-root include dir is served for resolution and suggestions but never
+   diagnosed, because its parse is not the user's code and reporting it would
+   leak off-project state into the report; and (b) delivers on **push
+   best-effort**: when an open buffer's closure changes (open, edit,
+   include-path change, watched-files rescan), publish diagnostics for the
+   closed included indexed files, tombstoning a previously-reported file with
+   an empty publish when it goes clean — clients may ignore diagnostics for
+   documents they never opened, so best-effort is the honest capability to
+   advertise, not a guarantee.
+
+**Acceptance**
+
+- A header declaration is suggestible, resolvable, and hoverable from an
+  including document as soon as the include is on disk — no scan wait.
+- The M21 family is silent for `Extern`/`Shared` names declared through the
+  closure; the in-file controls still fire.
+- A doubly-included header introduces each name once.
+- Closed indexed headers' diagnostics arrive on pull (`relatedDocuments` +
+  `workspace/diagnostic`) and on push; a system-folder or out-of-root header
+  never ships diagnostics on either delivery.
+- `ctest` green, changed files clang-format clean.
 
 ### M18 — Public release: first tag
 
