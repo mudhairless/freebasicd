@@ -521,7 +521,8 @@ case has to be *right*, not merely legal:
 `includePaths` today, and so is root-scoped like every setting since M11.
 Contradictions are reported rather than silently resolved: a `build.main` naming
 a file that is not in the index, or set at all on a non-`exe` `kind`, is a
-configuration error worth saying out loud (AGENTS.md §Boundary discipline).
+configuration error worth saying out loud (AGENTS.md §Architecture, "Boundary
+discipline").
 
 **Config shape.** The new keys go in `[build]` and `[fbc]` sub-tables rather
 than as four more top-level keys. That is one helper in `src/settings.cpp`

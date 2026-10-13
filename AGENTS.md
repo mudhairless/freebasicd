@@ -66,6 +66,11 @@ Two conventions are ours rather than the language's:
   byte offsets. LSP interaction happens only in `session`; convert positions via
   LspCpp `WorkingFile` line offsets (`utf16.h`). All LSP positions are UTF-16
   code units.
+- **Boundary discipline**: `session` is the only system boundary — parse and
+  validate external input there (protocol params, `freebasicd.toml`, paths) and
+  let the pure modules trust their inputs. A contradiction at the boundary is
+  reported, not silently resolved, and a malformed value never degrades a
+  session.
 - **LspCpp API**: use `lsp::LanguageSession`; register handlers with
   `server.on(...)`. Request types are `td_<feature>::request/response`,
   notifications `Notify_<Name>::notify`. Buffers via
