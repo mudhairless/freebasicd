@@ -2280,6 +2280,45 @@ static void TestModuleVarNotSharedDiagnostics() {
   }
 }
 
+// The extern-placement lint (resolve.h): both `Extern` forms — the
+// multi-module variable (`extern x as integer`) and the C-library block
+// (`Extern "C" ... End Extern`) — are the same placement problem, one Warning
+// of our own (fbcError 0: fbc compiles a .bas `Extern` fine, so there is no
+// parity number to claim) at the keyword's own range. The `end extern` closer's
+// `extern` word is not a declaration, and a comment or string that merely
+// mentions the keyword lexes to a non-Keyword token, so neither is a hit.
+// Whether the lint fires is the caller's choice (the session keeps `.bi`
+// files silent) — this scan itself is file-type-agnostic.
+static void TestExternPlacementDiagnostics() {
+  std::string const src =
+      "extern ext1 as integer\n"
+      "extern \"C\"\n"
+      "    declare sub c_func cdecl alias \"c_func\" () as long\n"
+      "end extern\n"
+      "' extern again here is only a comment\n"
+      "dim s as string = \"extern\"\n";
+  AnalyzedDoc const doc = analyze(src);
+  std::vector<Diagnostic> hits;
+  externPlacementDiagnostics(doc.tokens, &hits);
+  CHECK_MSG(hits.size() == 2,
+            "both extern forms are flagged; the closer, the comment, and the "
+            "string are not");
+  if (hits.size() == 2) {
+    for (Diagnostic const &d : hits) {
+      CHECK(d.code == "extern-in-source");
+      CHECK(d.severity == Severity::Warning);
+      CHECK(d.fbcError == 0);
+      CHECK_MSG(src.substr(d.range.beg, d.range.end - d.range.beg) == "extern",
+                "the range covers the extern keyword itself");
+      CHECK_MSG(d.message.find("shared header") != std::string::npos,
+                "the message names the shared header");
+    }
+    CHECK(hits[0].range.beg == src.find("extern ext1"));
+    CHECK(hits[0].range.beg < hits[1].range.beg &&
+          hits[1].range.beg == src.find("extern \"C\""));
+  }
+}
+
 int main() {
   TestScopingResolvesCorrectly();
   TestUnknownAndNonIdentifiersResolveNull();
@@ -2306,6 +2345,7 @@ int main() {
   TestTypeOfResolvesTheTypeOfAUsage();
   TestDeclaredTypeNameScansPastPunctuation();
   TestModuleVarNotSharedDiagnostics();
+  TestExternPlacementDiagnostics();
   TestOccurrencesAcrossCrossFile();
   TestPreprocessorDefineWindows();
   std::printf("resolve_checks: %s\n", failures == 0 ? "PASS" : "FAIL");

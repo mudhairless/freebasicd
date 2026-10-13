@@ -778,6 +778,37 @@ void sharedGateDiagnostics(ParseResult &parse, std::vector<Token> const &tokens,
 
 } // namespace
 
+// The extern-placement lint: an `Extern` declaration — variable form or the
+// C-library block — belongs in a shared header, not a source module. Scanned
+// from the token stream because an `extern` is unambiguous once it is a
+// Keyword token (the lexer keeps the word out of comments and strings), and a
+// bare keyword scan cannot be fooled by its position in the statement grammar.
+void externPlacementDiagnostics(std::vector<Token> const &tokens,
+                                std::vector<Diagnostic> *out) {
+  for (std::size_t i = 0; i < tokens.size(); ++i) {
+    Token const &t = tokens[i];
+    if (t.kind != TokenKind::Keyword || toLowerChars(t.text()) != "extern") {
+      continue;
+    }
+    // `end extern` closes the C-library block; only its opener declares.
+    if (i > 0 && tokens[i - 1].kind == TokenKind::Keyword &&
+        toLowerChars(tokens[i - 1].text()) == "end") {
+      continue;
+    }
+    Diagnostic d;
+    d.range.beg = t.beg;
+    d.range.end = t.end;
+    d.severity = Severity::Warning;
+    d.fbcError = 0;
+    d.code = "extern-in-source";
+    // TRANSLATORS: a convention warning. An `Extern` declaration — a
+    // multi-module variable or an `Extern "C"` block — is valid FreeBASIC in a
+    // source module, but belongs in a shared header (.bi).
+    d.message = trf("externs belong in a shared header, not a source module");
+    out->push_back(std::move(d));
+  }
+}
+
 AnalyzedDoc analyze(std::string_view source) {
   AnalyzedDoc doc;
   doc.parse = parseDocument(source);

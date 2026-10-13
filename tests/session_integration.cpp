@@ -35,6 +35,7 @@ void RunCodeActionsTests();
 void RunWorkspaceTests();
 void RunIndexesTests();
 void RunCrossfileTests();
+void RunExternPlacementTests();
 void RunRenameTests();
 void RunSemanticTokensTests();
 void RunSettingsTests();
@@ -61,6 +62,7 @@ int main(int argc, char **argv) {
   fbtest::RunWorkspaceTests();
   fbtest::RunIndexesTests();
   fbtest::RunCrossfileTests();
+  fbtest::RunExternPlacementTests();
   fbtest::RunRenameTests();
   fbtest::RunSemanticTokensTests();
   fbtest::RunSettingsTests();

@@ -107,6 +107,26 @@ history use; they are kept here so an entry can be traced back.
   a `.x` access, and both `typeof` directive shapes compile (probed), and the
   name resolves from inside a procedure like a shared one; `Const Shared` is
   fbc `error 4`.
+- **`Extern` in a source module is now linted** (`extern-in-source`, a Warning
+  with no fbc number — fbc compiles it fine, so this is the "valid FreeBASIC,
+  bad habit" convention lint the user asked for, not parity). Both forms warn
+  at the `extern` keyword's own range: the multi-module variable
+  (`extern x as integer`) and the C-library block (`Extern "C" ... End
+  Extern`). A `.bi` — the shared header `Extern` belongs in — stays silent,
+  and the extension check lives where only the session can see it: the pure
+  token scan is a resolve-layer pass (`externPlacementDiagnostics`, exercised
+  by `resolve_checks`), and the payload builders append it only for non-header
+  files, through the same gate as every other diagnostic. Being fbc-number-less
+  it is not `-w` gated (like `lang-mode`/`meta-directive`): it surfaces by
+  default and is dismissed via `suppress`. The file-type fact had to reach the
+  pull `resultId` too — two files with identical bytes, one `.bas` and one
+  `.bi`, carry different payloads, so they must not share an id. No quick fix
+  is registered: only the user knows which shared header to move the
+  declaration into. Tests: `resolve_checks` (both forms, the `end extern`
+  closer, comment/string mentions, ranges, message), and a new
+  `session_extern_placement_checks` feature file driving both deliveries — the
+  pull report and the push publish — for a `.bas` and a `.bi` with the same
+  text.
 
 ### 2026-10-11 — Module constructors and destructors parse, with fbc's codes (M21 step 1)
 

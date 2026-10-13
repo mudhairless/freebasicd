@@ -502,18 +502,56 @@ void appendIncludeDiagnostics(std::string_view content,
   }
 }
 
+// A `.bi` is the shared header `extern` declarations belong in; any other
+// extension (a `.bas` module in practice, and anything else the user opens) is
+// a source placement the lint flags. Extension is a wire-level fact the
+// language layer does not see, so the choice lives here, at the seam that
+// knows both the payload and the path.
+bool isHeaderFile(std::string_view path) {
+  std::string const ext =
+      fblang::toLowerChars(std::filesystem::path(path).extension().string());
+  return ext == ".bi";
+}
+
+// The extern-placement lint as a document's payload member: the scan
+// (resolve.cpp) runs only for non-header files, and every candidate goes
+// through the same gate as the rest of the payload — a `.bi` stays silent, a
+// suppression drops the code like any other, and the master switch empties it
+// with everything else.
+void appendExternPlacementDiagnostics(std::string_view content,
+                                      std::string_view path,
+                                      fblang::AnalyzedDoc const &doc,
+                                      DiagnosticsGate const &gate,
+                                      std::vector<lsDiagnostic> *out) {
+  if (isHeaderFile(path)) {
+    return;
+  }
+  std::vector<fblang::Diagnostic> raw;
+  fblang::externPlacementDiagnostics(doc.tokens, &raw);
+  for (fblang::Diagnostic const &d : raw) {
+    if (std::optional<lsDiagnostic> ls = gatedDiagnostic(content, d, gate)) {
+      out->push_back(std::move(*ls));
+    }
+  }
+}
+
 // The diagnostics payload one document carries: the parse diagnostics (through
-// the `-w` gate) plus the unresolved include edges of the index entry that
-// describes it (M6's include-not-found). One definition shared by the push
-// path and both pull handlers, so a client that negotiated either delivery can
-// never see a different answer for the same bytes — the M12 rule ("the fix
-// keys on the range the publish reports") extended to the pull model, and the
-// M23 gate ("the level the config set is the level the wire answers").
+// the `-w` gate), the extern-placement lint (resolve.cpp, only for non-header
+// files — a `.bi` is where `Extern` belongs), plus the unresolved include
+// edges of the index entry that describes it (M6's include-not-found). One
+// definition shared by the push path and both pull handlers, so a client that
+// negotiated either delivery can never see a different answer for the same
+// bytes — the M12 rule ("the fix keys on the range the publish reports")
+// extended to the pull model, and the M23 gate ("the level the config set is
+// the level the wire answers").
 std::vector<lsDiagnostic> documentDiagnostics(std::string_view content,
-                                              fblang::ParseResult const &parse,
+                                              fblang::AnalyzedDoc const &doc,
                                               fblang::IndexedFile const *entry,
-                                              DiagnosticsGate const &gate) {
-  std::vector<lsDiagnostic> diags = convertDiagnostics(content, parse, gate);
+                                              DiagnosticsGate const &gate,
+                                              std::string_view path) {
+  std::vector<lsDiagnostic> diags =
+      convertDiagnostics(content, doc.parse, gate);
+  appendExternPlacementDiagnostics(content, path, doc, gate, &diags);
   if (entry) {
     appendIncludeDiagnostics(content, *entry, gate, &diags);
   }
@@ -537,8 +575,15 @@ std::uint64_t diagnosticsFnv(std::string_view bytes, std::uint64_t hash) {
 
 std::string diagnosticsResultId(std::string_view content,
                                 fblang::IndexedFile const *entry,
-                                DiagnosticsGate const &gate) {
+                                DiagnosticsGate const &gate,
+                                std::string_view path) {
   std::uint64_t hash = fblang::AnalysisCache::hashContent(content);
+  if (isHeaderFile(path)) {
+    // The extern-placement lint does not fire in a `.bi`: two documents whose
+    // bytes are identical must still not share a result id when one is a
+    // header and the other a source module, because their payloads differ.
+    hash ^= 0x0d0e0a01ull;
+  }
   if (entry) {
     for (fblang::IncludeEdge const &edge : entry->includes) {
       hash = diagnosticsFnv(edge.literal, hash);
@@ -2028,6 +2073,7 @@ void FreeBasicServer::reparseAndPublish(
   DiagnosticsGate const gate = gateFor(settingsForDocument(normPath));
   std::vector<lsDiagnostic> diags =
       convertDiagnostics(content, doc.parse, gate);
+  appendExternPlacementDiagnostics(content, normPath, doc, gate, &diags);
 
   std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
   if (index) {
@@ -3998,7 +4044,7 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
   bool const on = settingsForDocument(normPath).diagnosticsOn;
   DiagnosticsGate const gate = gateFor(settingsForDocument(normPath));
   std::string const resultId =
-      diagnosticsResultId(dc->content, entry.get(), gate);
+      diagnosticsResultId(dc->content, entry.get(), gate, normPath);
 
   // The client's previousResultId names the report it already holds: when it
   // still matches the current one, answer `unchanged` (kind + resultId only)
@@ -4012,8 +4058,8 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
 
   rsp.result.first->resultId.emplace(resultId);
   if (on) {
-    rsp.result.first->items =
-        documentDiagnostics(dc->content, dc->analysis.parse, entry.get(), gate);
+    rsp.result.first->items = documentDiagnostics(dc->content, dc->analysis,
+                                                  entry.get(), gate, normPath);
   }
 
   // relatedDocuments: the include closure, what `interFileDependencies`
@@ -4035,11 +4081,11 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
           gateFor(settingsForDocument(relatedPath));
       RelatedDocumentDiagnosticReport report;
       report.resultId.emplace(diagnosticsResultId(
-          related->content, relatedEntry.get(), relatedGate));
+          related->content, relatedEntry.get(), relatedGate, relatedPath));
       if (relatedGate.on) {
         report.items =
-            documentDiagnostics(related->content, related->analysis.parse,
-                                relatedEntry.get(), relatedGate);
+            documentDiagnostics(related->content, related->analysis,
+                                relatedEntry.get(), relatedGate, relatedPath);
       }
       if (!rsp.result.first->relatedDocuments) {
         rsp.result.first->relatedDocuments.emplace();
@@ -4080,7 +4126,7 @@ workspace_diagnostic::response FreeBasicServer::onWorkspaceDiagnostic(
       }
       DiagnosticsGate const gate = gateFor(settingsForDocument(entry->path));
       std::string const resultId =
-          diagnosticsResultId(dc->content, entry.get(), gate);
+          diagnosticsResultId(dc->content, entry.get(), gate, entry->path);
       lsDocumentUri const uri(AbsolutePath(entry->path));
       auto const known = previous.find(uri.raw_uri_);
       if (known == previous.end()) {
@@ -4088,7 +4134,7 @@ workspace_diagnostic::response FreeBasicServer::onWorkspaceDiagnostic(
           continue; // gate off: the empty report has nothing to say
         }
         std::vector<lsDiagnostic> items = documentDiagnostics(
-            dc->content, dc->analysis.parse, entry.get(), gate);
+            dc->content, dc->analysis, entry.get(), gate, entry->path);
         if (items.empty()) {
           continue; // nothing new to surface for a file never reported
         }
@@ -4112,7 +4158,7 @@ workspace_diagnostic::response FreeBasicServer::onWorkspaceDiagnostic(
       doc.report.first->resultId.emplace(resultId);
       if (gate.on) {
         doc.report.first->items = documentDiagnostics(
-            dc->content, dc->analysis.parse, entry.get(), gate);
+            dc->content, dc->analysis, entry.get(), gate, entry->path);
       }
       // Open buffers carry the wire version so the client can correlate the
       // report with the document generation it displayed; disk files have

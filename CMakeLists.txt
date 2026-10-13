@@ -442,6 +442,7 @@ add_executable(session_integration
     tests/session_completion_checks.cpp
     tests/session_core_checks.cpp
     tests/session_crossfile_checks.cpp
+    tests/session_extern_placement_checks.cpp
     tests/session_hover_checks.cpp
     tests/session_indexes_checks.cpp
     tests/session_navigation_checks.cpp

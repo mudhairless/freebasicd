@@ -528,6 +528,16 @@ External linkage (multi-module, `fbc a.bas b.bas`; KeyPgExtern — "can be
   compiles) but `Common` is a plain definition (`common c` twice is `error 4`,
   probed).
 
+Where `Extern` belongs (server convention, not an fbc rule): both forms — the
+multi-module variable and the `Extern "C"` block — re-declare names the other
+modules hold, so the shared header (`#include`d by each side) is their home,
+not a source module. The server warns (`extern-in-source`, Warning, no fbc
+number — fbc compiles a `.bas` `Extern` fine) for every `Extern` in a
+non-`.bi` file, at the keyword's own range, and stays silent in a `.bi`. No
+quick fix: only the user knows which shared header to move it into. Being
+fbc-number-less, the lint is not `-w` gated — it surfaces by default and is
+dismissed with the rest of the family through `suppress`.
+
 So: **scope blocks nest and inherit; procedure bodies do not see module-level
 plain `Dim`/`Common`** — only `Shared`/`Extern`/`Common Shared` module names
 plus their own locals and enclosing-in-procedure block names. (A name declared
