@@ -127,6 +127,26 @@ history use; they are kept here so an entry can be traced back.
   `session_extern_placement_checks` feature file driving both deliveries — the
   pull report and the push publish — for a `.bas` and a `.bi` with the same
   text.
+- **Probed follow-up: `Extern x` + a plain `Dim x` is one shared name, so the
+  defining module's `.x` / `typeof(.x)` uses stopped being false errors 8/9.**
+  The defining-module probes showed fbc compiles every family shape in the
+  defining module — the bare read and write, `.x`, both `typeof` forms, at
+  module level and inside a procedure — even though the defining `Dim` carries
+  no `Shared` (the `Extern` declaration carries the shared visibility; the plain
+  `Dim` only provides storage). The bare shapes already escaped, because
+  resolution finds the `Extern` root; the leading-dot 8/9 branches had no
+  visibility walk and fired as soon as a plain non-Shared `Dim` candidate
+  existed, so they squiggled legal `.x` / `typeof(.x)` in the extern+dim combo.
+  They now skip when a shared module root of the name exists
+  (`hasSharedModuleRoot` — the `Extern` root is `shared`, as is `Dim Shared`).
+  The escape is in-file only: a defining module that reaches its `Extern`
+  through an `#include`d header still reports the family, because a single-file
+  parse cannot see the header's declaration — the false-report direction of the
+  include gap already recorded in §12.29, left unengineered for the same reason.
+  Tests: `resolve_checks` covers the extern+dim shape set (all five shapes clean,
+  resolution to the `Extern` root, the candidate seam intact) alongside the
+  unchanged plain-dim controls; FreeBASIC.md §8/§12.29 record the probes.
+  `ctest` 19/19, changed files clang-format clean.
 
 ### 2026-10-11 — Module constructors and destructors parse, with fbc's codes (M21 step 1)
 

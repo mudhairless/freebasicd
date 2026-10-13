@@ -2166,6 +2166,44 @@ static void TestModuleVarNotSharedDiagnostics() {
     }
     CHECK(moduleSharedCandidate(d.parse, ext, "ext1") == nullptr);
   }
+  // An `Extern` of a name with a *defining* plain `Dim` behind it is one
+  // shared external name (probed, fbc 1.10.2): the defining module's
+  // procedures read, write, and use every shape of the family — the bare
+  // name, `.name`, and both `typeof` forms, at module level and inside a
+  // procedure. The `Extern` root carries the name into shared visibility, so
+  // the leading-dot shapes escape through the shared-root check and the bare
+  // shapes through resolution — a candidate still exists (the plain `Dim` is
+  // a non-Shared module variable) but no diagnostic fires, and none should:
+  // before this shape was probed, `.ext1` and `typeof(.ext1)` were reported
+  // as false errors 8/9.
+  {
+    std::string const extDim = "extern ext1 as integer\n"
+                               "dim ext1 as integer\n"
+                               "sub s()\n"
+                               "    print ext1\n"
+                               "    ext1 = 5\n"
+                               "    print .ext1\n"
+                               "    #print typeof(ext1)\n"
+                               "    #print typeof(.ext1)\n"
+                               "end sub\n"
+                               "print .ext1\n"
+                               "#print typeof(.ext1)\n";
+    AnalyzedDoc const d = analyze(extDim);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "extern + plain dim is one shared name; nothing is gated");
+    Symbol const *use =
+        resolveAt(d, static_cast<std::uint32_t>(extDim.find("print ext1") + 6));
+    CHECK_MSG(use != nullptr && use->shared && use->declOnly,
+              "the procedure name resolves to the Extern declaration");
+    Symbol const *cand = moduleSharedCandidate(d.parse, extDim, "ext1");
+    CHECK_MSG(cand != nullptr,
+              "the plain Dim is still a candidate (the fix seam, unused)");
+    if (cand != nullptr) {
+      CHECK_MSG(cand->selection.beg ==
+                    static_cast<std::uint32_t>(extDim.find("dim ext1")) + 4,
+                "the candidate is the plain defining dim");
+    }
+  }
   {
     std::string const cst = "const c1 as integer = 5\n"
                             "sub s()\n"

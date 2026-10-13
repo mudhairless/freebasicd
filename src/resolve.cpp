@@ -623,6 +623,24 @@ std::string notVisibleInProcedureMessage(std::string_view name) {
              name, "Shared");
 }
 
+// A module-level `Dim` root naming `key` with shared storage — a written
+// `Shared`, or `Extern`, which implies it. fbc's errors 8/9 name *the shared
+// module variable* (`.name` / `typeof(.name)`), so when such a root exists the
+// dot is legal even if a plain `Dim` of the same name also exists: `Extern x`
+// followed by `Dim x` is one shared external name, and every shape of the
+// family compiles in the defining module, at module level and inside
+// procedures (probed, FreeBASIC.md §8). The bare shapes already escape through
+// `declAt`/`visibleDeclNamed` resolving the `Extern` root; the leading-dot
+// shapes have no visibility walk, so they need this direct check.
+bool hasSharedModuleRoot(ParseResult const &parse, std::string const &key) {
+  for (Symbol const &r : parse.roots) {
+    if (r.kind == SymbolKind::Dim && r.shared && r.key == key) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // `typeof` inside a `#print`/`#if`/`#elseif` directive. A directive is one
 // whole-line token, so the `typeof` argument has no identifier token of its own
 // and is scanned textually. Two shapes of the family live here:
@@ -711,11 +729,17 @@ void typeofDiagnostics(ParseResult &parse, std::string_view source,
         directive.beg + static_cast<std::uint32_t>(nbeg);
     std::uint32_t const nameEnd = directive.beg + static_cast<std::uint32_t>(i);
     if (leadingDot) {
-      // TRANSLATORS: the first %s is an identifier (e.g. var1); the second is
-      // the FreeBASIC keyword Shared, passed as an argument, never translated.
-      addNotShared(parse, nameBeg, nameEnd, 9,
-                   trf("'.%s' in typeof requires a %s module-level variable",
-                       code.substr(nbeg, i - nbeg), "Shared"));
+      // An `Extern`/`Dim Shared` root of this name serves the dot: the name
+      // is the shared module variable, so the dot is legal whatever a plain
+      // `Dim` says.
+      if (!hasSharedModuleRoot(parse, key)) {
+        // TRANSLATORS: the first %s is an identifier (e.g. var1); the second
+        // is the FreeBASIC keyword Shared, passed as an argument, never
+        // translated.
+        addNotShared(parse, nameBeg, nameEnd, 9,
+                     trf("'.%s' in typeof requires a %s module-level variable",
+                         code.substr(nbeg, i - nbeg), "Shared"));
+      }
     } else if (visibleDeclNamed(parse, nameBeg, key) == nullptr) {
       // No local/parameter/shared declaration of the name is visible here, so
       // the module `Dim` is the only one and it is gated — the same `error 42`
@@ -755,6 +779,12 @@ void sharedGateDiagnostics(ParseResult &parse, std::vector<Token> const &tokens,
     if (i > 0 && tokens[i - 1].kind == TokenKind::Symbol &&
         tokens[i - 1].text() == ".") {
       if (insideWithScope(parse, t.beg) || !dotIsLeading(tokens, i - 1)) {
+        continue;
+      }
+      // An `Extern`/`Dim Shared` root of this name serves the dot: the name
+      // is the shared module variable, so the dot is legal whatever a plain
+      // `Dim` says.
+      if (hasSharedModuleRoot(parse, key)) {
         continue;
       }
       // TRANSLATORS: the first %s is an identifier; the second is the

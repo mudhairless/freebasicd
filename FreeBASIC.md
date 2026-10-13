@@ -502,6 +502,12 @@ Probe results:
 - `Extern ext1` + procedure read → compiles; so do `#print typeof(.ext1)` and
   `#print typeof(ext1)`. An `Extern` is shared regardless of a `Shared` keyword,
   and `Extern Shared` is fbc `error 4: Duplicated definition`.
+- `Extern x` + a defining **plain** `Dim x` (no `Shared`) is one shared external
+  name: the defining module's procedures read and write it, and `.x`,
+  `typeof(x)`, and `typeof(.x)` all compile — at module level and inside a
+  procedure. The `Extern` declaration carries the shared visibility; the plain
+  `Dim` only provides the storage the linker-invisible pairing needs. (Same
+  truth when the `Extern` lives in an `#include`d header — see §12.29.)
 - `Const c1` + procedure read → compiles; so do `#print typeof(.c1)` and
   `#print typeof(c1)`. `Const` needs an initializer (`error 10` without one) and
   rejects `Shared` (`error 4`), because a module-level constant is already
@@ -1284,6 +1290,15 @@ to "the language is what the lexer does":
     ships without its fix, none is offered. `Extern` and module-level `Const`
     are never gated: an `Extern` name is shared whether or not `Shared` is
     written (§8), and a module `Const` is storage-less and always visible.
+    Probed further in the defining module: `Extern x` + a plain `Dim x` is one
+    shared name, so the bare read, the leading-dot shapes, and both `typeof`
+    forms compile, and the same-file `Extern` root escapes the 8/9 shapes too.
+    That escape is in-file only: a defining module that reaches its `Extern`
+    through `#include` (the header holds the declaration, the `.bas` the `Dim`)
+    still reports the whole family against fbc's accept — a single-file parse
+    cannot see the header's declaration. It is the false-report direction of
+    the include gap above, left unengineered for the same reason (the fix
+    would have to edit another file).
     Neither accepts a `Shared` keyword (`Dim`/`Redim`/`Common`/`Static`/`Var`
     do — `Extern Shared` and `Const Shared` are fbc `error 4`). The linkage
     half of `Extern` (KeyPgExtern: a name declared external may be (re)defined
