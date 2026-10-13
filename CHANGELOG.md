@@ -26,6 +26,35 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-13 — A micro syntax file, the third editor grammar
+
+- `docs/grammar/freebasic.yaml` — a third editor grammar beside the TextMate
+  and vim ones, in the YAML format micro reads from
+  `~/.config/micro/syntax/`. The same `tools/grammar_emitter` emits it from the
+  same `src/language.cpp` catalog, `grammar_checks` byte-gates it, and
+  `cmake --install` ships it, so the three cannot drift from each other or from
+  the lexer. `docs/editors/micro.md` is the install page; micro bundles no LSP
+  client, so it documents highlighting alone, like the Vim page.
+- **The format is not TextMate's, and the two engines order rules in opposite
+  directions.** Porting the grammar meant copying the *ordering* discipline, not
+  just the categories: micro applies regions before patterns and lets the
+  **last** matching pattern win, where TextMate takes the first. The micro rules
+  are therefore written broadest-first (identifier → operator → keyword →
+  number → preprocessor) to land on the same result. Reversing that is
+  invisible to a freshness test — the file still parses — and shows up only as
+  keywords losing to identifiers.
+- **micro applies a region's `skip` to its own *start* search, not only its end
+  search.** The `skip: "\"\""` that keeps a doubled quote from ending a string
+  also hides a bare `""` from the string region's start, so the empty string
+  would go unhighlighted; a separate `constant.string: "[!$]?\"\""` pattern
+  recovers it. micro's own files do not work around this — the lesson is that
+  "region with a skip" is not one primitive across editors.
+- The YAML is not round-tripped through a parser the way the TextMate JSON is,
+  because no YAML parser is vendored. `grammar_checks` checks it structurally
+  instead: every reserved word in its `statement` alternations, one rule per
+  token category, and the detector; the emitter's restricted shape is valid
+  YAML by construction.
+
 ### 2026-10-12 — The `Shared`-gate diagnostic ships as a fix (M21 step 2)
 
 - **A module-level `Dim` without `Shared` is now diagnosed where fbc rejects it.**

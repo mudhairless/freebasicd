@@ -146,12 +146,14 @@ key-based LSP client:
 ```
 
 Ready-made steps for the editors that work with no extension are in
-[`docs/editors/`](docs/editors/README.md) — Kate, Neovim, Emacs, Helix, and
-Vim — and installation is covered in [`docs/install.md`](docs/install.md).
+[`docs/editors/`](docs/editors/README.md) — Kate, Neovim, Emacs, Helix, Vim,
+and micro — and installation is covered in
+[`docs/install.md`](docs/install.md).
 
-The editor grammars (a TextMate grammar and a vim/Neovim syntax file) are in
-[`docs/grammar/`](docs/grammar/README.md). They are generated from the keyword
-catalog in `src/language.cpp`, so they cannot drift from the server.
+The editor grammars (a TextMate grammar, a vim/Neovim syntax file, and a micro
+syntax file) are in [`docs/grammar/`](docs/grammar/README.md). They are
+generated from the keyword catalog in `src/language.cpp`, so they cannot drift
+from the server.
 
 ## Configuration
 

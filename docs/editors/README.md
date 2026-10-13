@@ -20,8 +20,9 @@ client beyond the path to the binary — project settings live in a
 | Emacs | built in, `eglot` (Emacs 29 and newer) | a few lines in `init.el` | none — buffers open as plain text until you add a mode | [emacs.md](emacs.md) |
 | Helix | built in | `~/.config/helix/languages.toml` | none — Helix has no FreeBASIC tree-sitter grammar, so highlighting stays plain | [helix.md](helix.md) |
 | Vim | none — Vim ships no LSP client | — | [`freebasic.vim`](../grammar/freebasic.vim) | [vim.md](vim.md) |
+| micro | none — micro ships no LSP client | — | [`freebasic.yaml`](../grammar/freebasic.yaml) | [micro.md](micro.md) |
 
-The two grammar files are generated from the server's own keyword catalog, so
+The grammar files are generated from the server's own keyword catalog, so
 they cannot drift from it: see [`../grammar/`](../grammar/README.md). They are
 also installed with the server, at
 `<prefix>/share/freebasicd/grammar/`, so an installed server hands you the file

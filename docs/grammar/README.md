@@ -15,8 +15,9 @@ against the committed files, so a stale grammar fails CI.
 - `freebasic.tmLanguage.json` — TextMate grammar (`source.freebasic`), for
   TextMate-compatible editors.
 - `freebasic.vim` — vim and Neovim syntax (`b:current_syntax = "freebasic"`).
+- `freebasic.yaml` — micro syntax (filetype `freebasic`).
 
-`cmake --install` copies both to `<prefix>/share/freebasicd/grammar/`.
+`cmake --install` copies all three to `<prefix>/share/freebasicd/grammar/`.
 
 ## Installing them
 
@@ -30,4 +31,12 @@ mkdir -p ~/.vim/syntax ~/.vim/ftdetect
 cp freebasic.vim ~/.vim/syntax/freebasic.vim
 printf 'au BufRead,BufNewFile *.bas,*.bi set filetype=freebasic\n' \
   > ~/.vim/ftdetect/freebasic.vim
+```
+
+micro needs no filetype override, because its detection regex travels in the
+syntax file:
+
+```
+mkdir -p ~/.config/micro/syntax
+cp freebasic.yaml ~/.config/micro/syntax/freebasic.yaml
 ```

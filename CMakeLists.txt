@@ -124,6 +124,7 @@ install(FILES LICENSE.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES
     ${CMAKE_SOURCE_DIR}/docs/grammar/freebasic.vim
     ${CMAKE_SOURCE_DIR}/docs/grammar/freebasic.tmLanguage.json
+    ${CMAKE_SOURCE_DIR}/docs/grammar/freebasic.yaml
     DESTINATION ${CMAKE_INSTALL_DATADIR}/freebasicd/grammar)
 
 # --- gettext catalogs (M20) -------------------------------------------------

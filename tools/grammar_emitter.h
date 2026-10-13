@@ -22,8 +22,10 @@ struct GeneratedFile {
 
 // Deterministic emitter: stable key order, LF endings, fixed JSON field order,
 // so a freshness diff is byte-stable. The TextMate output is parsed back with
-// RapidJSON before it is returned. Both grammars are derived from the
-// `src/language.cpp` catalog: the lexer and the grammars cannot drift.
+// RapidJSON before it is returned; the micro YAML has no vendored parser to
+// round-trip through, so its structure is by construction and its correctness
+// is checked structurally in `grammar_checks`. All three grammars are derived
+// from the `src/language.cpp` catalog: the lexer and the grammars cannot drift.
 std::vector<GeneratedFile> generate();
 
 } // namespace fbgrammar

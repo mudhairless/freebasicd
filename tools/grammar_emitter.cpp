@@ -80,6 +80,52 @@ std::string jsonString(std::string_view s) {
   return "\"" + jsonEscape(s) + "\"";
 }
 
+// A micro syntax file is YAML, and every regex is a double-quoted scalar — a
+// literal backslash has to be written `\\`, because a bare `\b` is YAML's
+// backspace escape. The patterns here hold printable ASCII plus backslashes and
+// quotes, so those two escapes and the control characters are the whole rule.
+std::string yamlEscape(std::string_view s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char const raw : s) {
+    unsigned char const c = static_cast<unsigned char>(raw);
+    switch (c) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (c < kControlCharLimit) {
+        char buf[kUnicodeEscapeBufSize];
+        int const written = std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+        if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(buf)) {
+          std::abort();
+        }
+        out.append(buf, static_cast<std::size_t>(written));
+      } else {
+        out.push_back(static_cast<char>(c));
+      }
+      break;
+    }
+  }
+  return out;
+}
+
+std::string yamlString(std::string_view s) {
+  return "\"" + yamlEscape(s) + "\"";
+}
+
 // Escape Oniguruma metacharacters so a literal token is matched literally.
 std::string regexEscape(std::string_view s) {
   constexpr char const kMetachars[] = ".^$*+?()[]{}|\\/";
@@ -235,6 +281,105 @@ std::string emitTmLanguage() {
   return validateJson(json);
 }
 
+// micro's YAML syntax format. The engine applies regions before patterns and
+// lets the last matching pattern win, so the rules are ordered by precedence
+// rather than by token category: broadest first, most specific last. See
+// docs/editors/micro.md.
+std::string emitMicro() {
+  std::vector<std::string> const reserved = catalogReservedWords();
+  std::vector<std::string> const ops = catalogOperators();
+
+  std::string rules;
+  auto addRule = [&rules](std::string const &rule) {
+    rules += "    - " + rule + "\n";
+  };
+
+  // Identifiers, written before the keyword and operator rules that must
+  // overwrite them.
+  addRule("identifier: " + yamlString("[A-Za-z_][A-Za-z0-9_]*[%&!#$]?"));
+
+  // Operators, longest alternative first for micro's leftmost-first engine.
+  {
+    std::string pattern = "(?:";
+    for (std::size_t i = 0; i < ops.size(); ++i) {
+      if (i != 0) {
+        pattern.push_back('|');
+      }
+      pattern += regexEscape(ops[i]);
+    }
+    pattern += ")";
+    addRule("symbol.operator: " + yamlString(pattern));
+  }
+
+  // Keywords: every reserved word, including the built-in type names (the
+  // lexer emits both as Keyword tokens). Split deterministically.
+  for (std::size_t i = 0; i < reserved.size(); i += kWordGroupSize) {
+    std::size_t const end = std::min(i + kWordGroupSize, reserved.size());
+    std::string pattern = "(?i:\\b(?:";
+    for (std::size_t j = i; j < end; ++j) {
+      if (j != i) {
+        pattern.push_back('|');
+      }
+      pattern += regexEscape(reserved[j]);
+    }
+    pattern += ")\\b)";
+    addRule("statement: " + yamlString(pattern));
+  }
+
+  // Numbers: radix, decimal, leading-dot, with an optional suffix.
+  addRule("constant.number: " +
+          yamlString("(?:&[HhOoBb][0-9A-Fa-f]+|\\d+(?:\\.\\d+)?"
+                     "(?:[eE][+-]?\\d+)?|\\.\\d+)[%&!#]?"));
+
+  // micro applies a region's `skip` to its own *start* search as well as its
+  // end search, so the empty string `""` is invisible to the string region
+  // below and would go unhighlighted; this bare pattern recovers it.
+  addRule("constant.string: " + yamlString("[!$]?\"\""));
+
+  // `#`-preprocessor / metacommand: the whole line is one token.
+  addRule("preproc: " + yamlString("^\\s*#.*$"));
+
+  // `REM` line comment; after the keyword rule so it overwrites `rem`.
+  addRule("comment: " + yamlString("(?i:\\bREM\\b).*$"));
+
+  // Regions. micro tries regions before patterns and takes the earliest start,
+  // so a `'` inside a string stays a string (the string region starts first)
+  // while a `"` inside a comment stays a comment (the comment region starts
+  // first). `skip: "\"\""` is FreeBASIC's doubled-quote escape. The `/'...'/`
+  // block comment does not nest: micro's regions nest only as deep as the
+  // rules literally written inside them.
+  rules += "    - constant.string:\n";
+  rules += "        start: " + yamlString("[!$]?\"") + "\n";
+  rules += "        end: " + yamlString("\"") + "\n";
+  rules += "        skip: " + yamlString("\"\"") + "\n";
+  rules += "    - comment:\n";
+  rules += "        start: " + yamlString("'") + "\n";
+  rules += "        end: " + yamlString("$") + "\n";
+  rules += "        rules:\n";
+  rules += "            - todo: " + yamlString("(TODO|FIXME|XXX):?") + "\n";
+  rules += "    - comment:\n";
+  rules += "        start: " + yamlString("/'") + "\n";
+  rules += "        end: " + yamlString("'/") + "\n";
+  rules += "        rules:\n";
+  rules += "            - todo: " + yamlString("(TODO|FIXME|XXX):?") + "\n";
+
+  std::string yaml;
+  yaml += "# FreeBASIC syntax file for micro.\n";
+  yaml += "# Generated by tools/gen_grammar from src/language.cpp; do not edit "
+          "by hand.\n";
+  yaml += "# Install: ~/.config/micro/syntax/freebasic.yaml. See "
+          "docs/editors/micro.md.\n";
+  yaml += "\n";
+  yaml += "filetype: freebasic\n";
+  yaml += "\n";
+  yaml += "detect:\n";
+  yaml += "    filename: " + yamlString("\\.(bas|bi)$") + "\n";
+  yaml += "\n";
+  yaml += "rules:\n";
+  yaml += rules;
+  return yaml;
+}
+
 std::string emitVim() {
   std::vector<std::string> const reserved = catalogReservedWords();
   std::vector<std::string> const ops = catalogOperators();
@@ -338,8 +483,9 @@ against the committed files, so a stale grammar fails CI.
 - `freebasic.tmLanguage.json` — TextMate grammar (`source.freebasic`), for
   TextMate-compatible editors.
 - `freebasic.vim` — vim and Neovim syntax (`b:current_syntax = "freebasic"`).
+- `freebasic.yaml` — micro syntax (filetype `freebasic`).
 
-`cmake --install` copies both to `<prefix>/share/freebasicd/grammar/`.
+`cmake --install` copies all three to `<prefix>/share/freebasicd/grammar/`.
 
 ## Installing them
 
@@ -354,6 +500,14 @@ cp freebasic.vim ~/.vim/syntax/freebasic.vim
 printf 'au BufRead,BufNewFile *.bas,*.bi set filetype=freebasic\n' \
   > ~/.vim/ftdetect/freebasic.vim
 ```
+
+micro needs no filetype override, because its detection regex travels in the
+syntax file:
+
+```
+mkdir -p ~/.config/micro/syntax
+cp freebasic.yaml ~/.config/micro/syntax/freebasic.yaml
+```
 )";
 }
 
@@ -363,6 +517,7 @@ std::vector<GeneratedFile> generate() {
   std::vector<GeneratedFile> files;
   files.push_back({"freebasic.tmLanguage.json", emitTmLanguage()});
   files.push_back({"freebasic.vim", emitVim()});
+  files.push_back({"freebasic.yaml", emitMicro()});
   files.push_back({"README.md", emitReadme()});
   return files;
 }

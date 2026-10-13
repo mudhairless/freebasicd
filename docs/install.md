@@ -122,13 +122,15 @@ form, and it is what the examples use.
 | `bin/freebasicd` (`freebasicd.exe` on Windows) | the server |
 | `share/freebasicd/grammar/freebasic.vim` | vim and Neovim syntax file |
 | `share/freebasicd/grammar/freebasic.tmLanguage.json` | TextMate grammar |
+| `share/freebasicd/grammar/freebasic.yaml` | micro syntax file |
 | `share/locale/<lang>/LC_MESSAGES/freebasicd.mo` | one compiled catalog per translated language |
 | `share/doc/freebasicd/LICENSE.md` | the GPL text, which has to travel with the binary |
 
-The two grammar files are generated from the server's own keyword catalog, so
+The grammar files are generated from the server's own keyword catalog, so
 they match whatever this build knows. Copy one into your editor's syntax
-directory; the [Vim](editors/vim.md) and [Neovim](editors/neovim.md) pages show
-the exact commands. [Kate](editors/kate.md), [Emacs](editors/emacs.md), and
+directory; the [Vim](editors/vim.md), [Neovim](editors/neovim.md), and
+[micro](editors/micro.md) pages show the exact commands.
+[Kate](editors/kate.md), [Emacs](editors/emacs.md), and
 [Helix](editors/helix.md) need none of them.
 
 ## Translations
@@ -173,6 +175,7 @@ each one does.
 - [Emacs](editors/emacs.md) — a few lines of `init.el`
 - [Helix](editors/helix.md) — two tables in `languages.toml`
 - [Vim](editors/vim.md) — highlighting only; Vim has no LSP client
+- [micro](editors/micro.md) — highlighting only; micro ships no LSP client
 
 [editors/README.md](editors/README.md) is the index, including which LSP features
 each of those clients can display.

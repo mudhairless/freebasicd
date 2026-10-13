@@ -50,7 +50,7 @@ endif()
 # The editor grammars. An installed server whose user has to clone the repo to
 # get a syntax file is not an installed server, and a renamed DESTINATION is
 # exactly the failure this script exists to catch.
-foreach(_grammar freebasic.vim freebasic.tmLanguage.json)
+foreach(_grammar freebasic.vim freebasic.tmLanguage.json freebasic.yaml)
   if(NOT EXISTS "${_prefix}/share/freebasicd/grammar/${_grammar}")
     list(APPEND _problems
          "no ${_grammar} under ${_prefix}/share/freebasicd/grammar/")
