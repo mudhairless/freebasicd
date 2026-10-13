@@ -6,190 +6,113 @@ repository (default branch `main`).
 
 ## Dependencies
 
-- **LspCpp** is the LSP/JSON-RPC library, vendored as a **git submodule** at
-  `third_party/LspCpp` from **our fork,
-  [github.com/mudhairless/LspCpp](https://github.com/mudhairless/LspCpp)**
-  (`.gitmodules` points there; the submodule is pinned to
-  `e4b177e8b65bf78194f53b3137362b4a11da3560` on the fork's
-  `lsp-3.17-completions` branch (named for what it carries: the LSP 3.17 types
-  and serialization upstream still lacks), which is **upstream
-  `19150d12c4ae26239d75258ed598ba8ea3587cb7`**
-  (kuafuwang/LspCpp master, 2026-08-21; no release tag exists yet) **plus eleven
-  commits of ours**: `310e1e6` adding the watched-files registration types
-  upstream lacks —
-  `lsFileSystemWatcher`/`lsDidChangeWatchedFilesOptions`
-  (`workspace/did_change_watched_files.h`), `Registration::registerOptions`
-  (`client/registerCapability.h`), and
-  `WorkspaceServerCapabilities::didChangeWatchedFiles`
-  (`general/lsServerCapabilities.h`) — `f0cd2fa` covering them with
-  round-trip/parse tests plus a self-contained `client/registerCapability.h`
-  (it calls `DEFINE_REQUEST_RESPONSE_TYPE` from `RequestInMessage.h` and must
-  include it directly), and `45846f7` fixing `SemanticTokensEdit` serialization
-  (`textDocument/SemanticTokens.h`): the struct now carries the LSP wire shape
-  (`start`/`deleteCount` in flat-array elements, `data`) so generic reflection
-  is correct at every call depth, instead of the token-count projection whose
-  non-template `Reflect` overload only won for direct top-level calls, and
-  `50be209` making `textDocument/codeAction` answer with the type the protocol
-  defines — the result is `(Command | CodeAction)[]`, i.e.
-  `std::vector<TextDocumentCodeAction::Either>`, not
-  `std::vector<lsCommandWithAny>`. A `Command` is an id the client *executes*,
-  so a server that can only return those cannot hand the client a
-  `WorkspaceEdit` to apply; upstream's own reader existed but the matching
-  writer did not, so the local commit adds it (`lsCodeAction.h`,
-  `src/lsp/lsp.cpp`, mirroring `LocationListEither::Either`) plus
-  `lsp_types_roundtrip_tests` coverage of the edit variant, `0badddd`
-  fixing the test's access to the edit's `std::optional` changes, and
-  `a98ddce` gating `lspcpp_set_target_options`'s boost nuget packages on
-  `NOT LSPCPP_STANDALONE_ASIO` (it asked a Visual Studio generator for seven
-  of them unconditionally, so configure died with "Can't find target of
-  boost.1.76.0.0" for a dependency the build does not have — the block 20
-  lines above that installs the same packages already skipped it), completed
-  by `9feb484`, which brings the seventh call (`boost_thread-vc141`) inside
-  that guard too — `a98ddce` opened the guard between the first and the last
-  of the seven, so CI skipped six and died on the seventh, and `8a67671`
-  defining `NOMINMAX` before `utils.cpp`'s `<Windows.h>` — that include brings
-  `min`/`max` in as function-like macros, so the `std::min` in the UTF-16
-  offset conversion expands to a `(` token and MSVC stops with "error C2589:
-  '(': illegal token on right side of '::'" (`utils.cpp:594`), which no Linux or
-  macOS build can show because neither pulls in `Windows.h`. `lsp.cpp` already
-  guards its own `<Windows.h>` this way; the fork commit makes `utils.cpp`
-  match, and `0865f2a` adds the LSP 3.17 diagnostic-report types M14 needs
-  (`FullDocumentDiagnosticReport` with `relatedDocuments`,
-  `RelatedDocumentDiagnosticReport`, `UnchangedDocumentDiagnosticReport`,
-  `PreviousResultId`, `WorkspaceDiagnosticParams`, the `DocumentDiagnosticReport`
-  `Either` with a hand-written `kind`-discriminating `Reflect`, and the
-  `td_diagnostic` / `workspace_diagnostic` request types — the same precedent
-  as `50be209` for code actions: a response typed as a bare full report can
-  never answer the `unchanged` arm the protocol defines), while `9b7257f` fixes
-  `WorkingFiles::OnOpen`, which copied `open.version` only when the document was
-  *already* open, so a first `didOpen` left `WorkingFile::version` at 0 —
-  indistinguishable from "unknown", and the only source
-  `WorkspaceDocumentDiagnosticReport.version` has, and `e4b177e` models
-  `InitializeResult::serverInfo` so the protocol's own place for the version is
-  not a sixth local invention. Only the Visual Studio
-  generator reaches the boost-nuget branch, and no local platform can configure
-  it, so a change to LspCpp's CMake has to be checked by reading it, not by
-  building it.
-  Restore with `git submodule update --init`. Consumed
-  via `add_subdirectory(third_party/LspCpp)` and linked as the `lspcpp`
-  target. No Boost is required (`LSPCPP_STANDALONE_ASIO` is the default);
-  build with `LSPCPP_BUILD_WEBSOCKETS=OFF`, `LSPCPP_BUILD_EXAMPLES=OFF`,
+- **LspCpp** is the LSP/JSON-RPC library, vendored as a git submodule at
+  `third_party/LspCpp` from our fork
+  [mudhairless/LspCpp](https://github.com/mudhairless/LspCpp), pinned to
+  `e4b177e` on the fork's `lsp-3.17-completions` branch. That branch is upstream
+  `kuafuwang/LspCpp` `19150d12` (master, 2026-08-21; no release tag exists) plus
+  our commits, which carry the LSP 3.17 types and serialization upstream lacks:
+  the watched-files registration types, the `codeAction` result's `CodeAction`
+  arm and its writer, the diagnostic-report types, `SemanticTokensEdit`'s wire
+  shape, `InitializeResult::serverInfo`, the `WorkingFiles::OnOpen` version fix,
+  and the CMake/MSVC build fixes. The commits and their rationale live on the
+  branch and in `CHANGELOG.md`. Restore with `git submodule update --init`;
+  consumed via `add_subdirectory(third_party/LspCpp)` and linked as the `lspcpp`
+  target. No Boost is required (`LSPCPP_STANDALONE_ASIO` is the default); build
+  with `LSPCPP_BUILD_WEBSOCKETS=OFF`, `LSPCPP_BUILD_EXAMPLES=OFF`,
   `LSPCPP_BUILD_TESTS=OFF`, and `USE_ZLIB=OFF` (ixwebsocket is added whatever
-  `LSPCPP_BUILD_WEBSOCKETS` says, and defaults it on for a compression a stdio
-  server cannot reach; without this the Windows leg stops on a missing zlib).
-  Windows builds with the Visual Studio generator, so keep that branch of
-  LspCpp working.
-  **Working on the fork**: inside `third_party/LspCpp`, `origin` is
-  `mudhairless/LspCpp` (our fork, fetch = HTTPS, push = SSH) and `upstream` is
-  `kuafuwang/LspCpp` with its push URL disabled. The checked-out branch is
-  `lsp-3.17-completions` (tracks `origin/lsp-3.17-completions`); the fork's
-  `master` is left at upstream. To pick up upstream changes:
-  `git fetch upstream && git switch lsp-3.17-completions && git rebase
-  upstream/master`, then `git push --force-with-lease origin
-  lsp-3.17-completions` and bump the pinned commit here (`.gitmodules` URL is
-  unchanged, so `git submodule update --init` keeps working for contributors).
-- LspCpp handles all protocol JSON via its bundled RapidJSON. 
-- **tomlplusplus** (github.com/marzer/tomlplusplus) is vendored as a **git
-  submodule** at `third_party/tomlplusplus`, pinned to `30172438` (v3.4.0).
-  Header-only — an INTERFACE target (`tomlplusplus::tomlplusplus`) whose only
-  cost is the include dir. It parses the server's `freebasicd.toml` config
-  file (`src/settings.{h,cpp}`, M11). Restore with
-  `git submodule update --init`.
+  `LSPCPP_BUILD_WEBSOCKETS` says, and defaults on a compression a stdio server
+  cannot reach). Windows builds with the Visual Studio generator, so keep that
+  branch of LspCpp working — and note that only that generator reaches the
+  boost-nuget branch and no local platform can configure it, so a change to
+  LspCpp's CMake has to be checked by reading it, not by building it.
+- **Working on the fork**: inside `third_party/LspCpp`, `origin` is
+  `mudhairless/LspCpp` (fetch HTTPS, push SSH) and `upstream` is
+  `kuafuwang/LspCpp` with its push URL disabled; the checked-out branch is
+  `lsp-3.17-completions`. To pick up upstream changes: `git fetch upstream &&
+  git switch lsp-3.17-completions && git rebase upstream/master`, then
+  `git push --force-with-lease origin lsp-3.17-completions` and bump the pinned
+  commit here (`.gitmodules` URL is unchanged, so `git submodule update --init`
+  keeps working for contributors).
+- LspCpp handles all protocol JSON via its bundled RapidJSON.
+- **tomlplusplus** (github.com/marzer/tomlplusplus) is a git submodule at
+  `third_party/tomlplusplus`, pinned to `30172438` (v3.4.0). Header-only — an
+  INTERFACE target (`tomlplusplus::tomlplusplus`). It parses the server's
+  `freebasicd.toml` config file (`src/settings.{h,cpp}`, M11).
 - Requires CMake 3.16+ and C++17.
 
 ## FreeBASIC facts (encode these in the lexer/parser)
 
 **`FreeBASIC.md` is the single source of truth for the language.** Read it
-before touching the lexer/parser. Anything already encoded in
-`src/language.cpp` (keyword catalog, block closers, wiki URLs) is data, not to
-be re-derived. Provenance: wiki pages + fbc 1.10.2 probes; known divergences
-between this implementation and real `fbc` are tracked in FreeBASIC.md §12 and
-must stay there. Encoding directives that the lexer/parser must honor:
+before touching the lexer/parser. The keyword catalog, block closers, wiki URLs,
+and scope rules already encoded in `src/language.cpp` are data, not to be
+re-derived. Known divergences from real `fbc` live in FreeBASIC.md §12 and must
+stay there. Only `fb` is implemented: `#LANG "<name>"` and the `$lang`
+metacommand both set the dialect, recorded in `ParseResult.lang`, and a non-`fb`
+file gets a best-effort `fb` parse plus one `lang-mode` Information diagnostic.
 
-- Identifiers are **case-insensitive**; canonical lookup key = lowercase name
-  including any trailing type-suffix char. Suffix chars: `$` STRING, `%`
-  INTEGER (not SHORT — see FreeBASIC.md §2), `&` LONG, `!` SINGLE, `#` DOUBLE;
-  `@` is the address-of operator, not a suffix. In `fb` mode fbc ignores
-  identifier suffixes (warning 44) and aliases `foo`/`foo$` — one symbol.
-- Built-in types, block closers, `END` vs `END IF`, `WEND`/`NEXT`/`LOOP`,
-  line continuation `_`, `:` separators, comment forms (`'`, `REM`, nestable
-  `/'...'/`), `#`-preprocessor, `$`-metacommands, dialect gating, and scope
-  rules (module-level plain `Dim` is **not** visible inside procedures — only
-  `Shared`/`Common Shared`): all in `FreeBASIC.md` (§1–§11), verified there.
-- Doc comments: `///` and `''` lines directly above a declaration → hover
-  text. This is our convention, not a language feature (FreeBASIC.md §5).
-- `.` member access, `->`, and the combined assignments `AND=`/`OR=`/`XOR=`/
-  `EQV=`/`IMP=`/`MOD=`/`SHL=`/`SHR=` are operators, never identifier parts.
-- Dialects: only `fb` is implemented; `#LANG "<name>"` and the `$lang`
-  metacommand both set the dialect, recorded in `ParseResult.lang`; non-`fb`
-  gets a best-effort `fb` parse plus one `lang-mode` Information diagnostic.
+Two conventions are ours rather than the language's:
+
+- Identifiers are case-insensitive; the canonical lookup key is the lowercase
+  name including any trailing type-suffix char. In `fb` mode fbc ignores
+  identifier suffixes (warning 44) and aliases `foo`/`foo$` — see FreeBASIC.md
+  §12.1.
+- Doc comments: `///` and `''` lines directly above a declaration become hover
+  text (our convention, FreeBASIC.md §5).
 
 ## Architecture
 
-- **Persistence/layering**: `lexer` + `parser` + `language` are LSP-agnostic and
-  work in **byte offsets**. LSP interaction happens only in `session`; convert
-  positions via LspCpp `WorkingFile` line offsets (`utf16.h` helper). All LSP
-  positions are UTF-16 code units.
+- **Layering**: `lexer` + `parser` + `language` are LSP-agnostic and work in
+  byte offsets. LSP interaction happens only in `session`; convert positions via
+  LspCpp `WorkingFile` line offsets (`utf16.h`). All LSP positions are UTF-16
+  code units.
 - **LspCpp API**: use `lsp::LanguageSession`; register handlers with
   `server.on(...)`. Request types are `td_<feature>::request/response`,
-  notifications `Notify_<Name>::notify`. Buffers via `WorkingFiles`/`WorkingFile`
-  (`OnOpen`/`OnChange`/`OnClose`, `GetOffsetForPosition`, `RebuildLineOffsets`).
-  Diagnostics are pushed with `Notify_TextDocumentPublishDiagnostics::notify`.
+  notifications `Notify_<Name>::notify`. Buffers via
+  `WorkingFiles`/`WorkingFile` (`OnOpen`/`OnChange`/`OnClose`,
+  `GetOffsetForPosition`, `RebuildLineOffsets`). Diagnostics are pushed with
+  `Notify_TextDocumentPublishDiagnostics::notify`.
 - **Concurrency**: LspCpp runs a parse pool + handler pool + FIFO notification
-  thread. Requests can run concurrently with each other; keep `max_workers=2`.
-  Guard shared language state with a mutex; take the lock only to snapshot a
-  parse, build responses lock-free.
+  thread, so requests can run concurrently with each other. Keep
+  `max_workers=2`; guard shared language state with a mutex; take the lock only
+  to snapshot a parse, and build responses lock-free. New handlers follow the
+  same snapshot discipline (see §ThreadSanitizer).
 - **Index**: each `WorkspaceIndex` is **in-memory only** — nothing is ever
   written to disk. A background scan parses the workspace (plus a debounced
   rescan on watched-file events); open-buffer entries are marked
-  `fromDisk=false` and the scan **skips them entirely** — an open buffer
-  outranks disk, because the index's byte offsets have to describe the bytes a
-  reply is measured against, and a disk re-parse leaves the two describing
-  different files (the Windows leg's `dim localOnly` at 1:5 instead of 1:4,
-  CRLF on disk under an LF `didOpen`; pinned by
-  `TestScanKeepsOpenBufferAheadOfDisk` and the matching `index_checks` block).
-  That rule is enforced at **both** halves, and the write half is the one that
-  matters: the scan reads the flag, then reads and parses the file, and only
-  then writes — so a `didOpen` landing in that window is a check-then-act race,
-  and the integration test failed about one run in thirty until `upsert` itself
-  refused to let a `fromDisk` entry replace a `fromDisk=false` one. A rule a
-  reader can only satisfy at the check is not the rule; enforce it where the
-  decision is committed.
-  Closed files stay disk truth, which is what makes a watched-files event
-  converge an external edit (`TestWatchedFilesRescanConverges` — its header is
-  closed for exactly that reason). Since M11 the server owns **one index per
-  workspace root**:
-  `indexes_` (a map keyed by normalized root) under a single `indexesMutex_`
-  holds the registered client folders that are themselves workspace roots,
-  detected roots, and single-file roots. Session handlers snapshot a
-  `shared_ptr<WorkspaceIndex>` (via `indexFor` for a path, `allIndexes()` for
-  workspace/symbol) and hold it while raw result pointers (member-access
-  walks) are in use. Watched-file events route per path to the owning root's
+  `fromDisk=false` and the scan **skips them entirely**, because the index's
+  byte offsets have to describe the bytes a reply is measured against. That rule
+  is enforced at **both halves**, and the write half is the one that matters:
+  `upsert` itself refuses to let a `fromDisk` entry replace a `fromDisk=false`
+  one — a rule a reader can only satisfy at the check is not the rule; enforce it
+  where the decision is committed. Closed files stay disk truth, which is what
+  makes a watched-files event converge an external edit. Since M11 the server
+  owns **one index per workspace root**: `indexes_` (a map keyed by normalized
+  root) under a single `indexesMutex_` holds the registered client folders that
+  are themselves workspace roots, detected roots, and single-file roots.
+  Session handlers snapshot a `shared_ptr<WorkspaceIndex>` (`indexFor` for a
+  path, `allIndexes()` for workspace/symbol) and hold it while raw result
+  pointers are in use. Watched-file events route per path to the owning root's
   index and are deduped by owner root; folder add/remove re-key the map.
-- **Workspace roots (M11)**: root selection is `chooseIndexRoot`'s priority
-  0–5 — the deepest registered marker-root containing the file; a client root
-  that is itself a workspace root as-is; else the nearest VCS marker, then the
-  nearest `freebasicd.toml` (config-file marker), then the source/include
-  layout walk (`findSourceLayoutRoot`, up to the drive root / `$HOME`); and
-  single-file mode when no client root exists. A file outside every index root
-  is served **resolution-only** through the session-root index's on-demand
-  closure — never its own index (it would leak into workspace/symbol) and
-  never the single-file branch while a client root exists. A detected root
-  that replaces the client's is logged to stderr with the signal.
-  The two unbounded walks end at the home folder, and "is this the home
-  folder" is `isHomeFolder` — `std::filesystem::equivalent`, not a path
-  compare: Windows reports `%USERPROFILE%` long and `%TEMP%` (hence every
-  document URI under it) 8.3-short, and a symlinked home keeps the link, so a
-  `==` misses the guard, the walk climbs out, and the index roots at the
-  profile — every stray `.bas` under it joins the workspace and the project's
-  own `freebasicd.toml` is never read. That is not hypothetical: it is how the
-  Windows leg lost three tests.
-  `src/settings.{h,cpp}` parses `freebasicd.toml` (`hasConfigFile` is the
-  marker; `Settings` keys with fixed defaults). Each index owns a `Settings`
-  snapshot adopted at construction (`ensureWorkspaceIndex` →
-  `index->applySettings(settingsForDirLogged(root))`); `workspace/
-  didChangeConfiguration` re-reads every root's file (the notification payload
-  is ignored — the file is the truth; idempotent), applies per-root changes
+- **Workspace roots (M11)**: `chooseIndexRoot`'s priority 0–5 — the deepest
+  registered marker-root containing the file; a client root that is itself a
+  workspace root as-is; else the nearest VCS marker, then the nearest
+  `freebasicd.toml`, then the source/include layout walk
+  (`findSourceLayoutRoot`, up to the drive root / `$HOME`); and single-file mode
+  when no client root exists. A file outside every index root is served
+  **resolution-only** through the session-root index's on-demand closure — never
+  its own index (it would leak into workspace/symbol) and never the single-file
+  branch while a client root exists. A detected root that replaces the client's
+  is logged to stderr with the signal. The two unbounded walks end at the home
+  folder, identified by `isHomeFolder` with `std::filesystem::equivalent`, not a
+  path compare: Windows spells one path long and another 8.3-short and a
+  symlinked home keeps the link, so a `==` misses the guard and the index roots
+  at the profile. `src/settings.{h,cpp}` parses `freebasicd.toml`
+  (`hasConfigFile` is the marker; `Settings` keys have fixed defaults). Each
+  index adopts a `Settings` snapshot at construction (`ensureWorkspaceIndex` →
+  `index->applySettings(settingsForDirLogged(root))`);
+  `workspace/didChangeConfiguration` re-reads every root's file (the payload is
+  ignored — the file is the truth; idempotent), applies per-root changes
   (`reindexIncludeEdges`, no re-parse), reconciles the root's open buffers
   (diagnostics off ⇒ one empty publish then silence, on ⇒ re-publish; an
   `includePaths` change re-resolves the buffers' include edges), and the
@@ -197,139 +120,118 @@ must stay there. Encoding directives that the lexer/parser must honor:
   gate on `settingsForDocument` with empty-result semantics when a flag is off.
 - **Quick fixes (M12)**: `src/code_actions.{h,cpp}` is the LSP-agnostic,
   byte-offset fix layer, registered as a `{diagnostic code, provider}` table
-  (`quickFixProviders()`, looked up with `quickFixProviderFor`). A provider is
-  a pure function of (diagnostic, `QuickFixContext`); the context is the *only*
+  (`quickFixProviders()`, looked up with `quickFixProviderFor`). A provider is a
+  pure function of (diagnostic, `QuickFixContext`); the context is the *only*
   way it reaches workspace state (an index snapshot, the document path, and a
-  `resolveInclude` callback wired to `resolveIncludeTarget`). A fix therefore
-  never guesses: offer a candidate only when that seam accepts it, or nothing.
-  **Adding a fix = one function + one table row**; do not touch `session.cpp`
-  or the capability. A fix ships as an LSP `CodeAction` (`title`, `kind:
+  `resolveInclude` callback wired to `resolveIncludeTarget`), so a fix never
+  guesses: offer a candidate only when that seam accepts it, or nothing.
+  **Adding a fix = one function + one table row**; do not touch `session.cpp` or
+  the capability. A fix ships as an LSP `CodeAction` (`title`, `kind:
   "quickfix"`, the diagnostic it answers, and `edit.changes` keyed by the
-  request's own URI) — never as a `Command`: a Command is an id the client
-  *executes*, so an empty-id Command with the edit in `arguments` lists in the
-  lightbulb and does nothing when picked. `context.only` is filtered
-  server-side. Diagnostics a fix keys on must be built by the same function the
-  publish path uses (`unresolvedIncludeDiagnostics`), or the published range and
-  the fix's range drift apart.
-- **Code lens (M13)**: `src/code_lens.{h,cpp}` is the LSP-agnostic, byte-offset
-  layer — it owns *which* declarations get a lens (`carriesLens`: the
-  procedure-like kinds plus Type/Union/Enum/Namespace, nesting flattened) and
-  the title, and takes the count through one `ReferenceCounter` seam
-  (`size_t(LensAnchor const&)`), so adding a lens kind touches this module and
-  nothing else. `LensAnchor` is pointer-free, so a lens pins no snapshot.
-  `resolveProvider` is false and there is no `data` blob: the lens's `range` is
-  the declaration's name token, and the click sends that same position back.
-  A lens carries **no** edit field in the protocol, so the click is a `Command`
-  (`freebasicd.showReferences`, advertised through `executeCommandProvider`) —
-  same honesty rule as M12 quick fixes, one layer up. Its result is the
-  location list, so the "show references" panel itself stays client-side. Count
-  and list come from one walk with one scope: `referenceSites(..., scope)` with
-  `Closure` (the request file + its transitive includes — what
-  `textDocument/references` answers) or `Workspace` (that plus the includers,
-  found through the M6 reverse-reachability graph — what a lens should count).
-  Sites are matched by `DeclIdentity`, **never** by `Symbol` pointer: each
-  candidate is parsed into its own analysis, so one declaration is a different
-  object in every one of them. A lens cannot ask for `includeDeclaration`, so
-  the count excludes the declaration's own name token — the same convention
-  `references` reports with it false.
-- **Pull diagnostics (M14)**: the LSP 3.17 alternative to push, **negotiated
-  and never assumed**. `capabilities.textDocument.diagnostic` present ⇒
-  advertise `diagnosticProvider` and disable `publishDiagnostics` for the whole
-  session; absent ⇒ the push path is exactly what it was, so one build serves
-  both client generations. The rule is not politeness: a client supporting both
-  must never see the same diagnostic twice, and the spec has the server stop
-  publishing once pull is negotiated.
-  - **One payload, two deliveries.** `documentDiagnostics(content, parse,
-    entry)` is the single definition of a document's diagnostics (parse
-    diagnostics plus its own unresolved include edges) that the push path and
-    both pull handlers call, so a client cannot be shown two answers for the
-    same bytes. This is the M12 rule ("the fix keys on the range the publish
-    reports") generalized to the delivery itself.
-  - **resultId** = `AnalysisCache::hashContent(content)` folded with the
-    include edges and the diagnostics gate, computed fresh per request. Equal
-    ids promise equal payloads, and nothing else is folded in — so a request
-    naming a matching `previousResultId` can answer `unchanged` without
-    recomputing. The gate has to be in the id: a config flip empties the report,
-    and a client caching by id would otherwise keep the old one.
-  - **relatedDocuments** is the M6 transitive include closure, one level deep
-    (a related report is never itself related — the value type stays
-    non-recursive), gated on `relatedDocumentSupport`.
+  request's own URI) — never as a `Command`, which the client *executes*, so an
+  empty-id Command with the edit in `arguments` lists in the lightbulb and does
+  nothing when picked. `context.only` is filtered server-side. Diagnostics a fix
+  keys on must be built by the same function the publish path uses
+  (`unresolvedIncludeDiagnostics`), or the published range and the fix's range
+  drift apart.
+- **Code lens (M13)**: `src/code_lens.{h,cpp}` is LSP-agnostic and byte-offset.
+  It owns *which* declarations get a lens (`carriesLens`: the procedure-like
+  kinds plus Type/Union/Enum/Namespace, nesting flattened) and the title, and
+  takes the count through one `ReferenceCounter` seam, so adding a lens kind
+  touches this module and nothing else. `LensAnchor` is pointer-free, so a lens
+  pins no snapshot. `resolveProvider` is false and there is no `data` blob: the
+  lens's `range` is the declaration's name token and the click sends that same
+  position back, as a `Command` (`freebasicd.showReferences`, advertised through
+  `executeCommandProvider`) — the same honesty rule as M12, one layer up. Count
+  and list come from one walk, `referenceSites(..., scope)`, with `Closure` (the
+  request file + its transitive includes — what `textDocument/references`
+  answers) or `Workspace` (that plus the includers, through the M6
+  reverse-reachability graph — what a lens counts). Sites are matched by
+  `DeclIdentity`, **never** by `Symbol` pointer, because each candidate is parsed
+  into its own analysis, so one declaration is a different object in every one.
+  A lens cannot ask for `includeDeclaration`, so the count excludes the
+  declaration's own name token — the convention `references` reports with it
+  false.
+- **Pull diagnostics (M14)**: the LSP 3.17 alternative to push, **negotiated and
+  never assumed**. `capabilities.textDocument.diagnostic` present ⇒ advertise
+  `diagnosticProvider` and disable `publishDiagnostics` for the whole session;
+  absent ⇒ the push path is exactly what it was. The rule is not politeness: a
+  client supporting both must never see the same diagnostic twice, and the spec
+  has the server stop publishing once pull is negotiated.
+  - **One payload, two deliveries.** `documentDiagnostics(content, parse, entry)`
+    is the single definition of a document's diagnostics (parse diagnostics plus
+    its own unresolved include edges) that the push path and both pull handlers
+    call, so a client cannot be shown two answers for the same bytes.
+  - **resultId** = `AnalysisCache::hashContent(content)` folded with the include
+    edges and the diagnostics gate, computed fresh per request. Equal ids promise
+    equal payloads, and nothing else is folded in, so a request naming a matching
+    `previousResultId` can answer `unchanged` without recomputing. The gate has
+    to be in the id: a config flip empties the report, and a client caching by id
+    would otherwise keep the old one.
+  - **relatedDocuments** is the M6 transitive include closure, one level deep (a
+    related report is never itself related), gated on `relatedDocumentSupport`.
   - **`workspace/diagnostic/refresh`** is the server hint that stands where a
-    push would have been: an edit, a close, a config change, and a
-    watched-files rescan all fire it. The rescan is the one that needs a seam
-    (`WorkspaceIndex::onRescanCompleted`) because an external edit arrives
-    outside every notification the session can see; the callback is copied out
-    under `rescanMu_` and invoked with no lock held.
-- **Message catalogs**: `fblang::trf` for a message, `fblang::trn(msgid,
-  plural, n)` when the count changes the form — `ngettext`, because only the
-  catalog's plural rule can serve a language with three or four forms, which two
+    push would have been: an edit, a close, a config change, and a watched-files
+    rescan all fire it. The rescan needs the `WorkspaceIndex::onRescanCompleted`
+    seam; the callback is copied out under `rescanMu_` and invoked with no lock
+    held.
+- **Message catalogs**: `fblang::trf` for a message, `fblang::trn(msgid, plural,
+  n)` when the count changes the form — `ngettext`, because only the catalog's
+  plural rule can serve a language with three or four forms, which two
   hand-written msgids cannot. Both share `detail::substitutePercentS` (`%s`
   only, verbatim, no printf — every argument is already a `std::string`). Editor
-  UI strings (a lens title) are messages too, so they go through the same
-  functions. After a new or changed message, regenerate `po/freebasicd.pot`
-  (`po-template` target) — `i18n_checks` fails on a literal missing from it.
-  `po/*.po` are deliberately not regenerated in the same wave; they lag the pot.
+  UI strings (a lens title) are messages too. After a new or changed message,
+  regenerate `po/freebasicd.pot` (`po-template` target) — `i18n_checks` fails on
+  a literal missing from it. `po/*.po` are deliberately not regenerated in the
+  same wave; they lag the pot.
 - Capabilities advertise only implemented features; `positionEncoding: "utf-16"`.
 
 ## Verification
 
-- Unit drivers in `tests/` via ctest (19 suites: `lexer_checks`,
-  `analysis_cache_checks`, `language_checks`, `parser_checks`,
-  `resolve_checks`, `corpus_checks`, `utf16_checks`,
-  `semantic_tokens_checks`, `inlay_hints_checks`, `selection_checks`,
-  `call_hierarchy_checks`, `code_actions_checks`, `code_lens_checks`,
-  `grammar_checks`, `fbc_diagnostics_checks`,
-  `index_checks`, `settings_checks`,
-  `i18n_checks`, and `session_integration`, which drives `LanguageSession` with
-  in-memory streams — LspCpp `tests/test_helpers.h`).
+- Unit drivers in `tests/` via ctest (19 suites, one per subsystem) plus
+  `session_integration`, which drives `LanguageSession` with in-memory streams
+  (LspCpp `tests/test_helpers.h`). The system `fbc` compiler (1.10.2) is
+  available for ground-truthing ambiguous FreeBASIC constructs.
 - **`session_integration` is one executable, one file per feature.** The shared
   harness is `tests/session_support.{h,cpp}` (`namespace fbtest`); each feature
-  is one translation unit (`tests/session_hover_checks.cpp`,
-  `tests/session_pull_diagnostics_checks.cpp`, …) that `using namespace fbtest;`
-  and exposes `void Run<Feature>Tests()`; `tests/session_integration.cpp` holds
-  `main()` alone and calls each runner in a fixed order. Two rules keep the split
-  from eroding, and both are enforced by reading the tree rather than by a
-  script: a **wire frame or helper only one feature file's tests send stays in
-  that file**, declared just above them (what is in `session_support.h` is
-  shared by more than one file, or is machinery every test needs), and **adding
-  a test touches exactly one file** — the function plus one `RUN_TEST` line in
-  that file's runner.
-- **A new feature file is registered in two places, and only one of them fails
-  loudly.** Add the source to the `session_integration` target in
-  `CMakeLists.txt`, and declare + call its `Run<Feature>Tests()` in
-  `tests/session_integration.cpp`. Miss the first and the link fails with
-  `undefined reference to fbtest::Run<Feature>Tests()` — the error names the
-  step. **Miss the second and nothing says anything**: the file compiles, links,
-  and its tests never run, so the suite prints `0 failure(s)` having tested
-  less than it did the day before. When adding a feature file, grep the driver
-  for the runner name, and check the new tests appear in the `[ RUN ]` output;
-  a green run is not evidence that a new file is wired in.
+  is one translation unit that `using namespace fbtest;` and exposes
+  `void Run<Feature>Tests()`; `tests/session_integration.cpp` holds `main()`
+  alone and calls each runner in a fixed order. Two rules keep the split from
+  eroding, both enforced by reading the tree rather than by a script: a **wire
+  frame or helper only one feature file's tests send stays in that file**,
+  declared just above them, and **adding a test touches exactly one file** — the
+  function plus one `RUN_TEST` line in that file's runner.
+- **A new feature file is registered in two places, and only one fails loudly.**
+  Add the source to the `session_integration` target in `CMakeLists.txt`, and
+  declare + call its `Run<Feature>Tests()` in `tests/session_integration.cpp`.
+  Miss the first and the link fails with `undefined reference to
+  fbtest::Run<Feature>Tests()` — the error names the step. **Miss the second and
+  nothing says anything**: the file compiles, links, and its tests never run, so
+  the suite prints `0 failure(s)` having tested less than the day before. When
+  adding a feature file, grep the driver for the runner name and check the new
+  tests appear in the `[ RUN ]` output; a green run is not evidence that a new
+  file is wired in.
 - **Keep it one ctest suite.** The `[ RUN ]` / `[ DONE ]` markers and the final
   "all tests ran" line are properties of the *process*, and `ctest --timeout`
-  prints one captured stream per test, so splitting the suite into fifteen
+  prints one captured stream per test, so splitting the suite into many
   executables would trade a readable crash log for a per-file timeout budget
   nobody can act on. One file per feature is a source-layout choice; one
   executable is a diagnostics choice, and the second is deliberate.
-- The system `fbc` compiler (1.10.2) is available for ground-truthing ambiguous
-  FreeBASIC constructs.
 - Hosted CI (`.github/workflows/ci.yml`): the `build-test` job configures,
-  builds, and `ctest`s on Linux (gcc and clang), macOS (AppleClang), and
-  Windows (MSVC), then installs into a scratch prefix and checks the tree with
+  builds, and `ctest`s on Linux (gcc and clang), macOS (AppleClang), and Windows
+  (MSVC), then installs into a scratch prefix and checks the tree with
   `tools/check_install_tree.cmake`; the `clang-format` job enforces the
-  formatting gate below on Linux. A green local run is not a substitute for
-  the macOS and Windows legs — those only exist on CI.
+  formatting gate below on Linux. A green local run is not a substitute for the
+  macOS and Windows legs — those only exist on CI.
 
 ### ThreadSanitizer
 
-**On demand, like clang-tidy — not part of the gate.** `ctest` cannot see a
-data race, and the workspace index is the one place where a bug of this class
-is invisible locally: the handler pool reads a `WorkspaceIndex` snapshot while
-the background scan thread `upsert`s the same paths, and on Linux the freed
-entry usually still holds its old bytes, so a use-after-free reads as correct.
-macOS reuses the block and segfaults, which is how a Linux-green suite failed
-one macOS run in five. Run the integration driver under TSan when touching
-`src/index.{h,cpp}`, `src/session.cpp`, or anything that hands a raw pointer
-into a snapshot:
+**On demand, like clang-tidy — not part of the gate.** `ctest` cannot see a data
+race, and the workspace index is the one place where a bug of this class is
+invisible locally: the handler pool reads a `WorkspaceIndex` snapshot while the
+background scan thread `upsert`s the same paths. Run the integration driver
+under TSan when touching `src/index.{h,cpp}`, `src/session.cpp`, or anything that
+hands a raw pointer into a snapshot:
 
 ```
 cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -340,149 +242,87 @@ cmake --build build-tsan --target session_integration --parallel
 ./build-tsan/session_integration 2>&1 | grep -c 'WARNING: ThreadSanitizer'
 ```
 
-Zero is the bar. The rule the two findings teach: **a result type that hands
-out a pointer into a snapshot must carry the pin** — `CrossDecl::file`,
-`MemberAccess::file`, `MemberCompletion::owner.file` and
-`fblang::IncomingCall::caller` are that pin (the last one a bare `Symbol const*`
-into a scanned `AnalyzedDoc`, so the caller's `shared_ptr<DocumentContent>` is
-held across the whole conversion), and
-`onWorkspaceSymbol`'s per-file hit list holds `shared_ptr<IndexedFile const>`
-for the same reason. Holding the `WorkspaceIndex` is *not* the pin: a scan
-replaces the entries inside it.
+Zero is the bar. The rules it enforces:
 
-**A third shape of the same rule: a pointer that must outlive the handler.**
-LspCpp's `SelectionRange::parent` is `optional<SelectionRange*>`, and the
-response vector owns only the innermost node, so `src/selection_lsp.{h,cpp}` has
-to park every ancestor somewhere that lives until the reply is written. It is a
-`thread_local std::deque` cleared once per request, which is sound *because*
-`sendSessionMessage` serializes the reply inline on the handler thread under the
-send mutex and `ResponseOrError(T&&)` moves the response (a vector move steals
-the buffer, so the parked nodes stay put) — one thread, one arena, no lock.
-Hand-rolled storage is only safe while that stays true, so the lifetime is
-asserted rather than assumed: `session_integration`'s selection-range test
-matches the **nested** `"parent"` chain on the wire, which fails the moment the
-ancestors are dropped. The same reasoning puts the whole batch of chains in one
-`selectionRanges` call — per-position calls would clear the arena between chains
-and dangle the ones already built.
-
-**The same rule for bytes: an offset is meaningless without the content it is
-relative to.** A parse records byte offsets, and a reply converts them with a
-line table built from *some* copy of the file. When those two copies differ, the
-answer is wrong in a way no test of the *answer* explains — the request was
-fine, the resolution was fine, and the location was still off. So the scan must
-not re-parse an open buffer (§Index), and the general form to remember when adding
-a result type is: whatever hands out an offset has to be the same thing that
-supplies the line table. The tell is a fixture that writes bytes the client
-never sent: the two-file fixtures write through a text-mode `ofstream`, so on
-MSVC the disk copy is CRLF and the `didOpen` text is LF, which is why this class
-of defect can be invisible on Linux and *is* visible there
-(`TestScanKeepsOpenBufferAheadOfDisk` reproduces the runner's exact reply).
-
-**What TSan cannot see, in the same file.** A lost wakeup and a two-thread
-`std::thread` handoff are both invisible to TSan *and* to `ctest`, and both
-present the same way — no output, no failure, the process simply stops. Both
-were real defects here and are fixed (`close()` cleared `running_` outside
-`rescanMu_`, so a store+notify could land between `rescanLoop`'s predicate check
-and its block and park the loop forever; and `scan(true)` is reachable from a
-handler thread as well as the rescan loop, so two threads could join and
-reassign one `std::thread`). What the evidence actually showed is that they
-were **not** what stalled the Windows leg: with the tests naming themselves, the
-stall turned out to be accumulated poll budgets, not a wedge — see the URI note
-below. Two rules follow, and neither needs a sanitizer to check:
-
+- **A result type that hands out a pointer into a snapshot must carry the pin.**
+  `CrossDecl::file`, `MemberAccess::file`, `MemberCompletion::owner.file`, and
+  `fblang::IncomingCall::caller` are that pin (the last a bare `Symbol const*`
+  into a scanned `AnalyzedDoc`, so the caller's `shared_ptr<DocumentContent>` is
+  held across the whole conversion), and `onWorkspaceSymbol`'s per-file hit list
+  holds `shared_ptr<IndexedFile const>` for the same reason. Holding the
+  `WorkspaceIndex` is *not* the pin: a scan replaces the entries inside it.
+- **A pointer that must outlive the handler** is the same rule. LspCpp's
+  `SelectionRange::parent` is a non-owning `optional<SelectionRange*>`, so
+  `src/selection_lsp.{h,cpp}` parks every ancestor in a `thread_local
+  std::deque` cleared once per request. It is sound *because*
+  `sendSessionMessage` serializes the reply inline on the handler thread under
+  the send mutex and `ResponseOrError(T&&)` moves the response — one thread, one
+  arena, no lock. The lifetime is asserted rather than assumed: the
+  selection-range integration test matches the **nested** `"parent"` chain on the
+  wire. The same reasoning puts a whole batch of chains in one `selectionRanges`
+  call; per-position calls would clear the arena and dangle the ones already
+  built.
+- **An offset is meaningless without the content it is relative to.** Whatever
+  hands out an offset has to be the same thing that supplies the line table, so
+  the scan must not re-parse an open buffer (§Index). The tell is a fixture that
+  writes bytes the client never sent: the two-file fixtures write through a
+  text-mode `ofstream`, so on MSVC the disk copy is CRLF under an LF `didOpen`.
 - **A condition variable's predicate state changes under the mutex the waiter
-  blocks on.** An atomic flag is not a substitute — the waiter holds nothing
-  the notifier is obliged to take, so the notification can be lost. Every wait
-  that shutdown depends on needs a timeout *or* the lock discipline; the index
-  has the lock discipline.
+  blocks on.** An atomic flag is not a substitute — the waiter holds nothing the
+  notifier is obliged to take, so the notification can be lost. Every wait that
+  shutdown depends on needs a timeout *or* the lock discipline.
 - **One `std::thread`, one thread touching it.** Every `join()` and every
   reassignment of `scanner_` is under `scannerMu_`.
 
-When a suite hangs on a platform you cannot reproduce, make it name itself
-before theorizing: `session_integration` prints `[ RUN ] <test>` per test
-(flushed, so it survives a process that never exits) and CI passes
-`ctest --timeout`, which prints the captured output of a test that times out.
-That instrumentation is what turned "the Windows leg hangs" into "these eleven
-tests fail, here are their assertions" in one run.
+What TSan and `ctest` cannot see, and how to diagnose it:
 
-**The same argument covers silence, which is not a pass.** A process that dies
-prints nothing, and on MSVC every way out of `main` is quiet: the default
-terminate handler, an unhandled exception, and a hardware fault all leave an
-empty log, which ctest renders as a bare `***Failed` with no reason line. That
-signature — 70 `[ RUN ]` lines, zero failure messages, `***Failed` — means the
-process never returned; it is not an assertion that was skipped or a test that
-did nothing. So `RUN_TEST` brackets every test with `[ DONE ]`, catches an
-escaping exception to name the test and count it (one bad test no longer takes
-the suite with it), and `main` prints a final "all tests ran" line: a missing
-final line puts the death *inside* a test, a present one puts it in teardown or
-static destruction. `std::set_terminate` reports what escaped the tests and
-whether an exception was active at all (a bare terminate *is* the diagnosis —
-a joinable `std::thread`, a noexcept violation).
+- **Make a hanging suite name itself.** `session_integration` prints
+  `[ RUN ] <test>` per test (flushed, so it survives a process that never exits)
+  and CI passes `ctest --timeout`, which prints a timed-out test's captured
+  output — that is what localizes a platform-only hang.
+- **Silence is not a pass.** On MSVC every way out of `main` is quiet, so a bare
+  `***Failed` with no reason line means the process never returned. `RUN_TEST`
+  brackets every test with `[ DONE ]`, catches an escaping exception to name and
+  count the test (one bad test no longer takes the suite with it), and `main`
+  prints a final "all tests ran" line: a missing final line puts the death inside
+  a test, a present one puts it in teardown or static destruction.
+  `std::set_terminate` reports what escaped the tests and whether an exception
+  was active at all.
+- **Keep this list to the portable markers.** A Windows unhandled-exception
+  filter was removed: it printed an unresolvable faulting address in Release and
+  dragged `<Windows.h>` into a cross-platform test file. Add a platform reporter
+  back only if a crash localizes to a test and `[ DONE ]` is demonstrably not
+  enough.
+- **Then reproduce the platform's difference locally.** A platform-only trigger
+  is not an excuse for a test you can only run there:
+  `TestHomeFolderGuardAsksTheFilesystem` sets `HOME` to a symlink and to a `..`
+  spelling in turn and asserts the home folder's own project stays out of the
+  index, so the defect fails a Linux run before it ever reaches a Windows runner.
 
-**Keep this list to the portable markers.** A Windows unhandled-exception
-filter was in `session_integration` and is gone: it printed a faulting address
-from a Release runner, where nothing can resolve one, and it dragged
-`<Windows.h>` into a cross-platform test file to do it. The markers answer the
-question that address would have been asked for — *which* test, or after the
-suite — and a hardware fault needs a local repro whatever it prints. Add a
-platform reporter back only if a crash localizes to a test and `[ DONE ]` is
-demonstrably not enough to act on.
+Test fixtures and wire frames:
 
-**Then reproduce the platform's difference locally.** The next Windows wave
-failed 5 assertions across 3 tests, all from one cause, and the cause was not
-Windows-specific at all — only its *trigger* was (`%TEMP%` hands out an 8.3
-short name, `%USERPROFILE%` does not, so a path guard could not tell the
-profile from the walk's spelling). "These two paths name one directory" is
-buildable anywhere: a symlink to it, a `..` component in it, both spellings no
-path compare can match. `TestHomeFolderGuardAsksTheFilesystem` sets `HOME` to
-each in turn (a `ScopedEnv` shim, since MSVC has no `setenv`) and asserts the
-home folder's own project stays out of the index — so the defect fails a Linux
-run before it ever reaches a Windows runner. A platform-only trigger is not an
-excuse for a test you can only run there.
-
-**`file://` + `path.string()` is not a URI.** A `file:` URI needs forward
-slashes, a third slash before a drive letter, and percent-encoding of anything
-unsafe. A backslash is not merely wrong in a URI — inside the JSON frame that
-carries it, a backslash is an *escape*, so `"d:\tmp\ws"` silently corrupts the
-path via `\t`/`\f` and fails to parse outright on `\w`, the message never
-reaches the server, and every test that sent it fails on a poll budget rather
-than on an assertion (≈20 s apiece, which is what made a dozen failures look
-like a hang). Build URIs through LspCpp's `make_file_scheme_uri` over
-`fblang::normalizePath` output — the same call the server makes when it echoes a
-URI, so a test and the server agree byte for byte on every platform. The same
-applies to a *hardcoded* URI: `file:///tmp/x.bas` is not a Windows URI at all
-(it decodes to a drive-less path), so the suite writes its documents against a
-`{{tmp}}` placeholder that `MakeLspFrame` expands per platform. The lesson
-generalizes: a test fixture that builds a wire-format string by string surgery
-fails as *malformed input*, not as a wrong answer, and a poll-based wait turns
-that into a timeout instead of a failure.
-
-**A raw string that ends in a JSON quote is a silent truncation.** The same
-class of defect, twice over in one milestone: `R"(","value":"")"` *looks* like
-a fragment ending in a closing quote, but the `)"` is the raw string's own
-terminator, so the literal ends at `:"` and the stray `"` that follows starts
-an empty C string — the frame goes out as `"value":""` followed by whatever
-came next. Likewise a `previousResultId` nested inside `textDocument` instead
-of beside it parses as valid JSON and is simply not a member of `params`. Both
-produced a frame the JSON parser rejected, so the handler never ran and the
-poll reported a timeout — a malformed input wearing a wrong answer's clothes,
-three times, in a milestone whose server code was correct throughout. When a
-poll times out with an *empty* newest reply, the frame never parsed; print the
-frame and read it before reading the server.
-
-**A poll's needle must be scoped to the reply it returns.** `PollRequest`
-resends a request until the answer contains a needle, because the index behind a
-cross-file resolve settles asynchronously — and it matched that needle against
-the *whole output stream*, which is cumulative. Every `didOpen` publishes
-diagnostics for its document, so a needle naming a document is already in the
-stream before the first request is answered: the poll returned whatever that
-first reply said and stopped waiting, and the caller failed on a premature
-answer. The Windows leg's last assertion was exactly that, and it is provable
-anywhere — a probe whose reply can never name the header returns `"result":null`
-on attempt 0 while the header URI sits in an earlier publish. Two rules, both
-cheap: match the needle in the region the caller will inspect (the reply's tail),
-and let a poll that spends its budget say so, because from the caller's side a
-give-up and a wrong answer are the same failed assertion.
+- **`file://` + `path.string()` is not a URI.** Build URIs through LspCpp's
+  `make_file_scheme_uri` over `fblang::normalizePath` output — the same call the
+  server makes when it echoes a URI, so a test and the server agree byte for byte
+  on every platform. A backslash inside a JSON frame is an *escape*, so
+  `"d:\tmp\ws"` silently corrupts the path and a test fails on a poll budget
+  rather than on an assertion. A hardcoded `file:///tmp/x.bas` is not a Windows
+  URI at all, so write documents against the `{{tmp}}` placeholder that
+  `MakeLspFrame` expands per platform. A fixture that builds a wire-format string
+  by string surgery fails as *malformed input*, not as a wrong answer.
+- **A raw string that ends in a JSON quote is a silent truncation.**
+  `R"(","value":"")"` *looks* like a fragment ending in a closing quote, but the
+  `)"` is the raw string's own terminator, so the literal ends at `:"` and the
+  stray `"` starts an empty C string. The frame never parses, the handler never
+  runs, and the poll reports a timeout — a malformed input wearing a wrong
+  answer's clothes. When a poll times out with an empty newest reply, print the
+  frame and read it before reading the server.
+- **A poll's needle must be scoped to the reply it returns.** `PollRequest`
+  matches its needle against the cumulative output stream, but every `didOpen`
+  publishes diagnostics, so a needle naming a document is already in the stream
+  before the first request is answered. Match in the region the caller will
+  inspect (the reply's tail), and let a poll that spends its budget say so — from
+  the caller's side a give-up and a wrong answer are the same failed assertion.
 
 ### clang-format
 
@@ -496,88 +336,57 @@ git ls-files '*.cpp' '*.h' | grep -v '^third_party/' \
   | xargs clang-format --dry-run --Werror
 ```
 
-Every tracked C++ file, so a new file in a new directory cannot escape the
-gate; `git ls-files` does not descend into the submodules, and the filter says
-so out loud. **Run the system-installed `clang-format` — the `/usr/bin` copy,
-not a vendored pin substitute.** This machine is Arch and tracks the latest
-LLVM, so the local tool drifts ahead of the workflow's pinned
-`CLANG_FORMAT_VERSION`; that is the expected state while both versions agree on
-the tree. **When a discrepancy arises — the system version formats a file
-differently than the workflow's pin would — tell the user and bump
-`CLANG_FORMAT_VERSION` to the system version in its own standalone commit**: no
-`CHANGELOG.md` entry, it is a tooling sync, not a milestone. The same policy
-covers the clang diagnostics below: run what the system installed.
-
-Apply with `clang-format -i <file>` (or `--lines=start:end` for a region, e.g.
-right after `clang-tidy --fix`). Corpus `.bas`/`.diag` files and
+`git ls-files` does not descend into the submodules, and the filter says so out
+loud, so a new file in a new directory cannot escape the gate. **Run the
+system-installed `clang-format` — the `/usr/bin` copy.** This machine tracks the
+latest LLVM, so the local tool drifts ahead of the workflow's pinned
+`CLANG_FORMAT_VERSION`; that is expected while both versions agree on the tree.
+**When a discrepancy arises — the system version formats a file differently than
+the pin — tell the user and bump `CLANG_FORMAT_VERSION` to the system version in
+its own standalone commit**: no `CHANGELOG.md` entry, it is a tooling sync, not a
+milestone. Apply with `clang-format -i <file>` (or `--lines=start:end` for a
+region, e.g. right after `clang-tidy --fix`). Corpus `.bas`/`.diag` files and
 `third_party/` are out of scope.
 
 ### clang-tidy
 
 On-demand only — not part of the milestone gate. Baseline config lives at repo
-root `.clang-tidy`; keep `src/` **zero-diagnostic** under it whenever you do
-run it, but don't block a milestone on tidying. Run it with the
-system-installed `/usr/bin/clang-tidy`: the clang-format policy above ("run
-what the system installed; bump the CI pin only when the two disagree")
-applies to clang diagnostics as well. Run it when asked or when a change looks
-tricky (copy-paste code, heavy templates, new headers):
+root `.clang-tidy`; keep `src/` **zero-diagnostic** under it whenever you do run
+it, but don't block a milestone on tidying. Run it with the system-installed
+`clang-tidy` (the same "run what the system installed" policy as clang-format)
+when asked or when a change looks tricky (copy-paste code, heavy templates, new
+headers):
 
 ```
 cmake -S . -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_COMPILER=clang++
-clang-tidy -p build-tidy --quiet src/lexer.cpp src/language.cpp src/parser.cpp \
-    src/resolve.cpp src/index.cpp src/settings.cpp src/session.cpp src/utf16.cpp src/main.cpp
+clang-tidy -p build-tidy --quiet <changed src/*.cpp>
 ```
 
-Gotchas learned the hard way (2026-09):
-
-- The system `clang-tidy` is built with **no checks enabled** — a
-  bare run without `-checks`/`.clang-tidy` aborts with "no checks enabled".
-  Disable checks by *adding* `-checks` values; `.clang-tidy` `Checks:` and
-  `WarningsAsErrors:` are the committed source of truth.
-- The checked-in `build/compile_commands.json` is **not** usable for tidying
-  (stale: missing `-std=c++17` and rapidjson include, plus third-party
-  ixwebsocket entries). Using it makes clang-tidy fail to parse the files
-  (`std::string_view`/`std::filesystem` "no member" errors). Always re-create
-  the throwaway `build-tidy/` DB above (gitignored via `build*/`).
-- Default `-header-filter` floods output from vendored headers (LspCpp,
-  rapidjson). `.clang-tidy` restricts to `src/[^/]*\.h$` — our headers live
-  directly under `src/`, third-party does not. Add new src headers without
-  touching this.
-- `WarningsAsErrors` gates bug-class checks (`bugprone-*`, `cert-*`,
-  `clang-analyzer-*`, `performance-*`) — a real finding exits non-zero. Do not
-  widen the suppression list (`-readability-*`, `-misc-*` entries in
-  `.clang-tidy`) to silence a new bug-class hit; those entries exist for
-  deliberate conventions only, each with its reason in the config.
-- Auto-fix pitfall: the raw `--fix` output is not formatter-clean (one-line
-  statements come back as `{ stmt;` with the closing brace at column 0), so
-  run `clang-format -i` over the touched lines afterward and review the diff;
-  never hand-write a brace shape over the tool's output.
-  `readability-braces-around-statements` is enabled (since 2026-09): single-
-  statement `if`/`for`/`while`/`do` bodies must be braced in the attached,
-  2-space style that `.clang-format` (LLVM) enforces codebase-wide.
-- 2026-09 cleanup already applied: uint→int narrowing in folding ranges,
-  duplicated switch/case-`if` branches, an ignored `snprintf` result,
-  `std::move` of a trivially-copyable type, `path`-by-value params made
-  `const&`, const-correctness pass, loop→`std::any_of`/`find_if` conversions.
-  Visual check: exit 0, zero diagnostics, `ctest` 15/15 green.
+Re-create the throwaway `build-tidy/` DB above (gitignored via `build*/`) rather
+than trusting the checked-in `build/compile_commands.json`, which is stale.
+`WarningsAsErrors` gates bug-class checks (`bugprone-*`, `cert-*`,
+`clang-analyzer-*`, `performance-*`), so a real finding exits non-zero; do not
+widen the suppression list to silence a new bug-class hit — those entries exist
+for deliberate conventions only, each with its reason in `.clang-tidy` and
+`TIDY.md`. The raw `--fix` output is not formatter-clean, so run `clang-format
+-i` over the touched lines afterward and review the diff.
 
 ## Versioning
 
-The project follows **semantic versioning**. The single source of the number
-is `project(freebasicd LANGUAGES CXX VERSION <x.y.z> ...)` in `CMakeLists.txt`;
-CMake passes it to `main.cpp` as `FBLANG_VERSION`, and that is the only place
-it surfaces (the LSP `initialize` reply cannot carry it, LspCpp's
-`InitializeResult` has no `serverInfo` field).
+The project follows **semantic versioning**. The single source of the number is
+`project(freebasicd LANGUAGES CXX VERSION <x.y.z> ...)` in `CMakeLists.txt`;
+CMake passes it to `main.cpp` and `session.cpp` as `FBLANG_VERSION`, and it
+surfaces in the LSP `initialize` reply's `serverInfo` and on the startup stderr
+line.
 
-- **Bump the version only when a release ships.** Feature commits, fix
-  commits, refactors, and docs commits never touch it. A release is a version
-  bump plus a tag, and the tag is what the number is for. A release also
-  retitles `CHANGELOG.md`'s `## [Unreleased]` to `## [<x.y.z>] — <date>` and
-  opens a fresh empty `## [Unreleased]` above it, so the two numbers cannot
-  drift apart.
+- **Bump the version only when a release ships.** Feature commits, fix commits,
+  refactors, and docs commits never touch it. A release is a version bump plus a
+  tag, and the tag is what the number is for. A release also retitles
+  `CHANGELOG.md`'s `## [Unreleased]` to `## [<x.y.z>] — <date>` and opens a fresh
+  empty `## [Unreleased]` above it, so the two numbers cannot drift apart.
 - Pre-1.0 (anything `0.y.z`): MINOR is the feature wave, PATCH is fixes and
-  docs. BREAKING in the 0.x line means "the protocol surface or the config
-  file changed shape", and it takes the MINOR.
+  docs. BREAKING in the 0.x line means "the protocol surface or the config file
+  changed shape", and it takes the MINOR.
 - Keep it below 1.0 until the LSP surface, the `freebasicd.toml` keys, and the
   install layout have held still long enough to call stable.
 
@@ -586,13 +395,12 @@ it surfaces (the LSP `initialize` reply cannot carry it, LspCpp's
 - **Commit automatically when a milestone is achieved.** Do not wait for an
   explicit commit request. A milestone is achieved when its acceptance criteria
   pass: the milestone's tests are green (`ctest` / `cmake --build`), changed C++
-  files are `clang-format` clean (see Verification §clang-format), and the
-  milestone deliverable (e.g. lexer/parser, an LSP feature, a docs refresh) is
-  complete. Commit even if the milestone is "small"; never commit half-finished
-  or failing work.
-- **A finished milestone goes in `CHANGELOG.md`, not `PLAN.md`.** The plan is
-  for work still to do; the changelog is the record of what landed, when, and
-  what it cost. So a milestone's closing wave is:
+  files are `clang-format` clean (see §clang-format), and the milestone
+  deliverable is complete. Commit even if the milestone is "small"; never commit
+  half-finished or failing work.
+- **A finished milestone goes in `CHANGELOG.md`, not `PLAN.md`.** The plan is for
+  work still to do; the changelog is the record of what landed, when, and what it
+  cost. A milestone's closing wave:
   1. **Add a dated `CHANGELOG.md` entry** at the top of `## [Unreleased]`,
      newest first, headed `### <date> — <what shipped>`. Keep a Changelog shape
      (`### Added` / `### Changed` / `### Fixed` only when the entry genuinely has
@@ -614,7 +422,8 @@ it surfaces (the LSP `initialize` reply cannot carry it, LspCpp's
   this rule exists to prevent.
 - Keep the working tree clean between milestones: stage only intended files,
   never build artifacts or secrets, and write a short conventional `scope:`-style
-  message summarizing what the milestone delivers (see PLAN.md §5 forward plan, §7 acceptance).
+  message summarizing what the milestone delivers (see PLAN.md §5 forward plan,
+  §7 acceptance).
 - Before committing, quickly review `git status` / `git diff` so the commit
   contains exactly the milestone's changes, nothing stray.
 - The repo lives on `main`; push only when asked.
