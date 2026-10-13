@@ -26,6 +26,66 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-12 — The `Shared`-gate diagnostic ships as a fix (M21 step 2)
+
+- **A module-level `Dim` without `Shared` is now diagnosed where fbc rejects it.**
+  §8 says a plain module `Dim` is invisible inside a procedure, and fbc reports
+  that from four directions, each with its own number: reading the name there is
+  `error 42`, reaching it through a leading `.name` is `error 8`, passing it as a
+  `typeof(.name)` argument to `#print`/`#if`/`#elseif` is `error 9`, and passing
+  it as a bare `typeof(name)` argument to those directives is `error 42` again
+  (the directive is evaluated in the procedure's scope). The wire still carries
+  one routing key for the family — `module-var-not-shared` — with the fbc number
+  appended (`module-var-not-shared, fbc error: 42`), so a suppression or a
+  quick-fix row keys on one identifier while the compiler's own number stays
+  visible. The bare read and bare `typeof(name)` are procedure-body rules (the
+  latter silent when a local, parameter, or `Shared` declaration of the name is
+  visible); the dot and `typeof(.name)` shapes fire at module level too, which is
+  what the probes showed.
+- **The bare `typeof(name)` shape was missed at first, and the reason is the
+  lesson.** A `typeof(name)` probe *at module level* compiles without `Shared`,
+  so the shape was written off as legal; only the procedure-scope probe shows
+  `error 42`. §8 is exactly the claim that the two contexts differ, so a probe
+  of a gated name has to be taken in the gate's own context — inside a procedure
+  — or it measures the wrong thing. Every shape in this family is now probed in
+  both contexts.
+- **The fix is adding `Shared` to the declaration, offered through the M12
+  provider table** — one function (`addSharedModuleVar`) plus one table row, no
+  `session.cpp` change. The diagnostic sits on the *use* and the fix edits the
+  *declaration*, so the fix and the diagnostic must agree on which declaration
+  that is: both go through `moduleSharedCandidate`, the same predicate the pass
+  gated on, so a fix is offered exactly when a diagnostic named one. A
+  var-declaration `Symbol`'s range is its name token alone, so the insertion
+  point (`sharedInsertionOffset`) scans back to the line start to find the
+  leading keyword and inserts ` Shared` after it.
+- **The candidate is deliberately narrow, and what it excludes is the point.**
+  `Dim`-kind module roots whose leading keyword can take `Shared` (`Dim`/
+  `Redim`/`Common`/`Static`/`Var`) qualify; `Extern`/`Const` do not, because fbc
+  keeps `extern` visible inside a procedure anyway and neither accepts `Shared`.
+  A module-level scoped block's local (`scope` / `dim inner` / `end scope`) is
+  *also* excluded, and this one is a real miss: fbc reports `error 42` for it,
+  but `Shared` there is itself `error 96`, so no fix exists and — per the M12
+  rule that a diagnostic never ships without its fix — none is offered. The same
+  rule excludes a non-`Shared` module variable declared in an *included* header:
+  the fix would have to edit another file. Both misses, `extern`/`const`, and
+  the local-shadow case are recorded in FreeBASIC.md §12.29.
+- **A trailing `'` comment on a directive is stripped before the `typeof`
+  scan.** A line-leading `#` is one whole-line `Preprocessor` token, comment and
+  all, so a naive scan sees the `typeof(.x)` in the comment too. fbc strips the
+  comment first (probed: `#print typeof(.var1) ' ... typeof(.var1)` is one
+  `error 9`), so the pass must match it. The scan tracks double-quoted strings
+  (with `""` doubling, as FreeBASIC escapes a quote) so an apostrophe *inside* a
+  string literal does not open a comment — the same comment-stripping a reader
+  would do, on the token the lexer hands over.
+- **Tests.** `resolve_checks` pins the fbc numbers, the ranges, the candidate and
+  insertion offset, the keyword table, the trailing-comment cases (dot and
+  no-dot), the local and parameter shadows, and the module-level dot shape;
+  `code_actions_checks` pins the provider's insertion and its refusal of an
+  unfixable declaration; the session suite drives the family over the wire on
+  both the push and pull paths and applies the fix, checking the family clears
+  on re-parse. `po/freebasicd.pot` regenerated. `ctest` 19/19, changed files
+  clang-format clean.
+
 ### 2026-10-11 — Module constructors and destructors parse, with fbc's codes (M21 step 1)
 
 - **`Sub name() Constructor [priority]` / `Destructor` is lexed and parsed.**

@@ -389,7 +389,7 @@
      supply. M21 takes both as optional config with defaults that keep today's
      behavior.
   6. **Most diagnostic codes are still our own, not fbc's.** The catalog is
-     data (M21 step 6: `tools/fbc_catalog.tsv` → `src/fbc_diagnostics.inc`,
+     data (M21 step 5: `tools/fbc_catalog.tsv` → `src/fbc_diagnostics.inc`,
      byte-checked by `fbc_diagnostics_checks`) and the block-closer family
      already reports fbc's number and links its wiki page. The statement,
      placement, and warning families and the whole resolve layer still report
@@ -447,22 +447,18 @@ diagnostics it implies fbc's numbers instead of ours. Gating milestone for M18.
    outside 101–65535 (`error 189`). A `Static` UDT member procedure may be a
    module constructor and a non-`Static` one may not (`error 17`).
    **Landed (2026-10-11).**
-2. **A constructor is a procedure body**, so §8 applies inside one: a plain
-   module-level `Dim` is invisible there and reading it is `error 42`. The fix
-   is adding `Shared`, and we can offer it because both halves are known — this
-   is a quick fix through the M12 provider table, not a session handler.
-3. **Project type and main module, as optional config** — the two facts an LSP
+2. **Project type and main module, as optional config** — the two facts an LSP
    cannot derive (detailed below). Nothing requires them, and each has a
    default that keeps today's behavior.
-4. **Module-level executable code outside the main module**, which step 3 makes
+3. **Module-level executable code outside the main module**, which step 2 makes
    stateable. The fix wraps the run in `Sub <name>() Constructor` — an explicit
    `Constructor` states *when* it runs, an implicit module body does not.
-5. **Two `Public` constructors sharing a name across the include closure** is
+4. **Two `Public` constructors sharing a name across the include closure** is
    an fbc link error; report it while editing, case-insensitively. Say nothing
    about constructor *order*: fbc does not specify it, it is not stable across
    link orders (probed — two link orders of the same three modules interleave
    differently), so neither is any claim we make.
-6. **The catalog as data — landed (2026-10-09).**
+5. **The catalog as data — landed (2026-10-09).**
    `tools/extract_fbc_catalog.py` reads `error.bas` at the pinned tag into the
    checked-in `tools/fbc_catalog.tsv`; `tools/gen_fbc_catalog.cpp` (the
    `fbc-catalog` target) emits `src/fbc_diagnostics.inc`;
@@ -471,7 +467,7 @@ diagnostics it implies fbc's numbers instead of ours. Gating milestone for M18.
    drifts from the snapshot. A reader who knows `error 42` now learns something
    from our output.
 
-**Step 3 in detail: what the config says, and what it defaults to.**
+**Step 2 in detail: what the config says, and what it defaults to.**
 
 An LSP never sees the build command line, so two facts must be told to it or
 guessed: what kind of artifact this is, and which module is `main`. Both go in
@@ -490,8 +486,8 @@ entry point — probed, not assumed: `-lib` and `-dylib` builds carry module-lev
 statements with no diagnostic, emit them as load-time constructors
 (`fb_ctor__*`, `__fb_DllMain_ctor`) with no `main` symbol, and run them before
 the linking exe's `main` (FreeBASIC.md §9) — so in one of those projects every
-module level is initialization, and step 4 can say that flatly. Only an exe
-needs `build.main` on top, and only to sharpen it: with `main` set, step 4 can
+module level is initialization, and step 3 can say that flatly. Only an exe
+needs `build.main` on top, and only to sharpen it: with `main` set, step 3 can
 say *"app.bas is the main module, so this level runs before it"*; with it unset
 the finding is phrased against fbc's own default, which is the **first `.bas` on
 the command line** (FreeBASIC.md §9) — "if this file is not the first source on
@@ -537,9 +533,6 @@ different compiler than the server diagnoses against. Findings carry
 
 - `Constructor`/`Destructor` parse; each malformed form has a test naming fbc's
   code.
-- The module-global-in-a-constructor diagnostic ships as a quick fix added
-  through the M12 provider table — no `session.cpp` change (AGENTS.md §Quick
-  fixes: adding a fix is one function plus one table row).
 - Generated catalog table plus a staleness test, and our emitted codes are
   fbc's for the covered set.
 - **No config key is required for any diagnostic to fire.** Each one either

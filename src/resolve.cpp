@@ -6,6 +6,7 @@
 
 #include "resolve.h"
 
+#include "i18n.h"
 #include "index.h"
 #include "lexer.h"
 #include "parser.h"
@@ -180,22 +181,19 @@ moduleLevelCandidates(std::vector<Symbol> const &roots) {
   return out;
 }
 
-// The declaration a usage at `off` resolves to, over a pre-lexed stream. This
-// is the single resolution walk shared by analyze's occurrence sweep and the
-// on-demand resolution API (which used to re-lex per call).
+// The declaration `key` resolves to at `off`, honoring the §12.2 storage gate.
+// `declAt` is the token-driven wrapper for a usage that has its own identifier
+// token; this form takes the key directly, because an offset inside a
+// `#print`/`#if` directive has no identifier token to read one from (the whole
+// line is a single Preprocessor token).
 //
 // Honors the §12.2 storage gate: a usage inside a procedure body (its control
 // blocks included) may only match a module-scope Dim-kind declaration carrying
 // the `Shared` modifier; at module level, and inside module-level control
 // blocks (scope/for/if/...), every root is visible. Procedure/type/enum/const
 // roots are never gated.
-Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
-                     std::uint32_t off) {
-  Token const *tok = tokenAt(tokens, off);
-  if (tok == nullptr) {
-    return nullptr;
-  }
-  std::string const key = toLowerChars(tok->text());
+Symbol const *visibleDeclNamed(ParseResult const &parse, std::uint32_t off,
+                               std::string const &key) {
   Symbol const *const siteScope = innermostScope(parse, off);
   bool const storageGated = insideProcedureBody(parse, siteScope);
   for (Symbol const *cur = siteScope;;) {
@@ -223,6 +221,18 @@ Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
     }
     cur = parentOf(parse, cur);
   }
+}
+
+// The declaration a usage at `off` resolves to, over a pre-lexed stream. This
+// is the single resolution walk shared by analyze's occurrence sweep and the
+// on-demand resolution API (which used to re-lex per call).
+Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
+                     std::uint32_t off) {
+  Token const *tok = tokenAt(tokens, off);
+  if (tok == nullptr) {
+    return nullptr;
+  }
+  return visibleDeclNamed(parse, off, toLowerChars(tok->text()));
 }
 
 // Fill `occurrences` on every Symbol of `parse` (file roots tagged
@@ -423,6 +433,351 @@ bool insideProcedureBody(ParseResult const &parse, Symbol const *siteScope) {
   return false;
 }
 
+namespace {
+
+// The byte range of the first word on the physical line containing `off`
+// ("dim", "static", ...), or {npos, npos} when the line does not begin with a
+// word. A var-declaration Symbol's range is its name token alone, so the
+// statement that declares it — and the keyword `Shared` follows — is only
+// reachable by scanning back to the line start.
+std::pair<std::size_t, std::size_t> leadingWordAt(std::string_view content,
+                                                  std::uint32_t off) {
+  std::size_t const npos = std::string_view::npos;
+  if (off > content.size()) {
+    return {npos, npos};
+  }
+  std::size_t lineStart = content.rfind('\n', off == 0 ? 0 : off - 1);
+  lineStart = (lineStart == npos) ? 0 : lineStart + 1;
+  std::size_t i = lineStart;
+  while (i < content.size() && (content[i] == ' ' || content[i] == '\t')) {
+    ++i;
+  }
+  std::size_t const wbeg = i;
+  while (i < content.size() && isDirectiveWordChar(content[i])) {
+    ++i;
+  }
+  if (i == wbeg) {
+    return {npos, npos};
+  }
+  return {wbeg, i};
+}
+
+// The declaration keywords `Shared` may follow. `Shared` is one of the
+// declaration's storage words (`Dim Shared x`); probed, these five accept it
+// and `Extern`/`Const` reject it with fbc's "Duplicated definition". Gating the
+// candidate on this keeps the diagnostic honest: a declaration the fix would
+// not compile is never reported as fixable.
+bool sharedInsertable(std::string_view keyword) {
+  std::string const w = toLowerChars(keyword);
+  return w == "dim" || w == "redim" || w == "common" || w == "static" ||
+         w == "var";
+}
+
+bool insideWithScope(ParseResult const &parse, std::uint32_t off) {
+  for (Symbol const *s = innermostScope(parse, off); s != nullptr;
+       s = parentOf(parse, s)) {
+    if (s->kind == SymbolKind::Scope && s->name == "with") {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isNameChar(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+         (c >= '0' && c <= '9') || c == '_';
+}
+
+// A FreeBASIC type-suffix char (FreeBASIC.md §2): part of an identifier but not
+// of a bare word. The `typeof` argument scan needs it so `typeof(.x$)` reads
+// the whole name — the canonical key, which the module candidate lookup
+// compares against, keeps the suffix.
+bool isSuffixChar(char c) {
+  return c == '$' || c == '%' || c == '&' || c == '!' || c == '#';
+}
+
+bool isIdentChar(char c) { return isNameChar(c) || isSuffixChar(c); }
+
+// True when the `.` at `dotIdx` opens an implicit `with`-member access (a
+// leading dot: `.field` with no expression to its left). Mirrors the chain
+// walk's `implicit` test (collectChainWalk) for the one-operator case: a
+// preceding identifier, a call/array receiver, or a reserved-word member is an
+// *explicit* access to that expression's member (`a.field`, `f().field`,
+// `v.name.field`), never the with-target's.
+bool dotIsLeading(std::vector<Token> const &tokens, std::size_t dotIdx) {
+  if (dotIdx == 0) {
+    return true;
+  }
+  Token const &lhs = tokens[dotIdx - 1];
+  switch (lhs.kind) {
+  case TokenKind::Identifier:
+    return false;
+  case TokenKind::Keyword:
+    return !(dotIdx >= 2 && tokens[dotIdx - 2].kind == TokenKind::Symbol &&
+             (tokens[dotIdx - 2].text() == "." ||
+              tokens[dotIdx - 2].text() == "->"));
+  case TokenKind::Symbol:
+    return lhs.text() != ")" && lhs.text() != "]";
+  case TokenKind::Newline:
+  case TokenKind::Comment:
+  case TokenKind::DocComment:
+  case TokenKind::Eof:
+    return true;
+  default:
+    return false; // a literal before the dot is an explicit access
+  }
+}
+
+// Tokens after which a bare name can never be a value reference, so the
+// `error 42` family must not fire: `as` names a type (`dim x as t` is fbc's
+// `error 14`, not 42), and `goto`/`gosub` name a label (both accept a label
+// whose spelling matches a module variable). `.`/`->` are handled by the member
+// shape above; they are listed here for the bare path's safety.
+bool precededByNonValue(std::vector<Token> const &tokens, std::size_t idx) {
+  if (idx == 0) {
+    return false;
+  }
+  Token const &p = tokens[idx - 1];
+  if (p.kind != TokenKind::Symbol && p.kind != TokenKind::Keyword) {
+    return false;
+  }
+  std::string const w = toLowerChars(p.text());
+  return w == "." || w == "->" || w == "as" || w == "goto" || w == "gosub";
+}
+
+// A single diagnostic of the family: fbc's number (`42`/`8`/`9`) and its
+// message, anchored on the identifier token's bytes.
+void addNotShared(ParseResult &parse, std::uint32_t beg, std::uint32_t end,
+                  int fbcError, std::string msg) {
+  Diagnostic d;
+  d.range.beg = beg;
+  d.range.end = end;
+  d.severity = Severity::Error;
+  d.code = "module-var-not-shared";
+  d.fbcError = fbcError;
+  d.message = std::move(msg);
+  parse.diagnostics.push_back(std::move(d));
+}
+
+// The `#` line's directive word, lowercased ("print", "include", ...), or
+// empty. `line` starts at the '#'.
+std::string_view leadingDirectiveWord(std::string_view line) {
+  std::size_t i = 1;
+  while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
+    ++i;
+  }
+  std::size_t const wbeg = i;
+  while (i < line.size() && isDirectiveWordChar(line[i])) {
+    ++i;
+  }
+  return line.substr(wbeg, i - wbeg);
+}
+
+} // namespace
+
+// Exported (resolve.h): where `Shared` is written for the module-level `Dim`
+// `decl` — immediately after its leading declaration keyword — or nullopt when
+// that word is not one which accepts `Shared`.
+std::optional<std::uint32_t> sharedInsertionOffset(std::string_view content,
+                                                   Symbol const &decl) {
+  std::pair<std::size_t, std::size_t> const w =
+      leadingWordAt(content, decl.selection.beg);
+  if (w.first == std::string_view::npos) {
+    return std::nullopt;
+  }
+  if (!sharedInsertable(content.substr(w.first, w.second - w.first))) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint32_t>(w.second);
+}
+
+// Exported (resolve.h): the in-file module-level `Dim` a
+// `module-var-not-shared` diagnostic and its quick fix agree on. A top-level
+// root (a module-level control block's local is not fixable by adding
+// `Shared`), not `Shared`, with the key, and declared by a keyword `Shared` may
+// follow.
+Symbol const *moduleSharedCandidate(ParseResult const &parse,
+                                    std::string_view content,
+                                    std::string const &key) {
+  for (Symbol const &r : parse.roots) {
+    if (r.kind != SymbolKind::Dim || r.shared || r.key != key) {
+      continue;
+    }
+    if (sharedInsertionOffset(content, r).has_value()) {
+      return &r;
+    }
+  }
+  return nullptr;
+}
+
+namespace {
+
+// The `error 42` message, shared by the bare-identifier shape and the
+// `typeof(name)` directive shape: in both, the declaration exists at module
+// level but is not visible where it is named.
+std::string notVisibleInProcedureMessage(std::string_view name) {
+  // TRANSLATORS: the first %s is an identifier; the second is the FreeBASIC
+  // keyword Shared, passed as an argument, never translated.
+  return trf("'%s' is a module-level variable without %s, so it is not "
+             "visible inside a procedure",
+             name, "Shared");
+}
+
+// `typeof` inside a `#print`/`#if`/`#elseif` directive. A directive is one
+// whole-line token, so the `typeof` argument has no identifier token of its own
+// and is scanned textually. Two shapes of the family live here:
+//
+//   `typeof(.name)` — a *leading* dot; fbc's `error 9`, at module level too,
+//   and a local shadow does not help (the dot names the with-target/module
+//   scope, not a local). `typeof(a.name)` is ordinary member access, so the dot
+//   is only this family when it is leading.
+//   `typeof(name)` — no dot; fbc's `error 42` when `name` is a plain module
+//   `Dim` named inside a procedure body, because the directive is evaluated in
+//   the procedure's scope. At module level, or with a local/parameter/shared
+//   declaration of the same name visible, it compiles (probed).
+//
+// Restricted to the expression directives: a `#include` literal or a `#define`
+// body holding that text is not an evaluated `typeof`.
+void typeofDiagnostics(ParseResult &parse, std::string_view source,
+                       Token const &directive) {
+  std::string_view const line =
+      source.substr(directive.beg, directive.end - directive.beg);
+  std::string_view const word = leadingDirectiveWord(line);
+  if (word != "print" && word != "if" && word != "elseif") {
+    return;
+  }
+  // A directive is one whole-line token, so a trailing `'` comment is inside
+  // it. fbc strips that comment before evaluating the expression (probed: only
+  // the first `typeof(.x)` of
+  //   #print typeof(.var1) ' a comment with typeof(.var1) inside
+  // is an error), so the scan must too — a `typeof` quoted in the comment is
+  // not a second diagnostic. An apostrophe inside a string literal does not
+  // open a comment, hence the quote toggle.
+  std::size_t codeEnd = 0;
+  bool inString = false;
+  for (; codeEnd < line.size(); ++codeEnd) {
+    char const c = line[codeEnd];
+    if (c == '"') {
+      inString = !inString;
+      continue;
+    }
+    if (c == '\'' && !inString) {
+      break;
+    }
+  }
+  std::string_view const code = line.substr(0, codeEnd);
+  std::size_t pos = 0;
+  while (pos + 6 <= code.size()) {
+    std::size_t const at = code.find("typeof", pos);
+    if (at == std::string_view::npos) {
+      break;
+    }
+    pos = at + 6;
+    bool const boundary = (at == 0 || !isNameChar(code[at - 1])) &&
+                          (pos == code.size() || !isNameChar(code[pos]));
+    if (!boundary) {
+      continue;
+    }
+    std::size_t i = pos;
+    while (i < code.size() && (code[i] == ' ' || code[i] == '\t')) {
+      ++i;
+    }
+    if (i >= code.size() || code[i] != '(') {
+      continue;
+    }
+    ++i;
+    while (i < code.size() && (code[i] == ' ' || code[i] == '\t')) {
+      ++i;
+    }
+    bool const leadingDot = i < code.size() && code[i] == '.';
+    if (leadingDot) {
+      ++i; // the dot
+      while (i < code.size() && (code[i] == ' ' || code[i] == '\t')) {
+        ++i;
+      }
+    }
+    std::size_t const nbeg = i;
+    while (i < code.size() && isIdentChar(code[i])) {
+      ++i;
+    }
+    if (i == nbeg) {
+      continue;
+    }
+    std::string const key = toLowerChars(code.substr(nbeg, i - nbeg));
+    if (moduleSharedCandidate(parse, source, key) == nullptr) {
+      continue;
+    }
+    std::uint32_t const nameBeg =
+        directive.beg + static_cast<std::uint32_t>(nbeg);
+    std::uint32_t const nameEnd = directive.beg + static_cast<std::uint32_t>(i);
+    if (leadingDot) {
+      // TRANSLATORS: the first %s is an identifier (e.g. var1); the second is
+      // the FreeBASIC keyword Shared, passed as an argument, never translated.
+      addNotShared(parse, nameBeg, nameEnd, 9,
+                   trf("'.%s' in typeof requires a %s module-level variable",
+                       code.substr(nbeg, i - nbeg), "Shared"));
+    } else if (visibleDeclNamed(parse, nameBeg, key) == nullptr) {
+      // No local/parameter/shared declaration of the name is visible here, so
+      // the module `Dim` is the only one and it is gated — the same `error 42`
+      // a bare read produces.
+      addNotShared(parse, nameBeg, nameEnd, 42,
+                   notVisibleInProcedureMessage(code.substr(nbeg, i - nbeg)));
+    }
+    pos = i;
+  }
+}
+
+// The `module-var-not-shared` family: a module-level `Dim` that lacks `Shared`
+// is invisible inside a procedure (FreeBASIC.md §8; `insideProcedureBody`), so
+// reading it there, or naming it through a leading `.` / `typeof(.x)` /
+// `typeof(x)` directive argument, is one of fbc's errors 42/8/9. Every shape is
+// gated on the same in-file non-Shared `Dim` candidate the quick fix edits, so
+// a diagnostic is never reported without the fix that clears it. Appended to
+// the document's parse diagnostics — the one payload every delivery path (push,
+// document pull, workspace pull) reads.
+void sharedGateDiagnostics(ParseResult &parse, std::vector<Token> const &tokens,
+                           std::string_view source) {
+  for (std::size_t i = 0; i < tokens.size(); ++i) {
+    Token const &t = tokens[i];
+    if (t.kind == TokenKind::Preprocessor) {
+      typeofDiagnostics(parse, source, t);
+      continue;
+    }
+    if (t.kind != TokenKind::Identifier) {
+      continue;
+    }
+    std::string const key = toLowerChars(t.text());
+    if (moduleSharedCandidate(parse, source, key) == nullptr) {
+      continue;
+    }
+    // Leading `.name`: fbc wants a Shared module variable, whether or not a
+    // local of that name exists (probed: a local shadow does not help).
+    if (i > 0 && tokens[i - 1].kind == TokenKind::Symbol &&
+        tokens[i - 1].text() == ".") {
+      if (insideWithScope(parse, t.beg) || !dotIsLeading(tokens, i - 1)) {
+        continue;
+      }
+      // TRANSLATORS: the first %s is an identifier; the second is the
+      // FreeBASIC keyword Shared, passed as an argument, never translated.
+      addNotShared(
+          parse, t.beg, t.end, 8,
+          trf("'.%s' requires a %s module-level variable", t.text(), "Shared"));
+      continue;
+    }
+    if (precededByNonValue(tokens, i) ||
+        !insideProcedureBody(parse, innermostScope(parse, t.beg)) ||
+        declAt(parse, tokens, t.beg) != nullptr) {
+      continue;
+    }
+    // TRANSLATORS: the first %s is an identifier; the second is the
+    // FreeBASIC keyword Shared, passed as an argument, never translated.
+    addNotShared(parse, t.beg, t.end, 42,
+                 notVisibleInProcedureMessage(t.text()));
+  }
+}
+
+} // namespace
+
 AnalyzedDoc analyze(std::string_view source) {
   AnalyzedDoc doc;
   doc.parse = parseDocument(source);
@@ -435,6 +790,7 @@ AnalyzedDoc analyze(std::string_view source) {
     }
   }
   attachOccurrences(doc.parse, doc.tokens);
+  sharedGateDiagnostics(doc.parse, doc.tokens, source);
   collectIncludes(source, doc.tokens, &doc.includes);
   doc.pragmaOnce = detectPragmaOnce(source, doc.tokens);
   return doc;

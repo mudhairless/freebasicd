@@ -324,6 +324,44 @@ std::vector<QuickFix> removeKeywordSuffix(Diagnostic const &d,
   return {std::move(fix)};
 }
 
+// `module-var-not-shared` -> add `Shared` to the declaration the diagnostic
+// names.
+//
+// The diagnostic sits on the *use* (a bare name inside a procedure, a leading
+// `.name`, or a `typeof(.name)`/`typeof(name)` directive argument); the
+// declaration it is about lives elsewhere in the buffer, so the fix and the
+// diagnostic must agree on which one — that is `moduleSharedCandidate`, the
+// same predicate `resolve.cpp` gated the diagnostic on, so a fix is offered
+// exactly when the diagnostic reported one. The edit inserts ` Shared` right
+// after the declaration's leading keyword, which is `Dim`-first source order
+// and valid for every keyword the candidate accepted.
+std::vector<QuickFix> addSharedModuleVar(Diagnostic const &d,
+                                         QuickFixContext const &ctx) {
+  if (ctx.doc == nullptr || d.range.beg >= d.range.end ||
+      d.range.end > ctx.content.size()) {
+    return {};
+  }
+  std::string const key =
+      toLowerChars(ctx.content.substr(d.range.beg, d.range.end - d.range.beg));
+  Symbol const *decl = moduleSharedCandidate(ctx.doc->parse, ctx.content, key);
+  if (decl == nullptr) {
+    return {}; // no in-file declaration this fix could edit
+  }
+  std::optional<std::uint32_t> const at =
+      sharedInsertionOffset(ctx.content, *decl);
+  if (!at) {
+    return {};
+  }
+  QuickFix fix;
+  // TRANSLATORS: the first %s is the FreeBASIC keyword Shared (passed as an
+  // argument, never translated); the second is the variable's name.
+  fix.title = trf("Add '%s' to '%s'", "Shared", decl->name);
+  fix.code = d.code;
+  fix.diagRange = d.range;
+  fix.edits.push_back({SourceRange{*at, *at}, " Shared"});
+  return {std::move(fix)};
+}
+
 } // namespace
 
 std::vector<QuickFixRegistration> const &quickFixProviders() {
@@ -342,6 +380,10 @@ std::vector<QuickFixRegistration> const &quickFixProviders() {
       // 44, "Suffix ignored") — the fix deletes the char the diagnostic sits
       // on, leaving the bare keyword the parser already read.
       {"keyword-suffix", removeKeywordSuffix},
+      // resolve.cpp: a module-level `Dim` without `Shared` read inside a
+      // procedure (or through a leading `.` / `typeof(.x)` / `typeof(x)`) —
+      // fbc errors 42/8/9; the fix adds the keyword to the declaration.
+      {"module-var-not-shared", addSharedModuleVar},
   };
   return table;
 }

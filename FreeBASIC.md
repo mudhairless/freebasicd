@@ -1222,6 +1222,39 @@ to "the language is what the lexer does":
     a problem this server diagnoses as an error already renders as one, so
     `warningLevel = "error"` is an unknown string → `none`.
 
+29. **The `Shared`-gate family (fbc errors 42/8/9) is reported only when the
+    declaration it wants fixed is in the requesting file.** A module-level
+    `Dim` without `Shared` is invisible inside a procedure (§8), so naming it
+    there is now diagnosed (`module-var-not-shared`; the fbc number varies, the
+    routing key does not):
+    - reading it (`error 42`);
+    - through a leading `.name` (`error 8`), at module level too;
+    - as a `typeof(.name)` argument in `#print`/`#if`/`#elseif` (`error 9`), at
+      module level too;
+    - as a bare `typeof(name)` argument to the same directives (`error 42`) —
+      the directive is evaluated in the procedure's scope, so it is the same
+      error a bare read produces. At module level, or when a local, parameter,
+      or `Shared` declaration of the name is visible, it compiles (probed).
+
+    Each shape is reported only against an in-file top-level root, because the
+    one fix that clears it edits that declaration's own line (`Dim Shared`).
+    Two shapes fbc rejects are deliberately silent, each a miss rather than a
+    false report: a non-`Shared` module variable declared in an *included*
+    header (fbc 42/8/9; the fix would have to edit another file), and a
+    module-level scoped block's local (`scope` / `dim inner` / `end scope`, then
+    a procedure read → fbc 42), where `Shared` is itself illegal (fbc
+    `error 96`), so no fix exists and, per the M12 rule that a diagnostic never
+    ships without its fix, none is offered. `Extern`/`Const` module declarations
+    are never gated: fbc keeps `extern` visible inside procedures, and neither
+    accepts `Shared` (`Dim`/`Redim`/`Common`/`Static`/`Var` do). The bare read
+    and the bare `typeof(name)` shape additionally require no visible
+    declaration of the name, so a local or parameter that shadows the module
+    name is legal and silent. A trailing `'` comment on a directive is stripped
+    before the `typeof` scan, because fbc strips it too (probed):
+    `#print typeof(.x) ' ... typeof(.x)` is one `error 9`, not two, and the
+    comment on `~/var-scoping-shared.bas` line 29 names its own 42 without
+    adding one.
+
 28. **Module-constructor parsing reports fbc's numbers, but three shapes stay
     silent.** `Sub name() Constructor [priority]` / `Destructor` is now parsed
     (§9) and each malformed form carries fbc's own code: a parameter list is

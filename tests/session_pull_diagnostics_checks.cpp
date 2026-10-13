@@ -626,6 +626,81 @@ void TestPullDiagnosticsRefresh() {
          "request");
   session2.stop();
 }
+void TestPullDiagnosticsModuleVarNotShared() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kInitializePullFrame));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"diagnosticProvider\"") != std::string::npos,
+         "initialize must advertise the pull provider");
+
+  // ~/var-scoping-shared.bas with its commented lines live: the family is one
+  // routing key over fbc's 42/8/9. The trailing comment on line 4 repeats
+  // `typeof(.var1)`, and line 5 is the no-dot `typeof(var1)` shape (fbc error
+  // 42 inside a procedure). fbc strips a directive's trailing comment before
+  // evaluating (probed), so neither comment yields a second item; the
+  // preprocessor directive is one whole-line token, so this is the shape where
+  // a naive scan would double-count.
+  std::string const text =
+      "dim var1 as integer\n"
+      "sub our_sub()\n"
+      "    print var1\n"
+      "    print .var1\n"
+      "    #print typeof(.var1) 'the comment repeats typeof(.var1)\n"
+      "    #print typeof(var1) 'error 42: Variable not declared, var1\n"
+      "end sub\n";
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      Expand(kUri) + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString(text) + "\"}}}";
+  input->append(MakeLspFrame(openFrame.c_str()));
+  Expect(WaitForRefreshes(output, 1).find(
+             "\"method\":\"textDocument/publishDiagnostics\"") ==
+             std::string::npos,
+         "didOpen must not publish to a pull client");
+
+  std::string const report = PollRequest(
+      input, output, "pmvs", "\"kind\":\"full\"", [&](std::string const &id) {
+        return std::string(
+                   R"({"jsonrpc":"2.0","id":")" + id +
+                   R"(","method":"textDocument/diagnostic","params":{"textDocument":{"uri":")") +
+               Expand(kUri) + "\"}}}";
+      });
+  Expect(CountOf(report, "\"code\":\"module-var-not-shared, fbc error: 42\"") ==
+             2,
+         "the bare read and the typeof(x) argument must both pull error 42");
+  Expect(report.find("\"code\":\"module-var-not-shared, fbc error: 8\"") !=
+             std::string::npos,
+         "a leading-dot use must pull fbc error 8");
+  Expect(CountOf(report, "\"code\":\"module-var-not-shared, fbc error: 9\"") ==
+             1,
+         "the typeof(.x) argument must pull fbc error 9 exactly once");
+  // The four shapes carry the identifier's own range, not the line's.
+  Expect(report.find("\"start\":{\"line\":2,\"character\":10},\"end\":"
+                     "{\"line\":2,\"character\":14}") != std::string::npos,
+         "the bare-use item must cover the identifier");
+  Expect(report.find("\"start\":{\"line\":3,\"character\":11},\"end\":"
+                     "{\"line\":3,\"character\":15}") != std::string::npos,
+         "the leading-dot item must cover the identifier, not the dot");
+  Expect(report.find("\"start\":{\"line\":4,\"character\":19},\"end\":"
+                     "{\"line\":4,\"character\":23}") != std::string::npos,
+         "the typeof(.x) item must cover the argument identifier");
+  Expect(report.find("\"start\":{\"line\":5,\"character\":18},\"end\":"
+                     "{\"line\":5,\"character\":22}") != std::string::npos,
+         "the typeof(x) item must cover the argument identifier");
+  Expect(!ResultIdOf(report).empty(), "the report must carry a resultId");
+
+  session.stop();
+}
+
 } // namespace
 
 namespace fbtest {
@@ -638,6 +713,7 @@ void RunPullDiagnosticsTests() {
   RUN_TEST(TestWarningLevelFoldsIntoResultId);
   RUN_TEST(TestSuppressFoldsIntoResultId);
   RUN_TEST(TestPullDiagnosticsRefresh);
+  RUN_TEST(TestPullDiagnosticsModuleVarNotShared);
 }
 
 } // namespace fbtest

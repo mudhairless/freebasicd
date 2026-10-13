@@ -86,6 +86,25 @@ Symbol const *innermostNode(ParseResult const &parse, std::uint32_t off);
 // boundary, not on "inside any block".
 bool insideProcedureBody(ParseResult const &parse, Symbol const *siteScope);
 
+// The in-file module-level `Dim` declaration that a `module-var-not-shared`
+// diagnostic and its quick fix agree on: a top-level root, not `Shared`, whose
+// key is `key`, declared by a keyword `Shared` may follow (`Dim`/`Redim`/
+// `Common`/`Static`/`Var` — probed). `content` must be the buffer the
+// ParseResult was built from: a candidate whose declaration line cannot be read
+// is not returned, so the diagnostic and the fix can never disagree about
+// whether a fix exists.
+Symbol const *moduleSharedCandidate(ParseResult const &parse,
+                                    std::string_view content,
+                                    std::string const &key);
+
+// Where the quick fix writes `Shared` for `decl` — the byte just past its
+// leading declaration keyword (`Dim`/`Redim`/`Common`/`Static`/`Var`) — or
+// nullopt when that word is not one `Shared` may follow. `content` must be the
+// buffer `decl` was parsed from, since a var-declaration Symbol's range covers
+// its name token alone.
+std::optional<std::uint32_t> sharedInsertionOffset(std::string_view content,
+                                                   Symbol const &decl);
+
 // Parent of `node` in the parse symbol tree (the declaration block or module
 // root owning it), or nullptr for a file root. Enum members are Const
 // children of their Enum root — use this to tell an enum member from a

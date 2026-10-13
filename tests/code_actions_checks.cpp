@@ -656,12 +656,100 @@ void SuffixFixRefusesARangeThatIsNotASuffix() {
             .empty());
 }
 
+// `module-var-not-shared` -> add `Shared` to the declaration the use names.
+//
+// The diagnostic sits on the use, so the fix and the diagnostic must agree on
+// the declaration — that is `moduleSharedCandidate`, the same predicate the
+// diagnostic was gated on. Applying the fix must clear the diagnostic, which is
+// the acceptance criterion at the seam.
+void SharedFixInsertsTheKeywordOnTheDeclaration() {
+  std::string const src = "dim var1 as integer\n"
+                          "sub s()\n"
+                          "    print var1\n"
+                          "end sub\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  CHECK(doc.parse.diagnostics.size() == 1);
+  if (doc.parse.diagnostics.size() != 1) {
+    return;
+  }
+  Diagnostic const &d = doc.parse.diagnostics.front();
+  CHECK(d.code == "module-var-not-shared" && d.fbcError == 42);
+
+  std::vector<QuickFix> const fixes = fixesFor("module-var-not-shared", d, ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() != 1) {
+    return;
+  }
+  CHECK(fixes[0].title == "Add 'Shared' to 'var1'");
+  CHECK(fixes[0].code == "module-var-not-shared");
+  CHECK(fixes[0].diagRange.beg == d.range.beg);
+  // `Shared` goes right after the leading `Dim`.
+  std::size_t const afterDim = src.find("dim") + 3;
+  CHECK(editText(fixes[0]) == insertAt(afterDim) + " Shared");
+
+  TextEditBytes const &e = fixes[0].edits.front();
+  std::string const applied =
+      src.substr(0, e.range.beg) + e.newText + src.substr(e.range.end);
+  CHECK(applied == "dim Shared var1 as integer\nsub s()\n    print var1\nend "
+                   "sub\n");
+  AnalyzedDoc const after = analyze(applied);
+  CHECK(after.parse.diagnostics.empty());
+
+  // The leading-dot and typeof shapes name the same declaration, so they get
+  // the same fix.
+  std::string const dotted = "dim var1 as integer\n"
+                             "sub s()\n"
+                             "    print .var1\n"
+                             "    #print typeof(.var1)\n"
+                             "end sub\n";
+  AnalyzedDoc const ddoc = analyze(dotted);
+  QuickFixContext const dctx = bareContext(dotted, ddoc);
+  CHECK(ddoc.parse.diagnostics.size() == 2);
+  for (Diagnostic const &dd : ddoc.parse.diagnostics) {
+    if (dd.code != "module-var-not-shared") {
+      continue;
+    }
+    std::vector<QuickFix> const f = fixesFor("module-var-not-shared", dd, dctx);
+    CHECK(f.size() == 1);
+    if (f.size() == 1) {
+      CHECK(f[0].title == "Add 'Shared' to 'var1'");
+      CHECK(f[0].edits.front().newText == " Shared");
+    }
+  }
+}
+
+// A use the diagnostic reports must never come without the fix: when the
+// declaration cannot carry `Shared` (here an `extern`), the pass reports
+// nothing, and the provider stands by the same predicate rather than guessing.
+void SharedFixRefusesAnUnfixableDeclaration() {
+  std::string const src = "extern ext1 as integer\n"
+                          "sub s()\n"
+                          "    print ext1\n"
+                          "end sub\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  CHECK(doc.parse.diagnostics.empty());
+  // Even hand-built, a diagnostic naming the unfixable declaration yields no
+  // edit: the candidate gate is the provider's, not the client's.
+  std::size_t const at = src.find("ext1", src.find("print"));
+  Diagnostic const hand =
+      diagAt("module-var-not-shared", static_cast<std::uint32_t>(at),
+             static_cast<std::uint32_t>(at + 4));
+  CHECK(fixesFor("module-var-not-shared", hand, ctx).empty());
+  // A stale range that is no longer an identifier is refused too.
+  CHECK(fixesFor("module-var-not-shared", diagAt("module-var-not-shared", 0, 0),
+                 ctx)
+            .empty());
+}
+
 void RegistryAnswersTheFixableCodes() {
-  CHECK(quickFixProviders().size() == 4);
+  CHECK(quickFixProviders().size() == 5);
   CHECK(quickFixProviderFor("unterminated-block") != nullptr);
   CHECK(quickFixProviderFor("invalid-member-name") != nullptr);
   CHECK(quickFixProviderFor("include-not-found") != nullptr);
   CHECK(quickFixProviderFor("keyword-suffix") != nullptr);
+  CHECK(quickFixProviderFor("module-var-not-shared") != nullptr);
   // Every registered code is a real diagnostic code, and the registry is
   // stable across calls (the session serves it from the handler pool).
   CHECK(quickFixProviders().data() == quickFixProviders().data());
@@ -688,6 +776,8 @@ int main() {
   MemberNameFixRefusesARangeThatIsNotAName();
   SuffixFixRemovesTheSuffixChar();
   SuffixFixRefusesARangeThatIsNotASuffix();
+  SharedFixInsertsTheKeywordOnTheDeclaration();
+  SharedFixRefusesAnUnfixableDeclaration();
   RegistryAnswersTheFixableCodes();
 
   if (failures == 0) {

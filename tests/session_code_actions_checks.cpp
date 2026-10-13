@@ -381,6 +381,91 @@ void TestMissingIncludePublishesDiagnostic() {
   std::error_code ec;
   std::filesystem::remove_all(sandbox, ec);
 }
+
+void TestCodeActionAddsSharedToModuleVar() {
+  CodeActionFixture fix;
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  // A module-level plain `Dim` read inside a procedure is fbc's `error 42`; the
+  // leading-dot and `typeof(.x)` shapes are errors 8 and 9, and a `typeof(x)`
+  // (no dot) in the procedure's scope is 42 again — one routing key, the fbc
+  // number varying. This is ~/var-scoping-shared.bas with its commented lines
+  // live.
+  std::string const text = "dim var1 as integer\n"
+                           "sub our_sub()\n"
+                           "    print var1\n"
+                           "    print .var1\n"
+                           "    #print typeof(.var1)\n"
+                           "    #print typeof(var1)\n"
+                           "end sub\n";
+  input->append(MakeLspFrame(OpenFrame(fix.mainUri, text).c_str()));
+  std::string const published = WaitForPublishedUri(output, 1);
+  Expect(published.find("\"code\":\"module-var-not-shared, fbc error: 42\"") !=
+             std::string::npos,
+         "a gated read inside a procedure must publish fbc error 42 under the "
+         "routing key");
+  Expect(published.find("\"code\":\"module-var-not-shared, fbc error: 8\"") !=
+             std::string::npos,
+         "a leading-dot use must publish fbc error 8");
+  Expect(published.find("\"code\":\"module-var-not-shared, fbc error: 9\"") !=
+             std::string::npos,
+         "a typeof(.x) argument must publish fbc error 9");
+  Expect(CountOf(published,
+                 "\"code\":\"module-var-not-shared, fbc error: 42\"") == 2,
+         "the bare read and the typeof(x) argument are the same 42 arm");
+  Expect(published.find("\"codeDescription\":{\"href\":\"https://www.freebasic."
+                        "net/wiki/CompilerErrMsg\"}") != std::string::npos,
+         "the family links the fbc catalog page");
+  Expect(published.find("\"severity\":1") != std::string::npos,
+         "the family publishes at Error severity");
+
+  // The fix names the declaration it edits, not the use it answers.
+  std::string const reply = PollRequest(
+      input, output, "cavar", "Add 'Shared'", [&](std::string const &id) {
+        return CodeActionFrame(id, fix.mainUri, 2, {}, 1000);
+      });
+  Expect(reply.find("\"title\":\"Add 'Shared' to 'var1'\"") !=
+             std::string::npos,
+         "the fix must name the declaration it edits");
+  Expect(reply.find("\"kind\":\"quickfix\"") != std::string::npos,
+         "the fix must carry the kind the client filters on");
+  Expect(reply.find("\"command\"") == std::string::npos,
+         "the fix must ship as an edit, not a command");
+  // `Shared` goes right after the `Dim` on line 0, character 3.
+  Expect(reply.find("\"newText\":\" Shared\"") != std::string::npos,
+         "the fix inserts the Shared keyword");
+  Expect(reply.find("\"start\":{\"line\":0,\"character\":3},\"end\":"
+                    "{\"line\":0,\"character\":3}") != std::string::npos,
+         "the insertion lands right after the Dim keyword");
+  Expect(reply.find("\"" + fix.mainUri + "\":[{\"range\"") != std::string::npos,
+         "the edit must be keyed by the request's own document URI");
+  // `context.only` is filtered server-side, and this fix honors it: with the
+  // mismatched kind filter, nothing is offered.
+  std::string const filtered = PollRequest(
+      input, output, "cavar2", "\"result\":[]", [&](std::string const &id) {
+        return CodeActionFrame(id, fix.mainUri, 2, "refactor", 1000);
+      });
+  Expect(filtered.find("\"result\":[]") != std::string::npos,
+         "a fix with no matching kind is filtered out");
+
+  // Applying the fix (inserting ` Shared` after `dim`) clears every shape of
+  // the diagnostic on re-parse.
+  input->append(
+      MakeLspFrame(ReplaceFrame(fix.mainUri, 0, 3, 0, 3, " Shared").c_str()));
+  Expect(LastPublish(WaitForPublishedUri(output, 2))
+                 .find("module-var-not-shared") == std::string::npos,
+         "adding Shared must clear the family on re-parse");
+
+  session.stop();
+}
+
 } // namespace
 
 namespace fbtest {
@@ -391,6 +476,7 @@ void RunCodeActionsTests() {
   RUN_TEST(TestCodeActionRemovesKeywordSuffix);
   RUN_TEST(TestCodeActionOffersNothingUnfixable);
   RUN_TEST(TestMissingIncludePublishesDiagnostic);
+  RUN_TEST(TestCodeActionAddsSharedToModuleVar);
 }
 
 } // namespace fbtest

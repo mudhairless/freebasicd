@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-10-11 14:08-0500\n"
-"PO-Revision-Date: 2026-10-11 14:08-0500\n"
+"POT-Creation-Date: 2026-10-12 20:58-0500\n"
+"PO-Revision-Date: 2026-10-12 20:58-0500\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -45,7 +45,14 @@ msgstr ""
 msgid "Remove the '%s' suffix"
 msgstr ""
 
-#: src/code_actions.cpp:378
+#. TRANSLATORS: the first %s is the FreeBASIC keyword Shared (passed as an
+#. argument, never translated); the second is the variable's name.
+#: src/code_actions.cpp:358
+#, c-format
+msgid "Add '%s' to '%s'"
+msgstr ""
+
+#: src/code_actions.cpp:420
 #, c-format
 msgid "include file not found: \"%s\""
 msgstr ""
@@ -156,6 +163,25 @@ msgstr ""
 #: src/parser.cpp:1903
 #, c-format
 msgid "'%s' is not allowed on a declaration line"
+msgstr ""
+
+#. TRANSLATORS: the first %s is an identifier; the second is the FreeBASIC
+#. keyword Shared, passed as an argument, never translated.
+#: src/resolve.cpp:621
+#, c-format
+msgid ""
+"'%s' is a module-level variable without %s, so it is not visible inside a "
+"procedure"
+msgstr ""
+
+#: src/resolve.cpp:717
+#, c-format
+msgid "'.%s' in typeof requires a %s module-level variable"
+msgstr ""
+
+#: src/resolve.cpp:764
+#, c-format
+msgid "'.%s' requires a %s module-level variable"
 msgstr ""
 
 #: src/session.cpp:1063

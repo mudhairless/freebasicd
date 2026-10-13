@@ -1996,6 +1996,258 @@ static void TestPreprocessorDefineWindows() {
   }
 }
 
+// The `module-var-not-shared` family (M21 step 2): a module-level `Dim` without
+// `Shared` is invisible inside a procedure — reading it there, or naming it
+// through a leading `.` / `typeof(.x)`, is fbc's errors 42/8/9. The pass lives
+// in `analyze`, so every one of these arrives through the same parse
+// diagnostics the push and pull paths read; `moduleSharedCandidate` /
+// `sharedInsertionOffset` are the seam the quick fix shares, so a diagnostic is
+// only ever reported when the fix that clears it exists.
+static void TestModuleVarNotSharedDiagnostics() {
+  std::string const src = "dim var1 as integer\n"
+                          "dim shared var2 as integer\n"
+                          "sub our_sub()\n"
+                          "    print var1\n"
+                          "    print .var1\n"
+                          "    #print typeof(.var1)\n"
+                          "    #print typeof(var1)\n"
+                          "    print var2\n"
+                          "end sub\n";
+  AnalyzedDoc const doc = analyze(src);
+
+  struct Hit {
+    int fbcError;
+    std::string text;
+  };
+  std::vector<Hit> hits;
+  for (Diagnostic const &d : doc.parse.diagnostics) {
+    if (d.code == "module-var-not-shared") {
+      hits.push_back(
+          {d.fbcError, src.substr(d.range.beg, d.range.end - d.range.beg)});
+    }
+  }
+  CHECK_MSG(hits.size() == 4, "the four gated uses produce four diagnostics");
+  if (hits.size() == 4) {
+    CHECK(hits[0].fbcError == 42 && hits[0].text == "var1");
+    CHECK(hits[1].fbcError == 8 && hits[1].text == "var1");
+    CHECK(hits[2].fbcError == 9 && hits[2].text == "var1");
+    CHECK(hits[3].fbcError == 42 && hits[3].text == "var1");
+  }
+  // The shared variable is visible, so its use is not one of them.
+  CHECK_MSG(hits.size() == 4, "only the non-Shared variable is reported");
+  for (Hit const &h : hits) {
+    CHECK_MSG(h.text == "var1", "only the non-Shared variable is reported");
+  }
+
+  // The candidate and the insertion offset are what the quick fix edits: the
+  // in-file `dim var1`, with `Shared` going just after `dim`.
+  std::uint32_t const declOff =
+      static_cast<std::uint32_t>(src.find("dim var1"));
+  Symbol const *cand = moduleSharedCandidate(doc.parse, src, "var1");
+  CHECK_MSG(cand != nullptr && cand->selection.beg == declOff + 4,
+            "the candidate is the module-level non-shared dim");
+  std::optional<std::uint32_t> const at =
+      cand != nullptr ? sharedInsertionOffset(src, *cand) : std::nullopt;
+  CHECK_MSG(at.has_value() && *at == declOff + 3,
+            "Shared is inserted right after the Dim keyword");
+  // The shared declaration itself is never a candidate.
+  CHECK(moduleSharedCandidate(doc.parse, src, "var2") == nullptr);
+
+  // Negative shapes. A module-level read is not gated (fbc only errors inside a
+  // procedure); a type named through `as` is fbc's error 14, not 42; an
+  // explicit `a.var1` is an ordinary member access; and a `with` target's
+  // leading dot is legal.
+  {
+    std::string const moduleUse = "dim g as integer\n"
+                                  "print g\n"
+                                  "end\n";
+    AnalyzedDoc const d = analyze(moduleUse);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "a module-level read of a plain Dim is not an error");
+  }
+  {
+    std::string const asType = "dim t as integer\n"
+                               "sub s()\n"
+                               "    dim x as t\n"
+                               "end sub\n";
+    AnalyzedDoc const d = analyze(asType);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "an `as` type reference is not the 42 family");
+  }
+  {
+    std::string const memberAccess = "type t\n"
+                                     "    dim var1 as integer\n"
+                                     "end type\n"
+                                     "dim shared a as t\n"
+                                     "sub s()\n"
+                                     "    print a.var1\n"
+                                     "end sub\n";
+    AnalyzedDoc const d = analyze(memberAccess);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "an explicit member access is not the leading-dot error");
+  }
+  // `typeof(name)` with no dot is fbc's `error 42` *inside a procedure* (the
+  // directive is evaluated in the procedure's scope), but legal at module level
+  // and when a local/parameter/shared declaration of the name is visible.
+  // Probed at fbc 1.10.2.
+  {
+    std::string const noDot = "dim var1 as integer\n"
+                              "sub s()\n"
+                              "    #print typeof(var1)\n"
+                              "end sub\n";
+    AnalyzedDoc const d = analyze(noDot);
+    CHECK_MSG(d.parse.diagnostics.size() == 1 &&
+                  d.parse.diagnostics[0].fbcError == 42,
+              "typeof(var1) inside a procedure is fbc error 42");
+  }
+  {
+    std::string const noDotModule = "dim var1 as integer\n"
+                                    "#print typeof(var1)\n";
+    AnalyzedDoc const d = analyze(noDotModule);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "typeof(var1) at module level compiles without Shared");
+  }
+  {
+    std::string const noDotShadow = "dim var1 as integer\n"
+                                    "sub s()\n"
+                                    "    dim var1 as string\n"
+                                    "    #print typeof(var1)\n"
+                                    "end sub\n";
+    AnalyzedDoc const d = analyze(noDotShadow);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "typeof(var1) resolves to a local shadow without Shared");
+  }
+  {
+    std::string const noDotParam = "dim var1 as integer\n"
+                                   "sub s(var1 as string)\n"
+                                   "    #print typeof(var1)\n"
+                                   "end sub\n";
+    AnalyzedDoc const d = analyze(noDotParam);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "typeof(var1) resolves to a parameter without Shared");
+  }
+  {
+    std::string const withDot = "type t\n"
+                                "    dim var1 as integer\n"
+                                "end type\n"
+                                "sub s()\n"
+                                "    dim a as t\n"
+                                "    with a\n"
+                                "        print .var1\n"
+                                "    end with\n"
+                                "end sub\n";
+    AnalyzedDoc const d = analyze(withDot);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "a with-target leading dot is legal");
+  }
+  // `extern` keeps the name visible in a procedure, so it is never gated, and a
+  // keyword `Shared` may not follow it — the candidate refuses it.
+  {
+    std::string const ext = "extern ext1 as integer\n"
+                            "sub s()\n"
+                            "    print ext1\n"
+                            "end sub\n";
+    AnalyzedDoc const d = analyze(ext);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "an extern module variable is visible inside a procedure");
+    CHECK(moduleSharedCandidate(d.parse, ext, "ext1") == nullptr);
+  }
+  // A module-level control block's local is not fixable by adding `Shared`, so
+  // it is not a candidate and its gated use reports nothing.
+  {
+    std::string const blockLocal = "scope\n"
+                                   "    dim inner as integer\n"
+                                   "end scope\n"
+                                   "sub s()\n"
+                                   "    print inner\n"
+                                   "end sub\n";
+    AnalyzedDoc const d = analyze(blockLocal);
+    CHECK(moduleSharedCandidate(d.parse, blockLocal, "inner") == nullptr);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "a block-local is not a module Shared candidate");
+  }
+  // A shadowing local makes the bare use resolve locally, so no 42 — while the
+  // leading-dot shape still wants a Shared module variable (probed: a local
+  // does not help for error 8).
+  {
+    std::string const shadow = "dim var1 as integer\n"
+                               "sub s()\n"
+                               "    dim var1 as string\n"
+                               "    print var1\n"
+                               "end sub\n";
+    AnalyzedDoc const d = analyze(shadow);
+    CHECK_MSG(d.parse.diagnostics.empty(),
+              "a local shadow makes the bare use legal");
+  }
+  // fbc reports the leading-dot (8) and typeof (9) shapes at module level too:
+  // only the bare read (42) is a procedure-body rule.
+  {
+    std::string const moduleDot = "dim var1 as integer\n"
+                                  "print .var1\n";
+    AnalyzedDoc const d = analyze(moduleDot);
+    CHECK(d.parse.diagnostics.size() == 1);
+    if (d.parse.diagnostics.size() == 1) {
+      CHECK(d.parse.diagnostics[0].fbcError == 8);
+    }
+  }
+  // Each keyword `Shared` may follow makes a candidate; `const`/`extern`
+  // reject it and so are not fixable.
+  {
+    struct Case {
+      char const *src;
+      char const *key;
+      bool candidate;
+    };
+    Case const cases[] = {
+        {"common c1 as integer\n", "c1", true},
+        {"redim r1(3) as integer\n", "r1", true},
+        {"static st1 as integer\n", "st1", true},
+        {"var v1 = 1\n", "v1", true},
+        {"const k1 as integer = 1\n", "k1", false},
+        {"extern e1 as integer\n", "e1", false},
+    };
+    for (Case const &c : cases) {
+      AnalyzedDoc const d = analyze(c.src);
+      bool const got = moduleSharedCandidate(d.parse, c.src, c.key) != nullptr;
+      CHECK_MSG(got == c.candidate, c.src);
+    }
+  }
+  // A directive is one whole-line token, so a trailing `'` comment is part of
+  // it; fbc strips that comment before evaluating (probed), so a `typeof(...)`
+  // quoted in the comment is not a second diagnostic. This is
+  // ~/var-scoping-shared.bas line 29, whose comment names its own expression.
+  {
+    std::string const withComment =
+        "dim var1 as integer\n"
+        "#print typeof(.var1) 'apostrophe: the comment repeats typeof(.var1)\n";
+    AnalyzedDoc const d = analyze(withComment);
+    int nines = 0;
+    for (Diagnostic const &diag : d.parse.diagnostics) {
+      if (diag.code == "module-var-not-shared" && diag.fbcError == 9) {
+        ++nines;
+      }
+    }
+    CHECK_MSG(nines == 1,
+              "a comment repeating typeof(.x) adds no second diagnostic");
+  }
+  {
+    std::string const withComment =
+        "dim var1 as integer\n"
+        "sub s()\n"
+        "    #print typeof(var1) 'error 42: Variable not declared, var1\n"
+        "end sub\n";
+    AnalyzedDoc const d = analyze(withComment);
+    int fortyTwos = 0;
+    for (Diagnostic const &diag : d.parse.diagnostics) {
+      if (diag.code == "module-var-not-shared" && diag.fbcError == 42) {
+        ++fortyTwos;
+      }
+    }
+    CHECK_MSG(fortyTwos == 1,
+              "a comment repeating typeof(x) adds no second diagnostic");
+  }
+}
+
 int main() {
   TestScopingResolvesCorrectly();
   TestUnknownAndNonIdentifiersResolveNull();
@@ -2021,6 +2273,7 @@ int main() {
   TestFindVisibleMemberInheritsFields();
   TestTypeOfResolvesTheTypeOfAUsage();
   TestDeclaredTypeNameScansPastPunctuation();
+  TestModuleVarNotSharedDiagnostics();
   TestOccurrencesAcrossCrossFile();
   TestPreprocessorDefineWindows();
   std::printf("resolve_checks: %s\n", failures == 0 ? "PASS" : "FAIL");
