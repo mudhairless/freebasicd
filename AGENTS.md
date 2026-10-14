@@ -225,6 +225,18 @@ Two conventions are ours rather than the language's:
   executables would trade a readable crash log for a per-file timeout budget
   nobody can act on. One file per feature is a source-layout choice; one
   executable is a diagnostics choice, and the second is deliberate.
+- **A full build is part of every deliverable, not just the test target.**
+  `session_integration`, the unit drivers, and `freebasicd` are separate targets;
+  building the tests does not relink `build/freebasicd`, and that binary is what
+  an editor actually launches (Kate's client names it in
+  `~/.config/kate/lspclient/settings.json`). So a change can pass `ctest` while
+  the running server is stale — an editor showed a parse-time log stuck in
+  milliseconds, with sub-millisecond parses logged as `0 ms`, because only the
+  test target had been rebuilt after the fix. Before accepting or committing a
+  change, build the whole tree, and clean when a target's objects might be
+  reused: `cmake --build build --clean-first --parallel` (or at least
+  `--target freebasicd`). A green test run is not evidence the editor's server
+  reflects the source.
 - Hosted CI (`.github/workflows/ci.yml`): the `build-test` job configures,
   builds, and `ctest`s on Linux (gcc and clang), macOS (AppleClang), and Windows
   (MSVC), then installs into a scratch prefix and checks the tree with
