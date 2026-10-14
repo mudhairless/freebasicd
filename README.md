@@ -68,6 +68,10 @@ Implemented and advertised in the `initialize` reply:
 Not implemented, and therefore not advertised: document links, completion item
 resolve, and `typeHierarchy/resolve` (prepare fills both lists instead).
 
+The server advertises `textDocumentSync.willSave` and accepts
+`textDocument/willSave`, but acts on neither: diagnostics are already reissued
+by `didSave`, and the hook is reserved for format-on-save (PLAN.md M17).
+
 ### Push or pull
 
 Diagnostics are pushed with `textDocument/publishDiagnostics` unless the client

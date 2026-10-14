@@ -1326,6 +1326,8 @@ void FreeBasicServer::registerHandlers() {
   session_.on([this](Notify_TextDocumentDidSave::notify const &notify) {
     onDidSave(notify);
   });
+  session_.on(
+      [this](td_willSave::notify const &notify) { onWillSave(notify); });
   session_.on([this](Notify_TextDocumentDidClose::notify const &notify) {
     onDidClose(notify);
   });
@@ -1439,6 +1441,11 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
       rsp.result.capabilities.textDocumentSync.emplace().second.emplace();
   sync.openClose = true;
   sync.change = lsTextDocumentSyncKind::Incremental;
+  // Advertised so a client sends `textDocument/willSave` before it writes. The
+  // server has no pre-save work (see onWillSave); the bit is set because an
+  // unadvertised notification is one the client is right not to send, and
+  // format-on-save (M17) is the feature that will need the hook.
+  sync.willSave = true;
 
   // `serverInfo` (LSP 3.15+): the server's name and version, which is where a
   // client is meant to learn who it is talking to — so the version reaches
@@ -2051,6 +2058,17 @@ void FreeBasicServer::onDidSave(
     return;
   }
   reparseAndPublish(file, notify.params.textDocument.uri);
+}
+
+// Deliberately empty. `willSave` is the client's last chance to tell the server
+// a write is coming, and this server has nothing to do with it: diagnostics are
+// already reissued by `didSave` (which every client sends, whether or not it
+// advertises `willSave`), so validating here would only publish the same bytes
+// twice. The handler is registered anyway — an advertised notification with no
+// receiver is a protocol gap — and format-on-save (M17) is the work that will
+// give it a body.
+void FreeBasicServer::onWillSave(td_willSave::notify const &notify) {
+  (void)notify;
 }
 
 void FreeBasicServer::onDidClose(

@@ -37,6 +37,7 @@
 #include "LibLsp/lsp/textDocument/selectionRange.h"
 #include "LibLsp/lsp/textDocument/signature_help.h"
 #include "LibLsp/lsp/textDocument/type_definition.h"
+#include "LibLsp/lsp/textDocument/willSave.h"
 #include "LibLsp/lsp/windows/MessageNotify.h"
 
 // The type-hierarchy request types are local (src/type_hierarchy_lsp.h): the
@@ -265,6 +266,7 @@ private:
   void onDidOpen(Notify_TextDocumentDidOpen::notify &notify);
   void onDidChange(Notify_TextDocumentDidChange::notify const &notify);
   void onDidSave(Notify_TextDocumentDidSave::notify const &notify);
+  void onWillSave(td_willSave::notify const &notify);
   void onDidClose(Notify_TextDocumentDidClose::notify const &notify);
 
   td_initialize::response onInitialize(td_initialize::request const &req);

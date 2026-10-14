@@ -26,6 +26,30 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-14 — `willSave` advertised and accepted (M16)
+
+- **The server advertises `textDocumentSync.willSave` and handles
+  `textDocument/willSave`.** The handler (`FreeBasicServer::onWillSave`,
+  `src/session.cpp`) is deliberately empty. Diagnostics are already reissued by
+  `didSave` — which every client sends, whether or not it advertises `willSave`,
+  so the two paths cannot be split — and validating again at willSave would
+  publish the same bytes twice for nothing. The handler is registered anyway, so
+  the advertised notification has a receiver, and format-on-save (M17) is the
+  work that will give it a body.
+- **The no-op is asserted by ordering, not by a sleep**
+  (`TestWillSaveIsQuiet`, `tests/session_core_checks.cpp`). A `didOpen` sent
+  after the willSave is a barrier: notifications are serialized on LspCpp's one
+  FIFO thread, so its publish cannot appear until the willSave has been
+  dispatched, and a willSave that published makes the publish count 4 instead of
+  3. Sleeping for a budget would have made a give-up and a wrong answer
+  indistinguishable; the barrier does not. The test was checked by mutation — a
+  handler that republishes fails it — rather than by reading it.
+- **`telemetry` is dropped from the M16 list.** An open-source server has no
+  business phoning home, and no diagnostic here depends on an upstream report;
+  M16 now lists `documentLink`, `completionItem/resolve`, and `$/progress`.
+- No message text changed, so `po/freebasicd.pot` is unchanged. `README.md`'s
+  capability section records that the advertised willSave is inert.
+
 ### 2026-10-13 — Server log lines reach the client (`window/logMessage`)
 
 - **The session's own log lines now go to the client, not only to stderr.**

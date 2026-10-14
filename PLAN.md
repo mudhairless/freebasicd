@@ -252,7 +252,7 @@
   - `src/main.cpp` — stdio entry; `LanguageSession` + exit condition.
 
   Implemented LSP methods: `initialize`/`shutdown`/`exit`,
-  `didOpen`/`didChange`/ `didSave`/`didClose`, `publishDiagnostics`,
+  `didOpen`/`didChange`/`didSave`/`willSave`/`didClose`, `publishDiagnostics`,
   `documentSymbol`, `hover` (symbols + member access + intrinsic signatures +
   keyword wiki links + preprocessor `#define`/`#macro` definitions),
   `foldingRange`, `definition`, `references`,
@@ -443,16 +443,26 @@
 
 `documentLink` over keyword/wiki URLs (hover already carries them), optional
 `completionItem/resolve` once the M10 catalog makes items heavy, advertised
-`willSave`, `window/logMessage` + `$/progress`/`workDoneProgress` for long
-scans, and small telemetry. Individually tiny; bundle as one polish drop.
+`willSave`, and `window/logMessage` + `$/progress`/`workDoneProgress` for long
+scans. Individually tiny; bundle as one polish drop. Telemetry was on this list
+and is dropped: an open-source server that phones home is not a trade worth
+making here.
 
 **Landed (2026-10-13): `window/logMessage`.** The session's own log lines now
 reach the client as `window/logMessage` as well as stderr (`logToClient` in
 `src/session.cpp`), so an editor shows the config-parse and workspace-root notes
 in its own panel. The direct send is deliberately not the final shape — sending
 inline from a handler or scan thread can hold `indexesMutex_` across a client
-write; the shared log FIFO that fixes it is PLAN.md §4 gap 9. Remaining:
-`documentLink`, `completionItem/resolve`, `willSave`, `$/progress`, telemetry.
+write; the shared log FIFO that fixes it is PLAN.md §4 gap 9.
+
+**Landed (2026-10-14): `willSave`.** Advertised in `textDocumentSync` and
+answered by `onWillSave`, which is deliberately empty: the server has no
+pre-save work, and re-validating there would only duplicate the reparse and
+publish `didSave` already performs (a client that does not advertise `willSave`
+still gets that path, so the two cannot be split). The handler exists so the
+notification is not a protocol gap the client can observe, and because
+format-on-save (M17) is the work that will need it. Remaining: `documentLink`,
+`completionItem/resolve`, `$/progress`.
 
 Note the shape precedent from M12/M13: a fix that must carry an edit ships as a
 `CodeAction`, and a thing the client executes ships as a `Command`. A

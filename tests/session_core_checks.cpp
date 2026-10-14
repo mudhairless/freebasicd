@@ -38,6 +38,13 @@ char const kDidCloseFrame[] =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":)FB"
     R"FB({"uri":"file://{{tmp}}/hello.bas"}})FB";
 
+// Only this file's willSave tests send it, so it lives here rather than in the
+// shared frame list. `reason` is the numeric enum the protocol puts on the wire
+// (1 = Manual).
+char const kWillSaveFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/willSave","params":{"textDocument":)FB"
+    R"FB({"uri":"file://{{tmp}}/hello.bas"},"reason":1}})FB";
+
 // A client that opts into `workspace.didChangeWatchedFiles` dynamic
 // registration; must be registered for it on the `initialized` notification.
 char const kInitializeDynamicFrame[] =
@@ -93,6 +100,8 @@ void TestInitializeReportsSyncCapabilities() {
          "textDocumentSync must advertise openClose");
   Expect(response.find("\"change\":2") != std::string::npos,
          "textDocumentSync must advertise incremental changes");
+  Expect(response.find("\"willSave\":true") != std::string::npos,
+         "textDocumentSync must advertise willSave");
   Expect(response.find("\"documentSymbolProvider\":true") != std::string::npos,
          "initialize response must advertise documentSymbol support");
   Expect(response.find("\"hoverProvider\":true") != std::string::npos,
@@ -436,6 +445,36 @@ void TestDidChangePushesDiagnostics() {
   session.stop();
 }
 
+void TestWillSaveIsQuiet() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must trigger a publish");
+
+  // The no-op is asserted by ordering, not by a sleep. Notifications are
+  // serialized on one FIFO thread, so opening a second document after the
+  // willSave is a barrier: its publish cannot appear until willSave has been
+  // dispatched. A willSave that published would make the count 4, and no
+  // later notification is needed to expose it.
+  input->append(MakeLspFrame(kWillSaveFrame));
+  input->append(MakeLspFrame(kDidChangeFrame));
+  input->append(MakeLspFrame(kDidOpenResolveFrame));
+  std::string const after = WaitForOutputContaining(output, "resolve.bas");
+  Expect(CountPublished(after) == 3,
+         "willSave must not publish: didOpen, didChange, and the barrier "
+         "didOpen are the only three");
+
+  session.stop();
+}
+
 void TestDidCloseEvictsAndPublishes() {
   lsp::NullLog log;
   lsp::LanguageSession session(log);
@@ -642,6 +681,7 @@ void RunCoreTests() {
   RUN_TEST(TestDocumentSymbolsQualifyMemberImplementations);
   RUN_TEST(TestFoldingRangesReturned);
   RUN_TEST(TestDidChangePushesDiagnostics);
+  RUN_TEST(TestWillSaveIsQuiet);
   RUN_TEST(TestDidCloseEvictsAndPublishes);
   RUN_TEST(TestShutdownReturnsNullResult);
   RUN_TEST(TestExitNotifiesSession);
