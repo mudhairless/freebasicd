@@ -154,6 +154,36 @@ void TestInitializeReportsServerInfo() {
   session.stop();
 }
 
+// The server's own log lines reach the client through `window/logMessage`, not
+// only through the process's stderr: an editor that never surfaces stderr gets
+// none of them otherwise. The line observed here is the one the session emits
+// while indexing the single-file workspace a bare didOpen opens (no client root
+// was registered), which is deterministic and needs no fixture.
+void TestServerLogMessagesReachTheClient() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenFrame));
+  std::string const out =
+      WaitForOutputContaining(output, "\"method\":\"window/logMessage\"");
+
+  Expect(out.find("\"method\":\"window/logMessage\"") != std::string::npos,
+         "the session must send its log lines as window/logMessage");
+  Expect(out.find("\"message\":\"workspace root: ") != std::string::npos,
+         "the workspace-root log line must carry the indexed root");
+  Expect(out.find("\"type\":4") != std::string::npos,
+         "log lines must use the Log message type, so an editor puts them in "
+         "its output pane");
+
+  session.stop();
+}
+
 void TestDidOpenPublishesDiagnostics() {
   lsp::NullLog log;
   lsp::LanguageSession session(log);
@@ -603,6 +633,7 @@ namespace fbtest {
 void RunCoreTests() {
   RUN_TEST(TestInitializeReportsSyncCapabilities);
   RUN_TEST(TestInitializeReportsServerInfo);
+  RUN_TEST(TestServerLogMessagesReachTheClient);
   RUN_TEST(TestDidOpenPublishesDiagnostics);
   RUN_TEST(TestDiagnosticsReflectParseErrors);
   RUN_TEST(TestDiagnosticsRespectDeclarationScopes);

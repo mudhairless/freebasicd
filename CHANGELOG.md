@@ -26,6 +26,37 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-13 — Server log lines reach the client (`window/logMessage`)
+
+- **The session's own log lines now go to the client, not only to stderr.**
+  `window/logMessage` (M16, first sub-item) carries the malformed-`freebasicd.toml`
+  note, the suppress-entry cleanup warning, and the workspace-root /
+  detected-root notes through one `FreeBasicServer::logToClient`
+  (`src/session.cpp`). stderr keeps every line too — it is the stream the
+  startup banner in `main.cpp` opens, and the one a bug report pastes — so the
+  change is additive. `logToClient` is also the first server→client send that
+  can run on the background scan thread; LspCpp serializes `send`, so no lock
+  is added for that.
+- **`settingsForDirLogged` and `logDetectedRoot` became members** (they now log
+  through the session), and `ensureWorkspaceIndex` logs its `"workspace root"`
+  line **inside** its critical section, *after* the already-indexed check: the
+  line describes the index the call is about to create, so it fires once per
+  root instead of once per call. The old placement printed a duplicate line on
+  every redundant `ensureWorkspaceIndex`.
+- **The defect found on the way, and why the fix is deferred.** Logging inside
+  the lock means the inline `endpoint().send(window/logMessage)` can run while
+  `indexesMutex_` is held, so a slow client would stall every other handler's
+  index snapshot for the length of the write. It is safe *today* — LspCpp
+  serializes `send` under its own mutex and no path takes `indexesMutex_` while
+  holding that one — but that is a lock-ordering argument no code enforces.
+  Recorded as PLAN.md §4 gap 9; the fix is one shared log FIFO, producers
+  appending under a small log mutex and a single drain owning the send, which
+  also collapses the interleaved `[freebasicd]` lines into one ordered stream.
+  The direct send is deliberately not the final shape.
+- No advertised capability changes (`window/logMessage` is a server→client
+  notification with no negotiation), so `README.md` is unchanged, and no message
+  text changed, so `po/freebasicd.pot` is unchanged.
+
 ### 2026-10-13 — Identifier suffixes are not identity in `fb`
 
 - **`foo` and `foo$` are now one symbol in `fb`, as fbc aliases them.** fbc

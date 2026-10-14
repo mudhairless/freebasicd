@@ -416,6 +416,21 @@
      files already exist on the pull path — `relatedDocuments` +
      `workspace/diagnostic` — and push publishes open buffers only.) Closing
      this is M25.
+  9. **Log messages are sent to the client inline, so a send can happen under
+     `indexesMutex_`.** The M16 `window/logMessage` drop (2026-10-13) routes the
+     existing stderr lines — the config-parse notes and the detected/workspace
+     root lines — through `FreeBasicServer::logToClient`, which calls
+     `endpoint().send(window/logMessage)` on the calling thread. That thread can
+     be the background scan thread or a handler, and `ensureWorkspaceIndex` logs
+     its root line from inside its critical section, so a slow client stalls
+     every other handler's index snapshot for the duration of the write. It is
+     safe *today* — LspCpp serializes `send` under its own send mutex and no path
+     takes `indexesMutex_` while holding it — but that is an argument no code
+     enforces, which is why it is written down. The shape to build: one shared
+     log FIFO, producers appending under a small log mutex and a single drain
+     owning the send, which also collapses the interleaved `[freebasicd]` lines
+     into one ordered stream and lets any thread log without a lock-ordering
+     claim. Deferred deliberately; the direct send is not the final form.
 
 ## 5. Forward plan
 
@@ -430,6 +445,14 @@
 `completionItem/resolve` once the M10 catalog makes items heavy, advertised
 `willSave`, `window/logMessage` + `$/progress`/`workDoneProgress` for long
 scans, and small telemetry. Individually tiny; bundle as one polish drop.
+
+**Landed (2026-10-13): `window/logMessage`.** The session's own log lines now
+reach the client as `window/logMessage` as well as stderr (`logToClient` in
+`src/session.cpp`), so an editor shows the config-parse and workspace-root notes
+in its own panel. The direct send is deliberately not the final shape — sending
+inline from a handler or scan thread can hold `indexesMutex_` across a client
+write; the shared log FIFO that fixes it is PLAN.md §4 gap 9. Remaining:
+`documentLink`, `completionItem/resolve`, `willSave`, `$/progress`, telemetry.
 
 Note the shape precedent from M12/M13: a fix that must carry an edit ships as a
 `CodeAction`, and a thing the client executes ships as a `Command`. A

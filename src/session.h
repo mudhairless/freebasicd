@@ -37,6 +37,7 @@
 #include "LibLsp/lsp/textDocument/selectionRange.h"
 #include "LibLsp/lsp/textDocument/signature_help.h"
 #include "LibLsp/lsp/textDocument/type_definition.h"
+#include "LibLsp/lsp/windows/MessageNotify.h"
 
 // The type-hierarchy request types are local (src/type_hierarchy_lsp.h): the
 // vendored td_typeHierarchy is typed as a bare TypeHierarchyItem where the
@@ -95,7 +96,7 @@ class FreeBasicServer {
 public:
   explicit FreeBasicServer(lsp::LanguageSession &session);
 
-  // Why an index root was chosen, so stderr can say whether the server took
+  // Why an index root was chosen, so the log can say whether the server took
   // the client's root as-is or found a project root itself (and from which
   // signal) instead of the one it was passed.
   struct IndexRootChoice {
@@ -200,6 +201,28 @@ private:
 
   void ensureWorkspaceIndex(std::filesystem::path const &root);
   IndexRootChoice chooseIndexRoot(std::filesystem::path const &openedFile);
+
+  // A server log line reaches two streams: stderr — the stream the startup
+  // banner opens, which a bug report is read from — and the client, as
+  // `window/logMessage`, so an editor shows it in its own log panel instead of
+  // depending on the process's stderr. Called from handler threads and the
+  // background scan thread; the endpoint serializes the send. The known cost of
+  // sending inline — a line emitted under `indexesMutex_` holds that lock for
+  // the duration of a client write — is tracked as PLAN.md §4 gap 9, whose fix
+  // is a shared log FIFO with a single drain.
+  void logToClient(lsMessageType type, std::string const &message) const;
+
+  // fblang::settingsForDir with the parse-failure notes routed to the log
+  // rather than stderr alone: a present-but-malformed freebasicd.toml keeps the
+  // defaults *and* says so, instead of quietly treating a broken config as
+  // defaults.
+  fblang::Settings settingsForDirLogged(std::filesystem::path const &dir);
+
+  // The note explaining a root the server *found* rather than the one the
+  // client passed, routed to the log. Silent when the chosen root is the
+  // client's own, which ensureWorkspaceIndex already logs.
+  void logDetectedRoot(IndexRootChoice const &choice,
+                       std::filesystem::path const &clientRoot) const;
 
   // The index serving `normalizedPath`: the deepest index whose root contains
   // it, falling back to the session-root index for documents opened outside

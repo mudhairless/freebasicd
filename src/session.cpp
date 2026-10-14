@@ -1094,20 +1094,34 @@ void FreeBasicServer::setExitHandler(std::function<void()> exitHandler) {
   exitHandler_ = std::move(exitHandler);
 }
 
+// A server log line reaches two streams: stderr (the stream the startup banner
+// in main.cpp opens, which is what a bug report pastes) and the client, as
+// `window/logMessage`, so the editor shows it in its own log panel. `type`
+// selects the client's channel — `Log` for these informational lines, which
+// editors route to an output pane rather than a popup.
+void FreeBasicServer::logToClient(lsMessageType type,
+                                  std::string const &message) const {
+  (void)std::fprintf(stderr, "[freebasicd] %s\n", message.c_str());
+  Notify_LogMessage::notify notify;
+  notify.params.type = type;
+  notify.params.message = message;
+  session_.endpoint().send(notify);
+}
+
 // fblang::settingsForDir with parse-failure logging: a missing or
 // comment-only freebasicd.toml is normal (defaults, nothing logged); a
-// present-but-malformed one also keeps the defaults but says so on stderr
+// present-but-malformed one also keeps the defaults but says so in the log
 // instead of silently treating a broken config as defaults.
-fblang::Settings settingsForDirLogged(std::filesystem::path const &dir) {
+fblang::Settings
+FreeBasicServer::settingsForDirLogged(std::filesystem::path const &dir) {
   bool ok = true;
   std::vector<fblang::SuppressNote> notes;
   fblang::Settings const s = fblang::settingsForDir(dir, &ok, &notes);
   if (!ok) {
-    (void)std::fprintf(
-        stderr, "[freebasicd] %s\n",
-        fblang::trf("%s/freebasicd.toml is not valid TOML; keeping defaults",
-                    fblang::normalizePath(dir))
-            .c_str());
+    logToClient(lsMessageType::Log,
+                fblang::trf("%s/freebasicd.toml is not valid TOML; "
+                            "keeping defaults",
+                            fblang::normalizePath(dir)));
   }
   // A `suppress` entry copied from a diagnostic's wire code names the fbc
   // number as well (`include-not-found, fbc error: 23`). Only the routing key
@@ -1115,12 +1129,11 @@ fblang::Settings settingsForDirLogged(std::filesystem::path const &dir) {
   // suppresses — but it warns, so a config that was never cleaned up does not
   // stay quietly wrong.
   for (fblang::SuppressNote const &note : notes) {
-    (void)std::fprintf(
-        stderr, "[freebasicd] %s\n",
+    logToClient(
+        lsMessageType::Log,
         fblang::trf("%s/freebasicd.toml: suppress entry \"%s\" should be "
                     "\"%s\"; remove the fbc code",
-                    fblang::normalizePath(dir), note.entry, note.key)
-            .c_str());
+                    fblang::normalizePath(dir), note.entry, note.key));
   }
   return s;
 }
@@ -1130,12 +1143,16 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
     return;
   }
   std::string const normRoot = fblang::normalizePath(root);
-  (void)std::fprintf(stderr, "[freebasicd] %s\n",
-                     fblang::trf("workspace root: %s", normRoot).c_str());
   std::lock_guard<std::mutex> const lock(indexesMutex_);
   if (indexes_.find(normRoot) != indexes_.end()) {
     return;
   }
+  // Logged inside the critical section and after the already-indexed check:
+  // the line describes the index this call is about to create, so it fires once
+  // per root rather than once per call. The send therefore happens while
+  // `indexesMutex_` is held — the cost PLAN.md §4 gap 9 tracks, whose fix is a
+  // shared log FIFO drained off the lock.
+  logToClient(lsMessageType::Log, fblang::trf("workspace root: %s", normRoot));
   auto index = std::make_shared<fblang::WorkspaceIndex>(root);
   index->open();
   index->applySettings(settingsForDirLogged(root));
@@ -1148,12 +1165,13 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
   indexes_[normRoot] = std::move(index);
 }
 
-// stderr note when the server set a root it *found* rather than the one the
-// client passed (or, with no client root, the file's own directory): say how
-// the root was identified so the choice reads as a decision. Silent when the
-// chosen root is the client's as-is, which ensureWorkspaceIndex already logs.
-void logDetectedRoot(FreeBasicServer::IndexRootChoice const &choice,
-                     std::filesystem::path const &clientRoot) {
+// Note when the server set a root it *found* rather than the one the client
+// passed (or, with no client root, the file's own directory): say how the root
+// was identified so the choice reads as a decision. Silent when the chosen root
+// is the client's as-is, which ensureWorkspaceIndex already logs.
+void FreeBasicServer::logDetectedRoot(
+    IndexRootChoice const &choice,
+    std::filesystem::path const &clientRoot) const {
   std::string how;
   switch (choice.reason) {
   case FreeBasicServer::IndexRootChoice::Reason::VcsMarker:
@@ -1170,18 +1188,15 @@ void logDetectedRoot(FreeBasicServer::IndexRootChoice const &choice,
   }
   std::string const normRoot = fblang::normalizePath(choice.root);
   if (clientRoot.empty()) {
-    (void)std::fprintf(
-        stderr, "[freebasicd] %s\n",
+    logToClient(
+        lsMessageType::Log,
         fblang::trf("workspace root %s (detected via %s; no client root)",
-                    normRoot, how)
-            .c_str());
+                    normRoot, how));
     return;
   }
-  (void)std::fprintf(
-      stderr, "[freebasicd] %s\n",
-      fblang::trf("workspace root %s (detected via %s; client root %s)",
-                  normRoot, how, fblang::normalizePath(clientRoot))
-          .c_str());
+  logToClient(lsMessageType::Log,
+              fblang::trf("workspace root %s (detected via %s; client root %s)",
+                          normRoot, how, fblang::normalizePath(clientRoot)));
 }
 
 FreeBasicServer::IndexRootChoice
@@ -1992,8 +2007,8 @@ void FreeBasicServer::onDidOpen(Notify_TextDocumentDidOpen::notify &notify) {
   bool const choiceContainsFile = isWithinNormalized(normFile, normChoice);
   if (!serving || (deferredBroadRoot && !alreadyRooted)) {
     // A root the server found itself (version-control marker, config file, or
-    // source/include layout), other than the client's own, gets an
-    // explanatory stderr note.
+    // source/include layout), other than the client's own, gets an explanatory
+    // log note.
     bool const notThePassedRoot =
         sessionRoot.empty() || normChoice != fblang::normalizePath(sessionRoot);
     if ((choice.reason == IndexRootChoice::Reason::VcsMarker ||
