@@ -122,6 +122,18 @@ char const *kOnOptionCompletionFrame =
     R"FB({"jsonrpc":"2.0","id":"g3n","method":"textDocument/completion","params":)FB"
     R"FB({"textDocument":{"uri":"file://{{tmp}}/kwd.bas"},"position":{"line":4,"character":2}}})FB";
 
+// A typed suffix on the prefix in `fb` (canonicalKey; fbc warning 44 treats
+// `counter$` and `counter` as one identifier), so completion must complete the
+// bare symbol from the suffixed prefix exactly as from the bare one.
+char const kDidOpenSuffixCompletionFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file://{{tmp}}/sufcomp.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"dim counter as integer\ncounter$\n"}}})FB";
+
+char const *kSuffixCompletionFrame =
+    R"FB({"jsonrpc":"2.0","id":"scp","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/sufcomp.bas"},"position":{"line":1,"character":8}}})FB";
+
 void TestCompletionOffersKeywordsAndSymbols() {
   lsp::NullLog log;
   lsp::LanguageSession session(log);
@@ -384,12 +396,36 @@ void TestCompletionOffersNewReservedWordsAndIntrinsics() {
 
   session.stop();
 }
+
+void TestCompletionTreatsSuffixAsIdentity() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenSuffixCompletionFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kSuffixCompletionFrame));
+  std::string const response =
+      WaitForOutputContaining(output, "\"id\":\"scp\"");
+  Expect(response.find("\"label\":\"counter\"") != std::string::npos,
+         "a suffixed prefix must complete the bare symbol in `fb`");
+
+  session.stop();
+}
 } // namespace
 
 namespace fbtest {
 
 void RunCompletionTests() {
   RUN_TEST(TestCompletionOffersKeywordsAndSymbols);
+  RUN_TEST(TestCompletionTreatsSuffixAsIdentity);
   RUN_TEST(TestCompletionFiltersMembersByAccessContext);
   RUN_TEST(TestSignatureHelpShowsParamsAndActiveIndex);
   RUN_TEST(TestCompletionOffersIntrinsicCatalogItems);

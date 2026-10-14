@@ -110,8 +110,9 @@ static void TestKeywordSuffixWarning() {
     CHECK(block.diagnostics.front().message == "Suffix ignored in 'if%'");
   }
 
-  // A suffix on a variable is part of the identifier (`x%` and `x` are two
-  // variables in FreeBASIC), so it is not a keyword warning.
+  // A suffix on a variable is ignored for *identity* in `fb` (`x%` and `x`
+  // are the same variable, canonicalKey), but it is still not a reserved
+  // word, so no keyword warning.
   ParseResult const ident = parseDocument("dim x% as integer\nx% = 1\n");
   CHECK(diagnosticCount(ident, "keyword-suffix") == 0);
 
@@ -124,6 +125,46 @@ static void TestKeywordSuffixWarning() {
   // inert and do not warn.
   ParseResult const pp = parseDocument("#if 0\nprint%\n#endif\n");
   CHECK(diagnosticCount(pp, "keyword-suffix") == 0);
+}
+
+// In `fb`, fbc ignores a trailing type-suffix char on an identifier (warning
+// 44) and aliases `foo`/`foo$` to one symbol, so the canonical key drops it
+// (canonicalKey, language.h). The qb/fblite/deprecated dialects treat the
+// suffix as significant, so their keys keep it. This is a parser-level check
+// of the key; resolution identity is pinned in resolve_checks.
+static void TestIdentifierSuffixIdentity() {
+  // A variable: the key is suffix-free while the name keeps the spelling, and
+  // the suffixed lookup key no longer exists.
+  {
+    ParseResult const r = parseDocument("dim foo$ as string\n"
+                                        "foo = \"x\"\n");
+    const Symbol *d = find(r.roots, "foo", SymbolKind::Dim);
+    CHECK(d != nullptr && d->name == "foo$");
+    CHECK(find(r.roots, "foo$", SymbolKind::Dim) == nullptr);
+  }
+  // A record field and a parameter share the rule.
+  {
+    ParseResult const r = parseDocument("type rec\n"
+                                        "  field% as integer\n"
+                                        "end type\n"
+                                        "sub emit(s$ as string)\n"
+                                        "end sub\n");
+    const Symbol *rec = find(r.roots, "rec", SymbolKind::Type);
+    CHECK(rec != nullptr);
+    CHECK(find(rec->children, "field", SymbolKind::Variable) != nullptr);
+    CHECK(find(rec->children, "field%", SymbolKind::Variable) == nullptr);
+    const Symbol *emit = find(r.roots, "emit", SymbolKind::Sub);
+    CHECK(emit != nullptr && emit->children.size() == 1);
+    CHECK(emit != nullptr && emit->children[0].key == "s");
+  }
+  // A non-`fb` dialect keeps the suffix in the key: `foo` and `foo$` are two
+  // symbols there.
+  {
+    ParseResult const r = parseDocument("#lang \"qb\"\ndim foo$ as string\n");
+    CHECK(r.lang == "qb");
+    CHECK(find(r.roots, "foo$", SymbolKind::Dim) != nullptr);
+    CHECK(find(r.roots, "foo", SymbolKind::Dim) == nullptr);
+  }
 }
 
 static int errorDiagnosticCount(const ParseResult &r) {
@@ -2454,6 +2495,7 @@ int main() {
 
   TestStep2bParsingFixes();
   TestKeywordSuffixWarning();
+  TestIdentifierSuffixIdentity();
   TestAnonymousDeclarationsNameAndSelect();
   TestPreprocessorSymbolsAndBranches();
   TestModuleConstructors();

@@ -82,9 +82,11 @@ struct Symbol {
   // Display name (original case + suffix char). A declaration block written
   // without a name gets `<anonymous <keyword>>` here — display only.
   std::string name;
-  // Canonical lookup key = lowercase name incl. suffix. Empty for a
-  // nameless block (and for a Scope): that emptiness is the parser's
-  // unnamed-declaration signal, so `name`'s placeholder never fills it in.
+  // Canonical lookup key = lowercase name, with a trailing type-suffix char
+  // dropped in `fb` (fbc warning 44 aliases `foo`/`foo$`; see canonicalKey in
+  // language.h) and kept in qb/fblite. Empty for a nameless block (and for a
+  // Scope): that emptiness is the parser's unnamed-declaration signal, so
+  // `name`'s placeholder never fills it in.
   std::string key;
   SymbolKind kind = SymbolKind::Variable;
   SourceRange range; // whole construct (SUB ... END SUB); decls: the statement

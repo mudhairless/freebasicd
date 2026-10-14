@@ -178,6 +178,69 @@ void TestReferencesListAllSites() {
   session.stop();
 }
 
+// A declaration and two usages spelled with different suffixes in `fb`
+// (canonicalKey; fbc warning 44 treats them as one identifier). Every site
+// must come back together, and the *suffixed* spelling must not be missed.
+char const kDidOpenSuffixFrame[] =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file://{{tmp}}/suffix.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"dim counter$ as integer\ncounter = counter% + 1\n"}}})FB";
+
+char const kSuffixReferencesFrame[] =
+    R"FB({"jsonrpc":"2.0","id":"sref","method":"textDocument/references","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/suffix.bas"},"position":{"line":0,"character":4},)FB"
+    R"FB("context":{"includeDeclaration":true}}})FB";
+
+char const kSuffixHighlightFrame[] =
+    R"FB({"jsonrpc":"2.0","id":"shl","method":"textDocument/documentHighlight","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/suffix.bas"},"position":{"line":0,"character":4}}})FB";
+
+void TestSuffixSpellingsAreOneSymbol() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenSuffixFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  // References from the `counter$` declaration token: the bare `counter` usage
+  // (line 1, char 0) and the `counter%` usage (line 1, char 10) are both the
+  // same symbol, and the declaration itself is included.
+  input->append(MakeLspFrame(kSuffixReferencesFrame));
+  std::string const refs = TailAfter(
+      WaitForOutputContaining(output, "\"id\":\"sref\""), "\"id\":\"sref\"");
+  Expect(refs.find("\"start\":{\"line\":0,\"character\":4}") !=
+             std::string::npos,
+         "references must include the suffixed declaration");
+  Expect(refs.find("\"start\":{\"line\":1,\"character\":0}") !=
+             std::string::npos,
+         "references must include the bare usage");
+  Expect(refs.find("\"start\":{\"line\":1,\"character\":10}") !=
+             std::string::npos,
+         "references must include the differently-suffixed usage");
+
+  // Highlight answers the same three sites: the token filter is the same rule.
+  // Scope the count to this reply's own tail — the references reply above
+  // carries its own `"start":` entries in the same cumulative stream.
+  input->append(MakeLspFrame(kSuffixHighlightFrame));
+  std::string const hl = TailAfter(
+      WaitForOutputContaining(output, "\"id\":\"shl\""), "\"id\":\"shl\"");
+  std::size_t count = 0;
+  for (std::size_t pos = 0;
+       (pos = hl.find("\"start\":", pos)) != std::string::npos; pos += 8) {
+    ++count;
+  }
+  Expect(count == 3, "highlight must cover all three suffix spellings");
+
+  session.stop();
+}
+
 void TestHighlightCoversAllSites() {
   lsp::NullLog log;
   lsp::LanguageSession session(log);
@@ -216,6 +279,7 @@ void RunNavigationTests() {
   RUN_TEST(TestSelectionRangeNestsParentChain);
   RUN_TEST(TestDefinitionResolvesToDeclaration);
   RUN_TEST(TestReferencesListAllSites);
+  RUN_TEST(TestSuffixSpellingsAreOneSymbol);
   RUN_TEST(TestHighlightCoversAllSites);
 }
 

@@ -26,6 +26,41 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-13 — Identifier suffixes are not identity in `fb`
+
+- **`foo` and `foo$` are now one symbol in `fb`, as fbc aliases them.** fbc
+  ignores a trailing type-suffix char in `fb` mode (warning 44) and treats a
+  name spelled two ways as one declaration; the server had kept the suffix in
+  its lookup key, so `foo`/`foo$` were two symbols — a wrong
+  go-to-definition, highlight, references list, rename target, and completion
+  set. `canonicalKey(name, lang)` (`src/language.h`) is now the single place
+  the rule lives: lowercase the name and, only in `fb`, drop one trailing
+  suffix char (`qb`/`fblite`/`deprecated` keep it, where it selects a distinct
+  symbol). Every key-construction site calls it — the parser's declarations
+  (through `Parser::keyFor`, which reads the dialect in force at the token),
+  the resolver's usage, member-chain, and type lookups, the session's
+  reference/highlight token filter, rename's `newKey`, and the quick-fix key.
+- **The member chain keys each segment, so a suffix difference anywhere in a
+  chain mattered.** `collectChainWalk`/`collectMemberChain` now take the
+  document's dialect and key every segment through `canonicalKey`, so `r.n`
+  reaches a field declared `n%`, and `r.n%` a field declared `n`. Completion's
+  typed prefix is canonicalized too, so typing `counter$` offers `counter`.
+- **Two halves are deliberately still open, recorded in FreeBASIC.md §12.1
+  rather than silently patched.** fbc *warns* (warning 44) on the suffix it
+  ignores, at the declaration and at each use, and this server reports nothing
+  there (its `keyword-suffix` code fires only on a reserved word); and the
+  preprocessor `#define`/`#undef` table still keys a define with its suffix, so
+  `#define foo$` and a bare `foo` do not meet. Both are misses, not false
+  reports.
+- **Deviations from the sketch.** The sketch said to delete §12.1 and renumber
+  §12.2–§12.29; that would have churned the ~45 `§12.N` cross-references across
+  `src/`, `tests/`, and historical changelog entries, so the entry keeps its
+  number and is retitled in place — the same shape item 2 already uses for its
+  M7 fix. §12's numbering is a citation anchor, not an ordinal. The sketch also
+  called the member-completion prefix "already fine" because matching is
+  prefix-based — true in one direction only, so the prefix is canonicalized
+  too.
+
 ### 2026-10-13 — A micro syntax file, the third editor grammar
 
 - `docs/grammar/freebasic.yaml` — a third editor grammar beside the TextMate

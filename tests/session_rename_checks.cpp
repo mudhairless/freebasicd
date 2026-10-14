@@ -244,6 +244,21 @@ void TestRenameRejectsCollision() {
                  std::string::npos,
          "renaming onto a closure module-scope key must be rejected");
 
+  // A suffix is not part of the identity in `fb` (fbc warning 44), so folding
+  // into `head` as `head$` collides just as the bare spelling does: the guard
+  // keys on canonicalKey, not on the name as typed.
+  std::string const suffix =
+      PollRequest(input, output, "rcs", "head$", [&](std::string const &id) {
+        return R"({"jsonrpc":"2.0","id":")" + id +
+               R"(","method":"textDocument/rename","params":{"textDocument":{"uri":")" +
+               fix.mainUri +
+               R"("},"position":{"line":2,"character":7},"newName":"head$"}})";
+      });
+  Expect(suffix.find("\"error\"") != std::string::npos &&
+             suffix.find("collides with an existing declaration") !=
+                 std::string::npos,
+         "a suffix-only-different new name must collide in `fb`");
+
   session.stop();
 }
 } // namespace

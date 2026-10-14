@@ -1015,11 +1015,17 @@ construct.
 Deliberate model simplifications / bugs, tracked here so docs never drift back
 to "the language is what the lexer does":
 
-1. **Suffix identity in `fb` mode.** The symbol model keys identifiers with
-   their suffix (`foo$` ≠ `foo`), correct for qb/fblite but wrong for `fb`,
-   where fbc 1.10.2 ignores the suffix (warning 44) and aliases both to one
-   symbol. The parser records the dialect; the resolve/session layer must
-   collapse suffix-distinct keys in `fb`.
+1. **Suffix identity in `fb` mode: the resolver half is fixed; the warning and
+   the preprocessor half remain.** The parser and resolver now key an identifier
+   in `fb` with a trailing type-suffix char dropped (`canonicalKey`,
+   `language.h`), so `foo$` and `foo` are the one symbol fbc aliases them to
+   (warning 44, §2); qb/fblite/deprecated keep the suffix in the key, where it
+   selects a distinct symbol. Two halves stay divergent: fbc also *warns*
+   (`warning 44`) on the suffix it ignores, at the declaration and at each use,
+   while this server reports nothing there (its `keyword-suffix` code fires only
+   on a reserved word); and a preprocessor `#define`/`#undef`
+   name is still keyed with its suffix, so `#define foo$` and a bare `foo` do
+   not meet. Each is a miss, not a false report.
 2. **Module-level visibility: fixed at M7, one cross-file leniency remains.**
    `dim`-kind module declarations are only visible to module-level code; inside
    procedures only `Shared` module declarations (plus `Const` and locals)

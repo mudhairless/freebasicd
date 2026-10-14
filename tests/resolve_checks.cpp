@@ -85,6 +85,54 @@ static void TestScopingResolvesCorrectly() {
   CHECK(param && param->kind == SymbolKind::Parameter && param->name == "n");
 }
 
+// In `fb` a trailing type suffix is not part of an identifier's identity
+// (canonicalKey, language.h; fbc warning 44), so a usage and a declaration
+// spelled with different suffixes resolve to the same symbol — including
+// through a member chain, whose walk keys each segment. qb/fblite keep the
+// suffix in the key, where the two are distinct.
+static void TestIdentifierSuffixIdentity() {
+  std::string const src = "dim foo$ as string\n"
+                          "foo = \"x\"\n"
+                          "dim bar as integer\n"
+                          "bar% = 2\n"
+                          "type rec\n"
+                          "    n% as integer\n"
+                          "end type\n"
+                          "dim r as rec\n"
+                          "r.n = 1\n"
+                          "r.n% = 2\n";
+  AnalyzedDoc const doc = analyze(src);
+
+  // Suffixed declaration, bare usage.
+  Symbol const *fooDecl =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("dim foo$") + 4));
+  CHECK(fooDecl != nullptr && fooDecl->kind == SymbolKind::Dim &&
+        fooDecl->name == "foo$");
+  Symbol const *fooUse =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("foo = \"x\"")));
+  CHECK_MSG(fooUse == fooDecl,
+            "a bare `foo` usage resolves to the `foo$` declaration");
+
+  // Bare declaration, suffixed usage.
+  Symbol const *barUse =
+      resolveAt(doc, static_cast<std::uint32_t>(src.find("bar% = 2")));
+  CHECK_MSG(barUse != nullptr && barUse->name == "bar",
+            "a `bar%` usage resolves to the bare `bar` declaration");
+
+  // The member chain matches across the suffix: the field is `n%`, and both
+  // `r.n` (bare) and `r.n%` (as written) reach it.
+  MemberAccess const bare = resolveMemberAccess(
+      doc, "x.bas", static_cast<std::uint32_t>(src.find("r.n = 1") + 2),
+      nullptr);
+  CHECK_MSG(bare.member != nullptr && bare.member->name == "n%",
+            "`r.n` reaches the `n%` field");
+  MemberAccess const suffixed = resolveMemberAccess(
+      doc, "x.bas", static_cast<std::uint32_t>(src.find("r.n% = 2") + 2),
+      nullptr);
+  CHECK_MSG(suffixed.member != nullptr && suffixed.member->name == "n%",
+            "`r.n%` reaches the same field");
+}
+
 static void TestUnknownAndNonIdentifiersResolveNull() {
   AnalyzedDoc const doc = analyze(kDoc);
 
@@ -2360,6 +2408,7 @@ static void TestExternPlacementDiagnostics() {
 int main() {
   TestScopingResolvesCorrectly();
   TestUnknownAndNonIdentifiersResolveNull();
+  TestIdentifierSuffixIdentity();
   TestOccurrences();
   TestAnalyze();
   TestAnalyzeIsDeterministic();

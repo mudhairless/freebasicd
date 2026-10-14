@@ -128,9 +128,10 @@ public:
   std::vector<std::shared_ptr<IndexedFile const>> snapshot() const;
   std::size_t size() const;
 
-  // Module-scope declarations whose key (lowercase, suffix char included)
-  // equals `key`. Includes open-buffer entries. Answers cross-file
-  // references through the #include closure.
+  // Module-scope declarations whose key (lowercase; in `fb` with the ignored
+  // type-suffix char dropped, see canonicalKey) equals `key`. Includes
+  // open-buffer entries. Answers cross-file references through the #include
+  // closure.
   std::vector<KeyedDecl> byKey(std::string const &key) const;
 
   // The indexed types that extend the type whose key is `typeKey` — the

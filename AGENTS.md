@@ -54,9 +54,12 @@ file gets a best-effort `fb` parse plus one `lang-mode` Information diagnostic.
 Two conventions are ours rather than the language's:
 
 - Identifiers are case-insensitive; the canonical lookup key is the lowercase
-  name including any trailing type-suffix char. In `fb` mode fbc ignores
-  identifier suffixes (warning 44) and aliases `foo`/`foo$` — see FreeBASIC.md
-  §12.1.
+  name, and in `fb` mode a trailing type-suffix char is dropped from it, because
+  fbc ignores suffixes there (warning 44) and aliases `foo`/`foo$` to one symbol
+  (qb/fblite/deprecated keep the suffix). Build the key with `canonicalKey(name,
+  lang)` (`src/language.h`), never `toLowerChars` alone; the one deliberate
+  exception is the preprocessor define table, which still keys a `#define` name
+  with its suffix (FreeBASIC.md §12.1).
 - Doc comments: `///` and `''` lines directly above a declaration become hover
   text (our convention, FreeBASIC.md §5).
 

@@ -26,8 +26,8 @@ namespace fblang {
 // FreeBASIC scoping: the innermost declaration block (procedure, type, enum,
 // namespace, SCOPE) is searched first, then successively outer blocks up to
 // module level. A declaration is a Dim/Const/Parameter symbol whose key (the
-// case-insensitive lowercased name including any suffix char) matches the
-// usage token.
+// case-insensitive lowercased name, in `fb` with the ignored type-suffix char
+// dropped — canonicalKey in language.h) matches the usage token.
 
 // One document analyzed once: parse tree, full token stream (borrows the
 // `source` buffer passed to analyze — must not outlive it), and raw include
@@ -176,11 +176,11 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
 // empty when the declaration carries no explicit type (`dim v = expr`).
 std::string declaredTypeName(Symbol const &decl);
 
-// The member of a Type/Union declaration whose key equals `memberKey`
-// (lowercased name including suffix char), or nullptr. The members of the
-// *anonymous* blocks nested inside it count as this type's own (fbc publishes
-// them into the structure that nests them, FreeBASIC.md §7); a named nested
-// block keeps its fields, so they are not found here.
+// The member of a Type/Union declaration whose key equals `memberKey` (a
+// canonicalKey, language.h: lowercase, suffix dropped in `fb`), or nullptr. The
+// members of the *anonymous* blocks nested inside it count as this type's own
+// (fbc publishes them into the structure that nests them, FreeBASIC.md §7); a
+// named nested block keeps its fields, so they are not found here.
 Symbol const *findMember(Symbol const &typeDecl, std::string const &memberKey);
 
 // Cross-file lookup of a Type/Union declaration by key: the requesting doc's

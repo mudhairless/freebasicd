@@ -325,13 +325,14 @@
     constructors, and cross-module order is unspecified and not stable across
     link orders. A constructor is a procedure body, so a plain module-level
     `Dim` is invisible inside one. M21 implements this.
-  - **Case-insensitive identity.** Canonical `key` = lowercase name including
-    any type-suffix char (`foo$`, `i%`, …), which is what the symbol model keys
-    on today. **In `fb` that is wrong and §12.1 tracks it**: fbc ignores
-    identifier suffixes (warning 44) and aliases `foo`/`foo$` to one symbol.
-    Suffixes are a `qb`/`fblite`/`deprecated` feature; `fb`'s suffix is the
-    numeric-literal one (`100ul` is a `ULong`), so a diagnostic must not inherit
-    the wrong half.
+  - **Case-insensitive identity.** Canonical `key` = lowercase name, and in
+    `fb` with a trailing type-suffix char dropped (`canonicalKey`,
+    `language.h`), so `foo$`/`foo` are the one symbol fbc aliases them to
+    (warning 44). Suffixes are a `qb`/`fblite`/`deprecated` feature; `fb`'s
+    suffix is the numeric-literal one (`100ul` is a `ULong`), so a diagnostic
+    must not inherit the wrong half. Two halves remain open (FreeBASIC.md
+    §12.1): the ignored suffix is not warned on, and the preprocessor define
+    table still keys a `#define` name with its suffix.
   - **Byte-offset core.** Lexer/parser/resolve work in byte offsets; UTF-16
     conversion happens only at the session boundary per file buffer. Any
     cross-file reply must convert against the *target* file's content.

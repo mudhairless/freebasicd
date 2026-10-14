@@ -115,6 +115,20 @@ std::string_view preprocessorWord(std::string_view line);
 // Type-suffix characters attached to identifiers/numbers.
 bool isSuffixChar(char c);
 
+// Canonical identifier lookup key: the name ASCII-folded to lowercase, and —
+// in `fb` only — with a trailing type-suffix char dropped, because fbc ignores
+// it (warning 44) and aliases `foo`/`foo$` to one symbol (FreeBASIC.md §1).
+// The suffix selects a distinct symbol in qb/fblite/deprecated, so those
+// dialects keep it in the key. `lang` is the file's declared dialect
+// (`ParseResult::lang`, "fb" when no `#LANG` declares another).
+inline std::string canonicalKey(std::string_view name, std::string_view lang) {
+  std::string key = toLowerChars(name);
+  if (lang == "fb" && !key.empty() && isSuffixChar(key.back())) {
+    key.pop_back();
+  }
+  return key;
+}
+
 // True when `lowerName` (already ASCII-folded lowercase, e.g. via
 // toLowerChars) is a catalogued project source/include directory name. The
 // catalog pairs full names (source, include) with the common abbreviations

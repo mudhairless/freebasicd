@@ -8,6 +8,7 @@
 
 #include "i18n.h"
 #include "index.h"
+#include "language.h"
 #include "lexer.h"
 #include "parser.h"
 #include "symbols.h"
@@ -232,7 +233,7 @@ Symbol const *declAt(ParseResult const &parse, std::vector<Token> const &tokens,
   if (tok == nullptr) {
     return nullptr;
   }
-  return visibleDeclNamed(parse, off, toLowerChars(tok->text()));
+  return visibleDeclNamed(parse, off, canonicalKey(tok->text(), parse.lang));
 }
 
 // Fill `occurrences` on every Symbol of `parse` (file roots tagged
@@ -488,14 +489,10 @@ bool isNameChar(char c) {
          (c >= '0' && c <= '9') || c == '_';
 }
 
-// A FreeBASIC type-suffix char (FreeBASIC.md §2): part of an identifier but not
-// of a bare word. The `typeof` argument scan needs it so `typeof(.x$)` reads
-// the whole name — the canonical key, which the module candidate lookup
-// compares against, keeps the suffix.
-bool isSuffixChar(char c) {
-  return c == '$' || c == '%' || c == '&' || c == '!' || c == '#';
-}
-
+// A FreeBASIC type-suffix char, via the public predicate (language.h). The
+// `typeof` argument scan needs it so `typeof(.x$)` reads the whole name; the
+// canonical key that name is compared against drops the suffix in `fb`
+// (canonicalKey), which is what aliases `x$` to `x`.
 bool isIdentChar(char c) { return isNameChar(c) || isSuffixChar(c); }
 
 // True when the `.` at `dotIdx` opens an implicit `with`-member access (a
@@ -721,7 +718,8 @@ void typeofDiagnostics(ParseResult &parse, std::string_view source,
     if (i == nbeg) {
       continue;
     }
-    std::string const key = toLowerChars(code.substr(nbeg, i - nbeg));
+    std::string const key =
+        canonicalKey(code.substr(nbeg, i - nbeg), parse.lang);
     if (moduleSharedCandidate(parse, source, key) == nullptr) {
       continue;
     }
@@ -770,7 +768,7 @@ void sharedGateDiagnostics(ParseResult &parse, std::vector<Token> const &tokens,
     if (t.kind != TokenKind::Identifier) {
       continue;
     }
-    std::string const key = toLowerChars(t.text());
+    std::string const key = canonicalKey(t.text(), parse.lang);
     if (moduleSharedCandidate(parse, source, key) == nullptr) {
       continue;
     }
@@ -887,7 +885,7 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
     return CrossDecl{nullptr, local};
   }
 
-  std::string const key = toLowerChars(tok->text());
+  std::string const key = canonicalKey(tok->text(), doc.parse.lang);
   bool const storageGated =
       insideProcedureBody(doc.parse, innermostScope(doc.parse, off));
   auto gated = [storageGated](Symbol const &root) {
@@ -986,7 +984,7 @@ std::vector<OccurrenceSite> occurrencesAcross(AnalyzedDoc const &doc,
     AnalyzedDoc const &d = dc->analysis;
     for (Token const &t : d.tokens) {
       if (t.kind != TokenKind::Identifier ||
-          toLowerChars(t.text()) != target.decl->key) {
+          canonicalKey(t.text(), d.parse.lang) != target.decl->key) {
         continue;
       }
       CrossDecl const r = resolveIn(d, fpath, t.beg, index, declPath);
@@ -1299,10 +1297,10 @@ struct ChainSeg {
 // keyword / a parenthesized call with no name receiver.
 void collectChainWalk(std::vector<Token> const &tokens, size_t memberTokIdx,
                       std::vector<ChainSeg> *segs, bool *implicit,
-                      size_t *keywordTokIdx) {
+                      size_t *keywordTokIdx, std::string_view lang) {
   size_t i = memberTokIdx;
   for (;;) {
-    segs->push_back({toLowerChars(tokens[i].text()), i});
+    segs->push_back({canonicalKey(tokens[i].text(), lang), i});
     if (i == 0) {
       break; // leftmost segment is a variable
     }
@@ -1361,9 +1359,10 @@ void collectChainWalk(std::vector<Token> const &tokens, size_t memberTokIdx,
 // call, or nothing at all for a leading dot).
 void collectMemberChain(std::vector<Token> const &tokens, size_t memberTokIdx,
                         bool virtualMember, std::vector<ChainSeg> *segs,
-                        bool *implicit, size_t *keywordTokIdx) {
+                        bool *implicit, size_t *keywordTokIdx,
+                        std::string_view lang) {
   if (!virtualMember) {
-    collectChainWalk(tokens, memberTokIdx, segs, implicit, keywordTokIdx);
+    collectChainWalk(tokens, memberTokIdx, segs, implicit, keywordTokIdx, lang);
     std::reverse(segs->begin(), segs->end());
     return;
   }
@@ -1390,7 +1389,7 @@ void collectMemberChain(std::vector<Token> const &tokens, size_t memberTokIdx,
       *keywordTokIdx = memberTokIdx - 1;
     }
     if (receiver != std::string::npos) {
-      collectChainWalk(tokens, receiver, segs, implicit, keywordTokIdx);
+      collectChainWalk(tokens, receiver, segs, implicit, keywordTokIdx, lang);
     } else {
       *implicit = true;
     }
@@ -1434,8 +1433,7 @@ ChainBase chainOwner(AnalyzedDoc const &doc, std::string const &normalizedPath,
       if (kw.decl != nullptr && kw.decl->kind == SymbolKind::Enum) {
         // Splice the keyword back in as the leftmost segment; the enum's own
         // members follow the dot.
-        segs->insert(segs->begin(),
-                     {toLowerChars(kw.decl->name), keywordTokIdx});
+        segs->insert(segs->begin(), {kw.decl->key, keywordTokIdx});
         *baseName = std::string(kw.decl->name);
         *enumMember = true;
         *owner = kw;
@@ -1456,7 +1454,8 @@ ChainBase chainOwner(AnalyzedDoc const &doc, std::string const &normalizedPath,
     if (tn.empty()) {
       return ChainBase::NoOwner;
     }
-    *owner = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+    *owner = findTypeDecl(doc, normalizedPath, canonicalKey(tn, doc.parse.lang),
+                          index);
     if (owner->decl == nullptr) {
       return ChainBase::NoOwner;
     }
@@ -1485,7 +1484,8 @@ ChainBase chainOwner(AnalyzedDoc const &doc, std::string const &normalizedPath,
   if (tn.empty()) {
     return ChainBase::NoOwner;
   }
-  *owner = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+  *owner = findTypeDecl(doc, normalizedPath, canonicalKey(tn, doc.parse.lang),
+                        index);
   if (owner->decl == nullptr) {
     return ChainBase::NoOwner;
   }
@@ -1513,7 +1513,8 @@ bool walkIntermediateMembers(AnalyzedDoc const &doc,
     if (tn.empty()) {
       return false;
     }
-    *typeDecl = findTypeDecl(doc, normalizedPath, toLowerChars(tn), index);
+    *typeDecl = findTypeDecl(doc, normalizedPath,
+                             canonicalKey(tn, doc.parse.lang), index);
     if (typeDecl->decl == nullptr) {
       return false;
     }
@@ -1572,7 +1573,7 @@ MemberAccess resolveMemberAccess(AnalyzedDoc const &doc,
   bool implicit = false;
   size_t keywordTokIdx = std::string::npos;
   collectMemberChain(tokens, hover.second, /*virtualMember=*/false, &segs,
-                     &implicit, &keywordTokIdx);
+                     &implicit, &keywordTokIdx, doc.parse.lang);
   if (segs.empty()) {
     return out;
   }
@@ -1688,7 +1689,7 @@ MemberCompletion resolveMemberCompletion(AnalyzedDoc const &doc,
   bool implicit = false;
   size_t keywordTokIdx = std::string::npos;
   collectMemberChain(tokens, memberTokIdx, virtualMember, &segs, &implicit,
-                     &keywordTokIdx);
+                     &keywordTokIdx, doc.parse.lang);
   if (segs.empty()) {
     return mc;
   }
@@ -1970,8 +1971,8 @@ typeOfDecl(std::vector<Symbol> const &tree, CrossDecl const &target,
   if (declared.empty()) {
     return std::nullopt;
   }
-  CrossDecl const type =
-      findTypeDecl(doc, normalizedPath, toLowerChars(declared), index);
+  CrossDecl const type = findTypeDecl(
+      doc, normalizedPath, canonicalKey(declared, doc.parse.lang), index);
   if (type.decl == nullptr) {
     return std::nullopt;
   }

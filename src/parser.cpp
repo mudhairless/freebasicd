@@ -254,6 +254,15 @@ private:
     }
   }
 
+  // Canonical key for a declared name (canonicalKey, language.h): lowercase,
+  // and in `fb` the trailing type-suffix char dropped because fbc ignores it
+  // (warning 44) and aliases `foo`/`foo$`. Reads the dialect in force now; a
+  // `#LANG` is only ever at the top, so a key built before it is the `fb`
+  // default.
+  std::string keyFor(std::string_view name) const {
+    return canonicalKey(name, out_.lang);
+  }
+
   static bool isDeclOpenerWord(const std::string &w) {
     return w == "sub" || w == "function" || w == "property" ||
            w == "operator" || w == "constructor" || w == "destructor" ||
@@ -854,7 +863,7 @@ private:
         Symbol m;
         m.kind = mk;
         m.name = std::string(cur_.text());
-        m.key = toLowerChars(m.name);
+        m.key = keyFor(m.name);
         m.selection.beg = m.range.beg = cur_.beg;
         m.selection.end = m.range.end = cur_.end;
         m.signature =
@@ -887,7 +896,7 @@ private:
         Symbol s;
         s.kind = SymbolKind::Label;
         s.name = std::string(cur_.text());
-        s.key = toLowerChars(s.name);
+        s.key = keyFor(s.name);
         s.selection.beg = s.range.beg = cur_.beg;
         s.selection.end = s.range.end = cur_.end;
         s.doc = takeDoc();
@@ -1257,7 +1266,7 @@ private:
     Symbol s;
     s.kind = SymbolKind::Dim;
     s.name = std::string(nameTok.text());
-    s.key = toLowerChars(s.name);
+    s.key = keyFor(s.name);
     s.selection.beg = s.range.beg = nameTok.beg;
     s.selection.end = s.range.end = nameTok.end;
     s.signature = headerText(openTok); // carries the `as <type>` clause
@@ -1288,7 +1297,7 @@ private:
     if (cur_.kind != TokenKind::Identifier && cur_.kind != TokenKind::Keyword) {
       return;
     }
-    s.extendsKey = toLowerChars(cur_.text());
+    s.extendsKey = keyFor(cur_.text());
     advance();
   }
 
@@ -1317,7 +1326,7 @@ private:
     s.ownerName = s.name; // the qualifier as written, for the outline
     advance();            // '.'
     s.name = std::string(cur_.text());
-    s.key = toLowerChars(s.name);
+    s.key = keyFor(s.name);
     s.selection.beg = cur_.beg;
     s.selection.end = cur_.end;
     advance();
@@ -1519,7 +1528,7 @@ private:
     if (cur_.kind == TokenKind::Identifier || cur_.kind == TokenKind::Keyword ||
         (k == SymbolKind::Operator && cur_.kind == TokenKind::Symbol)) {
       s.name = std::string(cur_.text());
-      s.key = toLowerChars(s.name);
+      s.key = keyFor(s.name);
       s.selection.beg = cur_.beg;
       s.selection.end = cur_.end;
       advance();
@@ -1538,7 +1547,7 @@ private:
         if (cur_.kind == TokenKind::Identifier ||
             cur_.kind == TokenKind::Keyword) {
           s.name = std::string(cur_.text());
-          s.key = toLowerChars(s.name);
+          s.key = keyFor(s.name);
           s.selection.beg = cur_.beg;
           s.selection.end = cur_.end;
           advance();
@@ -1627,13 +1636,13 @@ private:
     addParam(s, entry);
   }
 
-  static void addParam(Symbol &s, const std::vector<Token> &entry) {
+  void addParam(Symbol &s, const std::vector<Token> &entry) {
     for (const Token &t : entry) {
       if (t.kind == TokenKind::Identifier) {
         Symbol p;
         p.kind = SymbolKind::Parameter;
         p.name = std::string(t.text());
-        p.key = toLowerChars(p.name);
+        p.key = keyFor(p.name);
         p.selection.beg = p.range.beg = t.beg;
         p.selection.end = p.range.end = t.end;
         // Signature carries the full parameter text (`byref map as map_struct`)
@@ -1715,7 +1724,7 @@ private:
         s.kind = SymbolKind::Type;
         s.aliasType = true;
         s.name = name;
-        s.key = toLowerChars(name);
+        s.key = keyFor(name);
         s.selection.beg = nameBeg;
         s.selection.end = nameEnd;
         s.range.beg = openTok.beg;
@@ -1754,7 +1763,7 @@ private:
     if (cur_.kind == TokenKind::Identifier || cur_.kind == TokenKind::Keyword) {
       hasName = true;
       s.name = std::string(cur_.text());
-      s.key = toLowerChars(s.name);
+      s.key = keyFor(s.name);
       s.selection.beg = cur_.beg;
       s.selection.end = cur_.end;
       advance();
@@ -1885,7 +1894,7 @@ private:
     advance();
     if (cur_.kind == TokenKind::Identifier || cur_.kind == TokenKind::Keyword) {
       s.name = std::string(cur_.text());
-      s.key = toLowerChars(s.name);
+      s.key = keyFor(s.name);
       s.selection.beg = cur_.beg;
       s.selection.end = cur_.end;
       advance();
@@ -1998,7 +2007,7 @@ private:
           Symbol s;
           s.kind = k;
           s.name = std::string(cur_.text());
-          s.key = toLowerChars(s.name);
+          s.key = keyFor(s.name);
           s.selection.beg = s.range.beg = cur_.beg;
           s.selection.end = s.range.end = cur_.end;
           // Storage tagging (§12.2 gate): a module-level var decl is

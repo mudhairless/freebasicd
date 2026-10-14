@@ -2664,7 +2664,7 @@ std::vector<fblang::OccurrenceSite> FreeBasicServer::referenceSites(
   auto collect = [&](fblang::AnalyzedDoc const &d, std::string const &fpath) {
     for (fblang::Token const &t : d.tokens) {
       if (t.kind != fblang::TokenKind::Identifier ||
-          fblang::toLowerChars(t.text()) != target.decl->key) {
+          fblang::canonicalKey(t.text(), d.parse.lang) != target.decl->key) {
         continue;
       }
       if (fpath == wanted.path && t.beg == sel.beg && t.end == sel.end) {
@@ -2816,7 +2816,7 @@ FreeBasicServer::onHighlight(td_highlight::request const &req) {
   }
   for (fblang::Token const &t : doc.tokens) {
     if (t.kind != fblang::TokenKind::Identifier ||
-        fblang::toLowerChars(t.text()) != target.decl->key) {
+        fblang::canonicalKey(t.text(), doc.parse.lang) != target.decl->key) {
       continue;
     }
     if (!target.file && t.beg == sel.beg && t.end == sel.end) {
@@ -2897,7 +2897,8 @@ td_rename::response FreeBasicServer::onRename(td_rename::request const &req) {
         lsErrorCodes::InvalidParams,
         "the position does not reference a renameable symbol");
   }
-  std::string const newKey = fblang::toLowerChars(req.params.newName);
+  std::string const newKey =
+      fblang::canonicalKey(req.params.newName, doc.parse.lang);
 
   // The collision guard and the rename-site sweep below both walk the index
   // that serves the requesting document; pin its snapshot for the whole
@@ -3002,8 +3003,8 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
   std::string_view const content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
-  std::string const prefix =
-      fblang::toLowerChars(completionPrefix(content, offset));
+  std::string const prefix = fblang::canonicalKey(
+      completionPrefix(content, offset), cached->analysis.parse.lang);
 
   fblang::AnalyzedDoc const &doc = cached->analysis;
 

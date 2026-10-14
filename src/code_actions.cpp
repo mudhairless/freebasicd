@@ -342,7 +342,8 @@ std::vector<QuickFix> addSharedModuleVar(Diagnostic const &d,
     return {};
   }
   std::string const key =
-      toLowerChars(ctx.content.substr(d.range.beg, d.range.end - d.range.beg));
+      canonicalKey(ctx.content.substr(d.range.beg, d.range.end - d.range.beg),
+                   ctx.doc->parse.lang);
   Symbol const *decl = moduleSharedCandidate(ctx.doc->parse, ctx.content, key);
   if (decl == nullptr) {
     return {}; // no in-file declaration this fix could edit
