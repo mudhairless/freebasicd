@@ -35,6 +35,7 @@
 #include "LibLsp/lsp/textDocument/publishDiagnostics.h"
 #include "LibLsp/lsp/textDocument/references.h"
 #include "LibLsp/lsp/textDocument/rename.h"
+#include "LibLsp/lsp/textDocument/resolveCompletionItem.h"
 #include "LibLsp/lsp/textDocument/selectionRange.h"
 #include "LibLsp/lsp/textDocument/signature_help.h"
 #include "LibLsp/lsp/textDocument/type_definition.h"
@@ -407,6 +408,9 @@ private:
   // where a wrong range is worse than a missing node.
   std::vector<TypeHierarchyItem>
   hierarchyItems(std::vector<fblang::TypeItem> const &types);
+
+  completionItem_resolve::response
+  onResolveCompletionItem(completionItem_resolve::request const &req);
 
   // Which files a reference walk sweeps. Both name the same declaration; they
   // differ in what the caller is asking about.

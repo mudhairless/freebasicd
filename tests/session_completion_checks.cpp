@@ -134,6 +134,46 @@ char const *kSuffixCompletionFrame =
     R"FB({"jsonrpc":"2.0","id":"scp","method":"textDocument/completion","params":)FB"
     R"FB({"textDocument":{"uri":"file://{{tmp}}/sufcomp.bas"},"position":{"line":1,"character":8}}})FB";
 
+// A doc-commented function and a `twi` prefix that matches only it, so the
+// completion reply carries no `documentation` at all: the item is lean and the
+// doc comment arrives only from `completionItem/resolve` (M16).
+char const *kDidOpenDocCommentFrame =
+    R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
+    R"FB({"uri":"file://{{tmp}}/doccomp.bas","languageId":"basic","version":1,)FB"
+    R"FB("text":"'' Doubles a number.\nfunction twice(n as integer) as integer\n)FB"
+    R"FB(    return n * 2\nend function\n\ndim t as integer\ntwi\n"}}})FB";
+
+char const *kDocCommentCompletionFrame =
+    R"FB({"jsonrpc":"2.0","id":"dcc","method":"textDocument/completion","params":)FB"
+    R"FB({"textDocument":{"uri":"file://{{tmp}}/doccomp.bas"},"position":{"line":6,"character":3}}})FB";
+
+// `completionItem/resolve` params are the item the completion reply handed the
+// client, echoed back verbatim. `{{data}}` is the `data` object spliced from
+// that reply, so the test never rebuilds the platform-specific path inside it.
+char const *kDocCommentResolveTemplate =
+    R"FB({"jsonrpc":"2.0","id":"dcr","method":"completionItem/resolve","params":)FB"
+    R"FB({"label":"twice","kind":3,"data":{{data}}}})FB";
+
+// The `data` object of the completion item labelled `label`, taken verbatim
+// from the reply's JSON. The item's `data` is one flat object (path + two
+// ints), so the first `}` closes it. Empty when the reply has no such item.
+std::string DataObjectOf(std::string const &reply, std::string const &label) {
+  std::size_t const at = reply.find("\"label\":\"" + label + "\"");
+  if (at == std::string::npos) {
+    return {};
+  }
+  std::size_t const key = reply.find("\"data\":{", at);
+  if (key == std::string::npos) {
+    return {};
+  }
+  std::size_t const open = reply.find('{', key);
+  std::size_t const close = reply.find('}', open);
+  if (close == std::string::npos) {
+    return {};
+  }
+  return reply.substr(open, close - open + 1);
+}
+
 void TestCompletionOffersKeywordsAndSymbols() {
   lsp::NullLog log;
   lsp::LanguageSession session(log);
@@ -419,6 +459,68 @@ void TestCompletionTreatsSuffixAsIdentity() {
 
   session.stop();
 }
+
+void TestCompletionResolveAddsDocComment() {
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  input->append(MakeLspFrame(kDidOpenDocCommentFrame));
+  Expect(WaitForPublishedUri(output, 1).empty() == false,
+         "didOpen must publish diagnostics");
+
+  input->append(MakeLspFrame(kDocCommentCompletionFrame));
+  std::string const completion = TailAfter(
+      WaitForOutputContaining(output, "\"id\":\"dcc\""), "\"id\":\"dcc\"");
+  Expect(completion.find("\"label\":\"twice\"") != std::string::npos,
+         "completion must offer the doc-commented function");
+  // The item stays lean: its doc comment is deferred to resolve, and the
+  // declaration's identity travels in `data`.
+  Expect(completion.find("\"documentation\"") == std::string::npos,
+         "the symbol item's documentation must wait for resolve");
+  std::string const data = DataObjectOf(completion, "twice");
+  Expect(!data.empty(), "the symbol item must carry a `data` identity");
+
+  std::string resolveFrame = kDocCommentResolveTemplate;
+  resolveFrame.replace(resolveFrame.find("{{data}}"), 8, data);
+  input->append(MakeLspFrame(resolveFrame));
+  std::string const resolved = TailAfter(
+      WaitForOutputContaining(output, "\"id\":\"dcr\""), "\"id\":\"dcr\"");
+  Expect(resolved.find("\"label\":\"twice\"") != std::string::npos,
+         "resolve must echo the item back");
+  Expect(resolved.find("\"documentation\"") != std::string::npos,
+         "resolve must attach the declaration's doc comment");
+  Expect(resolved.find("Doubles a number.") != std::string::npos,
+         "resolve documentation must be the `''` doc comment");
+
+  // `data` is untrusted input: a shape this server never wrote (here a bare
+  // string) must answer the item unchanged, not throw out of the typed reader.
+  input->append(MakeLspFrame(
+      R"FB({"jsonrpc":"2.0","id":"dcm","method":"completionItem/resolve","params":)FB"
+      R"FB({"label":"dim","kind":14,"data":"not-an-object"}})FB"));
+  std::string const malformed = TailAfter(
+      WaitForOutputContaining(output, "\"id\":\"dcm\""), "\"id\":\"dcm\"");
+  Expect(malformed.find("\"id\":\"dcm\"") != std::string::npos &&
+             malformed.find("\"documentation\"") == std::string::npos,
+         "a malformed `data` must answer the item unchanged");
+
+  // An item with no `data` at all (a keyword item) is echoed untouched.
+  input->append(MakeLspFrame(
+      R"FB({"jsonrpc":"2.0","id":"dcn","method":"completionItem/resolve","params":)FB"
+      R"FB({"label":"dim","kind":14}})FB"));
+  std::string const noData = TailAfter(
+      WaitForOutputContaining(output, "\"id\":\"dcn\""), "\"id\":\"dcn\"");
+  Expect(noData.find("\"label\":\"dim\"") != std::string::npos &&
+             noData.find("\"documentation\"") == std::string::npos,
+         "an item with no `data` must be echoed unchanged");
+
+  session.stop();
+}
 } // namespace
 
 namespace fbtest {
@@ -431,6 +533,7 @@ void RunCompletionTests() {
   RUN_TEST(TestCompletionOffersIntrinsicCatalogItems);
   RUN_TEST(TestSignatureHelpResolvesIntrinsic);
   RUN_TEST(TestCompletionOffersNewReservedWordsAndIntrinsics);
+  RUN_TEST(TestCompletionResolveAddsDocComment);
 }
 
 } // namespace fbtest

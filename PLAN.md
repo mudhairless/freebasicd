@@ -35,7 +35,7 @@
 
   | Milestone | Status |
   |-----------|--------|
-  | M16 — completion resolve + protocol polish (`#include` navigation landed) | next |
+  | M16 — completion resolve + protocol polish (`#include` navigation and completion item resolve landed) | next |
   | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
@@ -268,7 +268,9 @@
   header, M16), `references`,
   `documentHighlight`, `completion` (keywords + `END`-block snippets + in-scope
   symbols + intrinsic catalog + preprocessor defines/macros + context-aware UDT
-  member filtering after `.`/`->`), `signatureHelp` (user declarations and
+  member filtering after `.`/`->`), `completionItem/resolve` (M16: attaches a
+  declaration's `''` doc comment on demand, found by the `data` identity the
+  item carries), `signatureHelp` (user declarations and
   built-in functions),
   `workspace/symbol` (aggregated across per-root indexes), `prepareRename`,
   `rename` (resolution-based workspace edits),
@@ -393,7 +395,7 @@
      other feasible 3.17 extras are not: `codeLens` shipped with M13,
      `typeDefinition` / `implementation` / `typeHierarchy` shipped with M15 —
      `typeHierarchy/resolve` excepted, since prepare fills both lists — and
-     `completionItem/resolve` waits on the M10 catalog making items heavy.)
+     `completionItem/resolve` shipped with M16.)
   5. **The module model is documented but not implemented** (FreeBASIC.md §9,
      M21). `Constructor`/`Destructor` are neither lexed nor parsed, a module's
      *main-ness* is not tracked, and the diagnostics that fall out of the model
@@ -455,13 +457,11 @@
 
 ### M16 — Completion resolve + polish (backlog)
 
-Optional `completionItem/resolve` once the M10 catalog makes items heavy, and
-`$/progress`/`workDoneProgress` for long scans. Individually tiny; bundle as one
-polish drop. Telemetry was on this list and is dropped: an open-source server
-that phones home is not a trade worth making here.
+`$/progress`/`workDoneProgress` for long scans. Telemetry was on this list and is
+dropped: an open-source server that phones home is not a trade worth making here.
 
-`window/logMessage`, `willSave`, and `documentLink` were on this list and have
-landed — see below.
+`window/logMessage`, `willSave`, `documentLink`, and `completionItem/resolve`
+were on this list and have landed — see below. That leaves `$/progress`.
 
 **Landed (2026-10-13): `window/logMessage`.** The session's own log lines now
 reach the client as `window/logMessage` as well as stderr (`logToClient` in
@@ -487,8 +487,27 @@ keyword/wiki URLs (the wiki URL is already in hover, and a document-wide link on
 every keyword would underline the whole buffer to repeat it).
 `textDocument/definition` answers the same click from the same module
 (`includeLiteralAt` + `includeResolverFor`), which is what makes the navigation
-usable in a client that draws no link — Kate's does not. Remaining:
-`completionItem/resolve`, `$/progress`.
+usable in a client that draws no link — Kate's does not.
+
+**Landed (2026-10-15): `completionItem/resolve`.** Advertised with
+`resolveProvider: true`, and answered by `onResolveCompletionItem`, which
+attaches a workspace declaration's `''` doc comment (`documentation`, markdown)
+to the item the client echoed back. The identity travels in the item's `data`:
+`CompletionDocRef` (normalized declaring path + name-token byte range), the same
+pair `fblang::identityOf` produces, found again by `fblang::declAtIdentity` — the
+reverse of `identityOf`, added to the existing `resolve.{h,cpp}`, which walks the
+tree to any depth (a completion item can name a local) and answers `nullptr`,
+not the nearest declaration, when the range matches none.
+
+The deviation from the sketch is the whole scope. The sketch premised resolve on
+the M10 catalog making items heavy and deferring those docs; this build is
+**additive** instead. Symbol and closure items carried no `documentation` before,
+so adding the doc comment lazily fills the real gap, while the catalog's
+keyword/intrinsic docs stay inline — deferring them would blind a client that
+never sends `completionItem/resolve`, and the capability that would let the
+server negotiate that (`textDocument.completion.completionItem.resolveSupport`)
+is not in the vendored LspCpp client-capability types. Adding it there is a fork
+commit, worth doing only when the payload actually needs the cut (§4 gap 4).
 
 Note the shape precedent from M12/M13: a fix that must carry an edit ships as a
 `CodeAction`, and a thing the client executes ships as a `Command`. A

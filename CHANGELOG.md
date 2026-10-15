@@ -26,6 +26,36 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-15 — completion item resolve (M16)
+
+- **`completionItem/resolve` is implemented and the server advertises
+  `resolveProvider: true`.** A completion item backed by a workspace declaration
+  now carries a `data` identity — `CompletionDocRef`, the declaring file's
+  normalized path plus the name token's byte range — and the client's resolve
+  request is answered with that declaration's `''` doc comment, as markdown
+  `documentation`. The identity is the same `(path, name-token)` pair
+  `fblang::identityOf` produces; the new `fblang::declAtIdentity`
+  (`src/resolve.{h,cpp}`) is its reverse, and it answers `nullptr` — not the
+  nearest declaration — when the range matches none. `typeAtIdentity` now shares
+  that walk, so a type nested below module scope resolves too where the old
+  root-only loop missed it.
+- **The scope is additive, and that is the deviation from the sketch.** The M16
+  entry premised resolve on the catalog making items *heavy* and deferring those
+  docs; that is not what shipped. Deferring the catalog's inline
+  keyword/intrinsic documentation would blind any client that never sends
+  `completionItem/resolve`, and the LSP client capability that would let the
+  server negotiate the cut (`textDocument.completion.completionItem.resolveSupport`)
+  is not among the vendored LspCpp client-capability types — adding it is a fork
+  commit, worth doing only when the payload needs the reduction (PLAN.md §4 gap
+  4). So resolve fills the gap that was real: a symbol or closure item carried no
+  `documentation` at all, and now gets its doc comment on demand, while the
+  catalog's docs stay inline.
+- **`data` is untrusted input at the session boundary.** It is copied out of the
+  const request and its top-level JSON shape (`GetType() == kObjectType`) is
+  checked before `Get`, the same rule and reason as the `executeCommand`
+  arguments: LspCpp's typed reflect throws on a member type it did not expect, so
+  the shape is checked before anything is read.
+
 ### 2026-10-15 — `#include` navigation: document links and definition (M16)
 
 - **The server advertises `documentLinkProvider` (with `resolveProvider` off)

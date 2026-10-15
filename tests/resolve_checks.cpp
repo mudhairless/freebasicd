@@ -85,6 +85,34 @@ static void TestScopingResolvesCorrectly() {
   CHECK(param && param->kind == SymbolKind::Parameter && param->name == "n");
 }
 
+// `declAtIdentity` is the reverse of `identityOf`: a (path, name-token) pair
+// finds the declaration a completion item's `data` names, at any depth, and a
+// range that matches nothing answers nullptr rather than the nearest one.
+static void TestDeclAtIdentityFindsBySelectionRange() {
+  AnalyzedDoc const doc = analyze(kDoc);
+
+  std::size_t const dimTotal = kDoc.find("dim total");
+  DeclIdentity const rootId{"", static_cast<std::uint32_t>(dimTotal + 4),
+                            static_cast<std::uint32_t>(dimTotal + 9)};
+  Symbol const *root = declAtIdentity(doc, rootId);
+  CHECK(root != nullptr && root->kind == SymbolKind::Dim &&
+        root->name == "total");
+
+  // A nested declaration (the sub's local) is found too: a completion item can
+  // name a local, not just a module root.
+  std::size_t const localDim = kDoc.find("dim total", kDoc.find("sub bump"));
+  DeclIdentity const localId{"", static_cast<std::uint32_t>(localDim + 4),
+                             static_cast<std::uint32_t>(localDim + 9)};
+  Symbol const *local = declAtIdentity(doc, localId);
+  CHECK(local != nullptr && local->name == "total");
+  CHECK_MSG(local != root, "the nested declaration is a different symbol");
+
+  // A range that matches no declaration answers nullptr.
+  DeclIdentity const miss{"", static_cast<std::uint32_t>(dimTotal + 4),
+                          static_cast<std::uint32_t>(dimTotal + 8)};
+  CHECK(declAtIdentity(doc, miss) == nullptr);
+}
+
 // In `fb` a trailing type suffix is not part of an identifier's identity
 // (canonicalKey, language.h; fbc warning 44), so a usage and a declaration
 // spelled with different suffixes resolve to the same symbol — including
@@ -2407,6 +2435,7 @@ static void TestExternPlacementDiagnostics() {
 
 int main() {
   TestScopingResolvesCorrectly();
+  TestDeclAtIdentityFindsBySelectionRange();
   TestUnknownAndNonIdentifiersResolveNull();
   TestIdentifierSuffixIdentity();
   TestOccurrences();

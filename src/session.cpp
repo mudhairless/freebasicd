@@ -975,6 +975,34 @@ bool hasPrefix(std::string_view word, std::string_view prefix) {
          word.substr(0, prefix.size()) == prefix;
 }
 
+// The identity a completion item carries so `completionItem/resolve` can find
+// the declaration again and read its doc comment. `fblang::DeclIdentity`
+// (path + name-token byte range) is exactly the pair that identifies a
+// declaration across parses; it is mirrored here as a reflectable struct
+// because the item's `data` field is serialized to the client and echoed back
+// verbatim, so it must round-trip through LspCpp's `lsp::Any`.
+struct CompletionDocRef {
+  std::string path;
+  std::uint32_t beg = 0;
+  std::uint32_t end = 0;
+};
+MAKE_REFLECT_STRUCT(CompletionDocRef, path, beg, end);
+
+// Set the item's `data` to the declaration it documents so the client can ask
+// for the documentation lazily. Only items backed by a workspace declaration
+// with a doc comment carry a ref: a keyword or intrinsic item's documentation
+// is intrinsic to the catalog and stays inline, and an undocumented symbol has
+// nothing to resolve.
+void setCompletionDocRef(lsCompletionItem &item, std::string const &path,
+                         fblang::SourceRange selection) {
+  CompletionDocRef ref;
+  ref.path = path;
+  ref.beg = selection.beg;
+  ref.end = selection.end;
+  item.data.emplace();
+  item.data->Set(ref);
+}
+
 char const *const kBlockOpeners[] = {
     "sub",    "function", "property", "operator",  "constructor", "destructor",
     "type",   "union",    "enum",     "namespace", "scope",       "if",
@@ -1436,6 +1464,9 @@ void FreeBasicServer::registerHandlers() {
   session_.on([this](wp_executeCommand::request const &req) {
     return onExecuteCommand(req);
   });
+  session_.on([this](completionItem_resolve::request const &req) {
+    return onResolveCompletionItem(req);
+  });
   // Pull diagnostics (M14): the two pull requests a pull-negotiated client
   // sends, plus the server->client refresh request whose response parser must
   // be registered before startProcessingMessages() (same rule as
@@ -1524,6 +1555,7 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   rsp.result.capabilities.completionProvider->triggerCharacters.emplace();
   rsp.result.capabilities.completionProvider->triggerCharacters->emplace_back(
       ".");
+  rsp.result.capabilities.completionProvider->resolveProvider.emplace(true);
 
   rsp.result.capabilities.signatureHelpProvider.emplace();
   rsp.result.capabilities.signatureHelpProvider->triggerCharacters.emplace_back(
@@ -3205,6 +3237,9 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
     if (!sym->signature.empty()) {
       item.detail.emplace(sym->signature);
     }
+    if (!sym->doc.empty()) {
+      setCompletionDocRef(item, normPath, sym->selection);
+    }
     rsp.result.items.push_back(std::move(item));
   }
 
@@ -3249,6 +3284,9 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
         item.kind.emplace(completionKindFor(root.kind));
         if (!root.signature.empty()) {
           item.detail.emplace(root.signature);
+        }
+        if (!root.doc.empty()) {
+          setCompletionDocRef(item, closurePath, root.selection);
         }
         rsp.result.items.push_back(std::move(item));
       }
@@ -4104,6 +4142,42 @@ FreeBasicServer::onExecuteCommand(wp_executeCommand::request const &req) {
   // returns: a client that implements the command shows these, and a client
   // that does not is no worse off than before (the protocol expects null here).
   rsp.result.Set(locations);
+  return rsp;
+}
+
+completionItem_resolve::response FreeBasicServer::onResolveCompletionItem(
+    completionItem_resolve::request const &req) {
+  completionItem_resolve::response rsp;
+  rsp.id = req.id;
+  // Echo the item back; resolve only *adds* documentation, so the client's own
+  // label/kind/detail/textEdit survive untouched.
+  rsp.result = req.params;
+
+  if (!req.params.data) {
+    return rsp;
+  }
+  lsp::Any data = *req.params.data;
+  if (data.GetType() != lsp::Any::kObjectType) {
+    return rsp;
+  }
+  CompletionDocRef ref;
+  data.Get(ref);
+  if (ref.path.empty()) {
+    return rsp;
+  }
+  std::shared_ptr<fblang::DocumentContent const> const doc =
+      contentForPathAnalysis(std::filesystem::path(ref.path));
+  if (!doc) {
+    return rsp;
+  }
+  fblang::DeclIdentity const id{ref.path, ref.beg, ref.end};
+  fblang::Symbol const *const decl = fblang::declAtIdentity(doc->analysis, id);
+  if (decl == nullptr || decl->doc.empty()) {
+    return rsp;
+  }
+  rsp.result.documentation.emplace();
+  rsp.result.documentation->second.emplace(
+      MarkupContent{std::string("markdown"), decl->doc});
   return rsp;
 }
 

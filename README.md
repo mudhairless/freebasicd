@@ -48,7 +48,7 @@ Implemented and advertised in the `initialize` reply:
 | Find references | Workspace-wide, following includes |
 | Document highlight | Read/write occurrences of the symbol under the cursor |
 | Rename | `prepareRename` plus a workspace `rename` that respects scope |
-| Completion | Keywords, intrinsics, locals, preprocessor defines/macros, and context-aware UDT and enum members after `.` or `->` |
+| Completion | Keywords, intrinsics, locals, preprocessor defines/macros, and context-aware UDT and enum members after `.` or `->`; a declared symbol's doc comment is attached on demand by `completionItem/resolve` |
 | Signature help | For calls and subs, with parameter labels |
 | Document symbols | Symbols, subs, functions, types, enums, defines, and macros per file |
 | Folding ranges | Blocks and multi-line constructs |
@@ -66,8 +66,8 @@ Implemented and advertised in the `initialize` reply:
 | Workspace symbols | Aggregated from every workspace root, one index per root |
 | Workspace folders | Multi-root sessions, with watched files and per-root config |
 
-Not implemented, and therefore not advertised: completion item resolve, and
-`typeHierarchy/resolve` (prepare fills both lists instead).
+Not implemented, and therefore not advertised: `typeHierarchy/resolve`
+(prepare fills both lists instead).
 
 The server advertises `textDocumentSync.willSave` and accepts
 `textDocument/willSave`, but acts on neither: diagnostics are already reissued

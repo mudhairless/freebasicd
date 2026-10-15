@@ -1916,16 +1916,36 @@ CrossDecl implementationTarget(AnalyzedDoc const &doc,
                               index);
 }
 
-CrossDecl typeAtIdentity(AnalyzedDoc const &doc, DeclIdentity const &id) {
-  for (Symbol const &root : doc.parse.roots) {
-    if (root.kind != SymbolKind::Type && root.kind != SymbolKind::Union) {
-      continue;
+// Both identity lookups below share this walk. It descends to any depth
+// because what names a declaration — a completion item's `data`, or a
+// type-hierarchy node's `selectionRange` — can point at a nested declaration,
+// not only a module root.
+namespace {
+Symbol const *declAtIdentityIn(std::vector<Symbol> const &tree,
+                               DeclIdentity const &id) {
+  for (Symbol const &s : tree) {
+    if (s.selection.beg == id.beg && s.selection.end == id.end) {
+      return &s;
     }
-    if (root.selection.beg == id.beg && root.selection.end == id.end) {
-      return CrossDecl{nullptr, &root};
+    if (Symbol const *found = declAtIdentityIn(s.children, id)) {
+      return found;
     }
   }
+  return nullptr;
+}
+} // namespace
+
+CrossDecl typeAtIdentity(AnalyzedDoc const &doc, DeclIdentity const &id) {
+  Symbol const *const found = declAtIdentityIn(doc.parse.roots, id);
+  if (found != nullptr &&
+      (found->kind == SymbolKind::Type || found->kind == SymbolKind::Union)) {
+    return CrossDecl{nullptr, found};
+  }
   return {};
+}
+
+Symbol const *declAtIdentity(AnalyzedDoc const &doc, DeclIdentity const &id) {
+  return declAtIdentityIn(doc.parse.roots, id);
 }
 
 namespace {

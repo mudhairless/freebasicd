@@ -421,6 +421,12 @@ CrossDecl implementationTarget(AnalyzedDoc const &doc,
 // opened.
 CrossDecl typeAtIdentity(AnalyzedDoc const &doc, DeclIdentity const &id);
 
+// The declaration whose name token is exactly `id` in `doc`, at any depth: a
+// completion item can name a local, not just a module root. A (path, selection)
+// pair is what identifies a declaration across parses, so a range that matches
+// no declaration answers nullptr rather than the nearest one.
+Symbol const *declAtIdentity(AnalyzedDoc const &doc, DeclIdentity const &id);
+
 // The types `typeKey` extends, nearest first, following `Symbol::extendsKey`.
 // Closure-scoped, because it starts from a declaration in the requesting
 // document and walks up through that document's include closure — the
