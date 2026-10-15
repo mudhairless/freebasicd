@@ -6,6 +6,7 @@
 
 #include "session.h"
 
+#include "document_link.h"
 #include "fbc_diagnostics.h"
 #include "i18n.h"
 #include "index.h"
@@ -44,6 +45,7 @@
 #include "LibLsp/lsp/textDocument/did_close.h"
 #include "LibLsp/lsp/textDocument/did_open.h"
 #include "LibLsp/lsp/textDocument/did_save.h"
+#include "LibLsp/lsp/textDocument/document_link.h"
 #include "LibLsp/lsp/textDocument/document_symbol.h"
 #include "LibLsp/lsp/textDocument/foldingRange.h"
 #include "LibLsp/lsp/textDocument/highlight.h"
@@ -1401,6 +1403,8 @@ void FreeBasicServer::registerHandlers() {
   });
   session_.on(
       [this](td_codeLens::request const &req) { return onCodeLens(req); });
+  session_.on(
+      [this](td_links::request const &req) { return onDocumentLink(req); });
   session_.on([this](wp_executeCommand::request const &req) {
     return onExecuteCommand(req);
   });
@@ -1570,6 +1574,13 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   rsp.result.capabilities.executeCommandProvider.emplace();
   rsp.result.capabilities.executeCommandProvider->commands.push_back(
       kShowReferencesCommand);
+
+  // Document links (M16): the `#include` literals that resolve to a file.
+  // resolveProvider is off — every target is resolved eagerly (a filesystem
+  // stat per include, already paid by the diagnostics path), so nothing is
+  // left for a `documentLink/resolve` round trip.
+  rsp.result.capabilities.documentLinkProvider.emplace();
+  rsp.result.capabilities.documentLinkProvider->resolveProvider.emplace(false);
 
   // Pull diagnostics (M14): negotiated, never assumed. A client that
   // advertises `textDocument.diagnostic` (a 3.17+ pull client) gets the
@@ -3935,6 +3946,59 @@ FreeBasicServer::onCodeLens(td_codeLens::request const &req) {
   for (fblang::CodeLens const &lens : lenses) {
     rsp.result.push_back(
         codeLensItem(content, req.params.textDocument.uri, lens));
+  }
+  return rsp;
+}
+
+td_links::response
+FreeBasicServer::onDocumentLink(td_links::request const &req) {
+  td_links::response rsp;
+  rsp.id = req.id;
+
+  std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
+      cachedRequestAnalysis(req.params.textDocument.uri);
+  if (!cached) {
+    return rsp;
+  }
+  std::string_view const content = cached->content;
+  fblang::AnalyzedDoc const &doc = cached->analysis;
+
+  std::filesystem::path const documentPath(
+      req.params.textDocument.uri.GetAbsolutePath().path());
+  std::string const normPath = fblang::normalizePath(documentPath);
+
+  // Include resolution mirrors fbc's search order and so needs a workspace root
+  // and the config include dirs; the serving index owns both. It is snapshotted
+  // once for the reply, and only its cheap root/dirs copies escape it — no
+  // pointer into the index travels, so nothing here needs the snapshot pinned
+  // past the resolve calls.
+  //
+  // With no serving index (a document opened before any root exists) the
+  // document's own directory stands in as the root, so a header beside it still
+  // resolves: step ① is the same either way, and this only changes the later
+  // steps from "no root to search" to "search where the file lives".
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  std::filesystem::path const root =
+      index ? index->root() : documentPath.parent_path();
+  std::vector<std::filesystem::path> const includeDirs =
+      index ? index->includeDirs() : std::vector<std::filesystem::path>{};
+  // The system header folder is one fact for every include, so it is resolved
+  // once for the reply rather than inside the seam per literal (the function is
+  // memoized, but the constant belongs outside the loop).
+  std::filesystem::path const systemDir = fblang::defaultSystemIncludeDir();
+  fblang::IncludeResolver const resolve =
+      [&documentPath, &root, &includeDirs,
+       &systemDir](std::string const &literal) -> std::optional<std::string> {
+    return fblang::resolveIncludeTarget(literal, documentPath, root, systemDir,
+                                        includeDirs);
+  };
+
+  for (fblang::DocumentLinkItem const &link :
+       fblang::documentLinks(doc, resolve)) {
+    lsDocumentLink item;
+    item.range = fblang::utf16Range(content, link.range.beg, link.range.end);
+    item.target.emplace(lsDocumentUri(AbsolutePath(link.target)));
+    rsp.result.push_back(std::move(item));
   }
   return rsp;
 }

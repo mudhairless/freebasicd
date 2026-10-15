@@ -196,7 +196,7 @@ Two conventions are ours rather than the language's:
 
 ## Verification
 
-- Unit drivers in `tests/` via ctest (19 suites, one per subsystem) plus
+- Unit drivers in `tests/` via ctest (20 suites, one per subsystem) plus
   `session_integration`, which drives `LanguageSession` with in-memory streams
   (LspCpp `tests/test_helpers.h`). The system `fbc` compiler (1.10.2) is
   available for ground-truthing ambiguous FreeBASIC constructs.

@@ -26,6 +26,42 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-15 — Document links over `#include` targets (M16)
+
+- **The server advertises `documentLinkProvider` (with `resolveProvider` off)
+  and answers `textDocument/documentLink`.** Each `#include`/`#include once`
+  filename literal that resolves to a file becomes a link to that header, so a
+  click on `#include "lib.bi"` opens `lib.bi`. This is a deliberate deviation
+  from the M16 sketch, which said "keyword/wiki URLs (hover already carries
+  them)": the wiki URL is already in hover, and a document-wide link on every
+  keyword occurrence would underline the whole buffer to repeat it. The include
+  literal is the one navigation the server lacked — `textDocument/definition`
+  resolves *symbols* (`onDefinition`), so a click on an include did nothing,
+  even though include resolution exists everywhere else (the `include-not-found`
+  diagnostic, the missing-include quick fix, reverse reachability).
+- **The projection is a module, `src/document_link.{h,cpp}`** (LSP-agnostic, byte
+  offsets), the same shape as `code_lens`/`inlay_hints`: `DocumentLinkItem` plus
+  `documentLinks(doc, resolve)`, where `resolve` is the module's only seam on
+  workspace state (`IncludeResolver`), exactly as `ReferenceCounter` is for a
+  lens. A literal the resolver refuses produces no link — the include-not-found
+  diagnostic is the report, and a link would point at a file that is not there —
+  so the unresolved case is correct by construction rather than by a second
+  check. Targets resolve through `resolveIncludeTarget` with the serving index's
+  root and `includePaths`, falling back to the document's own directory when no
+  index exists yet.
+- **Tests are pinned at both levels, and were checked by mutation.** The unit
+  driver `tests/document_link_checks.cpp` owns which includes carry a link, the
+  range (the filename, quotes excluded), source order, the bare-`#include` and
+  unresolved cases, and the null seam; `tests/session_document_link_checks.cpp`
+  pins the wire shape — the capability, the resolved `file://` target URI, the
+  literal range, and that no `data` blob is sent. Mutations confirmed each: a
+  module that emitted a link for an unresolved literal fails both suites, and one
+  that used the whole directive line as the range fails the unit range checks.
+- **No new user-visible string**, so `po/freebasicd.pot` is unchanged, and no
+  config key, so the version stays. `README.md` gains a capability row and drops
+  document links from its "not implemented" list; `PLAN.md` M16 records the
+  landing and the deviation.
+
 ### 2026-10-14 — `willSave` advertised and accepted (M16)
 
 - **The server advertises `textDocumentSync.willSave` and handles

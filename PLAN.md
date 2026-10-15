@@ -35,7 +35,7 @@
 
   | Milestone | Status |
   |-----------|--------|
-  | M16 — document links + completion resolve + protocol polish (backlog) | next |
+  | M16 — completion resolve + protocol polish (document links landed) | next |
   | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
@@ -146,6 +146,13 @@
     makes an include fix correct by construction (a candidate is offered only
     when the next publish would resolve it). Also owns
     `unresolvedIncludeDiagnostics`, shared with the publish path.
+  - `src/document_link.{h,cpp}` — document links (M16), LSP-agnostic and in byte
+    offsets: `DocumentLinkItem` and `documentLinks(doc, resolve)` return one link
+    per `#include`/`#include once` filename literal the `IncludeResolver` seam
+    accepts, in source order, with the range narrowed to the literal (quotes
+    excluded). Symbols are deliberately not linked — hover carries a keyword's
+    wiki page, and a link on every keyword would underline the whole buffer to
+    repeat it.
   - `src/selection.{h,cpp}` — expand-selection chains (M13), LSP-agnostic and in
     byte offsets: `selectionChain(analysis, content, off)` returns the levels
     around one offset, innermost first — the token the cursor is in (or the one
@@ -273,6 +280,9 @@
   `codeLens` + `workspace/executeCommand` (M13: a "N references" lens per
   declaration, counting the includers, whose click sends
   `freebasicd.showReferences` and gets the location list back),
+  `documentLink` (M16: one link per `#include` filename literal that resolves,
+  targeting the header file — an include opens a file, so the wiki-URL/keyword
+  idea behind the original sketch is left to hover),
   `typeDefinition` + `implementation` + `typeHierarchy` + its `supertypes` /
   `subtypes` follow-ups (M15, through the `Extends` graph; `resolve` is not
   implemented and the capability says so),
@@ -439,14 +449,15 @@
   goes to [`CHANGELOG.md`](CHANGELOG.md) and its sketch is deleted here. Commits
   happen per milestone (AGENTS.md).
 
-### M16 — Document links + completion resolve + polish (backlog)
+### M16 — Completion resolve + polish (backlog)
 
-`documentLink` over keyword/wiki URLs (hover already carries them), optional
-`completionItem/resolve` once the M10 catalog makes items heavy, advertised
-`willSave`, and `window/logMessage` + `$/progress`/`workDoneProgress` for long
-scans. Individually tiny; bundle as one polish drop. Telemetry was on this list
-and is dropped: an open-source server that phones home is not a trade worth
-making here.
+Optional `completionItem/resolve` once the M10 catalog makes items heavy, and
+`$/progress`/`workDoneProgress` for long scans. Individually tiny; bundle as one
+polish drop. Telemetry was on this list and is dropped: an open-source server
+that phones home is not a trade worth making here.
+
+`window/logMessage`, `willSave`, and `documentLink` were on this list and have
+landed — see below.
 
 **Landed (2026-10-13): `window/logMessage`.** The session's own log lines now
 reach the client as `window/logMessage` as well as stderr (`logToClient` in
@@ -461,12 +472,24 @@ pre-save work, and re-validating there would only duplicate the reparse and
 publish `didSave` already performs (a client that does not advertise `willSave`
 still gets that path, so the two cannot be split). The handler exists so the
 notification is not a protocol gap the client can observe, and because
-format-on-save (M17) is the work that will need it. Remaining: `documentLink`,
+format-on-save (M17) is the work that will need it.
+
+**Landed (2026-10-15): `documentLink`.** Advertised (`resolveProvider` false —
+every target resolves eagerly) and answered over the `#include` filename
+literals that resolve to a file (`src/document_link.{h,cpp}`), so a click on
+`#include "lib.bi"` opens the header. This is the deviation from the sketch
+above: it links *includes*, not keyword/wiki URLs. The wiki URL is already in
+hover, and a document-wide link on every keyword would underline the whole
+buffer to repeat it, while the include literal is the one navigation the server
+otherwise lacks — `textDocument/definition` resolves symbols, so a click on an
+include does nothing today, even though include resolution exists everywhere
+else (diagnostics, the missing-include fix, reverse reachability). Remaining:
 `completionItem/resolve`, `$/progress`.
 
 Note the shape precedent from M12/M13: a fix that must carry an edit ships as a
 `CodeAction`, and a thing the client executes ships as a `Command`. A
-`documentLink` is neither.
+`documentLink` is neither — it carries a `target` URI the client opens, and
+nothing else.
 
 ### M17 — FreeBASIC formatter (backlog, scope TBD)
 
@@ -868,8 +891,8 @@ Remaining of a milestone whose CI and install work landed 2026-09-25 and whose
 - **Recorded non-starters** (never scheduled): `moniker`, `linkedEditingRange`,
   `documentColor`/`colorPresentation`, the deprecated `declaration` alias —
   exercises for editors we do not target.
-- **Scheduled but deferred** (each lives in §5): document links + completion
-  resolve + protocol polish (M16), and the FreeBASIC formatter (M17; high-payback
+- **Scheduled but deferred** (each lives in §5): completion resolve +
+  protocol polish (M16), and the FreeBASIC formatter (M17; high-payback
   — it sets the de-facto standard, scope TBD by a dedicated design pass).
 
 ## 7. Cross-cutting engineering notes

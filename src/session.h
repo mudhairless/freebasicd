@@ -24,6 +24,7 @@
 #include "LibLsp/lsp/textDocument/did_close.h"
 #include "LibLsp/lsp/textDocument/did_open.h"
 #include "LibLsp/lsp/textDocument/did_save.h"
+#include "LibLsp/lsp/textDocument/document_link.h"
 #include "LibLsp/lsp/textDocument/document_symbol.h"
 #include "LibLsp/lsp/textDocument/foldingRange.h"
 #include "LibLsp/lsp/textDocument/highlight.h"
@@ -318,6 +319,12 @@ private:
   // position, which is the mapping the client assumes.
   td_selectionRange::response
   onSelectionRange(td_selectionRange::request const &req);
+
+  // Document links (M16): the `#include` filename literals that resolve to a
+  // file, so an editor can open the header from the directive. Symbols are not
+  // linked — hover covers a keyword's wiki page, and a link on every keyword
+  // would underline the whole buffer to repeat what hover already shows.
+  td_links::response onDocumentLink(td_links::request const &req);
 
   // Call hierarchy (M13). All three carry the same item shape, and the two
   // follow-ups take an item the client echoes back from prepare or from an

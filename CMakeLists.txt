@@ -57,6 +57,7 @@ add_library(freebasicd_lang STATIC
     src/call_hierarchy.cpp
     src/code_actions.cpp
     src/code_lens.cpp
+    src/document_link.cpp
     src/fbc_diagnostics.cpp
     src/i18n.cpp
     src/index.cpp
@@ -343,6 +344,16 @@ target_include_directories(code_lens_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(code_lens_checks PRIVATE freebasicd_lang)
 add_test(NAME code_lens_checks COMMAND code_lens_checks)
 
+# M16 document links: which includes carry a link, the range, and the seam over a
+# fake resolver. The resolution itself is the session's (resolveIncludeTarget),
+# so this suite pins the projection and the integration driver pins the target.
+add_executable(document_link_checks
+    tests/document_link_checks.cpp
+)
+target_include_directories(document_link_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(document_link_checks PRIVATE freebasicd_lang)
+add_test(NAME document_link_checks COMMAND document_link_checks)
+
 # M9 editor grammars: a deterministic emitter shared by the writer tool and the
 # freshness test. RapidJSON is compile-time only (the emitter parses its own
 # output back before returning).
@@ -443,6 +454,7 @@ add_executable(session_integration
     tests/session_completion_checks.cpp
     tests/session_core_checks.cpp
     tests/session_crossfile_checks.cpp
+    tests/session_document_link_checks.cpp
     tests/session_extern_placement_checks.cpp
     tests/session_hover_checks.cpp
     tests/session_indexes_checks.cpp
