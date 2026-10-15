@@ -4,13 +4,16 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M16 document links.
+// M16 include navigation.
 //
-// The link a client draws over an `#include` filename literal, and the target
-// it opens: the resolved header on disk. What the module owns (which includes
-// carry a link, the range) is pinned by document_link_checks; this file pins
-// the session half — the advertised capability, the resolved target URI, and
-// that an include resolving nowhere produces no link.
+// What the cursor on an `#include` filename literal does: the link a client
+// draws over it, and the `textDocument/definition` it answers with the resolved
+// header. The two are one question asked two ways, so a client that renders no
+// documentLink — Kate's client does not — still navigates the include through
+// definition. What the module owns (which includes carry a hit, the ranges) is
+// pinned by document_link_checks; this file pins the session half — the
+// advertised capability, the resolved target URI, and that an include resolving
+// nowhere navigates nowhere rather than to a file that is not there.
 //
 // A new test goes here and in the runner at the bottom of this file;
 // everything it needs is either in session_support.h (the harness) or
@@ -83,12 +86,66 @@ void TestDocumentLinkLinksResolvedIncludesOnly() {
   session.stop();
 }
 
+// The same include navigation through `textDocument/definition`, the request
+// every client honors: a cursor on the filename literal opens the resolved
+// header, and an include that resolves nowhere answers null. The positive
+// poll's needle is the header URI, so a reply that comes back before the index
+// has settled the include cannot satisfy it — only the resolved answer can. The
+// negative poll's needle is the null result, which is the whole assertion: from
+// the caller's side a give-up and a wrong location are the same failed test, so
+// the unresolved case has to *answer*, not merely time out.
+void TestDefinitionOnIncludeOpensTheHeader() {
+  TwoFileFixture const fix;
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto output = std::make_shared<StringOStream>();
+  FreeBasicServer server(session);
+  auto input =
+      StartIndexedSession(session, server, output, fix,
+                          {{fix.mainUri, kMainContent},
+                           {fix.progUri, "#include \"missing.bi\"\n"}});
+
+  std::string const headerTarget = FileUri(fix.wsDir / "lib.bi");
+  // main.bas line 0 is `#include "lib.bi"`: the filename literal begins at
+  // character 10, so 11 is inside it. Line 0 is the only line either document
+  // has an include on.
+  auto definitionReply = [&](std::string const &tag, std::string const &needle,
+                             std::string const &uri, int character) {
+    return PollRequest(input, output, tag, needle, [&](std::string const &id) {
+      return R"({"jsonrpc":"2.0","id":")" + id +
+             R"(","method":"textDocument/definition","params":{"textDocument":{"uri":")" +
+             uri + R"("},"position":{"line":0,"character":)" +
+             std::to_string(character) + R"(}}})";
+    });
+  };
+
+  std::string const resolved =
+      definitionReply("incdef", headerTarget, fix.mainUri, 11);
+  Expect(resolved.find("\"uri\":\"" + headerTarget + "\"") != std::string::npos,
+         "definition on an include must open the resolved header on disk");
+  Expect(resolved.find("\"start\":{\"line\":0,\"character\":0}") !=
+             std::string::npos,
+         "a file target has no symbol to select, so the location is the "
+         "header's first line");
+
+  std::string const unresolved =
+      definitionReply("incnone", "\"result\":null", fix.progUri, 11);
+  Expect(unresolved.find("\"result\":null") != std::string::npos,
+         "definition on an unresolved include must answer null");
+  Expect(unresolved.find("\"uri\":") == std::string::npos,
+         "an unresolved include must not name a file that is not there");
+
+  session.stop();
+}
+
 } // namespace
 
 namespace fbtest {
 
 void RunDocumentLinkTests() {
   RUN_TEST(TestDocumentLinkLinksResolvedIncludesOnly);
+  RUN_TEST(TestDefinitionOnIncludeOpensTheHeader);
 }
 
 } // namespace fbtest

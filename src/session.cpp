@@ -486,6 +486,34 @@ std::vector<lsDiagnostic> convertDiagnostics(std::string_view content,
   return out;
 }
 
+// The include-resolution seam for one document, shared by documentLink and
+// definition so both resolve a literal exactly as the publish path's
+// `include-not-found` does. `resolveIncludeTarget` mirrors fbc's search order
+// and so needs a workspace root and the config include dirs; the serving index
+// owns both. With no serving index (a document opened before any root exists)
+// the document's own directory stands in as the root, so a header beside it
+// still resolves — the first search step is the same either way, and the rest
+// only changes "search no root" into "search where the file lives".
+//
+// Everything is captured by value: the seam outlives the locals it is built
+// from, and the copied root/dirs are all that escape the index, so no pointer
+// into the snapshot travels and nothing needs it pinned.
+fblang::IncludeResolver
+includeResolverFor(std::filesystem::path documentPath,
+                   std::shared_ptr<fblang::WorkspaceIndex> const &index) {
+  std::filesystem::path const root =
+      index ? index->root() : documentPath.parent_path();
+  std::vector<std::filesystem::path> const includeDirs =
+      index ? index->includeDirs() : std::vector<std::filesystem::path>{};
+  // One fact for every include, resolved once (memoized in the language layer).
+  std::filesystem::path const systemDir = fblang::defaultSystemIncludeDir();
+  return [documentPath = std::move(documentPath), root, includeDirs,
+          systemDir](std::string const &literal) -> std::optional<std::string> {
+    return fblang::resolveIncludeTarget(literal, documentPath, root, systemDir,
+                                        includeDirs);
+  };
+}
+
 // Unresolved `#include`/`#include once` literals of an indexed entry become
 // `include-not-found` Errors at the literal's own range. Only the document's
 // own edges are diagnosed here; the pull path surfaces the included files'
@@ -2424,10 +2452,35 @@ FreeBasicServer::onDefinition(td_definition::request const &req) {
   std::string_view const content = cached->content;
   std::uint32_t const offset =
       fblang::byteOffsetForUtf16Position(content, req.params.position);
-  std::string const normPath = fblang::normalizePath(
+  std::filesystem::path const documentPath(
       req.params.textDocument.uri.GetAbsolutePath().path());
+  std::string const normPath = fblang::normalizePath(documentPath);
 
   fblang::AnalyzedDoc const &doc = cached->analysis;
+
+  // An `#include` filename literal is not a symbol, so a click on it is served
+  // from the include edges: the resolved header, opened at its first line. This
+  // is the include navigation every client can show (a documentLink is not, in
+  // some — Kate among them), and it is what clangd does with an include. A
+  // literal that resolves nowhere falls through to symbol resolution, which
+  // finds nothing and answers empty exactly as before; the `include-not-found`
+  // diagnostic is what reports it.
+  if (fblang::IncludeDirective const *inc =
+          fblang::includeLiteralAt(doc, offset)) {
+    std::optional<std::string> const header =
+        includeResolverFor(documentPath, indexFor(normPath))(inc->literal);
+    if (header) {
+      // A file target has no symbol to point at, so the location is the file's
+      // start — the convention for a file-level definition.
+      lsLocation loc;
+      loc.uri = lsDocumentUri(AbsolutePath(*header));
+      loc.range = lsRange(lsPosition(0, 0), lsPosition(0, 0));
+      rsp.result.first.emplace();
+      rsp.result.first->push_back(std::move(loc));
+      return rsp;
+    }
+  }
+
   fblang::CrossDecl const target = resolveAtOrAcross(doc, normPath, offset);
   if (target.decl == nullptr) {
     return rsp;
@@ -3967,31 +4020,8 @@ FreeBasicServer::onDocumentLink(td_links::request const &req) {
       req.params.textDocument.uri.GetAbsolutePath().path());
   std::string const normPath = fblang::normalizePath(documentPath);
 
-  // Include resolution mirrors fbc's search order and so needs a workspace root
-  // and the config include dirs; the serving index owns both. It is snapshotted
-  // once for the reply, and only its cheap root/dirs copies escape it — no
-  // pointer into the index travels, so nothing here needs the snapshot pinned
-  // past the resolve calls.
-  //
-  // With no serving index (a document opened before any root exists) the
-  // document's own directory stands in as the root, so a header beside it still
-  // resolves: step ① is the same either way, and this only changes the later
-  // steps from "no root to search" to "search where the file lives".
-  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
-  std::filesystem::path const root =
-      index ? index->root() : documentPath.parent_path();
-  std::vector<std::filesystem::path> const includeDirs =
-      index ? index->includeDirs() : std::vector<std::filesystem::path>{};
-  // The system header folder is one fact for every include, so it is resolved
-  // once for the reply rather than inside the seam per literal (the function is
-  // memoized, but the constant belongs outside the loop).
-  std::filesystem::path const systemDir = fblang::defaultSystemIncludeDir();
   fblang::IncludeResolver const resolve =
-      [&documentPath, &root, &includeDirs,
-       &systemDir](std::string const &literal) -> std::optional<std::string> {
-    return fblang::resolveIncludeTarget(literal, documentPath, root, systemDir,
-                                        includeDirs);
-  };
+      includeResolverFor(documentPath, indexFor(normPath));
 
   for (fblang::DocumentLinkItem const &link :
        fblang::documentLinks(doc, resolve)) {

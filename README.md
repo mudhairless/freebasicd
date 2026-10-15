@@ -44,7 +44,7 @@ Implemented and advertised in the `initialize` reply:
 |---|---|
 | Diagnostics | Parse errors (block-structure and preprocessor ones carry fbc's own error numbers), unresolved `#include`; pushed by default, or pulled on request (see below) |
 | Hover | Types and signatures; resolves member access through the base variable's declared type, including cross-file and `with`-implicit chains; `#define`/`#macro` definitions on their usages |
-| Go to definition | Same-file and cross-file, gated on FreeBASIC's `Shared` visibility rules |
+| Go to definition | Same-file and cross-file, gated on FreeBASIC's `Shared` visibility rules; a cursor on an `#include` filename literal opens its header |
 | Find references | Workspace-wide, following includes |
 | Document highlight | Read/write occurrences of the symbol under the cursor |
 | Rename | `prepareRename` plus a workspace `rename` that respects scope |
@@ -61,7 +61,7 @@ Implemented and advertised in the `initialize` reply:
 | Implementation | The `declare sub` / module-level `sub Type.name` edge, across files |
 | Type hierarchy | Supertypes and subtypes of a `type` / `union`, through `Extends` |
 | Code lens | A reference count per declaration, whose click lists the sites |
-| Document links | Each `#include` literal that resolves to a file links to that header |
+| Document links | Each `#include` literal that resolves to a file links to that header (the same navigation `definition` gives on the literal, for clients that draw no link) |
 | Pull diagnostics | `textDocument/diagnostic` and `workspace/diagnostic`, negotiated |
 | Workspace symbols | Aggregated from every workspace root, one index per root |
 | Workspace folders | Multi-root sessions, with watched files and per-root config |

@@ -26,7 +26,7 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
-### 2026-10-15 — Document links over `#include` targets (M16)
+### 2026-10-15 — `#include` navigation: document links and definition (M16)
 
 - **The server advertises `documentLinkProvider` (with `resolveProvider` off)
   and answers `textDocument/documentLink`.** Each `#include`/`#include once`
@@ -35,32 +35,52 @@ history use; they are kept here so an entry can be traced back.
   from the M16 sketch, which said "keyword/wiki URLs (hover already carries
   them)": the wiki URL is already in hover, and a document-wide link on every
   keyword occurrence would underline the whole buffer to repeat it. The include
-  literal is the one navigation the server lacked — `textDocument/definition`
-  resolves *symbols* (`onDefinition`), so a click on an include did nothing,
+  literal was the one navigation the server lacked — `textDocument/definition`
+  resolved *symbols* (`onDefinition`), so a click on an include did nothing,
   even though include resolution exists everywhere else (the `include-not-found`
   diagnostic, the missing-include quick fix, reverse reachability).
-- **The projection is a module, `src/document_link.{h,cpp}`** (LSP-agnostic, byte
-  offsets), the same shape as `code_lens`/`inlay_hints`: `DocumentLinkItem` plus
-  `documentLinks(doc, resolve)`, where `resolve` is the module's only seam on
-  workspace state (`IncludeResolver`), exactly as `ReferenceCounter` is for a
-  lens. A literal the resolver refuses produces no link — the include-not-found
-  diagnostic is the report, and a link would point at a file that is not there —
-  so the unresolved case is correct by construction rather than by a second
-  check. Targets resolve through `resolveIncludeTarget` with the serving index's
-  root and `includePaths`, falling back to the document's own directory when no
-  index exists yet.
+- **`textDocument/definition` answers the same click, and that is the delivery
+  that matters in practice.** A cursor on the filename literal resolves to the
+  header's first line; a literal that resolves nowhere falls through to symbol
+  resolution and answers empty exactly as before, with `include-not-found` still
+  the report. The reason is empirical, not spec: the editor this server is
+  developed against is Kate, whose LSP client advertises `definitionProvider`
+  but has no `documentLinkProvider` at all (its plugin binary contains no `link`
+  string), so the `documentLink` work above was invisible there and its only
+  local proof was the test suite. `clangd` navigates a C `#include` the same
+  way. The two deliveries share one resolver seam (`includeResolverFor`) so a
+  client shown both cannot see two different answers, and share the
+  literal-range rule (`includeLiteralAt`) so a click a link covers is exactly a
+  click a definition answers.
+- **Include navigation is a module, `src/document_link.{h,cpp}`** (LSP-agnostic,
+  byte offsets), the same shape as `code_lens`/`inlay_hints`: `DocumentLinkItem`
+  plus `documentLinks(doc, resolve)`, where `resolve` is the module's only seam
+  on workspace state (`IncludeResolver`), exactly as `ReferenceCounter` is for a
+  lens. The same module owns the position half, `includeLiteralAt(doc, offset)` —
+  the literal a cursor sits on — so the range rule that decides which spans a
+  link covers is the one that decides which offset a definition answers, instead
+  of two copies that could drift. A literal the resolver refuses produces no link
+  — the include-not-found diagnostic is the report, and a link would point at a
+  file that is not there — so the unresolved case is correct by construction
+  rather than by a second check. Targets resolve through `resolveIncludeTarget`
+  with the serving index's root and `includePaths`, falling back to the
+  document's own directory when no index exists yet.
 - **Tests are pinned at both levels, and were checked by mutation.** The unit
   driver `tests/document_link_checks.cpp` owns which includes carry a link, the
   range (the filename, quotes excluded), source order, the bare-`#include` and
-  unresolved cases, and the null seam; `tests/session_document_link_checks.cpp`
-  pins the wire shape — the capability, the resolved `file://` target URI, the
-  literal range, and that no `data` blob is sent. Mutations confirmed each: a
+  unresolved cases, the null seam, and the position rule (`includeLiteralAt`:
+  every offset across a literal, the closing quote one past its last character,
+  the quote before its first, and the bare directive's zero-width range);
+  `tests/session_document_link_checks.cpp` pins the wire shape — the capability,
+  the resolved `file://` target URI, the literal range, that no `data` blob is
+  sent, and the definition reply (the header's first line for a resolved include,
+  `"result":null` for one that resolves nowhere). Mutations confirmed each: a
   module that emitted a link for an unresolved literal fails both suites, and one
   that used the whole directive line as the range fails the unit range checks.
 - **No new user-visible string**, so `po/freebasicd.pot` is unchanged, and no
-  config key, so the version stays. `README.md` gains a capability row and drops
-  document links from its "not implemented" list; `PLAN.md` M16 records the
-  landing and the deviation.
+  config key, so the version stays. `README.md` gains a capability row, notes the
+  include on the definition row, and drops document links from its "not
+  implemented" list; `PLAN.md` M16 records the landing and the deviation.
 
 ### 2026-10-14 — `willSave` advertised and accepted (M16)
 

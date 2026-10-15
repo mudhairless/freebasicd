@@ -32,4 +32,19 @@ std::vector<DocumentLinkItem> documentLinks(AnalyzedDoc const &doc,
   return out;
 }
 
+IncludeDirective const *includeLiteralAt(AnalyzedDoc const &doc,
+                                         std::uint32_t offset) {
+  for (IncludeDirective const &inc : doc.includes) {
+    if (inc.target.beg == inc.target.end) {
+      continue; // a bare `#include` (or `#include ""`) names nothing to open
+    }
+    // Half-open, but the end is inclusive here so the closing quote is a hit:
+    // a click just past the filename still names the file.
+    if (offset >= inc.target.beg && offset <= inc.target.end) {
+      return &inc;
+    }
+  }
+  return nullptr;
+}
+
 } // namespace fblang

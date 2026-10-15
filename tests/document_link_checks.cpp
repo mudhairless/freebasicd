@@ -15,6 +15,7 @@
 // driver.
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <optional>
 #include <string>
@@ -157,6 +158,71 @@ void TestNullResolverYieldsNoLinks() {
   CHECK(documentLinks(doc, nullptr).empty());
 }
 
+// The position half of include navigation: which literal a byte offset lands
+// on. The module owns this range rule, so it is pinned here rather than
+// re-derived by the session — `textDocument/definition` asks it to tell an
+// include click from a symbol click.
+void TestIncludeLiteralAtFindsTheLiteralUnderTheCursor() {
+  std::string const src = "#include \"first.bi\"\n"
+                          "#include once \"second.bi\"\n"
+                          "dim x as integer\n";
+  AnalyzedDoc const doc = analyze(src);
+  std::size_t const first = literalOffset(src, 0);
+  std::size_t const second = literalOffset(src, 1);
+  std::string const firstName = "first.bi";
+
+  // Every offset across the literal is a hit: its first character, the ones in
+  // between, and the position one past the last character — on the closing
+  // quote — which still names the file the click meant.
+  for (std::size_t off = first; off <= first + firstName.size(); ++off) {
+    IncludeDirective const *inc =
+        includeLiteralAt(doc, static_cast<std::uint32_t>(off));
+    CHECK(inc != nullptr);
+    if (inc != nullptr) {
+      CHECK(inc->literal == firstName);
+    }
+  }
+  // The opening quote is punctuation, not the filename, so one byte before the
+  // literal misses; so does the `#include` keyword itself.
+  CHECK(includeLiteralAt(doc, static_cast<std::uint32_t>(first - 1)) ==
+        nullptr);
+  CHECK(includeLiteralAt(doc, 1) == nullptr);
+
+  // A second directive answers at its own offset, and the two literals do not
+  // overlap — offset arithmetic stays inside one directive.
+  IncludeDirective const *secondInc =
+      includeLiteralAt(doc, static_cast<std::uint32_t>(second));
+  CHECK(secondInc != nullptr);
+  if (secondInc != nullptr) {
+    CHECK(secondInc->literal == "second.bi");
+  }
+  CHECK(includeLiteralAt(doc, static_cast<std::uint32_t>(second - 1)) ==
+        nullptr);
+
+  // A plain statement is not an include.
+  CHECK(includeLiteralAt(
+            doc, static_cast<std::uint32_t>(src.find("integer"))) == nullptr);
+}
+
+// A bare `#include` parses to an empty literal with a zero-width range at
+// offset 0. It must never be a hit — even at the offset where it sits — or a
+// click on that line would open whatever happens to be at file offset 0.
+void TestIncludeLiteralAtIgnoresZeroWidthLiteral() {
+  std::string const src = "#include\n#include \"real.bi\"\n";
+  AnalyzedDoc const doc = analyze(src);
+  CHECK(includeLiteralAt(doc, 0) == nullptr);
+
+  IncludeDirective const *real =
+      includeLiteralAt(doc, static_cast<std::uint32_t>(literalOffset(src, 1)));
+  CHECK(real != nullptr);
+  if (real != nullptr) {
+    CHECK(real->literal == "real.bi");
+  }
+
+  // No includes at all: no offset is a hit.
+  CHECK(includeLiteralAt(analyze("dim x as integer\n"), 3) == nullptr);
+}
+
 } // namespace
 
 int main() {
@@ -166,6 +232,8 @@ int main() {
   TestBareIncludeCarriesNoLink();
   TestEmptyAndPlainDocuments();
   TestNullResolverYieldsNoLinks();
+  TestIncludeLiteralAtFindsTheLiteralUnderTheCursor();
+  TestIncludeLiteralAtIgnoresZeroWidthLiteral();
 
   if (failures == 0) {
     std::printf("document_link_checks: all passed\n");

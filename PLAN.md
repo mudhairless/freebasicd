@@ -35,7 +35,7 @@
 
   | Milestone | Status |
   |-----------|--------|
-  | M16 — completion resolve + protocol polish (document links landed) | next |
+  | M16 — completion resolve + protocol polish (`#include` navigation landed) | next |
   | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
@@ -146,13 +146,15 @@
     makes an include fix correct by construction (a candidate is offered only
     when the next publish would resolve it). Also owns
     `unresolvedIncludeDiagnostics`, shared with the publish path.
-  - `src/document_link.{h,cpp}` — document links (M16), LSP-agnostic and in byte
-    offsets: `DocumentLinkItem` and `documentLinks(doc, resolve)` return one link
+  - `src/document_link.{h,cpp}` — include navigation (M16), LSP-agnostic and in
+    byte offsets: `documentLinks(doc, resolve)` returns one `DocumentLinkItem`
     per `#include`/`#include once` filename literal the `IncludeResolver` seam
     accepts, in source order, with the range narrowed to the literal (quotes
-    excluded). Symbols are deliberately not linked — hover carries a keyword's
-    wiki page, and a link on every keyword would underline the whole buffer to
-    repeat it.
+    excluded), and `includeLiteralAt(doc, offset)` names the literal a cursor
+    sits on, so `textDocument/definition` answers a click on an include with its
+    header. Symbols are deliberately not linked — hover carries a keyword's wiki
+    page, and a link on every keyword would underline the whole buffer to repeat
+    it.
   - `src/selection.{h,cpp}` — expand-selection chains (M13), LSP-agnostic and in
     byte offsets: `selectionChain(analysis, content, off)` returns the levels
     around one offset, innermost first — the token the cursor is in (or the one
@@ -262,7 +264,8 @@
   `didOpen`/`didChange`/`didSave`/`willSave`/`didClose`, `publishDiagnostics`,
   `documentSymbol`, `hover` (symbols + member access + intrinsic signatures +
   keyword wiki links + preprocessor `#define`/`#macro` definitions),
-  `foldingRange`, `definition`, `references`,
+  `foldingRange`, `definition` (symbols; an `#include` literal answers its
+  header, M16), `references`,
   `documentHighlight`, `completion` (keywords + `END`-block snippets + in-scope
   symbols + intrinsic catalog + preprocessor defines/macros + context-aware UDT
   member filtering after `.`/`->`), `signatureHelp` (user declarations and
@@ -281,8 +284,9 @@
   declaration, counting the includers, whose click sends
   `freebasicd.showReferences` and gets the location list back),
   `documentLink` (M16: one link per `#include` filename literal that resolves,
-  targeting the header file — an include opens a file, so the wiki-URL/keyword
-  idea behind the original sketch is left to hover),
+  targeting the header file, the same navigation `definition` gives on that
+  literal — an include opens a file, so the wiki-URL/keyword idea behind the
+  original sketch is left to hover),
   `typeDefinition` + `implementation` + `typeHierarchy` + its `supertypes` /
   `subtypes` follow-ups (M15, through the `Extends` graph; `resolve` is not
   implemented and the capability says so),
@@ -474,16 +478,16 @@ still gets that path, so the two cannot be split). The handler exists so the
 notification is not a protocol gap the client can observe, and because
 format-on-save (M17) is the work that will need it.
 
-**Landed (2026-10-15): `documentLink`.** Advertised (`resolveProvider` false —
-every target resolves eagerly) and answered over the `#include` filename
-literals that resolve to a file (`src/document_link.{h,cpp}`), so a click on
-`#include "lib.bi"` opens the header. This is the deviation from the sketch
-above: it links *includes*, not keyword/wiki URLs. The wiki URL is already in
-hover, and a document-wide link on every keyword would underline the whole
-buffer to repeat it, while the include literal is the one navigation the server
-otherwise lacks — `textDocument/definition` resolves symbols, so a click on an
-include does nothing today, even though include resolution exists everywhere
-else (diagnostics, the missing-include fix, reverse reachability). Remaining:
+**Landed (2026-10-15): `#include` navigation (links and definition).**
+`documentLink` is advertised (`resolveProvider` false — every target resolves
+eagerly) and answered over the `#include` filename literals that resolve to a
+file (`src/document_link.{h,cpp}`), so a click on `#include "lib.bi"` opens the
+header; this is the deviation from the sketch above, which links *includes*, not
+keyword/wiki URLs (the wiki URL is already in hover, and a document-wide link on
+every keyword would underline the whole buffer to repeat it).
+`textDocument/definition` answers the same click from the same module
+(`includeLiteralAt` + `includeResolverFor`), which is what makes the navigation
+usable in a client that draws no link — Kate's does not. Remaining:
 `completionItem/resolve`, `$/progress`.
 
 Note the shape precedent from M12/M13: a fix that must carry an edit ships as a

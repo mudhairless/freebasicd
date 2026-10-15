@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
@@ -15,18 +16,21 @@
 
 namespace fblang {
 
-// Document links (M16): a span an editor draws as a clickable resource. LSP-
-// agnostic and in byte offsets like the rest of the language layer; the session
-// turns one `DocumentLinkItem` into an `lsDocumentLink` and names the URI
-// scheme, the same split code_lens and inlay_hints use.
+// Include navigation (M16): what the server does when the cursor is on an
+// `#include` filename literal. LSP-agnostic and in byte offsets like the rest
+// of the language layer; the session turns a `DocumentLinkItem` into an
+// `lsDocumentLink` and names the URI scheme, the same split code_lens and
+// inlay_hints use.
 //
-// The resource this server links is the `#include` target: a filename literal
-// that resolves to a file on disk. That is the one navigation the server
-// otherwise lacks — `textDocument/definition` resolves *symbols*, so a click on
-// `#include "lib.bi"` does nothing today — and the link is what opens the
-// header. Keyword/intrinsic wiki pages are deliberately *not* links: hover
-// already carries the page for the word under the cursor, and a document-wide
-// link on every keyword would underline the whole buffer to repeat it.
+// The resource named is the `#include` target: a filename literal that resolves
+// to a file on disk — the one thing the server navigates to that is not a
+// *symbol*. `textDocument/definition` answers a click on the literal from here,
+// and the same literal is offered as a `documentLink` for the clients that draw
+// one (not all do: Kate's LSP client has no documentLink support, but it does
+// honor definition). Keyword/intrinsic wiki pages are deliberately *not* links:
+// hover already carries the page for the word under the cursor, and a
+// document-wide link on every keyword would underline the whole buffer to
+// repeat it.
 struct DocumentLinkItem {
   SourceRange range;  // the filename literal in source (quotes excluded)
   std::string target; // resolved normalized absolute path
@@ -46,5 +50,17 @@ using IncludeResolver =
 // nothing and carries no link.
 std::vector<DocumentLinkItem> documentLinks(AnalyzedDoc const &doc,
                                             IncludeResolver const &resolve);
+
+// The `#include` filename literal that `offset` sits on, or nullptr — the
+// position half of include navigation, over the same literal ranges the links
+// are built from. A `textDocument/definition` on an include literal asks this
+// to decide whether the click is on one of them.
+//
+// The source range is half-open (`[beg, end)`), but the end is accepted too, so
+// a cursor just past the last character — on the closing quote — still hits. A
+// bare `#include` (or `#include ""`) has a zero-width range and is never a hit,
+// so no click can land on a literal that names nothing.
+IncludeDirective const *includeLiteralAt(AnalyzedDoc const &doc,
+                                         std::uint32_t offset);
 
 } // namespace fblang
