@@ -95,7 +95,7 @@ add_library(freebasicd_core STATIC
 # glibc's libintl.h sits in /usr/include, a default search path. lspcpp stays
 # PRIVATE because no header of ours includes it.
 target_link_libraries(freebasicd_core
-    PUBLIC freebasicd_lang
+    PUBLIC freebasicd_lang freebasicd_format
     PRIVATE lspcpp)
 
 add_executable(freebasicd
@@ -127,6 +127,37 @@ install(FILES
     ${CMAKE_SOURCE_DIR}/docs/grammar/freebasic.tmLanguage.json
     ${CMAKE_SOURCE_DIR}/docs/grammar/freebasic.yaml
     DESTINATION ${CMAKE_INSTALL_DATADIR}/freebasicd/grammar)
+
+
+# --- formatter (M17) ---------------------------------------------------------
+add_library(freebasicd_format STATIC
+    src/format/config.cpp
+    src/format/tokens.cpp
+    src/format/engine.cpp
+    src/format/format_lsp.cpp
+)
+target_include_directories(freebasicd_format PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(freebasicd_format
+    PUBLIC freebasicd_lang
+    PRIVATE tomlplusplus::tomlplusplus)
+# Preset search: the installed styles live beside the datadir; the build tree
+# probes the source `styles/` after it, the same install-then-build order the
+# locale probe uses. Both are compiled in, so a dev binary finds the presets
+# without an install step.
+target_compile_definitions(freebasicd_format PUBLIC
+    FBLANG_FORMAT_STYLEDIR_INSTALL="${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/fbformat/styles"
+    FBLANG_FORMAT_STYLEDIR_BUILD="${CMAKE_SOURCE_DIR}/styles"
+)
+
+
+add_executable(fbformat
+    src/format/fbformat_main.cpp
+)
+target_link_libraries(fbformat PRIVATE freebasicd_format freebasicd_lang)
+
+install(TARGETS fbformat RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/styles/ DESTINATION ${CMAKE_INSTALL_DATADIR}/fbformat/styles
+        FILES_MATCHING PATTERN "*.toml")
 
 # --- gettext catalogs (M20) -------------------------------------------------
 # Committed sources: po/freebasicd.pot is the extracted message template;
@@ -435,6 +466,15 @@ add_executable(settings_checks
 target_include_directories(settings_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(settings_checks PRIVATE freebasicd_lang)
 add_test(NAME settings_checks COMMAND settings_checks)
+
+# M17: the formatter's config loader — discovery, preset resolution, single
+# parent inheritance, and the client-options mapping.
+add_executable(format_config_checks
+    tests/format_config_checks.cpp
+)
+target_include_directories(format_config_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(format_config_checks PRIVATE freebasicd_format)
+add_test(NAME format_config_checks COMMAND format_config_checks)
 
 # The integration driver is one executable built from the shared harness
 # (tests/session_support.{h,cpp}) plus one translation unit per LSP feature, so

@@ -1,0 +1,29 @@
+# The style the FreeBASIC wiki's code examples use, measured from the 1189
+# files under compiler/examples/manual (40080 lines). This is the default style
+# when a project names none, because it is what most readers have seen first.
+[format]
+KeywordCase = "Title"
+TypeNameCase = "Title"
+IntrinsicCase = "Title"
+ColumnLimit = 80
+UseTab = "ForIndentation"
+IndentWidth = 4
+TabWidth = 4
+InsertNewlineAtEOF = true
+TrimTrailingWhitespace = true
+TrimFinalNewlines = true
+SpaceBeforeParens = "Never"
+SpaceAroundBinaryOperators = true
+SpaceAfterComma = true
+SpaceBeforeComma = false
+BreakBinaryOperators = "None"
+AlignEscapedNewlines = "Right"
+StatementSeparatorStyle = "Leave"
+AllowShortIfStatementsOnASingleLine = "Leave"
+AllowShortBlocksOnASingleLine = "Leave"
+ContinuationStyle = "Leave"
+BreakStringLiterals = false
+SortIncludes = false
+CommentPragmas = "^[[:space:]]*\\$"
+FormatOffPragma = "fbformat: off"
+FormatOnPragma = "fbformat: on"

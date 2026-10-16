@@ -1,0 +1,18 @@
+# The FreeBASIC compiler's own style, measured from compiler/src (132603 lines).
+# It differs from FBdocs in exactly one dimension — keyword case — so it
+# inherits FBdocs and only overrides what the corpus disagrees with.
+[format-style]
+inherit = "FBdocs"
+
+[format]
+KeywordCase = "lower"
+TypeNameCase = "lower"
+IntrinsicCase = "lower"
+# The compiler indents continuations with tabs as well as bodies.
+UseTab = "ForContinuationAndIndentation"
+# `if( x ) then`, `f(x)`, `sub f( x as integer )`: inner spaces in conditionals
+# and parameter lists, tight call parens.
+SpacesInParens.InConditionalStatements = true
+SpacesInParens.InEmptyParentheses = true
+SpacesInParens.InParameterLists = true
+SpacesInParens.InCallParens = false
