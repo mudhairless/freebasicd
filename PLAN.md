@@ -26,7 +26,7 @@
   fbc 1.10.2, dialect and scope rules — lives in `FreeBASIC.md`. This plan
   covers roadmap, architecture, and the remaining work.
 
-  Milestones M1–M15, M19, and M20 are `done`; their entries, with dates and
+  Milestones M1–M16, M19, and M20 are `done`; their entries, with dates and
   lessons, are in [`CHANGELOG.md`](CHANGELOG.md). The same is true of the
   unnumbered waves since: anonymous outline nodes and scope subtrees, fbc
   block-closer numbers, the false-positive clears, the preprocessor wave
@@ -35,7 +35,6 @@
 
   | Milestone | Status |
   |-----------|--------|
-  | M16 — completion resolve + protocol polish (`#include` navigation and completion item resolve landed) | next |
   | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
@@ -455,65 +454,6 @@
   goes to [`CHANGELOG.md`](CHANGELOG.md) and its sketch is deleted here. Commits
   happen per milestone (AGENTS.md).
 
-### M16 — Completion resolve + polish (backlog)
-
-`$/progress`/`workDoneProgress` for long scans. Telemetry was on this list and is
-dropped: an open-source server that phones home is not a trade worth making here.
-
-`window/logMessage`, `willSave`, `documentLink`, and `completionItem/resolve`
-were on this list and have landed — see below. That leaves `$/progress`.
-
-**Landed (2026-10-13): `window/logMessage`.** The session's own log lines now
-reach the client as `window/logMessage` as well as stderr (`logToClient` in
-`src/session.cpp`), so an editor shows the config-parse and workspace-root notes
-in its own panel. The direct send is deliberately not the final shape — sending
-inline from a handler or scan thread can hold `indexesMutex_` across a client
-write; the shared log FIFO that fixes it is PLAN.md §4 gap 9.
-
-**Landed (2026-10-14): `willSave`.** Advertised in `textDocumentSync` and
-answered by `onWillSave`, which is deliberately empty: the server has no
-pre-save work, and re-validating there would only duplicate the reparse and
-publish `didSave` already performs (a client that does not advertise `willSave`
-still gets that path, so the two cannot be split). The handler exists so the
-notification is not a protocol gap the client can observe, and because
-format-on-save (M17) is the work that will need it.
-
-**Landed (2026-10-15): `#include` navigation (links and definition).**
-`documentLink` is advertised (`resolveProvider` false — every target resolves
-eagerly) and answered over the `#include` filename literals that resolve to a
-file (`src/document_link.{h,cpp}`), so a click on `#include "lib.bi"` opens the
-header; this is the deviation from the sketch above, which links *includes*, not
-keyword/wiki URLs (the wiki URL is already in hover, and a document-wide link on
-every keyword would underline the whole buffer to repeat it).
-`textDocument/definition` answers the same click from the same module
-(`includeLiteralAt` + `includeResolverFor`), which is what makes the navigation
-usable in a client that draws no link — Kate's does not.
-
-**Landed (2026-10-15): `completionItem/resolve`.** Advertised with
-`resolveProvider: true`, and answered by `onResolveCompletionItem`, which
-attaches a workspace declaration's `''` doc comment (`documentation`, markdown)
-to the item the client echoed back. The identity travels in the item's `data`:
-`CompletionDocRef` (normalized declaring path + name-token byte range), the same
-pair `fblang::identityOf` produces, found again by `fblang::declAtIdentity` — the
-reverse of `identityOf`, added to the existing `resolve.{h,cpp}`, which walks the
-tree to any depth (a completion item can name a local) and answers `nullptr`,
-not the nearest declaration, when the range matches none.
-
-The deviation from the sketch is the whole scope. The sketch premised resolve on
-the M10 catalog making items heavy and deferring those docs; this build is
-**additive** instead. Symbol and closure items carried no `documentation` before,
-so adding the doc comment lazily fills the real gap, while the catalog's
-keyword/intrinsic docs stay inline — deferring them would blind a client that
-never sends `completionItem/resolve`, and the capability that would let the
-server negotiate that (`textDocument.completion.completionItem.resolveSupport`)
-is not in the vendored LspCpp client-capability types. Adding it there is a fork
-commit, worth doing only when the payload actually needs the cut (§4 gap 4).
-
-Note the shape precedent from M12/M13: a fix that must carry an edit ships as a
-`CodeAction`, and a thing the client executes ships as a `Command`. A
-`documentLink` is neither — it carries a `target` URI the client opens, and
-nothing else.
-
 ### M17 — FreeBASIC formatter (backlog, scope TBD)
 
 There is no community formatter standard for FreeBASIC — the plan previously
@@ -914,9 +854,9 @@ Remaining of a milestone whose CI and install work landed 2026-09-25 and whose
 - **Recorded non-starters** (never scheduled): `moniker`, `linkedEditingRange`,
   `documentColor`/`colorPresentation`, the deprecated `declaration` alias —
   exercises for editors we do not target.
-- **Scheduled but deferred** (each lives in §5): completion resolve +
-  protocol polish (M16), and the FreeBASIC formatter (M17; high-payback
-  — it sets the de-facto standard, scope TBD by a dedicated design pass).
+- **Scheduled but deferred** (each lives in §5): the FreeBASIC formatter
+  (M17; high-payback — it sets the de-facto standard, scope TBD by a dedicated
+  design pass).
 
 ## 7. Cross-cutting engineering notes
 

@@ -26,6 +26,22 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-10-16 — M16 closed: `$/progress` dropped
+
+- The last open M16 item — `$/progress` / `workDoneProgress` for long scans —
+  is deliberately **dropped**, not deferred. The scan it would instrument is
+  sub-second for real workspaces (only per-file parses over 10 ms are even
+  logged), vendored LspCpp has no `window/workDoneProgress/create` type (so a
+  spinner would cost a fork commit), and the one-index-per-root shape (M11)
+  would fan one scan into several concurrent tokens with a bar that flickers on
+  every debounced rescan. `window/logMessage` already answers "is the server
+  working?". If a later milestone makes a genuinely long operation (M25's
+  include-point parsing, M17's formatter), instrument *that operation* — on the
+  shared log FIFO of PLAN.md §4 gap 9, not inline from a worker thread.
+- With that, M16 ships complete: `window/logMessage` (2026-10-13), `willSave`
+  (2026-10-14), `#include` navigation (2026-10-15), and `completionItem/resolve`
+  (2026-10-15), all recorded below.
+
 ### 2026-10-15 — completion item resolve (M16)
 
 - **`completionItem/resolve` is implemented and the server advertises
