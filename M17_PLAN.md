@@ -285,3 +285,4 @@ Smoke test via shell: format sample file, check output, `--check` behavior.
 - **Logging**: Follow existing pattern (stderr for server; CLI can be quiet by default).
 - **Cycle detection**: For `inherit` chains, track visited set and error if cycle found (treat as config error, fall back to defaults conservatively).
 - **Cross-platform**: Reuse `normalizePath`, path handling as in index/settings.
+**Status update (2026-10-16):** Phase 1 complete (scaffolding/config). Phase 2 complete (formatter tokenizer with block comment support, lossless block comment preservation, CLI builds, LSP formatting handlers wired and advertised). All existing tests pass. Remaining: Phase 3+ core engine (indentation/spacing/case transforms), format-off regions, CLI full flags, integration tests.
