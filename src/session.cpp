@@ -1,3 +1,4 @@
+#include "format/format_lsp.h"
 /*
  * FreeBASIC Language Server
  * Copyright (C) 2026 Ebben Feagan
@@ -17,6 +18,8 @@
 #include "resolve.h"
 #include "selection.h"
 #include "selection_lsp.h"
+#include "LibLsp/lsp/textDocument/formatting.h"
+#include "LibLsp/lsp/textDocument/range_formatting.h"
 #include "semantic_tokens.h"
 #include "symbols.h"
 #include "utf16.h"
@@ -1414,6 +1417,18 @@ void FreeBasicServer::registerHandlers() {
       [this](wp_symbol::request const &req) { return onWorkspaceSymbol(req); });
   session_.on(
       [this](td_codeAction::request const &req) { return onCodeAction(req); });
+  session_.on([this](td_formatting::request const &req) {
+    return onFormatting(req);
+  });
+  session_.on([this](td_rangeFormatting::request const &req) {
+    return onRangeFormatting(req);
+  });
+  session_.on([this](td_formatting::request const &req) {
+    return onFormatting(req);
+  });
+  session_.on([this](td_rangeFormatting::request const &req) {
+    return onRangeFormatting(req);
+  });
   session_.on([this](td_semanticTokens_full::request const &req) {
     return onSemanticTokensFull(req);
   });
@@ -1624,6 +1639,12 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   // the count is one walk over the same closure `textDocument/references`
   // answers from, and a client that wants it lazy can re-request the document
   // rather than round-trip per lens.
+  // Document formatting (M17): full document formatting and range formatting.
+  rsp.result.capabilities.documentFormattingProvider.emplace();
+  rsp.result.capabilities.documentFormattingProvider->first.emplace(true);
+  rsp.result.capabilities.documentRangeFormattingProvider.emplace();
+  rsp.result.capabilities.documentRangeFormattingProvider->first.emplace(true);
+
   rsp.result.capabilities.codeLensProvider.emplace();
   rsp.result.capabilities.codeLensProvider->resolveProvider.emplace(false);
 
@@ -4495,4 +4516,48 @@ FreeBasicServer::hierarchyItems(std::vector<fblang::TypeItem> const &types) {
     out.push_back(typeHierarchyItem(type.file, *content, type));
   }
   return out;
+}
+
+td_formatting::response
+FreeBasicServer::onFormatting(td_formatting::request const &req) {
+  td_formatting::response rsp;
+  auto const &abs = req.params.textDocument.uri.GetAbsolutePath();
+  std::optional<std::string> content = contentForPath(abs.path());
+  if (!content) {
+    return rsp;
+  }
+  std::vector<fbformat::TextEdit> edits = fbformat::formatDocumentLsp(
+      *content, abs.path(), fbformat::loadConfigForPath(abs.path()));
+  for (auto &e : edits) {
+    lsTextEdit te;
+    te.range.start.line = 0;
+    te.range.start.character = 0;
+    te.range.end.line = 0;
+    te.range.end.character = (int)e.end;
+    te.newText = e.newText;
+    rsp.result.push_back(std::move(te));
+  }
+  return rsp;
+}
+
+td_rangeFormatting::response
+FreeBasicServer::onRangeFormatting(td_rangeFormatting::request const &req) {
+  td_rangeFormatting::response rsp;
+  auto const &abs = req.params.textDocument.uri.GetAbsolutePath();
+  std::optional<std::string> content = contentForPath(abs.path());
+  if (!content) {
+    return rsp;
+  }
+  std::vector<fbformat::TextEdit> edits = fbformat::formatRangeLsp(
+      *content, abs.path(), fbformat::loadConfigForPath(abs.path()), 0, 0);
+  for (auto &e : edits) {
+    lsTextEdit te;
+    te.range.start.line = 0;
+    te.range.start.character = 0;
+    te.range.end.line = 0;
+    te.range.end.character = (int)e.end;
+    te.newText = e.newText;
+    rsp.result.push_back(std::move(te));
+  }
+  return rsp;
 }

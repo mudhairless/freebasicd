@@ -28,6 +28,8 @@
 #include "LibLsp/lsp/textDocument/document_symbol.h"
 #include "LibLsp/lsp/textDocument/foldingRange.h"
 #include "LibLsp/lsp/textDocument/highlight.h"
+#include "LibLsp/lsp/textDocument/formatting.h"
+#include "LibLsp/lsp/textDocument/range_formatting.h"
 #include "LibLsp/lsp/textDocument/hover.h"
 #include "LibLsp/lsp/textDocument/implementation.h"
 #include "LibLsp/lsp/textDocument/inlayHint.h"
@@ -285,6 +287,9 @@ private:
   onPrepareRename(td_prepareRename::request const &req);
   td_rename::response onRename(td_rename::request const &req);
   wp_symbol::response onWorkspaceSymbol(wp_symbol::request const &req);
+  td_formatting::response onFormatting(td_formatting::request const &req);
+  td_rangeFormatting::response
+  onRangeFormatting(td_rangeFormatting::request const &req);
   // Quick fixes (M12). LspCpp models the response as a bare command list, so
   // each fix ships as `Command{title, "", [WorkspaceEdit]}` — the empty command
   // name is the client's cue to apply `arguments[0]` itself — and the kind
