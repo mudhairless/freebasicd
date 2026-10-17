@@ -103,6 +103,7 @@ Flags:
 - `--config <path>`: explicit config file override (skip discovery)
 - `--style <preset>`: override style name
 - `<files...>` or read stdin if no files
+(replace manual parsing with https://github.com/p-ranav/argparse)
 
 Behavior:
 - Read file content (or stdin). For stdin, require `--stdin-filepath` for config discovery.
