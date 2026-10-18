@@ -34,8 +34,9 @@ static int failures = 0;
 #define CHECK_EQ(a, b)                                                         \
   do {                                                                         \
     if (!((a) == (b))) {                                                       \
-      std::printf("FAIL %s:%d: %s != %s\n  actual:   [%s]\n  expected: [%s]\n", \
-                  __FILE__, __LINE__, #a, #b, (a).c_str(), (b).c_str());       \
+      std::printf(                                                             \
+          "FAIL %s:%d: %s != %s\n  actual:   [%s]\n  expected: [%s]\n",        \
+          __FILE__, __LINE__, #a, #b, (a).c_str(), (b).c_str());               \
       ++failures;                                                              \
     }                                                                          \
   } while (0)
@@ -246,8 +247,7 @@ static void TestTypeIntrinsicBooleanPrecedence() {
 
   FormatConfig b = spaceConfig();
   b.booleanLiteralCase = CaseStyle::UPPER;
-  CHECK_EQ(fmt("x = true and false\n", b),
-           std::string("x = TRUE and FALSE\n"));
+  CHECK_EQ(fmt("x = true and false\n", b), std::string("x = TRUE and FALSE\n"));
 }
 
 // Preservation invariants: strings, comments, and doc blocks keep their
@@ -388,11 +388,9 @@ static void TestSpellingTable() {
   CHECK_EQ(std::string(canonicalSpelling("elseif")), std::string("ElseIf"));
   CHECK_EQ(std::string(canonicalSpelling("lbound")), std::string("LBound"));
   CHECK_EQ(std::string(canonicalSpelling("endif")), std::string("EndIf"));
-  CHECK_EQ(std::string(canonicalSpelling("ulongint")),
-           std::string("ULongInt"));
+  CHECK_EQ(std::string(canonicalSpelling("ulongint")), std::string("ULongInt"));
   CHECK_EQ(std::string(canonicalSpelling("cdecl")), std::string("cdecl"));
-  CHECK_EQ(std::string(canonicalSpelling("va_first")),
-           std::string("va_first"));
+  CHECK_EQ(std::string(canonicalSpelling("va_first")), std::string("va_first"));
   CHECK(canonicalSpelling("goto").empty());
   CHECK(canonicalSpelling("notarealword").empty());
 }

@@ -86,8 +86,7 @@ void TestFormattingRewritesTheOpenBuffer() {
   std::string const init = WaitForOutputContaining(output, "\"id\":\"init\"");
   Expect(init.find("\"documentFormattingProvider\"") != std::string::npos,
          "initialize must advertise document formatting");
-  Expect(init.find("\"documentRangeFormattingProvider\"") !=
-             std::string::npos,
+  Expect(init.find("\"documentRangeFormattingProvider\"") != std::string::npos,
          "initialize must advertise range formatting");
 
   std::string const reply = PollRequest(
@@ -97,9 +96,11 @@ void TestFormattingRewritesTheOpenBuffer() {
   // The content is six lines plus the trailing newline, so the whole-document
   // range ends at line 6, character 0. These positions are UTF-16 code
   // units, which for this ASCII document are the byte columns.
-  Expect(reply.find(R"("range":{"start":{"line":0,"character":0},"end":{"line":6,"character":0}})") !=
-             std::string::npos,
-         "the edit must span the whole document, in UTF-16 positions");
+  Expect(
+      reply.find(
+          R"("range":{"start":{"line":0,"character":0},"end":{"line":6,"character":0}})") !=
+          std::string::npos,
+      "the edit must span the whole document, in UTF-16 positions");
   Expect(CountOf(reply, "\"newText\":") == 1,
          "a full-document format is one edit, not one per changed line");
 
@@ -147,9 +148,9 @@ void TestConfigFileDiscoveryChangesBehavior() {
   lsp::LanguageSession session(log);
   auto output = std::make_shared<StringOStream>();
   FreeBasicServer server(session);
-  auto input = StartIndexedSession(session, server, output, fix,
-                                   {{styledUri, "sub f()\nend sub\n"},
-                                    {fix.progUri, "sub g()\nend sub\n"}});
+  auto input = StartIndexedSession(
+      session, server, output, fix,
+      {{styledUri, "sub f()\nend sub\n"}, {fix.progUri, "sub g()\nend sub\n"}});
 
   std::string const styledReply = PollRequest(
       input, output, "fmtcfg", NewTextNeedle("SUB f()\nEND SUB\n"),
@@ -178,8 +179,8 @@ void TestBlockCommentPreservedThroughTheSession() {
   lsp::LanguageSession session(log);
   auto output = std::make_shared<StringOStream>();
   FreeBasicServer server(session);
-  auto input =
-      StartIndexedSession(session, server, output, fix, {{fix.progUri, content}});
+  auto input = StartIndexedSession(session, server, output, fix,
+                                   {{fix.progUri, content}});
 
   std::string const reply = PollRequest(
       input, output, "fmtblk", NewTextNeedle(want),
@@ -204,13 +205,12 @@ void TestRangeFormattingDefersToTheWholeDocument() {
   auto input = StartIndexedSession(session, server, output, fix,
                                    {{fix.progUri, kUnformatted}});
 
-  std::string const reply = PollRequest(
-      input, output, "fmtrange", NewTextNeedle(kFormatted),
-      [&](std::string const &id) {
-        return RangeFormattingFrame(id, fix.progUri);
-      });
-  Expect(reply.find(R"("start":{"line":0,"character":0})") !=
-             std::string::npos,
+  std::string const reply =
+      PollRequest(input, output, "fmtrange", NewTextNeedle(kFormatted),
+                  [&](std::string const &id) {
+                    return RangeFormattingFrame(id, fix.progUri);
+                  });
+  Expect(reply.find(R"("start":{"line":0,"character":0})") != std::string::npos,
          "the deferring range edit still spans the whole document");
 
   session.stop();
@@ -227,8 +227,8 @@ void TestFormattingUnknownDocumentAnswersEmpty() {
   lsp::LanguageSession session(log);
   auto output = std::make_shared<StringOStream>();
   FreeBasicServer server(session);
-  auto input =
-      StartIndexedSession(session, server, output, fix, {{fix.progUri, "x=1\n"}});
+  auto input = StartIndexedSession(session, server, output, fix,
+                                   {{fix.progUri, "x=1\n"}});
   std::string const ghostUri = FileUri(fix.wsDir / "never-opened.bas");
 
   std::string const reply = PollRequest(
