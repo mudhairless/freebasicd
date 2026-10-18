@@ -35,7 +35,7 @@
 
   | Milestone | Status |
   |-----------|--------|
-  | M17 — FreeBASIC formatter (backlog, scope TBD) | next |
+  | M17 — FreeBASIC formatter (backlog, scope TBD) | done |
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
   | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
@@ -453,19 +453,6 @@
   its own acceptance tests. A milestone that ships leaves this section: its entry
   goes to [`CHANGELOG.md`](CHANGELOG.md) and its sketch is deleted here. Commits
   happen per milestone (AGENTS.md).
-
-### M17 — FreeBASIC formatter (backlog, scope TBD)
-
-There is no community formatter standard for FreeBASIC — the plan previously
-called that "low payback / don't do". Reconsidered: the absence of a standard
-is exactly what makes this high payback. Whoever ships the first real
-FreeBASIC formatter sets the de-facto standard, and the LSP server is the
-natural place for it (`textDocument/formatting`, `rangeFormatting`,
-`onTypeFormatting`). Full scope (lexer round-trip fidelity, `:` vs line-split
-policy, continuation `_` handling, comment/dialect preservation, integration
-with the file pipeline, format-on-type triggers) is deliberately
-unspecified here; it gets fleshed out as a dedicated design pass before
-implementation.
 
 ### M21 — Module model, module constructors, and fbc's own codes
 

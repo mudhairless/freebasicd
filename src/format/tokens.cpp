@@ -8,9 +8,7 @@ namespace {
 bool isIdentStart(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
 }
-bool isIdentChar(char c) {
-  return isIdentStart(c) || (c >= '0' && c <= '9');
-}
+bool isIdentChar(char c) { return isIdentStart(c) || (c >= '0' && c <= '9'); }
 bool isDigit(char c) { return c >= '0' && c <= '9'; }
 bool isWhitespace(char c) {
   return c == ' ' || c == '\t' || c == '\v' || c == '\f';
@@ -18,14 +16,14 @@ bool isWhitespace(char c) {
 bool isRadixPrefix(char c) {
   return c == 'h' || c == 'H' || c == 'o' || c == 'O' || c == 'b' || c == 'B';
 }
-}  // namespace
+} // namespace
 
-TokenStream::TokenStream(const std::string& content) : content_(content) {
-  const char* p = content_.data();
-  const char* end = p + content_.size();
+TokenStream::TokenStream(const std::string &content) : content_(content) {
+  const char *p = content_.data();
+  const char *end = p + content_.size();
 
-  auto atLineStart = [&](const char* cur) -> bool {
-    const char* q = cur;
+  auto atLineStart = [&](const char *cur) -> bool {
+    const char *q = cur;
     while (q > content_.data() && *(q - 1) != '\n' && *(q - 1) != '\r') {
       --q;
     }
@@ -34,8 +32,8 @@ TokenStream::TokenStream(const std::string& content) : content_(content) {
     }
     return q == cur;
   };
-  auto peekChar = [&](const char* cur, size_t ahead) -> char {
-    const char* q = cur + ahead;
+  auto peekChar = [&](const char *cur, size_t ahead) -> char {
+    const char *q = cur + ahead;
     return q < end ? *q : '\0';
   };
   auto addToken = [&](TokenKind k, size_t start, size_t endOff) {
@@ -83,9 +81,11 @@ TokenStream::TokenStream(const std::string& content) : content_(content) {
       continue;
     }
     if (*p == '#') {
-      // meta/pp style handled later; but handle here generally? only if line start per spec
+      // meta/pp style handled later; but handle here generally? only if line
+      // start per spec
       if (atLineStart(p)) {
-        while (p < end && *p != '\n' && *p != '\r') ++p;
+        while (p < end && *p != '\n' && *p != '\r')
+          ++p;
         addToken(TokenKind::Directive, start, p - content_.data());
         continue;
       }
@@ -100,15 +100,20 @@ TokenStream::TokenStream(const std::string& content) : content_(content) {
     if (atLineStart(p) && p + 3 <= end) {
       // REM
       char c = *p;
-      if ((c == 'r' || c == 'R') && ((*(p+1)=='e'||*(p+1)=='E')) && ((*(p+2)=='m'||*(p+2)=='M'))) {
-        if (p + 3 == end || isWhitespace(peekChar(p, 3)) || peekChar(p, 3) == '\'' || peekChar(p, 3) == '\n' || peekChar(p, 3) == '\r') {
-          while (p < end && *p != '\n' && *p != '\r') ++p;
+      if ((c == 'r' || c == 'R') && ((*(p + 1) == 'e' || *(p + 1) == 'E')) &&
+          ((*(p + 2) == 'm' || *(p + 2) == 'M'))) {
+        if (p + 3 == end || isWhitespace(peekChar(p, 3)) ||
+            peekChar(p, 3) == '\'' || peekChar(p, 3) == '\n' ||
+            peekChar(p, 3) == '\r') {
+          while (p < end && *p != '\n' && *p != '\r')
+            ++p;
           addToken(TokenKind::LineComment, start, p - content_.data());
           continue;
         }
       }
     }
-    if (*p == '/' && atLineStart(p) && p + 2 < end && *(p + 1) == '/' && *(p + 2) == '/') {
+    if (*p == '/' && atLineStart(p) && p + 2 < end && *(p + 1) == '/' &&
+        *(p + 2) == '/') {
       while (p < end && *p != '\n' && *p != '\r') {
         ++p;
       }
@@ -146,8 +151,16 @@ TokenStream::TokenStream(const std::string& content) : content_(content) {
       continue;
     }
     if (isDigit(*p) || (*p == '&' && isRadixPrefix(peekChar(p, 1))) ||
-        (*p == '.' && peekChar(p, 1) >= '0' && peekChar(p, 1) <= '9')) {
-      while (p < end && isIdentChar(*p)) {
+        (*p == '.' && isDigit(peekChar(p, 1)))) {
+      // Every branch of this loop must advance p: entering on a leading `.`
+      // or an `&H`-style radix prefix without consuming that byte made a
+      // zero-length Number token and spun until memory ran out. The prefix
+      // bytes are part of the literal, so consume them first and let `.`
+      // ride inside the token (`1.5`, `1.`, `.5`, `&H1F`).
+      if (*p == '&' || *p == '.') {
+        ++p;
+      }
+      while (p < end && (isIdentChar(*p) || *p == '.')) {
         ++p;
       }
       addToken(TokenKind::Number, start, p - content_.data());
@@ -157,4 +170,4 @@ TokenStream::TokenStream(const std::string& content) : content_(content) {
     addToken(TokenKind::Operator, start, p - content_.data());
   }
 }
-}  // namespace fbformat
+} // namespace fbformat

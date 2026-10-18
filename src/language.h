@@ -47,6 +47,15 @@ std::string keywordDocsUrl(std::string_view word);
 // Built-in type names (also reserved, listed separately for completion/hover).
 bool isBuiltinType(std::string_view wordLower);
 
+// Whether this occurrence of a builtin word is in a type position — the
+// question TypeNameCase needs and isBuiltinType cannot answer. `sub` and
+// `function` are builtin types only as the type half of `As <>` (`dim g as
+// sub()`, the record-body form in kBuiltinTypes' comment); in statement
+// position they are procedure keywords (`Sub Foo()`, `End Sub`) and
+// keywordCase governs them. `prevRaw` is the previous significant token as
+// written (any case).
+bool isTypeWordAt(std::string_view wordLower, std::string_view prevRaw);
+
 // Member-name legality, from two probed tables (FreeBASIC.md 7, and the probe
 // that produced them is tools/probe_member_names.sh). `wordLower` must be
 // ASCII-folded lowercase. These answer for a reserved word only; an ordinary

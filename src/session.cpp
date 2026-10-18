@@ -7,6 +7,8 @@
 
 #include "session.h"
 
+#include "LibLsp/lsp/textDocument/formatting.h"
+#include "LibLsp/lsp/textDocument/range_formatting.h"
 #include "document_link.h"
 #include "fbc_diagnostics.h"
 #include "i18n.h"
@@ -18,8 +20,6 @@
 #include "resolve.h"
 #include "selection.h"
 #include "selection_lsp.h"
-#include "LibLsp/lsp/textDocument/formatting.h"
-#include "LibLsp/lsp/textDocument/range_formatting.h"
 #include "semantic_tokens.h"
 #include "symbols.h"
 #include "utf16.h"
@@ -1417,15 +1417,8 @@ void FreeBasicServer::registerHandlers() {
       [this](wp_symbol::request const &req) { return onWorkspaceSymbol(req); });
   session_.on(
       [this](td_codeAction::request const &req) { return onCodeAction(req); });
-  session_.on([this](td_formatting::request const &req) {
-    return onFormatting(req);
-  });
-  session_.on([this](td_rangeFormatting::request const &req) {
-    return onRangeFormatting(req);
-  });
-  session_.on([this](td_formatting::request const &req) {
-    return onFormatting(req);
-  });
+  session_.on(
+      [this](td_formatting::request const &req) { return onFormatting(req); });
   session_.on([this](td_rangeFormatting::request const &req) {
     return onRangeFormatting(req);
   });
@@ -4530,10 +4523,10 @@ FreeBasicServer::onFormatting(td_formatting::request const &req) {
       *content, abs.path(), fbformat::loadConfigForPath(abs.path()));
   for (auto &e : edits) {
     lsTextEdit te;
-    te.range.start.line = 0;
-    te.range.start.character = 0;
-    te.range.end.line = 0;
-    te.range.end.character = (int)e.end;
+    // Byte offsets in, UTF-16 positions out — the same conversion every
+    // other range in this file makes.
+    te.range = fblang::utf16Range(*content, static_cast<std::uint32_t>(e.start),
+                                  static_cast<std::uint32_t>(e.end));
     te.newText = e.newText;
     rsp.result.push_back(std::move(te));
   }
@@ -4548,14 +4541,24 @@ FreeBasicServer::onRangeFormatting(td_rangeFormatting::request const &req) {
   if (!content) {
     return rsp;
   }
+  // The request's range is UTF-16; the format layer speaks bytes. Convert at
+  // the boundary, like every other handler here — formatRangeLsp defers to a
+  // full-document edit for now, but it already takes the real range, so the
+  // day it honors it no handler changes. A client that sends an inverted range
+  // gets it clamped, never a negative span.
+  std::uint32_t const beg =
+      fblang::byteOffsetForUtf16Position(*content, req.params.range.start);
+  std::uint32_t end =
+      fblang::byteOffsetForUtf16Position(*content, req.params.range.end);
+  if (end < beg) {
+    end = beg;
+  }
   std::vector<fbformat::TextEdit> edits = fbformat::formatRangeLsp(
-      *content, abs.path(), fbformat::loadConfigForPath(abs.path()), 0, 0);
+      *content, abs.path(), fbformat::loadConfigForPath(abs.path()), beg, end);
   for (auto &e : edits) {
     lsTextEdit te;
-    te.range.start.line = 0;
-    te.range.start.character = 0;
-    te.range.end.line = 0;
-    te.range.end.character = (int)e.end;
+    te.range = fblang::utf16Range(*content, static_cast<std::uint32_t>(e.start),
+                                  static_cast<std::uint32_t>(e.end));
     te.newText = e.newText;
     rsp.result.push_back(std::move(te));
   }

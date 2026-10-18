@@ -138,9 +138,10 @@ install(FILES
 # --- formatter (M17) ---------------------------------------------------------
 add_library(freebasicd_format STATIC
     src/format/config.cpp
-    src/format/tokens.cpp
     src/format/engine.cpp
     src/format/format_lsp.cpp
+    src/format/spelling.cpp
+    src/format/tokens.cpp
 )
 target_include_directories(freebasicd_format PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(freebasicd_format
@@ -485,6 +486,15 @@ target_include_directories(format_config_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(format_config_checks PRIVATE freebasicd_format)
 add_test(NAME format_config_checks COMMAND format_config_checks)
 
+# M17: the formatter engine — full expected-output checks for indentation,
+# spacing, case transforms, and the verbatim-preservation invariants.
+add_executable(format_engine_checks
+    tests/format_engine_checks.cpp
+)
+target_include_directories(format_engine_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(format_engine_checks PRIVATE freebasicd_format)
+add_test(NAME format_engine_checks COMMAND format_engine_checks)
+
 # The integration driver is one executable built from the shared harness
 # (tests/session_support.{h,cpp}) plus one translation unit per LSP feature, so
 # a failure names a file that holds only that feature's tests.
@@ -505,6 +515,7 @@ add_executable(session_integration
     tests/session_crossfile_checks.cpp
     tests/session_document_link_checks.cpp
     tests/session_extern_placement_checks.cpp
+    tests/session_formatting_checks.cpp
     tests/session_hover_checks.cpp
     tests/session_indexes_checks.cpp
     tests/session_navigation_checks.cpp

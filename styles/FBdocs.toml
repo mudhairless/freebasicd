@@ -1,10 +1,13 @@
 # The style the FreeBASIC wiki's code examples use, measured from the 1189
 # files under compiler/examples/manual (40080 lines). This is the default style
 # when a project names none, because it is what most readers have seen first.
+# Keyword/type/intrinsic case is Canonical — the wiki's documented spellings
+# (ElseIf, LBound, CInt), not bare TitleCase (Elseif, Lbound, Cint): the
+# corpus writes the interior capitals, so TitleCase would not reproduce it.
 [format]
-KeywordCase = "Title"
-TypeNameCase = "Title"
-IntrinsicCase = "Title"
+KeywordCase = "Canonical"
+TypeNameCase = "Canonical"
+IntrinsicCase = "Canonical"
 ColumnLimit = 80
 UseTab = "ForIndentation"
 IndentWidth = 4

@@ -771,7 +771,6 @@ bool loadPresetInto(std::string const &name, fs::path const &configDir,
 
 } // namespace
 
-
 // Walk up from `startDir` to the filesystem root, returning the first
 // `dir/<name>` that exists as a regular file, or an empty path.
 fs::path findUpwards(fs::path const &startDir, std::string_view name) {
@@ -801,7 +800,8 @@ FormatConfig loadConfigForPath(std::string const &filePath) {
   fs::path chosen = findUpwards(probe, kFormatFileName);
   std::string chosenName = kFormatFileName;
   if (chosen.empty()) {
-    // Also look for the server's freebasicd.toml; it carries [format] tables too.
+    // Also look for the server's freebasicd.toml; it carries [format] tables
+    // too.
     chosen = findUpwards(probe, "freebasicd.toml");
     chosenName = "freebasicd.toml";
   }
@@ -825,7 +825,7 @@ FormatConfig loadConfigForPath(std::string const &filePath) {
     applied = loadPresetInto(inherit, configDir, &cfg, &seen);
   }
   if (!applied) {
-    loadPresetInto("FBdocs", configDir, &cfg, &seen);  // the default preset
+    loadPresetInto("FBdocs", configDir, &cfg, &seen); // the default preset
   }
   if (!text.empty()) {
     std::string s2;
@@ -838,10 +838,11 @@ FormatConfig loadConfigForPath(std::string const &filePath) {
   if (!chosen.empty() && chosen.filename() == kFormatFileName) {
     fs::path const fbConfig = configDir / "freebasicd.toml";
     if (isFile(fbConfig)) {
-      std::fprintf(stderr,
-                   "[fbformat] .fbformat at %s overrides freebasicd.toml; "
-                   "formatting settings from freebasicd.toml will be ignored.\n",
-                   chosen.generic_string().c_str());
+      std::fprintf(
+          stderr,
+          "[fbformat] .fbformat at %s overrides freebasicd.toml; "
+          "formatting settings from freebasicd.toml will be ignored.\n",
+          chosen.generic_string().c_str());
     }
   }
   return cfg;

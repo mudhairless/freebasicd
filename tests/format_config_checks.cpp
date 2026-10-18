@@ -112,8 +112,9 @@ static void TestApplyClientOptions() {
   CHECK(zero.tabWidth == base.tabWidth);
 }
 
-// No config file anywhere: the default style is FBdocs (Title-case keywords,
-// a column limit), not the every-option-Leave factory values.
+// No config file anywhere: the default style is FBdocs (wiki-canonical
+// keyword spelling, a column limit), not the every-option-Leave factory
+// values.
 static void TestDefaultIsFbdocs() {
   std::string const empty = (fs::temp_directory_path() / "fbfmt-none").string();
   std::error_code ec;
@@ -121,9 +122,9 @@ static void TestDefaultIsFbdocs() {
   fs::create_directories(empty, ec);
 
   FormatConfig const c = loadConfigForPath(empty + "/a.bas");
-  CHECK(c.keywordCase == CaseStyle::Title);
-  CHECK(c.typeNameCase == CaseStyle::Title);
-  CHECK(c.intrinsicCase == CaseStyle::Title);
+  CHECK(c.keywordCase == CaseStyle::Canonical);
+  CHECK(c.typeNameCase == CaseStyle::Canonical);
+  CHECK(c.intrinsicCase == CaseStyle::Canonical);
   CHECK(c.columnLimit == 80);
 
   fs::remove_all(empty, ec);

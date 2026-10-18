@@ -1436,6 +1436,18 @@ bool isBuiltinType(std::string_view wordLower) {
                      [&](char const *t) { return wordLower == t; });
 }
 
+bool isTypeWordAt(std::string_view wordLower, std::string_view prevRaw) {
+  // `sub` and `function` are in kBuiltinTypes because fbc accepts them as
+  // the type half of `As <>` — but in statement position they are procedure
+  // keywords, so the type catalog may claim them only after `as`. Every
+  // other type name overlaps the keyword catalog only *as* a type name, so
+  // for those the position-free answer is already the right one.
+  if (wordLower == "sub" || wordLower == "function") {
+    return toLowerChars(prevRaw) == "as";
+  }
+  return isBuiltinType(wordLower);
+}
+
 namespace {
 
 template <std::size_t N>
