@@ -245,17 +245,17 @@ entirely in memory: nothing is ever written to disk.
 
 ## Tests
 
-Eighteen CTest suites, no external test framework:
+Comprehensive CTest suites, no external test framework:
 
 ```sh
 ctest --test-dir build --output-on-failure
 ```
 
 They cover the lexer, parser, resolver, index, settings, semantic tokens, inlay
-hints, code actions, grammar freshness, i18n, and a 4,800-line `LanguageSession`
-integration suite that drives the server over in-memory streams. The corpus in
-`tests/corpus/` holds 51 `.bas` files whose expected diagnostics (the matching
-`.diag` files) are checked against the parser.
+hints, code actions, formatting, grammar freshness, i18n, and a comprehensive
+`LanguageSession` integration suite that drives the server over in-memory
+streams. The corpus in `tests/corpus/` holds 51 `.bas` files whose expected
+diagnostics (the matching `.diag` files) are checked against the parser.
 
 ## Localization
 
