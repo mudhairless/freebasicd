@@ -62,6 +62,7 @@ Implemented and advertised in the `initialize` reply:
 | Type hierarchy | Supertypes and subtypes of a `type` / `union`, through `Extends` |
 | Code lens | A reference count per declaration, whose click lists the sites |
 | Document links | Each `#include` literal that resolves to a file links to that header (the same navigation `definition` gives on the literal, for clients that draw no link) |
+| Formatting | Full-document `textDocument/formatting`; `textDocument/rangeFormatting` is advertised (defers to a full-document edit for now) |
 | Pull diagnostics | `textDocument/diagnostic` and `workspace/diagnostic`, negotiated |
 | Workspace symbols | Aggregated from every workspace root, one index per root |
 | Workspace folders | Multi-root sessions, with watched files and per-root config |
@@ -71,7 +72,9 @@ Not implemented, and therefore not advertised: `typeHierarchy/resolve`
 
 The server advertises `textDocumentSync.willSave` and accepts
 `textDocument/willSave`, but acts on neither: diagnostics are already reissued
-by `didSave`, and the hook is reserved for format-on-save (PLAN.md M17).
+by `didSave`, and the hook is reserved for format-on-save. The formatter
+respects the nearest `.fbformat` (overriding `freebasicd.toml` when present),
+with FBdocs as the default preset.
 
 ### Push or pull
 
