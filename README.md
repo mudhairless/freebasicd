@@ -67,6 +67,10 @@ Implemented and advertised in the `initialize` reply:
 | Workspace symbols | Aggregated from every workspace root, one index per root |
 | Workspace folders | Multi-root sessions, with watched files and per-root config |
 
+The formatter (full-document `textDocument/formatting`, plus the `fbformat`
+CLI) is documented separately in [`Formatting.md`](Formatting.md): what it
+rewrites and preserves, the configuration options, and CLI usage.
+
 Not implemented, and therefore not advertised: `typeHierarchy/resolve`
 (prepare fills both lists instead).
 
@@ -275,6 +279,8 @@ cmake --build build --target update-po     # merge it into the po files
   result types, and `InitializeResult::serverInfo`).
 - [tomlplusplus](https://github.com/marzer/tomlplusplus) v3.4.0, vendored as a
   submodule, for the config file.
+- [argparse](https://github.com/p-ranav/argparse) v3.2, vendored as a submodule,
+  for the `fbformat` CLI.
 - RapidJSON, via LspCpp, for JSON.
 - GNU gettext, from the system, for localization.
 
