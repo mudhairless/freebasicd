@@ -39,6 +39,11 @@ repository (default branch `main`).
   `third_party/tomlplusplus`, pinned to `30172438` (v3.4.0). Header-only — an
   INTERFACE target (`tomlplusplus::tomlplusplus`). It parses the server's
   `freebasicd.toml` config file (`src/settings.{h,cpp}`, M11).
+- **argparse** (github.com/p-ranav/argparse) is a git submodule at
+  `third_party/argparse`, pinned to `3eda91b` (v3.2). Header-only — an
+  INTERFACE target (`argparse::argparse`). It parses `fbformat`'s command line
+  (`src/format/fbformat_main.cpp`, M17); `freebasicd` takes no argv today, and
+  should adopt argparse rather than hand-rolling if that ever changes.
 - Requires CMake 3.16+ and C++17.
 
 ## FreeBASIC facts (encode these in the lexer/parser)

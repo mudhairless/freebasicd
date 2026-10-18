@@ -103,7 +103,7 @@ Flags:
 - `--config <path>`: explicit config file override (skip discovery)
 - `--style <preset>`: override style name
 - `<files...>` or read stdin if no files
-(replace manual parsing with https://github.com/p-ranav/argparse)
+(replaced manual parsing with https://github.com/p-ranav/argparse, vendored at `third_party/argparse` — done for `fbformat`; `freebasicd` currently takes no argv at all, so when the server grows a command line it should use argparse too rather than hand-rolling)
 
 Behavior:
 - Read file content (or stdin). For stdin, require `--stdin-filepath` for config discovery.
@@ -287,3 +287,4 @@ Smoke test via shell: format sample file, check output, `--check` behavior.
 - **Cycle detection**: For `inherit` chains, track visited set and error if cycle found (treat as config error, fall back to defaults conservatively).
 - **Cross-platform**: Reuse `normalizePath`, path handling as in index/settings.
 **Status update (2026-10-16):** Phase 1 complete (scaffolding/config). Phase 2 complete (formatter tokenizer with block comment support, lossless block comment preservation, CLI builds, LSP formatting handlers wired and advertised). All existing tests pass. Remaining: Phase 3+ core engine (indentation/spacing/case transforms), format-off regions, CLI full flags, integration tests.
+**Status update (2026-10-18):** `fbformat`'s hand-rolled argument parsing replaced with argparse (vendored submodule `third_party/argparse`, v3.2). Same flag surface, but unknown flags now fail with usage and exit 2 instead of being silently ignored, and unreadable/unwritable files report an error and exit 2 instead of silently formatting empty content (which would have become a data-loss bug once the engine emits real output). `--config`/`--style` remain parsed-but-not-honored until the config layer grows override support. Remaining: Phase 3+ core engine (indentation/spacing/case transforms), format-off regions, CLI full flags, integration tests.

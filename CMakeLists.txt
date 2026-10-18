@@ -38,6 +38,12 @@ add_subdirectory(third_party/LspCpp)
 # (M11).
 add_subdirectory(third_party/tomlplusplus)
 
+# argparse (github.com/p-ranav/argparse) is vendored as a git submodule pinned
+# to v3.2 (3eda91b...). Header-only; an INTERFACE target. It parses fbformat's
+# command line. Its tests/install default OFF when not the top-level project,
+# so no cache overrides are needed.
+add_subdirectory(third_party/argparse)
+
 # Localization (M20): system GNU gettext. FindGettext locates the *tools*
 # (xgettext/msgfmt/msgmerge) that extract and compile catalogs; cmake/
 # FindIntl.cmake locates the *runtime* (libintl) and defines Intl::Intl —
@@ -153,7 +159,10 @@ target_compile_definitions(freebasicd_format PUBLIC
 add_executable(fbformat
     src/format/fbformat_main.cpp
 )
-target_link_libraries(fbformat PRIVATE freebasicd_format freebasicd_lang)
+# argparse is CLI-only: the library (freebasicd_format) stays argv-free, and
+# the server binary gets no argv parser until main.cpp migrates too.
+target_link_libraries(fbformat PRIVATE freebasicd_format freebasicd_lang
+                                argparse::argparse)
 
 install(TARGETS fbformat RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/styles/ DESTINATION ${CMAKE_INSTALL_DATADIR}/fbformat/styles
