@@ -290,3 +290,129 @@ Smoke test via shell: format sample file, check output, `--check` behavior.
 **Status update (2026-10-18):** `fbformat`'s hand-rolled argument parsing replaced with argparse (vendored submodule `third_party/argparse`, v3.2). Same flag surface, but unknown flags now fail with usage and exit 2 instead of being silently ignored, and unreadable/unwritable files report an error and exit 2 instead of silently formatting empty content (which would have become a data-loss bug once the engine emits real output). `--config`/`--style` remain parsed-but-not-honored until the config layer grows override support. Remaining: Phase 3+ core engine (indentation/spacing/case transforms), format-off regions, CLI full flags, integration tests.
 
 **Status update (2026-10-18, engine wave):** Phase 3+ core engine complete: real `formatDocument` in `src/format/engine.cpp` (indent stack over fblang block tables, spacing rules, case transforms by specificity, verbatim preservation for comments/strings/directives/macro bodies/continuation lines, CRLF/LF derivation, disableFormat, blank-line collapsing). Canonical spelling table (`src/format/spelling.{h,cpp}`, 206 entries) wired into `applyCase`; FBdocs preset uses `"Canonical"` for keyword/type/intrinsic case. `sub`/`function` are position-aware (`isTypeWordAt`): types only after `as`. Fixed a tokenizer OOM root cause (float/hex literals created a zero-length token and looped until memory ran out — `1.5`, `.25`, `1.`, `&H1F` now lex and round-trip; regression-tested). LSP: `onFormatting` converts bytes to UTF-16; `onRangeFormatting` passes the request's real range (clamped), deferring to a full-document edit for now. Tests: new `format_engine_checks` unit suite (23 checks: indentation, spacing, case, preservation, graphics pairs/slots, CRLF derivation, disableFormat, spelling-table contract, idempotence) and new `session_formatting_checks.cpp` integration feature file (full formatting, already-formatted → empty edits, `.fbformat` discovery, block-comment preservation, range-deferral, unknown-document-empty), registered in both `CMakeLists.txt` and `tests/session_integration.cpp`. Full tree builds; `ctest` green (22/22); clang-format clean. Remaining: format-off regions (safety features), real range formatting (currently defers to full-document edit), CLI full flags beyond argparse, idempotence verification on corpus.
+
+**Status update (2026-10-30):** Wave 2 is planned in §9; no code has been written yet. The "remaining" lists in the status updates above are superseded by §9.
+
+## 9. Wave 2 (next step): trust the inputs, bound the output
+
+The engine now formats and round-trips: a full clean build is green, `ctest` is 22/22, all 59 corpus files are idempotent, and a significant-token comparison over the corpus passes today. The remaining work is not "more spacing rules" — it is making the formatter refuse the inputs it cannot trust and leave alone the regions it cannot model, then replacing the range-formatting deferral. Wrapping (`ColumnLimit`, `ContinuationStyle`, `_` insertion) is deliberately the wave *after* this one: it needs a penalty/line-break model and parser block ranges, and it is much safer once the corpus gate below exists.
+
+Four phases, each independently verifiable and committable. Phase 1 is a pure refactor with no test changes; Phases 2–4 add behavior.
+
+### 9.1 Findings (code as of 2026-10-30)
+
+| Item | State today | Evidence |
+|---|---|---|
+| Format-off/on pragma regions | not enforced; fields exist | `config.h:267-269`; the engine has no pragma path |
+| `#macro ... #endmacro` bodies | **rebuilt as code**, body indentation destroyed | `preproc_macro.bas`: `    print w` → `Print w` at column 0 |
+| `Asm ... End Asm` bodies | rebuilt as code (case/spacing/indent), stack can be moved by a body line | engine tracks the block but formats interior lines as statements |
+| Bare `End` statement | **dedented as if it were a closer**; pops `Scope` | `sub f()\nend\nend sub` → `End` at column 0 |
+| Real range formatting | returns a full-document edit | `format_lsp.cpp:20-28`; the session test pins the deferral |
+| `--config` / `--style` | parsed, ignored | `fbformat_main.cpp:77-80` |
+| Client `FormattingOptions` | dead code; `applyClientOptions` has no production caller | only `tests/format_config_checks.cpp` calls it |
+| Malformed `.fbformat` | silently falls back to FBdocs | `loadConfigForPath` ignores `parseFormatTable`'s `false` |
+| `.fbformat` shadow warning | raw `fprintf(stderr)` in the library, never reaches the client log | `config.cpp` warning block |
+| `-` as stdin | documented but fails | `Formatting.md:99` vs `cannot read -`, exit 2 |
+| Multiple files to stdout | concatenates documents with no separator | `fbformat_main.cpp` loop |
+| Corpus idempotence | verified ad hoc, not gated | 59/59 idempotent and token-equivalent today |
+| i18n extraction | skips `src/format/` | `CMakeLists.txt:196-199` globs `src/*.cpp`; `i18n_checks.cpp` uses a non-recursive `directory_iterator` |
+
+### 9.2 Locked decisions
+
+| Question | Decision | Why |
+|---|---|---|
+| Config file exists but is unreadable/invalid TOML | refuse to format (empty edits in LSP, exit 2 in CLI) | "config presence is authoritative" is the plan's own rule; defaults would silently re-tab the project |
+| Unknown style (config file or `--style`) | error, not FBdocs | a typo must not degrade silently |
+| Off-pragma lines themselves | copied raw | the region is "untouched"; easiest to reason about |
+| Macro/asm delimiter lines | formatted; bodies raw | keeps canonical case on visible delimiters, protects opaque content |
+| Range edits | confined to expanded whole lines | clients clamp; a whole-document edit from a range request is the current bug |
+| Client options | only when no config file exists | §1 precedence |
+| Range boundary units | expand to whole lines, `_` chain, and block-comment token; trim blank edges | never split a unit the engine treats as one |
+
+### 9.3 Phase 1 — Extract the line model (pure refactor, no behavior change)
+
+`src/format/engine.cpp` is one 400-line loop with classification, stack update, and emission interleaved. Phases 2 and 4 need the same classification, so extract it once instead of duplicating it:
+
+- `LineShape classifyLine(Line, tokens)` → `{blank, firstKind, w0, w1, wLast, lead, closerInfo, labelLine, continues}`.
+- `applyLineToStack(stack, LineShape)` → the current block-stack update.
+- `emitLine(Formatter &, LineShape)` → the current per-line emission; `Formatter` owns the output string, verbatim spans, pending blanks, continuation state, and the `Emitter`'s per-line state.
+- `formatDocument` becomes an advance/emit loop over every line.
+
+Acceptance: **no test file changes**; all 22 suites green; byte-identical output on the corpus; clang-format clean. This is the "prove the refactor before adding behavior" commit.
+
+### 9.4 Phase 2 — Verbatim regions and the `End` fix
+
+All in `src/format/engine.cpp` + `tests/format_engine_checks.cpp`:
+
+1. **Format-off/on.** A comment token containing `config.formatOffPragma` opens a region; the line containing it, every line until the line containing `config.formatOnPragma`, and the on-line itself are copied from `line.begin` (original indent included) through `appendVerbatim`, so the trailing-whitespace pass leaves them alone. Unclosed off → EOF. Nested off is state, not depth (ignored). Guard empty pragma strings — `find("")` matches everything.
+2. **Macro bodies.** A `#macro` directive opens a region; body lines are raw until `#endmacro`. Delimiter lines still go through the directive path so `DirectiveCase` applies. Body lines must not touch the block stack: a body containing `loop` must not pop a `Do`.
+3. **Asm bodies.** `Asm` opener and `End Asm` closer format normally; interior lines are raw and do not update the stack.
+4. **Bare `End`.** `w0 == "end" && w1.empty()` is the program-termination statement, not a closer: `Lead::Plain`, no dedent, no `Scope` pop. Keep the existing `w1 == "as"` field guard (`End As Integer`).
+
+Tests: `TestFormatOffRegionPreserved`, `TestFormatOffToEof`, `TestMacroBodyVerbatim`, `TestAsmBodyVerbatim`, `TestBareEndIsAStatement`; extend the idempotence fixture. One session test in `tests/session_formatting_checks.cpp` proving a pragma region survives the wire while the code around it formats. Adding it touches that one feature file (function + `RUN_TEST` line), per the AGENTS.md rule.
+
+### 9.5 Phase 3 — Honest config resolution, CLI flags, client options, corpus gate
+
+**Config API** (`src/format/config.{h,cpp}`): replace `loadConfigForPath` with
+
+```cpp
+struct ConfigQuery { std::string configFile; std::string style; };
+struct ResolvedConfig {
+  FormatConfig config;
+  std::string configFile;      // the file used, empty if none
+  bool foundConfigFile = false;
+  bool ok = true;              // false => do not format
+  std::string error;           // reason when !ok
+  std::vector<std::string> warnings;
+};
+ResolvedConfig resolveConfig(std::string const &filePath, ConfigQuery const &q = {});
+ResolvedConfig configForStyle(std::string const &name, std::string const &configDir = {});
+```
+
+Rules: unreadable or invalid TOML → `ok=false`; unknown style from the config or `--style` → `ok=false`; the `.fbformat`-shadows-`freebasicd.toml` notice becomes a `warnings` entry instead of a library `fprintf`. Migrate all callers (session, CLI, tests) and delete `loadConfigForPath`; no compatibility wrapper.
+
+**Session** (`src/session.cpp`): both formatting handlers call `resolveConfig`; on `!ok`, `logToClient` the error and return **empty edits** (never format against a guessed config); on `!foundConfigFile`, apply client options, mapping the optional fields with `value_or(cfg.…)`; log warnings. Do not turn a config error into a protocol error — an editor would show a notification on every save.
+
+**CLI** (`src/format/fbformat_main.cpp`): honor `--config` and `--style`; `-` means stdin; stdin without `--stdin-filepath` and without `--config`/`--style` exits 2 instead of discovering from the cwd; config errors exit 2; more than one file to stdout without `-i`/`--check` exits 2 (today it concatenates documents).
+
+**Corpus gate** (`tests/format_corpus_checks.cpp`, new target, 23rd ctest suite): over `tests/corpus/*.bas`, with `configForStyle("FBdocs", CORPUS_DIR)` and the same for `fbc`:
+- `format(format(x)) == format(x)`;
+- significant token streams match: exact bytes for strings/comments, exact for identifiers **unless** the word is in the language catalogs, case-insensitive otherwise;
+- failure names the file and the first differing token.
+
+Tests in `format_config_checks.cpp`: explicit config/style overrides, unknown style error, malformed `.fbformat` → `ok=false`, warning vector, `foundConfigFile` false in an empty dir, `configForStyle`. Session tests: client options applied when unconfigured (spaces, `tabSize` 2), ignored when a `.fbformat` exists.
+
+**i18n plumbing.** New log messages live in `src/format/`, which the pot extraction and `i18n_checks` both miss. Switch `po-template`'s glob to `GLOB_RECURSE` over `src/` and `i18n_checks`'s `directory_iterator` to a recursive iterator, then `cmake --build build --target po-template` and commit the pot. Otherwise the messages are untranslatable and the freshness check cannot see them.
+
+### 9.6 Phase 4 — True range formatting
+
+Engine API in `src/format/engine.h`:
+
+```cpp
+struct RangeResult {
+  size_t replacementStart;
+  size_t replacementEnd;
+  std::string text;
+  bool changed;
+};
+RangeResult formatRange(content, filePath, config, rangeStart, rangeEnd);
+```
+
+Algorithm, using Phase 1's model:
+
+1. Map byte offsets to whole lines; an empty range is the line at the offset.
+2. Expand to logical units that must not be split: back to the head of a `_` continuation chain, out to the start/end of a block-comment token, forward to the chain end.
+3. Trim blank lines at both edges (a blank-only selection is a no-op).
+4. Dry-run `classify/applyStack` over the lines before the window so the first emitted line has the correct indent depth and continuation state; emit the window with `pendingBlank = 0`.
+5. Apply `trimTrailingWhitespace` to the window only; do not normalize EOF for a mid-document range.
+6. Replace `[lines[first].begin, start of the line after last)`; return empty when the window is unchanged.
+
+`format_lsp.cpp` returns one `TextEdit` from `RangeResult`; the session needs no change (it already converts bytes to UTF-16). Tests: middle-of-block range, indent context from the prefix, block-comment boundary, continuation head, blank-only no-op, already-formatted no-op. In `session_formatting_checks.cpp`, **delete** `TestRangeFormattingDefersToTheWholeDocument` and replace it with a test asserting the edit is confined to the selected lines and that applying it equals full formatting for a fixture whose surrounding lines are already formatted.
+
+### 9.7 Not in this wave
+
+`ColumnLimit` wrapping / `_` insertion, `ContinuationStyle` WrapOnly/WrapAndJoin, `StatementSeparatorStyle` Split*, `CallParentheses`/`NiladicCallParentheses`, alignment options, `OneLineFormatOffRegex`, `CommentPragmas` regex, format-on-type, dialect-aware `IntrinsicDollarSuffix`. These are the next wave: they need the penalty/line-break model and parser block ranges, and the corpus gate should exist first.
+
+### 9.8 Close-out
+
+Per phase: `cmake --build build --clean-first --parallel` (the editor binary, not only the test targets), `ctest --output-on-failure`, the clang-format gate on changed files, and the corpus gate. The final commit adds one dated `CHANGELOG.md` entry with the deviations and the lessons (bare `End`, macro bodies, silent config fallback, `-` in the docs, the i18n subdirectory escape), updates `Formatting.md` (off regions, macro/asm, honored flags, true range formatting, client-option precedence, and the `%APPDATA%`/`%USERPROFILE%` mismatch), and refreshes this file's status line. Push only on request.
