@@ -15,7 +15,10 @@
 // types, and intrinsics. What is copied verbatim, deliberately:
 //   - comments (line, block, doc) and every string literal;
 //   - `#...` directive lines and the macro/define bodies they continue
-//     (a directive ending in `_` puts the following lines through raw);
+//     (a directive ending in `_` puts the following lines through raw), the
+//     whole body of `#macro ... #endmacro` (delimiters still format), and
+//     every line of an `Asm ... End Asm` block except its two delimiters;
+//   - lines inside a format-off/on pragma region, pragmas included;
 //   - whole continuation lines (a line that continues a `_`-terminated
 //     logical line) — ContinuationStyle::Leave is the only mode implemented,
 //     so the author's escaped-newline alignment is never disturbed;
@@ -460,6 +463,28 @@ bool isLabelLine(std::vector<Token> const &toks,
          b.text == ":";
 }
 
+// The word after `#` in a directive token, lowercased: "#macro m(x)" ->
+// "macro". Empty when the token has no word after the hash.
+std::string directiveWord(std::string_view text) {
+  size_t hash = text.find('#');
+  if (hash == std::string_view::npos) {
+    return {};
+  }
+  size_t start = hash + 1;
+  while (start < text.size() && (text[start] == ' ' || text[start] == '\t')) {
+    ++start;
+  }
+  size_t end = start;
+  while (end < text.size() &&
+         ((text[end] >= 'a' && text[end] <= 'z') ||
+          (text[end] >= 'A' && text[end] <= 'Z') ||
+          (text[end] >= '0' && text[end] <= '9') || text[end] == '_')) {
+    ++end;
+  }
+  return end == start ? std::string()
+                      : fblang::toLowerChars(text.substr(start, end - start));
+}
+
 // How a line's leading words shape the block stack (see classifyLine).
 enum class Lead { Plain, EndTwoWord, EndIf, Bare };
 
@@ -520,8 +545,10 @@ LineShape classifyLine(Line const &line, std::vector<Token> const &toks) {
   // closer *word*, so `Sub` would read as its own closer and the opener
   // path would never run. A closer word followed by `as` is a UDT field
   // named after it (FreeBASIC.md §7, `Next As Node Ptr`), never a closer.
+  // A bare `End` is the program-termination statement, not `End <block>`:
+  // it keeps the body indent and pops nothing.
   if (shape.w1 != "as") {
-    if (shape.w0 == "end") {
+    if (shape.w0 == "end" && !shape.w1.empty()) {
       shape.lead = Lead::EndTwoWord;
     } else if (shape.w0 == "endif") {
       shape.lead = Lead::EndIf;
@@ -535,6 +562,31 @@ LineShape classifyLine(Line const &line, std::vector<Token> const &toks) {
   shape.labelLine = shape.lead == Lead::Plain && isLabelLine(toks, line.sig);
   shape.continues = last.kind == TokenKind::Identifier && last.text == "_";
   return shape;
+}
+
+bool directiveIs(std::vector<Token> const &toks, LineShape const &shape,
+                 std::string_view word) {
+  return shape.firstKind == TokenKind::Directive &&
+         directiveWord(toks[shape.firstIndex].text) == word;
+}
+
+// Is `pragma` present in one of this line's comment tokens? An empty pragma
+// is never present: `find("")` matches everything, which would turn every
+// comment into a format-off switch.
+bool hasCommentPragma(std::vector<Token> const &toks, LineShape const &shape,
+                      std::string const &pragma) {
+  if (pragma.empty()) {
+    return false;
+  }
+  for (size_t i : shape.line->sig) {
+    Token const &t = toks[i];
+    if ((t.kind == TokenKind::LineComment ||
+         t.kind == TokenKind::BlockComment) &&
+        t.text.find(pragma) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Indentation depth for this line, before the line updates the stack.
@@ -579,13 +631,9 @@ std::string indentFor(FormatConfig const &config, int depth) {
 void applyLineToStack(std::vector<fblang::BlockKind> &stack,
                       LineShape const &shape) {
   if (shape.lead == Lead::EndTwoWord) {
-    if (!shape.w1.empty()) {
-      fblang::BlockCloser c{};
-      if (fblang::blockForCloser(shape.w1, &c) && !stack.empty() &&
-          stack.back() == c.kind) {
-        stack.pop_back();
-      }
-    } else if (!stack.empty() && stack.back() == fblang::BlockKind::Scope) {
+    fblang::BlockCloser c{};
+    if (fblang::blockForCloser(shape.w1, &c) && !stack.empty() &&
+        stack.back() == c.kind) {
       stack.pop_back();
     }
   } else if (shape.lead == Lead::EndIf) {
@@ -628,6 +676,12 @@ struct Formatter {
   bool prevContinues = false;
   bool emittedAny = false;
 
+  // Raw-region state. These are state, not nesting: a second `off` inside an
+  // off region is ignored, and only the matching delimiter ends the region.
+  bool formatOff = false;
+  bool macroBody = false;
+  bool asmBody = false;
+
   Formatter(FormatConfig const &config, std::string const &content,
             std::vector<Token> const &toks)
       : config(config), content(content), toks(toks),
@@ -666,6 +720,17 @@ struct Formatter {
       out += eol;
     }
     pendingBlank = 0;
+  }
+
+  // Copy a line's original bytes (leading whitespace included) as one verbatim
+  // span, so the trailing-whitespace pass leaves a raw region byte-exact.
+  void emitVerbatimLine(Line const &line) {
+    std::string eol = eolFor(line);
+    flushBlanks(eol, !emittedAny);
+    appendVerbatim(content.substr(line.begin, line.end - line.begin));
+    out += eol;
+    prevContinues = false;
+    emittedAny = true;
   }
 
   std::string finish();
@@ -913,8 +978,58 @@ std::string formatDocument(const std::string &content,
   for (Line const &line : lines) {
     LineShape shape = classifyLine(line, toks);
 
+    // --- raw regions -----------------------------------------------------
+    // Off-pragma and macro/asm bodies are state, not nesting. Each region
+    // copies its lines from `line.begin`, original indent included, through
+    // appendVerbatim, so the trailing-whitespace pass leaves them alone.
+    if (formatter.formatOff) {
+      formatter.emitVerbatimLine(line);
+      if (hasCommentPragma(toks, shape, config.formatOnPragma)) {
+        formatter.formatOff = false;
+      }
+      continue;
+    }
+
+    if (formatter.macroBody) {
+      if (directiveIs(toks, shape, "endmacro")) {
+        // The delimiter is a directive line like any other: DirectiveCase
+        // applies, and a directive never touches the block stack.
+        shape.depth = depthFor(config, stack, shape);
+        emitLine(formatter, shape);
+        formatter.macroBody = false;
+      } else {
+        formatter.emitVerbatimLine(line);
+      }
+      continue;
+    }
+
+    if (formatter.asmBody) {
+      if (shape.lead == Lead::EndTwoWord && shape.w1 == "asm") {
+        // `End Asm` is the closer and formats normally.
+        shape.depth = depthFor(config, stack, shape);
+        if (emitLine(formatter, shape)) {
+          applyLineToStack(stack, shape);
+        }
+        formatter.asmBody = false;
+      } else {
+        formatter.emitVerbatimLine(line);
+      }
+      continue;
+    }
+
     if (shape.blank) {
       ++formatter.pendingBlank;
+      continue;
+    }
+
+    // A comment containing FormatOffPragma opens a raw region. The line
+    // itself is already part of the region. An off/on pair on one line is a
+    // region that closes where it opens.
+    if (hasCommentPragma(toks, shape, config.formatOffPragma)) {
+      bool closesImmediately =
+          hasCommentPragma(toks, shape, config.formatOnPragma);
+      formatter.emitVerbatimLine(line);
+      formatter.formatOff = !closesImmediately;
       continue;
     }
 
@@ -935,6 +1050,12 @@ std::string formatDocument(const std::string &content,
     shape.depth = depthFor(config, stack, shape);
     if (emitLine(formatter, shape)) {
       applyLineToStack(stack, shape);
+      if (shape.lead == Lead::Plain && shape.w0 == "asm") {
+        formatter.asmBody = true;
+      }
+    }
+    if (directiveIs(toks, shape, "macro")) {
+      formatter.macroBody = true;
     }
   }
 

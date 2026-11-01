@@ -12,7 +12,8 @@
 // whole-document TextEdit in UTF-16 positions, that an already-formatted
 // document answers with no edits at all, that a `.fbformat` found by walking
 // up from the document changes the answer, that block comments survive the
-// trip through the wire, and that a document the server has never seen is
+// trip through the wire, that a format-off region survives while the code
+// around it formats, and that a document the server has never seen is
 // *answered* empty rather than left hanging. The last one matters: from the
 // caller's side a give-up and an empty reply look identical to a poll, so the
 // test has to see the answer arrive.
@@ -191,6 +192,41 @@ void TestBlockCommentPreservedThroughTheSession() {
   session.stop();
 }
 
+// A format-off region survives the wire while the code around it formats: the
+// pragma lines and the bytes between them are copied exactly (original indent
+// and trailing whitespace included), and the statement after the on-line
+// still gets the preset's tab indent.
+void TestFormatOffRegionSurvivesTheSession() {
+  TwoFileFixture const fix;
+  char const *const content = "sub f()\n"
+                              "   ' fbformat: off\n"
+                              "   x=1   \n"
+                              "   ' fbformat: on\n"
+                              "y=2\n"
+                              "end sub\n";
+  char const *const want = "Sub f()\n"
+                           "   ' fbformat: off\n"
+                           "   x=1   \n"
+                           "   ' fbformat: on\n"
+                           "\ty = 2\n"
+                           "End Sub\n";
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto output = std::make_shared<StringOStream>();
+  FreeBasicServer server(session);
+  auto input = StartIndexedSession(session, server, output, fix,
+                                   {{fix.progUri, content}});
+
+  std::string const reply = PollRequest(
+      input, output, "fmtoff", NewTextNeedle(want),
+      [&](std::string const &id) { return FormattingFrame(id, fix.progUri); });
+  Expect(reply.find("x=1   ") != std::string::npos,
+         "the off region's bytes must reach the client unchanged");
+
+  session.stop();
+}
+
 // The range request is answered with the whole-document edit while
 // formatRangeLsp defers. Deleting this test when range formatting becomes a
 // true range edit is the deliberate act; letting it pass forever on a
@@ -249,6 +285,7 @@ void RunFormattingTests() {
   RUN_TEST(TestAlreadyFormattedAnswersNoEdits);
   RUN_TEST(TestConfigFileDiscoveryChangesBehavior);
   RUN_TEST(TestBlockCommentPreservedThroughTheSession);
+  RUN_TEST(TestFormatOffRegionSurvivesTheSession);
   RUN_TEST(TestRangeFormattingDefersToTheWholeDocument);
   RUN_TEST(TestFormattingUnknownDocumentAnswersEmpty);
 }

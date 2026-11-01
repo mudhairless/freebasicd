@@ -8,9 +8,10 @@
 // over literal inputs with explicit FormatConfig values, asserting full
 // expected outputs — indentation from the block stack, spacing rules, case
 // transforms against the language catalogs, and the verbatim-preservation
-// invariants (comments, strings, directives, macro bodies, continuation
-// lines, elided argument slots, number literals). Every test pins bytes, and
-// the idempotence test asserts format(format(x)) == format(x).
+// invariants (comments, strings, directives, macro and asm bodies, format-off
+// regions, continuation lines, elided argument slots, number literals). Every
+// test pins bytes, and the idempotence test asserts format(format(x)) ==
+// format(x).
 
 #include <cstdio>
 #include <string>
@@ -375,6 +376,120 @@ static void TestLineEndingDerivation() {
   CHECK_EQ(fmt("x=1\n", c), std::string("x = 1\n"));
 }
 
+// Format-off/on pragmas: the opening line, every line between, and the
+// closing line are copied from the original bytes (indent and trailing
+// whitespace included), while code outside the region still formats. A
+// second `off` inside the region is state, not depth, and is ignored.
+static void TestFormatOffRegionPreserved() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "sub f()\n"
+                         "  ' fbformat: off\n"
+                         "   x=1   \n"
+                         "  ' fbformat: off\n"
+                         "     junk   \n"
+                         "  ' fbformat: on\n"
+                         "y=2\n"
+                         "end sub\n";
+  std::string const want = "sub f()\n"
+                           "  ' fbformat: off\n"
+                           "   x=1   \n"
+                           "  ' fbformat: off\n"
+                           "     junk   \n"
+                           "  ' fbformat: on\n"
+                           "  y = 2\n"
+                           "end sub\n";
+  CHECK_EQ(fmt(in, c), want);
+
+  // An empty pragma must never match: `find("")` would otherwise turn every
+  // comment line into a format-off switch.
+  FormatConfig emptyOff = spaceConfig();
+  emptyOff.formatOffPragma.clear();
+  CHECK_EQ(fmt("sub f()\n' note\nx=1\nend sub\n", emptyOff),
+           std::string("sub f()\n  ' note\n  x = 1\nend sub\n"));
+}
+
+// An unclosed off region runs to end of file; the document tail still gets
+// its one final newline, but no raw line is rewritten.
+static void TestFormatOffToEof() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "sub f()\n"
+                         "  x=1\n"
+                         "  ' fbformat: off\n"
+                         "   y=2   \n"
+                         "     z=3\n";
+  std::string const want = "sub f()\n"
+                           "  x = 1\n"
+                           "  ' fbformat: off\n"
+                           "   y=2   \n"
+                           "     z=3\n";
+  CHECK_EQ(fmt(in, c), want);
+}
+
+// A `#macro` body is opaque until `#endmacro`: raw bytes, and no block-stack
+// effect (a body `loop` must not pop the enclosing `Do`, a body `if` must not
+// push an `If`). The delimiters themselves are directive lines, so
+// DirectiveCase still applies to them.
+static void TestMacroBodyVerbatim() {
+  FormatConfig c = spaceConfig();
+  c.directiveCase = CaseStyle::Title;
+  std::string const in = "do\n"
+                         "#macro m(x)\n"
+                         "    loop\n"
+                         "    if x then\n"
+                         "#endmacro\n"
+                         "x=1\n"
+                         "loop\n";
+  std::string const want = "do\n"
+                           "#Macro m(x)\n"
+                           "    loop\n"
+                           "    if x then\n"
+                           "#Endmacro\n"
+                           "  x = 1\n"
+                           "loop\n";
+  CHECK_EQ(fmt(in, c), want);
+}
+
+// An `Asm ... End Asm` body is raw and does not touch the stack; the opener
+// and closer are ordinary code lines, so they take the block indent.
+static void TestAsmBodyVerbatim() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "sub f()\n"
+                         "asm\n"
+                         "    mov eax, 0\n"
+                         "  x=1   \n"
+                         "end asm\n"
+                         "x=2\n"
+                         "end sub\n";
+  std::string const want = "sub f()\n"
+                           "  asm\n"
+                           "    mov eax, 0\n"
+                           "  x=1   \n"
+                           "  end asm\n"
+                           "  x = 2\n"
+                           "end sub\n";
+  CHECK_EQ(fmt(in, c), want);
+}
+
+// Bare `End` terminates the program; it is not `End <block>` and must not
+// dedent or pop the enclosing Scope. `End As Integer` remains a UDT field.
+static void TestBareEndIsAStatement() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "sub f()\n"
+                         "end\n"
+                         "end sub\n"
+                         "type t\n"
+                         "end as integer\n"
+                         "end type\n";
+  std::string const want = "sub f()\n"
+                           "  end\n"
+                           "end sub\n"
+                           "type t\n"
+                           "  end as integer\n"
+                           "end type\n";
+  CHECK_EQ(fmt(in, c), want);
+  CHECK_EQ(fmt("end\n", c), std::string("end\n"));
+}
+
 static void TestDisableFormat() {
   FormatConfig c = spaceConfig();
   c.disableFormat = true;
@@ -402,8 +517,17 @@ static void TestIdempotence() {
   c.keywordCase = CaseStyle::Canonical;
   std::string const in = "#define M(x) _\n"
                          "  ((x))\n"
+                         "#macro SAY(w)\n"
+                         "    print w   \n"
+                         "#endmacro\n"
+                         "' fbformat: off\n"
+                         "   raw=1   \n"
+                         "' fbformat: on\n"
                          "sub f( byval x as integer )\n"
                          "dim y as string\n"
+                         "asm\n"
+                         "    mov eax, 0\n"
+                         "end asm\n"
                          "if x>0 then\n"
                          "y = str$(x) + \"!\"\n"
                          "select case x\n"
@@ -416,6 +540,7 @@ static void TestIdempotence() {
                          "goto done\n"
                          "endif\n"
                          "done:\n"
+                         "end\n"
                          "end sub\n";
   std::string const once = fmt(in, c);
   CHECK_EQ(fmt(once, c), once);
@@ -443,6 +568,11 @@ int main() {
   TestTrailingCommentGap();
   TestLineEndingDerivation();
   TestDisableFormat();
+  TestFormatOffRegionPreserved();
+  TestFormatOffToEof();
+  TestMacroBodyVerbatim();
+  TestAsmBodyVerbatim();
+  TestBareEndIsAStatement();
   TestSpellingTable();
   TestIdempotence();
 
