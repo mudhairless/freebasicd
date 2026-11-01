@@ -460,28 +460,182 @@ bool isLabelLine(std::vector<Token> const &toks,
          b.text == ":";
 }
 
-// How a line's leading words shape the block stack (see the classification
-// inside the emission loop).
+// How a line's leading words shape the block stack (see classifyLine).
 enum class Lead { Plain, EndTwoWord, EndIf, Bare };
 
-} // namespace
+// Everything emission and the stack update need to know about one physical
+// line, computed once so the later passes (range formatting included) do not
+// have to re-derive it.
+struct LineShape {
+  Line const *line = nullptr; // source span and significant-token indices
+  bool blank = true;
+  TokenKind firstKind = TokenKind::Unknown;
+  size_t firstIndex = 0; // index of the first significant token
+  size_t lastCode = 0;   // index of the last non-comment significant token
+  std::string w0;        // first word, lowercased (or empty)
+  std::string w1;        // second word/operator, lowercased (or empty)
+  std::string wLast;     // last code word, lowercased (or empty)
+  Lead lead = Lead::Plain;
+  fblang::BlockCloser closerInfo{};
+  bool labelLine = false;
+  bool continues = false; // last code token is `_`
+  int depth = 0;          // indent depth, filled in by depthFor
+};
 
-std::string formatDocument(const std::string &content,
-                           const std::string &filePath,
-                           const FormatConfig &config) {
-  (void)filePath;
-  if (config.disableFormat || content.empty()) {
-    return content;
+LineShape classifyLine(Line const &line, std::vector<Token> const &toks) {
+  LineShape shape;
+  shape.line = &line;
+  if (line.sig.empty()) {
+    return shape;
+  }
+  shape.blank = false;
+  shape.firstIndex = line.sig.front();
+  Token const &first = toks[shape.firstIndex];
+  shape.firstKind = first.kind;
+  shape.w0 = first.kind == TokenKind::Identifier
+                 ? fblang::toLowerChars(first.text)
+                 : "";
+  // The last token that is code, not a trailing comment; structure is read
+  // from it (`If x Then ' note` still opens a block).
+  shape.lastCode = line.sig.back();
+  while (shape.lastCode > shape.firstIndex &&
+         (toks[shape.lastCode].kind == TokenKind::LineComment ||
+          toks[shape.lastCode].kind == TokenKind::BlockComment)) {
+    --shape.lastCode;
+  }
+  Token const &last = toks[shape.lastCode];
+  shape.wLast =
+      last.kind == TokenKind::Identifier ? fblang::toLowerChars(last.text) : "";
+  if (line.sig.size() > 1) {
+    Token const &second = toks[line.sig[1]];
+    if (second.kind == TokenKind::Identifier) {
+      shape.w1 = fblang::toLowerChars(second.text);
+    } else if (second.kind == TokenKind::Operator) {
+      shape.w1 = second.text;
+    }
   }
 
-  TokenStream ts(content);
-  std::vector<Token> const &toks = ts.tokens();
-  std::vector<Line> lines = splitLines(toks, content);
+  // The bare set is fblang's isCloserStatement answer (end, endif, next,
+  // wend, loop); blockForCloser alone would also claim every `End <x>`
+  // closer *word*, so `Sub` would read as its own closer and the opener
+  // path would never run. A closer word followed by `as` is a UDT field
+  // named after it (FreeBASIC.md §7, `Next As Node Ptr`), never a closer.
+  if (shape.w1 != "as") {
+    if (shape.w0 == "end") {
+      shape.lead = Lead::EndTwoWord;
+    } else if (shape.w0 == "endif") {
+      shape.lead = Lead::EndIf;
+    } else if ((shape.w0 == "next" || shape.w0 == "wend" ||
+                shape.w0 == "loop") &&
+               fblang::blockForCloser(shape.w0, &shape.closerInfo)) {
+      shape.lead = Lead::Bare;
+    }
+  }
+
+  shape.labelLine = shape.lead == Lead::Plain && isLabelLine(toks, line.sig);
+  shape.continues = last.kind == TokenKind::Identifier && last.text == "_";
+  return shape;
+}
+
+// Indentation depth for this line, before the line updates the stack.
+int depthFor(FormatConfig const &config,
+             std::vector<fblang::BlockKind> const &stack,
+             LineShape const &shape) {
+  int depth = static_cast<int>(stack.size());
+  if (shape.lead != Lead::Plain) {
+    depth = std::max(0, depth - 1);
+  } else if ((shape.w0 == "else" || shape.w0 == "elseif") && !stack.empty() &&
+             stack.back() == fblang::BlockKind::If) {
+    depth = std::max(0, depth - 1);
+  } else if (shape.w0 == "case" && !stack.empty() &&
+             stack.back() == fblang::BlockKind::Select) {
+    depth = std::max(0, depth - 1);
+  }
+
+  if (shape.labelLine) {
+    if (config.indentGotoLabels == IndentGotoLabels::OuterIndent) {
+      depth = std::max(0, depth - 1);
+    } else if (config.indentGotoLabels == IndentGotoLabels::InnerIndent) {
+      // same depth as the statements around it
+    } else {
+      depth = 0;
+    }
+  }
+  return depth;
+}
+
+std::string indentFor(FormatConfig const &config, int depth) {
+  if (config.useTab == UseTab::Never || config.indentWidth != config.tabWidth) {
+    return std::string(static_cast<size_t>(std::max(0, depth)) *
+                           static_cast<size_t>(config.indentWidth),
+                       ' ');
+  }
+  return std::string(static_cast<size_t>(std::max(0, depth)), '\t');
+}
+
+// How this line changes the block stack. Only code lines reach it: directive,
+// metacommand, and comment-only lines are emitted and never open or close a
+// block.
+void applyLineToStack(std::vector<fblang::BlockKind> &stack,
+                      LineShape const &shape) {
+  if (shape.lead == Lead::EndTwoWord) {
+    if (!shape.w1.empty()) {
+      fblang::BlockCloser c{};
+      if (fblang::blockForCloser(shape.w1, &c) && !stack.empty() &&
+          stack.back() == c.kind) {
+        stack.pop_back();
+      }
+    } else if (!stack.empty() && stack.back() == fblang::BlockKind::Scope) {
+      stack.pop_back();
+    }
+  } else if (shape.lead == Lead::EndIf) {
+    // The merged `EndIf` spelling of `End If`.
+    if (!stack.empty() && stack.back() == fblang::BlockKind::If) {
+      stack.pop_back();
+    }
+  } else if (shape.lead == Lead::Bare) {
+    // next / wend / loop
+    if (!stack.empty() && stack.back() == shape.closerInfo.kind) {
+      stack.pop_back();
+    }
+  } else {
+    fblang::BlockCloser opener{};
+    if (fblang::blockForOpener(shape.w0, &opener)) {
+      bool blockForm = true;
+      if (shape.w0 == "if") {
+        // `If cond Then` opens a block; `If cond Then stmt` is one line.
+        blockForm = shape.wLast == "then";
+      }
+      if (blockForm) {
+        stack.push_back(opener.kind);
+      }
+    }
+  }
+}
+
+// The document being built: output bytes, the verbatim spans the trailing-
+// whitespace pass must leave alone, the pending-blank counter, and the
+// continuation state. Owns every byte formatDocument emits.
+struct Formatter {
+  FormatConfig const &config;
+  std::string const &content;
+  std::vector<Token> const &toks;
+  bool anyCRLF;
+
+  std::string out;
+  std::vector<std::pair<size_t, size_t>> verbatimSpans;
+  size_t pendingBlank = 0;
+  bool prevContinues = false;
+  bool emittedAny = false;
+
+  Formatter(FormatConfig const &config, std::string const &content,
+            std::vector<Token> const &toks)
+      : config(config), content(content), toks(toks),
+        anyCRLF(content.find("\r\n") != std::string::npos) {}
 
   // One newline style for the whole document unless Leave keeps per-line
   // endings: derived from the source (a file with any CRLF is CRLF).
-  bool anyCRLF = content.find("\r\n") != std::string::npos;
-  auto eolFor = [&](Line const &l) -> std::string {
+  std::string eolFor(Line const &line) const {
     if (config.lineEnding == "LF") {
       return "\n";
     }
@@ -489,27 +643,18 @@ std::string formatDocument(const std::string &content,
       return "\r\n";
     }
     if (config.lineEnding == "Leave") {
-      return l.crlf ? "\r\n" : "\n";
+      return line.crlf ? "\r\n" : "\n";
     }
     return anyCRLF ? "\r\n" : "\n";
-  };
+  }
 
-  // Byte spans of `out` copied verbatim (continuation lines, block-comment
-  // blobs); the trailing-whitespace pass must not rewrite their interiors.
-  std::string out;
-  std::vector<std::pair<size_t, size_t>> verbatimSpans;
-  auto appendVerbatim = [&](std::string const &text) {
+  void appendVerbatim(std::string const &text) {
     size_t begin = out.size();
     out += text;
     verbatimSpans.emplace_back(begin, out.size());
-  };
+  }
 
-  std::vector<fblang::BlockKind> stack;
-  size_t pendingBlank = 0;
-  bool prevContinues = false;
-  bool emittedAny = false;
-
-  auto flushBlanks = [&](std::string const &eol, bool atFileStart) {
+  void flushBlanks(std::string const &eol, bool atFileStart) {
     size_t keep = config.maxEmptyLinesToKeep > 0
                       ? static_cast<size_t>(config.maxEmptyLinesToKeep)
                       : 0;
@@ -521,311 +666,12 @@ std::string formatDocument(const std::string &content,
       out += eol;
     }
     pendingBlank = 0;
-  };
-
-  for (Line const &line : lines) {
-    std::vector<Token> const &T = toks;
-    std::string eol = eolFor(line);
-
-    if (line.sig.empty()) {
-      ++pendingBlank;
-      continue;
-    }
-
-    // A continuation of a `_`-terminated logical line: ContinuationStyle::
-    // Leave copies the authored line byte for byte.
-    if (prevContinues) {
-      flushBlanks(eol, !emittedAny);
-      appendVerbatim(content.substr(line.begin, line.end - line.begin));
-      out += eol;
-      size_t lastSig = line.sig.back();
-      prevContinues =
-          T[lastSig].kind == TokenKind::Identifier && T[lastSig].text == "_";
-      continue;
-    }
-
-    Token const &first = T[line.sig.front()];
-    std::string w0 = first.kind == TokenKind::Identifier
-                         ? fblang::toLowerChars(first.text)
-                         : "";
-    // The last token that is code, not a trailing comment; structure is read
-    // from it (`If x Then ' note` still opens a block).
-    size_t lastCode = line.sig.back();
-    while (lastCode > line.sig.front() &&
-           (T[lastCode].kind == TokenKind::LineComment ||
-            T[lastCode].kind == TokenKind::BlockComment)) {
-      --lastCode;
-    }
-    std::string wLast = T[lastCode].kind == TokenKind::Identifier
-                            ? fblang::toLowerChars(T[lastCode].text)
-                            : "";
-    std::string w1 = "";
-    if (line.sig.size() > 1) {
-      Token const &second = T[line.sig[1]];
-      if (second.kind == TokenKind::Identifier) {
-        w1 = fblang::toLowerChars(second.text);
-      } else if (second.kind == TokenKind::Operator) {
-        w1 = second.text;
-      }
-    }
-
-    // --- how the line leads: closer form or plain statement ---
-    // The bare set is fblang's isCloserStatement answer (end, endif, next,
-    // wend, loop); blockForCloser alone would also claim every `End <x>`
-    // closer *word*, so `Sub` would read as its own closer and the opener
-    // path would never run. A closer word followed by `as` is a UDT field
-    // named after it (FreeBASIC.md §7, `Next As Node Ptr`), never a closer.
-    fblang::BlockCloser closerInfo{};
-    Lead lead = Lead::Plain;
-    if (w1 != "as") {
-      if (w0 == "end") {
-        lead = Lead::EndTwoWord;
-      } else if (w0 == "endif") {
-        lead = Lead::EndIf;
-      } else if ((w0 == "next" || w0 == "wend" || w0 == "loop") &&
-                 fblang::blockForCloser(w0, &closerInfo)) {
-        lead = Lead::Bare;
-      }
-    }
-
-    // --- indentation depth for this line ---
-    int depth = static_cast<int>(stack.size());
-    if (lead != Lead::Plain) {
-      depth = std::max(0, depth - 1);
-    } else if ((w0 == "else" || w0 == "elseif") && !stack.empty() &&
-               stack.back() == fblang::BlockKind::If) {
-      depth = std::max(0, depth - 1);
-    } else if (w0 == "case" && !stack.empty() &&
-               stack.back() == fblang::BlockKind::Select) {
-      depth = std::max(0, depth - 1);
-    }
-
-    bool labelLine = lead == Lead::Plain && isLabelLine(T, line.sig);
-    if (labelLine) {
-      if (config.indentGotoLabels == IndentGotoLabels::OuterIndent) {
-        depth = std::max(0, depth - 1);
-      } else if (config.indentGotoLabels == IndentGotoLabels::InnerIndent) {
-        // same depth as the statements around it
-      } else {
-        depth = 0;
-      }
-    }
-
-    auto indentStr = [&]() -> std::string {
-      if (config.useTab == UseTab::Never ||
-          config.indentWidth != config.tabWidth) {
-        return std::string(static_cast<size_t>(std::max(0, depth)) *
-                               static_cast<size_t>(config.indentWidth),
-                           ' ');
-      }
-      return std::string(static_cast<size_t>(std::max(0, depth)), '\t');
-    };
-
-    flushBlanks(eol, !emittedAny);
-
-    // --- emit the line ---
-    if (first.kind == TokenKind::Directive) {
-      // A `#...` line: case the directive word, keep the rest raw.
-      std::string raw = content.substr(line.begin, line.end - line.begin);
-      size_t trim = raw.find_first_not_of(" \t");
-      std::string body =
-          trim == std::string::npos ? std::string() : raw.substr(trim);
-      std::string lead = config.indentPPDirectives == IndentPPDirectives::None
-                             ? std::string()
-                             : indentStr();
-      size_t hash = body.find('#');
-      if (hash == std::string::npos ||
-          config.directiveCase == CaseStyle::Leave) {
-        out += lead + body;
-      } else {
-        size_t wordStart = hash + 1;
-        size_t wordEnd = wordStart;
-        while (wordEnd < body.size() &&
-               ((body[wordEnd] >= 'a' && body[wordEnd] <= 'z') ||
-                (body[wordEnd] >= 'A' && body[wordEnd] <= 'Z') ||
-                body[wordEnd] == '_')) {
-          ++wordEnd;
-        }
-        std::string word = body.substr(wordStart, wordEnd - wordStart);
-        if (word.empty()) {
-          out += lead + body;
-        } else {
-          out += lead + body.substr(0, wordStart) +
-                 applyCase(config.directiveCase, fblang::toLowerChars(word)) +
-                 body.substr(wordEnd);
-        }
-      }
-      out += eol;
-      // A directive ending in `_` continues onto the next lines, which are
-      // macro-body bytes and go through raw.
-      std::string trimmed = raw;
-      while (!trimmed.empty() &&
-             (trimmed.back() == ' ' || trimmed.back() == '\t')) {
-        trimmed.pop_back();
-      }
-      prevContinues = !trimmed.empty() && trimmed.back() == '_';
-      emittedAny = true;
-      continue;
-    }
-
-    if (first.kind == TokenKind::Metacommand) {
-      // A rare line-start `$...` metacommand (the `'$...` comment form is a
-      // line comment and stays verbatim like every comment).
-      std::string body = first.text;
-      size_t trim = body.find_first_not_of(" \t");
-      if (trim != std::string::npos) {
-        body.erase(0, trim);
-      }
-      if (config.metacommandCase != CaseStyle::Leave && !body.empty()) {
-        size_t wordStart = 1;
-        size_t wordEnd = wordStart;
-        while (wordEnd < body.size() &&
-               ((body[wordEnd] >= 'a' && body[wordEnd] <= 'z') ||
-                (body[wordEnd] >= 'A' && body[wordEnd] <= 'Z') ||
-                body[wordEnd] == '_')) {
-          ++wordEnd;
-        }
-        if (wordEnd > wordStart) {
-          body = body.substr(0, wordStart) +
-                 applyCase(config.metacommandCase,
-                           fblang::toLowerChars(
-                               body.substr(wordStart, wordEnd - wordStart))) +
-                 body.substr(wordEnd);
-        }
-      }
-      out += indentStr() + body + eol;
-      emittedAny = true;
-      continue;
-    }
-
-    if (first.kind == TokenKind::LineComment ||
-        first.kind == TokenKind::BlockComment) {
-      // A comment-only line (including `'$...` metacommand comments): the
-      // comment text is never rewritten, only placed at the indent. A block
-      // comment blob may span display rows; its bytes go through verbatim.
-      std::string raw = content.substr(line.begin, line.end - line.begin);
-      size_t trim = raw.find_first_not_of(" \t");
-      std::string text =
-          trim == std::string::npos ? std::string() : raw.substr(trim);
-      out += indentStr();
-      appendVerbatim(text);
-      out += eol;
-      prevContinues = false;
-      emittedAny = true;
-      continue;
-    }
-
-    // A code line: rebuild token by token.
-    out += indentStr();
-    Emitter em{config, T};
-    em.firstWordLower = w0;
-    for (size_t si = 0; si < line.sig.size(); ++si) {
-      size_t i = line.sig[si];
-      Token const &t = T[i];
-      bool hadWs = false;
-      if (si > 0) {
-        size_t prevEnd = T[line.sig[si - 1]].end;
-        hadWs = t.start > prevEnd;
-      } else {
-        hadWs = t.start > line.begin;
-      }
-
-      char gap = '\0';
-      if (em.hasPrev) {
-        Token const *nextSig =
-            si + 1 < line.sig.size() ? &T[line.sig[si + 1]] : nullptr;
-        gap = em.gapBefore(i, hadWs, nextSig);
-      }
-      // A trailing comment rides at the configured distance.
-      if ((t.kind == TokenKind::LineComment ||
-           t.kind == TokenKind::BlockComment) &&
-          i > lastCode) {
-        int n = config.spacesBeforeTrailingComments > 1
-                    ? config.spacesBeforeTrailingComments
-                    : 1;
-        out += std::string(static_cast<size_t>(n), ' ');
-      } else if (gap != '\0') {
-        out += gap;
-      }
-
-      if (t.kind == TokenKind::BlockComment) {
-        appendVerbatim(t.text);
-      } else if (t.kind == TokenKind::Identifier) {
-        out += caseWord(t.text, em.prevLower, config);
-      } else if (t.kind == TokenKind::Operator && t.text == "(") {
-        em.parenCtx.push_back(em.contextForOpenParen());
-        out += "(";
-      } else if (t.kind == TokenKind::Operator && t.text == ")") {
-        if (!em.parenCtx.empty()) {
-          em.parenCtx.pop_back();
-        }
-        out += ")";
-      } else {
-        out += t.text;
-      }
-
-      // Track unary -/+ so the operand stays attached when configured to.
-      // The sign-before-paren case counts too (`Line -(10,10)`).
-      if (t.text == "-" || t.text == "+") {
-        Token const *nx =
-            si + 1 < line.sig.size() ? &T[line.sig[si + 1]] : nullptr;
-        em.prevWasUnary =
-            em.unaryContext() ||
-            (nx != nullptr && nx->text == "(" && nx->start == t.end);
-      } else {
-        em.prevWasUnary = false;
-      }
-      em.hasPrev = true;
-      em.prevKind = t.kind;
-      em.prevText = t.text;
-      em.prevLower = fblang::toLowerChars(t.text);
-      em.prevHadWs = hadWs;
-    }
-    out += eol;
-
-    // A `_` as the last code token keeps the next line a continuation.
-    prevContinues =
-        T[lastCode].kind == TokenKind::Identifier && T[lastCode].text == "_";
-
-    // --- update the block stack ---
-    if (lead == Lead::EndTwoWord) {
-      if (!w1.empty()) {
-        fblang::BlockCloser c{};
-        if (fblang::blockForCloser(w1, &c) && !stack.empty() &&
-            stack.back() == c.kind) {
-          stack.pop_back();
-        }
-      } else if (!stack.empty() && stack.back() == fblang::BlockKind::Scope) {
-        stack.pop_back();
-      }
-    } else if (lead == Lead::EndIf) {
-      // The merged `EndIf` spelling of `End If`.
-      if (!stack.empty() && stack.back() == fblang::BlockKind::If) {
-        stack.pop_back();
-      }
-    } else if (lead == Lead::Bare) {
-      // next / wend / loop
-      if (!stack.empty() && stack.back() == closerInfo.kind) {
-        stack.pop_back();
-      }
-    } else {
-      fblang::BlockCloser opener{};
-      if (fblang::blockForOpener(w0, &opener)) {
-        bool blockForm = true;
-        if (w0 == "if") {
-          // `If cond Then` opens a block; `If cond Then stmt` is one line.
-          blockForm = wLast == "then";
-        }
-        if (blockForm) {
-          stack.push_back(opener.kind);
-        }
-      }
-    }
-
-    emittedAny = true;
   }
 
-  // --- document tail ---
+  std::string finish();
+};
+
+std::string Formatter::finish() {
   auto lineStartsInsideVerbatim = [&](size_t pos) {
     for (auto const &span : verbatimSpans) {
       if (pos >= span.first && pos < span.second) {
@@ -871,7 +717,228 @@ std::string formatDocument(const std::string &content,
              (out.empty() || (out.back() != '\n' && out.back() != '\r'))) {
     out += anyCRLF ? "\r\n" : "\n";
   }
-  return out;
+  return std::move(out);
+}
+
+// Emit one non-blank line that does not continue another. Returns true when
+// the line was rebuilt as code and so may change the block stack; directive,
+// metacommand, and comment-only lines keep the stack untouched.
+bool emitLine(Formatter &f, LineShape const &shape) {
+  Line const &line = *shape.line;
+  std::string eol = f.eolFor(line);
+  f.flushBlanks(eol, !f.emittedAny);
+
+  if (shape.firstKind == TokenKind::Directive) {
+    // A `#...` line: case the directive word, keep the rest raw.
+    std::string raw = f.content.substr(line.begin, line.end - line.begin);
+    size_t trim = raw.find_first_not_of(" \t");
+    std::string body =
+        trim == std::string::npos ? std::string() : raw.substr(trim);
+    std::string lead = f.config.indentPPDirectives == IndentPPDirectives::None
+                           ? std::string()
+                           : indentFor(f.config, shape.depth);
+    size_t hash = body.find('#');
+    if (hash == std::string::npos ||
+        f.config.directiveCase == CaseStyle::Leave) {
+      f.out += lead + body;
+    } else {
+      size_t wordStart = hash + 1;
+      size_t wordEnd = wordStart;
+      while (wordEnd < body.size() &&
+             ((body[wordEnd] >= 'a' && body[wordEnd] <= 'z') ||
+              (body[wordEnd] >= 'A' && body[wordEnd] <= 'Z') ||
+              body[wordEnd] == '_')) {
+        ++wordEnd;
+      }
+      std::string word = body.substr(wordStart, wordEnd - wordStart);
+      if (word.empty()) {
+        f.out += lead + body;
+      } else {
+        f.out += lead + body.substr(0, wordStart) +
+                 applyCase(f.config.directiveCase, fblang::toLowerChars(word)) +
+                 body.substr(wordEnd);
+      }
+    }
+    f.out += eol;
+    // A directive ending in `_` continues onto the next lines, which are
+    // macro-body bytes and go through raw.
+    std::string trimmed = raw;
+    while (!trimmed.empty() &&
+           (trimmed.back() == ' ' || trimmed.back() == '\t')) {
+      trimmed.pop_back();
+    }
+    f.prevContinues = !trimmed.empty() && trimmed.back() == '_';
+    f.emittedAny = true;
+    return false;
+  }
+
+  if (shape.firstKind == TokenKind::Metacommand) {
+    // A rare line-start `$...` metacommand (the `'$...` comment form is a
+    // line comment and stays verbatim like every comment).
+    std::string body = f.toks[shape.firstIndex].text;
+    size_t trim = body.find_first_not_of(" \t");
+    if (trim != std::string::npos) {
+      body.erase(0, trim);
+    }
+    if (f.config.metacommandCase != CaseStyle::Leave && !body.empty()) {
+      size_t wordStart = 1;
+      size_t wordEnd = wordStart;
+      while (wordEnd < body.size() &&
+             ((body[wordEnd] >= 'a' && body[wordEnd] <= 'z') ||
+              (body[wordEnd] >= 'A' && body[wordEnd] <= 'Z') ||
+              body[wordEnd] == '_')) {
+        ++wordEnd;
+      }
+      if (wordEnd > wordStart) {
+        body = body.substr(0, wordStart) +
+               applyCase(f.config.metacommandCase,
+                         fblang::toLowerChars(
+                             body.substr(wordStart, wordEnd - wordStart))) +
+               body.substr(wordEnd);
+      }
+    }
+    f.out += indentFor(f.config, shape.depth) + body + eol;
+    f.emittedAny = true;
+    return false;
+  }
+
+  if (shape.firstKind == TokenKind::LineComment ||
+      shape.firstKind == TokenKind::BlockComment) {
+    // A comment-only line (including `'$...` metacommand comments): the
+    // comment text is never rewritten, only placed at the indent. A block
+    // comment blob may span display rows; its bytes go through verbatim.
+    std::string raw = f.content.substr(line.begin, line.end - line.begin);
+    size_t trim = raw.find_first_not_of(" \t");
+    std::string text =
+        trim == std::string::npos ? std::string() : raw.substr(trim);
+    f.out += indentFor(f.config, shape.depth);
+    f.appendVerbatim(text);
+    f.out += eol;
+    f.prevContinues = false;
+    f.emittedAny = true;
+    return false;
+  }
+
+  // A code line: rebuild token by token.
+  f.out += indentFor(f.config, shape.depth);
+  Emitter em{f.config, f.toks};
+  em.firstWordLower = shape.w0;
+  for (size_t si = 0; si < line.sig.size(); ++si) {
+    size_t i = line.sig[si];
+    Token const &t = f.toks[i];
+    bool hadWs = false;
+    if (si > 0) {
+      size_t prevEnd = f.toks[line.sig[si - 1]].end;
+      hadWs = t.start > prevEnd;
+    } else {
+      hadWs = t.start > line.begin;
+    }
+
+    char gap = '\0';
+    if (em.hasPrev) {
+      Token const *nextSig =
+          si + 1 < line.sig.size() ? &f.toks[line.sig[si + 1]] : nullptr;
+      gap = em.gapBefore(i, hadWs, nextSig);
+    }
+    // A trailing comment rides at the configured distance.
+    if ((t.kind == TokenKind::LineComment ||
+         t.kind == TokenKind::BlockComment) &&
+        i > shape.lastCode) {
+      int n = f.config.spacesBeforeTrailingComments > 1
+                  ? f.config.spacesBeforeTrailingComments
+                  : 1;
+      f.out += std::string(static_cast<size_t>(n), ' ');
+    } else if (gap != '\0') {
+      f.out += gap;
+    }
+
+    if (t.kind == TokenKind::BlockComment) {
+      f.appendVerbatim(t.text);
+    } else if (t.kind == TokenKind::Identifier) {
+      f.out += caseWord(t.text, em.prevLower, f.config);
+    } else if (t.kind == TokenKind::Operator && t.text == "(") {
+      em.parenCtx.push_back(em.contextForOpenParen());
+      f.out += "(";
+    } else if (t.kind == TokenKind::Operator && t.text == ")") {
+      if (!em.parenCtx.empty()) {
+        em.parenCtx.pop_back();
+      }
+      f.out += ")";
+    } else {
+      f.out += t.text;
+    }
+
+    // Track unary -/+ so the operand stays attached when configured to.
+    // The sign-before-paren case counts too (`Line -(10,10)`).
+    if (t.text == "-" || t.text == "+") {
+      Token const *nx =
+          si + 1 < line.sig.size() ? &f.toks[line.sig[si + 1]] : nullptr;
+      em.prevWasUnary =
+          em.unaryContext() ||
+          (nx != nullptr && nx->text == "(" && nx->start == t.end);
+    } else {
+      em.prevWasUnary = false;
+    }
+    em.hasPrev = true;
+    em.prevKind = t.kind;
+    em.prevText = t.text;
+    em.prevLower = fblang::toLowerChars(t.text);
+    em.prevHadWs = hadWs;
+  }
+  f.out += eol;
+
+  // A `_` as the last code token keeps the next line a continuation.
+  f.prevContinues = shape.continues;
+  f.emittedAny = true;
+  return true;
+}
+
+} // namespace
+
+std::string formatDocument(const std::string &content,
+                           const std::string &filePath,
+                           const FormatConfig &config) {
+  (void)filePath;
+  if (config.disableFormat || content.empty()) {
+    return content;
+  }
+
+  TokenStream ts(content);
+  std::vector<Token> const &toks = ts.tokens();
+  std::vector<Line> lines = splitLines(toks, content);
+
+  Formatter formatter(config, content, toks);
+  std::vector<fblang::BlockKind> stack;
+
+  for (Line const &line : lines) {
+    LineShape shape = classifyLine(line, toks);
+
+    if (shape.blank) {
+      ++formatter.pendingBlank;
+      continue;
+    }
+
+    // A continuation of a `_`-terminated logical line: ContinuationStyle::
+    // Leave copies the authored line byte for byte.
+    if (formatter.prevContinues) {
+      std::string eol = formatter.eolFor(line);
+      formatter.flushBlanks(eol, !formatter.emittedAny);
+      formatter.appendVerbatim(
+          content.substr(line.begin, line.end - line.begin));
+      formatter.out += eol;
+      size_t lastSig = line.sig.back();
+      formatter.prevContinues = toks[lastSig].kind == TokenKind::Identifier &&
+                                toks[lastSig].text == "_";
+      continue;
+    }
+
+    shape.depth = depthFor(config, stack, shape);
+    if (emitLine(formatter, shape)) {
+      applyLineToStack(stack, shape);
+    }
+  }
+
+  return formatter.finish();
 }
 
 } // namespace fbformat
