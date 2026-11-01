@@ -35,7 +35,7 @@
 
   | Milestone | Status |
   |-----------|--------|
-  | M17 — FreeBASIC formatter (backlog, scope TBD) | done |
+  | M17 — FreeBASIC formatter (wave 2 in progress: verbatim regions, honest config, true range formatting — see [M17_PLAN.md](M17_PLAN.md)) | in progress |
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
   | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
@@ -841,9 +841,6 @@ Remaining of a milestone whose CI and install work landed 2026-09-25 and whose
 - **Recorded non-starters** (never scheduled): `moniker`, `linkedEditingRange`,
   `documentColor`/`colorPresentation`, the deprecated `declaration` alias —
   exercises for editors we do not target.
-- **Scheduled but deferred** (each lives in §5): the FreeBASIC formatter
-  (M17; high-payback — it sets the de-facto standard, scope TBD by a dedicated
-  design pass).
 
 ## 7. Cross-cutting engineering notes
 

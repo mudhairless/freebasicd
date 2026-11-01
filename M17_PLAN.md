@@ -293,20 +293,24 @@ Smoke test via shell: format sample file, check output, `--check` behavior.
 
 **Status update (2026-10-30):** Wave 2 is planned in §9; no code has been written yet. The "remaining" lists in the status updates above are superseded by §9.
 
-## 9. Wave 2 (next step): trust the inputs, bound the output
+**Status update (2026-11-01):** Wave 2 Phase 1 and Phase 2 are complete. `511558a` extracted the line model (`classifyLine`, `applyLineToStack`, `Formatter`, `emitLine`) with no test changes and byte-identical corpus output. `6632ef3` closed the four soundness findings in §9.1: format-off/on regions, `#macro ... #endmacro` bodies, and `Asm ... End Asm` bodies are now copied byte for byte (delimiters still formatted, raw bodies inert to the block stack), and a bare `End` is the program-termination statement instead of a closer. Full clean build, `ctest` 22/22, clang-format gate, and 59/59 corpus idempotence are green. Remaining in this wave: Phase 3 (honest config resolution, `--config`/`--style`, client options, corpus gate, i18n recursion) and Phase 4 (true range formatting). The wave's `CHANGELOG.md` and `Formatting.md` close-out stays with §9.8.
+
+## 9. Wave 2 (in progress): trust the inputs, bound the output
 
 The engine now formats and round-trips: a full clean build is green, `ctest` is 22/22, all 59 corpus files are idempotent, and a significant-token comparison over the corpus passes today. The remaining work is not "more spacing rules" — it is making the formatter refuse the inputs it cannot trust and leave alone the regions it cannot model, then replacing the range-formatting deferral. Wrapping (`ColumnLimit`, `ContinuationStyle`, `_` insertion) is deliberately the wave *after* this one: it needs a penalty/line-break model and parser block ranges, and it is much safer once the corpus gate below exists.
 
-Four phases, each independently verifiable and committable. Phase 1 is a pure refactor with no test changes; Phases 2–4 add behavior.
+Four phases, each independently verifiable and committable. Phase 1 is a pure refactor with no test changes; Phases 2–4 add behavior. **Phases 1 and 2 have landed** (commits `511558a` and `6632ef3`); Phases 3 and 4 remain.
 
 ### 9.1 Findings (code as of 2026-10-30)
 
+Phase 2 closed the four soundness rows in the first block; the rest are Phases 3–4 work.
+
 | Item | State today | Evidence |
 |---|---|---|
-| Format-off/on pragma regions | not enforced; fields exist | `config.h:267-269`; the engine has no pragma path |
-| `#macro ... #endmacro` bodies | **rebuilt as code**, body indentation destroyed | `preproc_macro.bas`: `    print w` → `Print w` at column 0 |
-| `Asm ... End Asm` bodies | rebuilt as code (case/spacing/indent), stack can be moved by a body line | engine tracks the block but formats interior lines as statements |
-| Bare `End` statement | **dedented as if it were a closer**; pops `Scope` | `sub f()\nend\nend sub` → `End` at column 0 |
+| Format-off/on pragma regions | **closed in Phase 2**: the pragma line, the interior, and the on-line are copied raw; unclosed runs to EOF; nested off is state, not depth; an empty pragma never matches | `formatDocument`'s raw-region block; `TestFormatOffRegionPreserved`, `TestFormatOffToEof` |
+| `#macro ... #endmacro` bodies | **closed in Phase 2**: body raw, delimiters still formatted, body never touches the stack | `preproc_macro.bas` keeps `    print w`; `TestMacroBodyVerbatim` |
+| `Asm ... End Asm` bodies | **closed in Phase 2**: opener and closer format normally, interior raw and inert to the stack | `blocks_asm.bas` keeps `    mov eax, 0`; `TestAsmBodyVerbatim` |
+| Bare `End` statement | **closed in Phase 2**: program termination, `Lead::Plain`, keeps the body indent, no `Scope` pop; `End As Integer` still a field | `TestBareEndIsAStatement` |
 | Real range formatting | returns a full-document edit | `format_lsp.cpp:20-28`; the session test pins the deferral |
 | `--config` / `--style` | parsed, ignored | `fbformat_main.cpp:77-80` |
 | Client `FormattingOptions` | dead code; `applyClientOptions` has no production caller | only `tests/format_config_checks.cpp` calls it |
@@ -329,7 +333,7 @@ Four phases, each independently verifiable and committable. Phase 1 is a pure re
 | Client options | only when no config file exists | §1 precedence |
 | Range boundary units | expand to whole lines, `_` chain, and block-comment token; trim blank edges | never split a unit the engine treats as one |
 
-### 9.3 Phase 1 — Extract the line model (pure refactor, no behavior change)
+### 9.3 Phase 1 — Extract the line model (pure refactor, no behavior change) — **done** (`511558a`)
 
 `src/format/engine.cpp` is one 400-line loop with classification, stack update, and emission interleaved. Phases 2 and 4 need the same classification, so extract it once instead of duplicating it:
 
@@ -340,7 +344,9 @@ Four phases, each independently verifiable and committable. Phase 1 is a pure re
 
 Acceptance: **no test file changes**; all 22 suites green; byte-identical output on the corpus; clang-format clean. This is the "prove the refactor before adding behavior" commit.
 
-### 9.4 Phase 2 — Verbatim regions and the `End` fix
+Landed as `511558a`, touching only `src/format/engine.cpp`; corpus output was byte-identical to the pre-refactor baseline.
+
+### 9.4 Phase 2 — Verbatim regions and the `End` fix — **done** (`6632ef3`)
 
 All in `src/format/engine.cpp` + `tests/format_engine_checks.cpp`:
 
@@ -351,7 +357,9 @@ All in `src/format/engine.cpp` + `tests/format_engine_checks.cpp`:
 
 Tests: `TestFormatOffRegionPreserved`, `TestFormatOffToEof`, `TestMacroBodyVerbatim`, `TestAsmBodyVerbatim`, `TestBareEndIsAStatement`; extend the idempotence fixture. One session test in `tests/session_formatting_checks.cpp` proving a pragma region survives the wire while the code around it formats. Adding it touches that one feature file (function + `RUN_TEST` line), per the AGENTS.md rule.
 
-### 9.5 Phase 3 — Honest config resolution, CLI flags, client options, corpus gate
+Landed as `6632ef3`. The empty-pragma guard is asserted inside `TestFormatOffRegionPreserved` rather than as its own test; the session test is `TestFormatOffRegionSurvivesTheSession`. Corpus output moves only where the old engine rewrote opaque bodies — `blocks_asm.bas`, `preproc_macro.bas`, `preproc_macro_dead.bas` — and all 59 files remain idempotent.
+
+### 9.5 Phase 3 — Honest config resolution, CLI flags, client options, corpus gate — **next**
 
 **Config API** (`src/format/config.{h,cpp}`): replace `loadConfigForPath` with
 
