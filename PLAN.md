@@ -384,10 +384,14 @@
      `intl-8.dll` in `bin`). So a Windows build links a DLL from outside the
      repo: an installed tree would start with the DLL beside the binary or not at
      all. `install(TARGETS ...)` does not install DLLs, so this is packaging
-     work for the first release that ships a Windows binary — deciding between
-     vendoring the DLL, static-linking libintl, or dropping gettext on Windows
-     (all 29 catalogs are empty today, so an English-only Windows build loses
-     nothing yet).
+     work for the first release that ships a Windows binary. **Decided
+     (2026-11-02): vendor libintl and build it on Windows**, replacing the
+     downloaded bundle, so the installed tree carries its own localization
+     instead of a DLL from outside the repo. Dropping gettext on Windows was
+     rejected: an English-only Windows build is not acceptable even while
+     all 29 catalogs are empty, because the plumbing has to be real in the
+     shipped artifact for translations to land later without a packaging
+     change.
   4. Pull diagnostics ships `full` | `unchanged`, and the per-item *delta* form
      is not implemented: LSP 3.17 defines a `DocumentDiagnosticReport` with
      `kind: "unchanged"` and an optional `relatedDocuments`, and the server answers
