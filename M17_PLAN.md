@@ -295,15 +295,17 @@ Smoke test via shell: format sample file, check output, `--check` behavior.
 
 **Status update (2026-11-01):** Wave 2 Phase 1 and Phase 2 are complete. `511558a` extracted the line model (`classifyLine`, `applyLineToStack`, `Formatter`, `emitLine`) with no test changes and byte-identical corpus output. `6632ef3` closed the four soundness findings in §9.1: format-off/on regions, `#macro ... #endmacro` bodies, and `Asm ... End Asm` bodies are now copied byte for byte (delimiters still formatted, raw bodies inert to the block stack), and a bare `End` is the program-termination statement instead of a closer. Full clean build, `ctest` 22/22, clang-format gate, and 59/59 corpus idempotence are green. Remaining in this wave: Phase 3 (honest config resolution, `--config`/`--style`, client options, corpus gate, i18n recursion) and Phase 4 (true range formatting). The wave's `CHANGELOG.md` and `Formatting.md` close-out stays with §9.8.
 
+**Status update (2026-11-02):** Wave 2 Phase 3 is complete. `6558fc0` replaced `loadConfigForPath` with `resolveConfig` and `configForStyle`, made a broken config, an unknown style, and an inheritance cycle errors instead of silent fallbacks, honored `fbformat --config` and `--style`, applied client `FormattingOptions` only when no config file exists, added `format_corpus_checks` as the 23rd ctest suite, and made the i18n extraction and freshness check recurse into `src/format`. Ebben's gate is green: a full clean build, `ctest` 23/23, and the clang-format gate with no output. Remaining in this wave: Phase 4 (true range formatting). The wave's `CHANGELOG.md` and `Formatting.md` close-out stays with §9.8.
+
 ## 9. Wave 2 (in progress): trust the inputs, bound the output
 
 The engine now formats and round-trips: a full clean build is green, `ctest` is 22/22, all 59 corpus files are idempotent, and a significant-token comparison over the corpus passes today. The remaining work is not "more spacing rules" — it is making the formatter refuse the inputs it cannot trust and leave alone the regions it cannot model, then replacing the range-formatting deferral. Wrapping (`ColumnLimit`, `ContinuationStyle`, `_` insertion) is deliberately the wave *after* this one: it needs a penalty/line-break model and parser block ranges, and it is much safer once the corpus gate below exists.
 
-Four phases, each independently verifiable and committable. Phase 1 is a pure refactor with no test changes; Phases 2–4 add behavior. **Phases 1 and 2 have landed** (commits `511558a` and `6632ef3`); Phases 3 and 4 remain.
+Four phases, each independently verifiable and committable. Phase 1 is a pure refactor with no test changes; Phases 2–4 add behavior. **Phases 1, 2, and 3 have landed** (commits `511558a`, `6632ef3`, and `6558fc0`); Phase 4 remains.
 
 ### 9.1 Findings (code as of 2026-10-30)
 
-Phase 2 closed the four soundness rows in the first block; the rest are Phases 3–4 work.
+Phase 2 closed the four soundness rows in the first block. Phase 3 closed every config, CLI, corpus, and i18n row below it. Real range formatting is the only row left, and it is Phase 4 work.
 
 | Item | State today | Evidence |
 |---|---|---|
@@ -312,14 +314,14 @@ Phase 2 closed the four soundness rows in the first block; the rest are Phases 3
 | `Asm ... End Asm` bodies | **closed in Phase 2**: opener and closer format normally, interior raw and inert to the stack | `blocks_asm.bas` keeps `    mov eax, 0`; `TestAsmBodyVerbatim` |
 | Bare `End` statement | **closed in Phase 2**: program termination, `Lead::Plain`, keeps the body indent, no `Scope` pop; `End As Integer` still a field | `TestBareEndIsAStatement` |
 | Real range formatting | returns a full-document edit | `format_lsp.cpp:20-28`; the session test pins the deferral |
-| `--config` / `--style` | parsed, ignored | `fbformat_main.cpp:77-80` |
-| Client `FormattingOptions` | dead code; `applyClientOptions` has no production caller | only `tests/format_config_checks.cpp` calls it |
-| Malformed `.fbformat` | silently falls back to FBdocs | `loadConfigForPath` ignores `parseFormatTable`'s `false` |
-| `.fbformat` shadow warning | raw `fprintf(stderr)` in the library, never reaches the client log | `config.cpp` warning block |
-| `-` as stdin | documented but fails | `Formatting.md:99` vs `cannot read -`, exit 2 |
-| Multiple files to stdout | concatenates documents with no separator | `fbformat_main.cpp` loop |
-| Corpus idempotence | verified ad hoc, not gated | 59/59 idempotent and token-equivalent today |
-| i18n extraction | skips `src/format/` | `CMakeLists.txt:196-199` globs `src/*.cpp`; `i18n_checks.cpp` uses a non-recursive `directory_iterator` |
+| `--config` / `--style` | **closed in Phase 3**: honored through `ConfigQuery`; a config error is fatal in the CLI | `fbformat_main.cpp` `configFor`; `TestExplicitConfigAndStyle` |
+| Client `FormattingOptions` | **closed in Phase 3**: applied only when no config file was found | `formattingConfigFor` in `src/session.cpp`; `TestClientOptionsAppliedWhenUnconfigured`, `TestClientOptionsIgnoredWhenConfigured` |
+| Malformed `.fbformat` | **closed in Phase 3**: `resolveConfig` returns `ok=false`; the session returns empty edits and the CLI exits 2 | `TestMalformedConfigIsRefused`, `TestInvalidConfigAnswersNoEdits` |
+| `.fbformat` shadow warning | **closed in Phase 3**: the notice is a `warnings` entry that the caller logs; the library writes no stderr | `TestShadowWarning` |
+| `-` as stdin | **closed in Phase 3**: `-` reads stdin; stdin with no `--stdin-filepath`, `--config`, or `--style` exits 2 instead of discovering from the cwd | `fbformat_main.cpp` stdin handling |
+| Multiple files to stdout | **closed in Phase 3**: exits 2 unless `--in-place` or `--check` is given | `fbformat_main.cpp` argument checks |
+| Corpus idempotence | **closed in Phase 3**: gated as the 23rd ctest suite, over both shipped presets | `tests/format_corpus_checks.cpp` |
+| i18n extraction | **closed in Phase 3**: the extraction glob is `GLOB_RECURSE` and `i18n_checks` walks `src/` recursively; the pot is regenerated | `CMakeLists.txt` po-template block; `po/freebasicd.pot` dated 2026-11-02 |
 
 ### 9.2 Locked decisions
 
@@ -359,7 +361,7 @@ Tests: `TestFormatOffRegionPreserved`, `TestFormatOffToEof`, `TestMacroBodyVerba
 
 Landed as `6632ef3`. The empty-pragma guard is asserted inside `TestFormatOffRegionPreserved` rather than as its own test; the session test is `TestFormatOffRegionSurvivesTheSession`. Corpus output moves only where the old engine rewrote opaque bodies — `blocks_asm.bas`, `preproc_macro.bas`, `preproc_macro_dead.bas` — and all 59 files remain idempotent.
 
-### 9.5 Phase 3 — Honest config resolution, CLI flags, client options, corpus gate — **next**
+### 9.5 Phase 3 — Honest config resolution, CLI flags, client options, corpus gate — **done** (`6558fc0`)
 
 **Config API** (`src/format/config.{h,cpp}`): replace `loadConfigForPath` with
 
@@ -392,7 +394,9 @@ Tests in `format_config_checks.cpp`: explicit config/style overrides, unknown st
 
 **i18n plumbing.** New log messages live in `src/format/`, which the pot extraction and `i18n_checks` both miss. Switch `po-template`'s glob to `GLOB_RECURSE` over `src/` and `i18n_checks`'s `directory_iterator` to a recursive iterator, then `cmake --build build --target po-template` and commit the pot. Otherwise the messages are untranslatable and the freshness check cannot see them.
 
-### 9.6 Phase 4 — True range formatting
+Landed as `6558fc0`. Two points go beyond the sketch above. Preset loading reports its own failures as well: an unreadable preset file, invalid preset TOML, an unknown parent in an inherit chain, and an inheritance cycle all return `ok=false`, rather than a silent stop or a half applied chain, and only the implicit FBdocs default falls back to the factory defaults when it cannot load. The CLI also rejects a repeated `-` and `-` mixed with file arguments. The session side gained one test the sketch did not list, `TestInvalidConfigAnswersNoEdits`.
+
+### 9.6 Phase 4 — True range formatting — **next**
 
 Engine API in `src/format/engine.h`:
 
