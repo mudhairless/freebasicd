@@ -35,7 +35,7 @@
 
   | Milestone | Status |
   |-----------|--------|
-  | M17 — FreeBASIC formatter (wave 2 in progress: wave 2 phases 1 to 3 landed, true range formatting remains — see [M17_PLAN.md](M17_PLAN.md)) | in progress |
+  | M17 — FreeBASIC formatter (wave 2 complete 2026-11-02; summary in CHANGELOG.md) | done |
   | M21 — module model, constructors, and fbc's codes | next |
   | M18 — public release: editor setup docs, first tag | blocked on M21 |
   | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
