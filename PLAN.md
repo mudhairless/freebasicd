@@ -42,6 +42,7 @@
   | M23 — fbc parser diagnostics: statements, placement, warnings (block structure + false-positive gate + code identity landed) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
+  | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
 
 ## 2. What exists (condensed)
 
@@ -814,6 +815,40 @@ before or alongside; both orders are workable.
   `workspace/diagnostic`) and on push; a system-folder or out-of-root header
   never ships diagnostics on either delivery.
 - `ctest` green, changed files clang-format clean.
+
+### M26 — Formatter wave 3: wrapping and the reserved options (backlog)
+
+The formatter's next wave, carried over from M17 wave 2's plan (§9.7 of the
+deleted `M17_PLAN.md`; the wave's summary is in [`CHANGELOG.md`](CHANGELOG.md)).
+Wave 2 deliberately stopped at trust: verbatim regions, honest config, true
+range formatting. What is left is the work that changes where lines break,
+plus the config fields the engine parses today and does not act on
+(`Formatting.md` lists them as reserved):
+
+- `ColumnLimit` wrapping, including `_` insertion, and `ContinuationStyle`
+  WrapOnly / WrapAndJoin: an over-limit statement is split with a
+  continuation, and existing continuations are kept, or joined and re-split.
+- The `StatementSeparatorStyle` Split* forms: a colon-compound line split
+  into one statement per line, the inverse of the compound handling the
+  wave 2 follow-up fix made safe.
+- `CallParentheses` / `NiladicCallParentheses`, the alignment options, and
+  `NamespaceIndentation`: layout options the line model can express once a
+  wrapping pass exists.
+- `OneLineFormatOffRegex` and the `CommentPragmas` regexes: format-off
+  regions selected by pattern, not by the pragma pair alone.
+- Format-on-type, and dialect-aware `IntrinsicDollarSuffix`.
+
+Why it waits: wrapping needs a penalty and line-break model the engine does
+not have, and it wants block ranges to break against. The parser already
+computes `blockRanges` for its own consumers (§2), so the missing piece is
+the model, not the ranges. The other precondition is already in place: the
+corpus gate (`format_corpus_checks`, wave 2) exists, and every wrapping rule
+lands against it, because a wrapper that is not idempotent over the corpus
+is a defect the gate can name. Each option lands with engine tests and
+corpus coverage of its shape, in the wave 2 pattern.
+
+Acceptance: `ctest` green, changed files clang-format clean, and the corpus
+idempotent under both presets with the new options exercised.
 
 ### M18 — Public release: first tag
 
