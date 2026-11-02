@@ -37,12 +37,13 @@
   |-----------|--------|
   | M17 — FreeBASIC formatter (wave 2 complete 2026-11-02; summary in CHANGELOG.md) | done |
   | M21 — module model, constructors, and fbc's codes | next |
-  | M18 — public release: editor setup docs, first tag | blocked on M21 |
+  | M18 — public release: editor setup docs, first tag | blocked on M21, M23, M24, and the VS Code extension |
   | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
   | M23 — fbc parser diagnostics: statements, placement, warnings (block structure + false-positive gate + code identity landed) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
   | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
+  | M27 — lint diagnostics: the checks fbc does not have (backlog) | backlog |
 
 ## 2. What exists (condensed)
 
@@ -625,7 +626,10 @@ suggesting it.
 ### M23 — fbc parser diagnostics: statements, placement, warnings (backlog)
 
 The parser-reachable half of fbc's catalog, reported with fbc's own numbers and
-texts from M21's generated catalog (landed).
+texts from M21's generated catalog (landed). The ranked candidate tiers behind
+this milestone and M24 are in
+[`research/fbc-diagnostics.md`](research/fbc-diagnostics.md). This milestone
+gates M18.
 
 - **False-positive gate — cleared (2026-10-09).** The parser no longer rejects
   FreeBASIC fbc accepts: the fb-dialect *error* false positives across the
@@ -730,7 +734,9 @@ English); the no-cascade rule has a test; a warning-level change moves the
 
 The largest diagnostic wave, and the one the parser alone cannot reach: fbc's
 name and type checks run past the parse, and `src/resolve.cpp` emits no
-diagnostics today. Build the type / overload / const-attribute model layered on
+diagnostics today. Its candidate set is Tier 4 of
+[`research/fbc-diagnostics.md`](research/fbc-diagnostics.md). This milestone
+gates M18. Build the type / overload / const-attribute model layered on
 `ResolvedSymbol`, then judge a name, an argument list, a member access, and an
 assignment against it and report fbc's numbers from M21's catalog:
 `42 VARIABLENOTDECLARED`, `8 UNDEFINEDSYMBOL`, `4 DUPDEFINITION`, `20/58` type
@@ -850,22 +856,67 @@ corpus coverage of its shape, in the wave 2 pattern.
 Acceptance: `ctest` green, changed files clang-format clean, and the corpus
 idempotent under both presets with the new options exercised.
 
+### M27 — Lint diagnostics: the checks fbc does not have (backlog)
+
+The second diagnostics direction, distinct from M23 and M24. Those report
+fbc's own findings with fbc's numbers; this milestone is the clang-tidy
+lineage the project started from: checks for patterns fbc accepts silently
+(shadowing, unused names, implicit-conversion hazards, dead code, and the
+other classes that survive translation to FreeBASIC's semantics). The
+mapping research is the first chunk of
+[`research/diagnostic-tooling.md`](research/diagnostic-tooling.md): clang and
+clang-tidy supply the check classes, Rubberduck VBA is the closest BASIC
+relative with open analyzers to study, and fbc plus `FreeBASIC.md` are the
+ground truth for what FreeBASIC's semantics actually are, so a check is
+ported as a class and a set of trigger conditions, never as C++ behavior.
+
+Most of the interesting checks need names and types resolved, so this
+milestone stands on M24's resolve model; the parser-only classes can start
+earlier. Each check lands with its trigger conditions stated against
+`FreeBASIC.md`, a suppression story (the `suppress` routing and the per-line
+comment form), and corpus goldens, in the M23/M24 pattern. This milestone
+does **not** gate M18: the initial release bar is fbc parity (M21, M23,
+M24), and the lint checks accrue after the tag.
+
 ### M18 — Public release: first tag
 
-**Gated on M21**: shipping a first tag with the module model documented but
-undetected, and diagnostic numbers that do not match the compiler they stand in
-for, would make the release the moment those become expensive to change.
+**Gated on M21, M23, and M24**: the initial release bar is parity with fbc
+diagnostics (decided 2026-11-02). M21 delivers the module model and fbc's
+numbers for its covered set, M23 the parser-reachable statement, placement,
+and warning families, and M24 the resolve-layer semantic set; together that
+is the parity the tag claims. Shipping earlier, with the module model
+documented but undetected and diagnostic numbers that do not match the
+compiler they stand in for, would make the release the moment those become
+expensive to change. The lint family (M27) is not part of the bar: it
+accrues after the tag.
+
+**Also gated on the VS Code extension** (below): a release whose largest
+editor audience has no installable path to the server is a release in name
+only.
 
 Remaining of a milestone whose CI and install work landed 2026-09-25 and whose
 `docs/editors/` wiring recipes plus `docs/install.md` landed 2026-10-02 (see
 [`CHANGELOG.md`](CHANGELOG.md)):
 
+- **VS Code: LSP support in the published extension.** The Marketplace
+  extension Ebben already publishes (FreeBASIC syntax highlighting only, a
+  separate project) gains a language client: it launches `freebasicd` and
+  surfaces its diagnostics, navigation, and formatting, so a VS Code user
+  installs one extension instead of following a wiring recipe. This repo's
+  `docs/editors/` has no VS Code entry today, and the six recipes it does
+  have (emacs, helix, kate, micro, neovim, vim) are all manual wiring. The
+  extension work gates the tag.
+- **Zed: a candidate, not a gate.** A Zed extension covers the same ground
+  for that editor's audience. Decide before the tag freezes; ship it with
+  the release if it is cheap, or let it follow.
 - **A first tagged release**: `git tag` at the version the release notes claim,
   plus a CPack config if a downloadable artifact is wanted. Nothing else in this
   milestone needs to be invented for that. The changelog's `## [Unreleased]`
   becomes the released version heading with its date.
 - Acceptance: a tagged version whose `CMakeLists.txt` number, README, and
-  `CHANGELOG.md` heading agree.
+  `CHANGELOG.md` heading agree, the diagnostics the server emits are fbc's
+  at the parity M23 and M24 define, and the VS Code extension in the store
+  launches the tagged server.
 
 ## 6. Not doing (soon)
 
