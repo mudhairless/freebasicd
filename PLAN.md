@@ -830,6 +830,8 @@ before or alongside; both orders are workable.
 
 The formatter's next wave, carried over from M17 wave 2's plan (§9.7 of the
 deleted `M17_PLAN.md`; the wave's summary is in [`CHANGELOG.md`](CHANGELOG.md)).
+The option catalog behind the whole design is
+[`research/formatter-design.md`](research/formatter-design.md).
 Wave 2 deliberately stopped at trust: verbatim regions, honest config, true
 range formatting. What is left is the work that changes where lines break,
 plus the config fields the engine parses today and does not act on
@@ -847,6 +849,45 @@ plus the config fields the engine parses today and does not act on
 - `OneLineFormatOffRegex` and the `CommentPragmas` regexes: format-off
   regions selected by pattern, not by the pragma pair alone.
 - Format-on-type, and dialect-aware `IntrinsicDollarSuffix`.
+- `BreakBinaryOperators` and `AlignEscapedNewlines`, which decide where a
+  wrapped line's operator and `_` sit.
+- The `AllowShortIfStatementsOnASingleLine` and
+  `AllowShortBlocksOnASingleLine` `Never` gates, which expand one-line
+  blocks into block form; `SplitAll` pairs with them, per the research.
+- The rest of the blank-line family: `SeparateDefinitionBlocks`,
+  `EmptyLineBeforeAccessModifier`, `EmptyLineAfterAccessModifier`,
+  `WrapNamespaceBodyWithEmptyLines`, and the `AtEndOfFile` and
+  `AtStartOfBlock` halves of `KeepEmptyLines` (only `AtStartOfFile` is
+  honored today).
+- The indent and spacing fields whose behavior is currently fixed:
+  `IndentCaseLabels`, `IndentAccessModifierSections`, `IndentExternBlock`,
+  `IndentWrappedFunctionNames`, `BracedInitializerIndentWidth`,
+  `ContinuationIndentWidth`, `FloatSuffixStyle`, `InsertLeadingZero`,
+  `SpaceAfterPrintChannelHash`, `SpacesInParens` `InSubscripts` and
+  `InCasts`, `SpacesInBracedInitializers`, `SpaceBeforeBracedInitializer`,
+  and `RemoveRedundantParens`.
+- The graphics remainder: `CoordPairSeparatorSpacing`,
+  `GraphicsModeWordCase`, and `SpaceBetweenEmptyArguments`
+  (`StepPrefixSpacing` already shipped).
+- The comment and preprocessor remainder: `ReflowComments`,
+  `SpacesInLineCommentPrefix`, `DocCommentPrefix`, `SortIncludes` with
+  `IncludeBlocks`, and `DirectiveContinuationAlign`.
+- The declaration rewrites: `CanonicalizeSpecifierOrder`,
+  `PointerSpellingStyle`, `ConstQualifierPosition`, `DimTypePosition`,
+  `TypeFieldDim`, `NextVariableStyle`, `CallKeywordStyle`, and
+  `LetKeywordStyle`. These are in scope (decided 2026-11-02), and they are
+  the wave's most delicate part: several reorder or respell tokens, which
+  breaks the token-equivalence stance the shipped engine holds, so each
+  lands behind its option with parse-equivalence tests, not just corpus
+  idempotence.
+- Three catalog options have no config field yet and join the schema when
+  scheduled: `RemCommentStyle`, `PrintShortcutStyle`, and
+  `IncludeCategories`.
+
+Also outstanding from the research: the `ext` preset, measured from the
+Extended Library project (Ebben's own style), planned alongside `FBdocs`
+and `fbc` but never made. It is a preset file plus the measurement pass,
+not engine work, and it belongs to this wave's tail.
 
 Why it waits: wrapping needs a penalty and line-break model the engine does
 not have, and it wants block ranges to break against. The parser already
