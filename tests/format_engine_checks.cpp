@@ -645,6 +645,74 @@ static void TestRangeMidDocumentKeepsEofAlone() {
   CHECK_EQ(applyRange(in, r), std::string("sub f()\n  x = 1\nend sub"));
 }
 
+// A block that opens and closes on one colon-separated line nets to zero
+// on the block stack: the `Next` after the colon closes the `For` the line
+// opened, so the enclosing `End Sub` still pops and the statement after
+// the sub sits at depth 0. Reading only the first statement leaked the
+// `For`, and every line after the sub stayed indented.
+static void TestCompoundForLineDoesNotLeak() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "sub f()\n"
+                         "dim as integer used(0 to 3)\n"
+                         "for i as integer = 0 to 3 : used(i) = 0 : next\n"
+                         "end sub\n"
+                         "dim as integer sentinel\n";
+  std::string const want = "sub f()\n"
+                           "  dim as integer used(0 to 3)\n"
+                           "  for i as integer = 0 to 3: used(i) = 0: next\n"
+                           "end sub\n"
+                           "dim as integer sentinel\n";
+  CHECK_EQ(fmt(in, c), want);
+}
+
+// The drd engine.bas failure in miniature: the leaked `For` also blocked
+// the enclosing blocks' closers, because a closer pops only the matching
+// kind. With the compound line applied in full, `Next` closes the outer
+// `For`, `End With` and `End Sub` pop, and the trailing statement is at
+// depth 0 instead of depth 3.
+static void TestCompoundForInsideWithAndFor() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "sub f()\n"
+                         "with m\n"
+                         "for s as integer = 0 to 2\n"
+                         "for i as integer = 0 to 1 : used(i) = 0 : next\n"
+                         "next\n"
+                         "end with\n"
+                         "end sub\n"
+                         "dim as integer sentinel\n";
+  std::string const want = "sub f()\n"
+                           "  with m\n"
+                           "    for s as integer = 0 to 2\n"
+                           "      for i as integer = 0 to 1: used(i) = 0: "
+                           "next\n"
+                           "    next\n"
+                           "  end with\n"
+                           "end sub\n"
+                           "dim as integer sentinel\n";
+  CHECK_EQ(fmt(in, c), want);
+}
+
+// The same one-line compound shape for the other bare closers: `While`
+// closed by `Wend` and `Do` closed by `Loop` on the same line.
+static void TestCompoundWhileAndDoLines() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "function f() as integer\n"
+                         "dim as integer n = 0\n"
+                         "while n < 3 : n = n + 1 : wend\n"
+                         "do : n = n - 1 : loop while n > 0\n"
+                         "return n\n"
+                         "end function\n"
+                         "dim as integer sentinel\n";
+  std::string const want = "function f() as integer\n"
+                           "  dim as integer n = 0\n"
+                           "  while n < 3: n = n + 1: wend\n"
+                           "  do: n = n - 1: loop while n > 0\n"
+                           "  return n\n"
+                           "end function\n"
+                           "dim as integer sentinel\n";
+  CHECK_EQ(fmt(in, c), want);
+}
+
 int main() {
   TestIndentBlocks();
   TestOneLineIfDoesNotPush();
@@ -681,6 +749,9 @@ int main() {
   TestRangeBlankOnlyIsNoOp();
   TestRangeAlreadyFormattedIsNoOp();
   TestRangeMidDocumentKeepsEofAlone();
+  TestCompoundForLineDoesNotLeak();
+  TestCompoundForInsideWithAndFor();
+  TestCompoundWhileAndDoLines();
 
   if (failures != 0) {
     std::printf("format_engine_checks: %d failure(s)\n", failures);

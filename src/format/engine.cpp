@@ -559,7 +559,11 @@ LineShape classifyLine(Line const &line, std::vector<Token> const &toks) {
     }
   }
 
-  shape.labelLine = shape.lead == Lead::Plain && isLabelLine(toks, line.sig);
+  // A label is a user identifier, so a reserved word followed by a colon
+  // is not one: `do : stmt` is a compound statement, not a label `do:`.
+  shape.labelLine = shape.lead == Lead::Plain &&
+                    !fblang::isReservedWord(shape.w0) &&
+                    isLabelLine(toks, line.sig);
   shape.continues = last.kind == TokenKind::Identifier && last.text == "_";
   return shape;
 }
@@ -625,40 +629,107 @@ std::string indentFor(FormatConfig const &config, int depth) {
   return std::string(static_cast<size_t>(std::max(0, depth)), '\t');
 }
 
-// How this line changes the block stack. Only code lines reach it: directive,
-// metacommand, and comment-only lines are emitted and never open or close a
-// block.
-void applyLineToStack(std::vector<fblang::BlockKind> &stack,
-                      LineShape const &shape) {
-  if (shape.lead == Lead::EndTwoWord) {
+// The stack effect of one statement, read from its first, second, and last
+// words. A closer pops only when the top of the stack is the block it
+// closes; there is no unwinding, so a block the classifier fails to close
+// stays on the stack and blocks every enclosing closer behind it. A closer
+// word followed by `as` is a UDT field named after it, never a closer.
+void applyStatementToStack(std::vector<fblang::BlockKind> &stack,
+                           std::string const &w0, std::string const &w1,
+                           std::string const &wLast) {
+  if (w1 != "as") {
     fblang::BlockCloser c{};
-    if (fblang::blockForCloser(shape.w1, &c) && !stack.empty() &&
-        stack.back() == c.kind) {
-      stack.pop_back();
-    }
-  } else if (shape.lead == Lead::EndIf) {
-    // The merged `EndIf` spelling of `End If`.
-    if (!stack.empty() && stack.back() == fblang::BlockKind::If) {
-      stack.pop_back();
-    }
-  } else if (shape.lead == Lead::Bare) {
-    // next / wend / loop
-    if (!stack.empty() && stack.back() == shape.closerInfo.kind) {
-      stack.pop_back();
-    }
-  } else {
-    fblang::BlockCloser opener{};
-    if (fblang::blockForOpener(shape.w0, &opener)) {
-      bool blockForm = true;
-      if (shape.w0 == "if") {
-        // `If cond Then` opens a block; `If cond Then stmt` is one line.
-        blockForm = shape.wLast == "then";
+    if (w0 == "end" && !w1.empty() && fblang::blockForCloser(w1, &c)) {
+      if (!stack.empty() && stack.back() == c.kind) {
+        stack.pop_back();
       }
-      if (blockForm) {
-        stack.push_back(opener.kind);
+      return;
+    }
+    if (w0 == "endif") {
+      // The merged `EndIf` spelling of `End If`.
+      if (!stack.empty() && stack.back() == fblang::BlockKind::If) {
+        stack.pop_back();
       }
+      return;
+    }
+    if ((w0 == "next" || w0 == "wend" || w0 == "loop") &&
+        fblang::blockForCloser(w0, &c)) {
+      if (!stack.empty() && stack.back() == c.kind) {
+        stack.pop_back();
+      }
+      return;
     }
   }
+  fblang::BlockCloser opener{};
+  if (fblang::blockForOpener(w0, &opener)) {
+    bool blockForm = true;
+    if (w0 == "if") {
+      // `If cond Then` opens a block; `If cond Then stmt` is one line.
+      blockForm = wLast == "then";
+    }
+    if (blockForm) {
+      stack.push_back(opener.kind);
+    }
+  }
+}
+
+// How this line changes the block stack. Only code lines reach it:
+// directive, metacommand, and comment-only lines are emitted and never open
+// or close a block.
+//
+// A line may carry several statements separated by `:`, and each one is
+// applied in order, so a block that opens and closes on the same line
+// (`For i = 0 To 3 : used(i) = 0 : Next`) nets to zero. Reading only the
+// first statement leaked the opener: the stack kept a `For` no later line
+// could close, and the enclosing `End With` / `End Sub` then refused to
+// pop behind it. One exception: a one-line `If ... Then stmt` keeps the
+// single-statement treatment, because the statements after `Then` are the
+// If's body and their colons are not boundaries the stack may read.
+void applyLineToStack(std::vector<fblang::BlockKind> &stack,
+                      LineShape const &shape, std::vector<Token> const &toks) {
+  if (shape.w0 == "if" && shape.wLast != "then") {
+    applyStatementToStack(stack, shape.w0, shape.w1, shape.wLast);
+    return;
+  }
+  std::vector<Token> stmt;
+  auto flush = [&]() {
+    if (stmt.empty()) {
+      return;
+    }
+    std::string w0;
+    std::string w1;
+    std::string wLast;
+    if (stmt.front().kind == TokenKind::Identifier) {
+      w0 = fblang::toLowerChars(stmt.front().text);
+    }
+    if (stmt.size() > 1) {
+      if (stmt[1].kind == TokenKind::Identifier) {
+        w1 = fblang::toLowerChars(stmt[1].text);
+      } else if (stmt[1].kind == TokenKind::Operator) {
+        w1 = stmt[1].text;
+      }
+    }
+    if (stmt.back().kind == TokenKind::Identifier) {
+      wLast = fblang::toLowerChars(stmt.back().text);
+    }
+    applyStatementToStack(stack, w0, w1, wLast);
+    stmt.clear();
+  };
+  for (size_t idx : shape.line->sig) {
+    if (idx > shape.lastCode) {
+      break;
+    }
+    Token const &t = toks[idx];
+    if (t.kind == TokenKind::LineComment || t.kind == TokenKind::BlockComment) {
+      continue;
+    }
+    if (t.kind == TokenKind::Operator && t.text == ":") {
+      flush();
+      continue;
+    }
+    stmt.push_back(t);
+  }
+  flush();
 }
 
 // The document being built: output bytes, the verbatim spans the trailing-
@@ -1001,7 +1072,7 @@ void processLines(Formatter &formatter, std::vector<Line> const &lines,
         // `End Asm` is the closer and formats normally.
         shape.depth = depthFor(config, stack, shape);
         if (emitLine(formatter, shape)) {
-          applyLineToStack(stack, shape);
+          applyLineToStack(stack, shape, toks);
         }
         formatter.asmBody = false;
       } else {
@@ -1042,7 +1113,7 @@ void processLines(Formatter &formatter, std::vector<Line> const &lines,
 
     shape.depth = depthFor(config, stack, shape);
     if (emitLine(formatter, shape)) {
-      applyLineToStack(stack, shape);
+      applyLineToStack(stack, shape, toks);
       if (shape.lead == Lead::Plain && shape.w0 == "asm") {
         formatter.asmBody = true;
       }

@@ -26,6 +26,13 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-02 — formatter: compound statements no longer leak blocks
+
+- **Found on a real file**: the one-line loop `for i as integer = 0 to wallListCount - 1 : used(i) = 0 : next` pushed a `For` the classifier never closed, because it read only the line's first statement. The outer loop's `Next` consumed the leaked slot, `End With` and `End Sub` refused to pop behind the leftover `For`, and the file's main body formatted three levels deep. The engine now applies each colon-separated statement in order; a one-line `If` keeps the old treatment, since the statements after `Then` are its body.
+- **Same family**: `do : ...` was read as a goto label named `do` and emitted at depth 0. A label is a user identifier, so a reserved word followed by a colon is no longer treated as one.
+- **Tests**: three engine tests pin the compound `For`, `While`, and `Do` depths, including the nested `With`/`For` miniature of the reported failure. The corpus gains `compound_statements.bas` (60 files).
+
+
 ### 2026-11-02 — M17 wave 2: verbatim regions, honest config, true range formatting
 
 Wave 2 made the formatter refuse the inputs it cannot trust and leave alone the regions it cannot model. The plan lived in `M17_PLAN.md` §9; this entry is its summary, and the plan file is deleted with the wave, as the repo's plan lifecycle prescribes.
