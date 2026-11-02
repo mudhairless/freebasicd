@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-10-12 21:42-0500\n"
-"PO-Revision-Date: 2026-10-12 21:42-0500\n"
+"POT-Creation-Date: 2026-11-02 13:54-0600\n"
+"PO-Revision-Date: 2026-11-02 13:54-0600\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -47,12 +47,12 @@ msgstr ""
 
 #. TRANSLATORS: the first %s is the FreeBASIC keyword Shared (passed as an
 #. argument, never translated); the second is the variable's name.
-#: src/code_actions.cpp:358
+#: src/code_actions.cpp:359
 #, c-format
 msgid "Add '%s' to '%s'"
 msgstr ""
 
-#: src/code_actions.cpp:420
+#: src/code_actions.cpp:421
 #, c-format
 msgid "include file not found: \"%s\""
 msgstr ""
@@ -67,6 +67,35 @@ msgid "%s reference"
 msgid_plural "%s references"
 msgstr[0] ""
 msgstr[1] ""
+
+#: src/format/config.cpp:750
+#, c-format
+msgid "style inheritance cycle at %s"
+msgstr ""
+
+#: src/format/config.cpp:766 src/format/config.cpp:857
+#: src/format/config.cpp:872
+#, c-format
+msgid "cannot read %s"
+msgstr ""
+
+#: src/format/config.cpp:773 src/format/config.cpp:790
+#: src/format/config.cpp:878 src/format/config.cpp:921
+#, c-format
+msgid "%s is not valid TOML"
+msgstr ""
+
+#: src/format/config.cpp:784 src/format/config.cpp:906
+#: src/format/config.cpp:935 src/format/config.cpp:943
+#, c-format
+msgid "unknown style: %s"
+msgstr ""
+
+#: src/format/config.cpp:886
+#, c-format
+msgid ""
+"%s: .fbformat overrides freebasicd.toml; its formatting settings are ignored"
+msgstr ""
 
 #: src/parser.cpp:120
 #, c-format
@@ -83,8 +112,8 @@ msgid ""
 "comments, e.g. %s"
 msgstr ""
 
-#: src/parser.cpp:171 src/parser.cpp:593 src/parser.cpp:2186
-#: src/parser.cpp:2251
+#: src/parser.cpp:171 src/parser.cpp:602 src/parser.cpp:2195
+#: src/parser.cpp:2260
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
@@ -103,83 +132,83 @@ msgstr ""
 msgid "dialect '%s' is not supported yet; parsing in '%s' mode"
 msgstr ""
 
-#: src/parser.cpp:497 src/parser.cpp:2023
+#: src/parser.cpp:506 src/parser.cpp:2032
 #, c-format
 msgid "duplicate definition: '%s'"
 msgstr ""
 
-#: src/parser.cpp:555
+#: src/parser.cpp:564
 #, c-format
 msgid ""
 "'%s' is a reserved word and cannot be a field name in a type with member "
 "functions"
 msgstr ""
 
-#: src/parser.cpp:634
+#: src/parser.cpp:643
 #, c-format
 msgid "'%s' is a reserved word and cannot be an enum member name"
 msgstr ""
 
-#: src/parser.cpp:731
+#: src/parser.cpp:740
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:828 src/parser.cpp:2089
+#: src/parser.cpp:837 src/parser.cpp:2098
 #, c-format
 msgid "'%s' is a reserved word and cannot be a field name"
 msgstr ""
 
-#: src/parser.cpp:1077 src/parser.cpp:1089 src/parser.cpp:2209
-#: src/parser.cpp:2280 src/parser.cpp:2423 src/parser.cpp:2431
-#: src/parser.cpp:2449
+#: src/parser.cpp:1086 src/parser.cpp:1098 src/parser.cpp:2218
+#: src/parser.cpp:2289 src/parser.cpp:2432 src/parser.cpp:2440
+#: src/parser.cpp:2458
 #, c-format
 msgid "%s without %s"
 msgstr ""
 
-#: src/parser.cpp:1456
+#: src/parser.cpp:1465
 #, c-format
 msgid "a module %s cannot take parameters"
 msgstr ""
 
-#: src/parser.cpp:1464
+#: src/parser.cpp:1473
 msgid "invalid priority attribute; expected 101 to 65535"
 msgstr ""
 
-#: src/parser.cpp:1481
+#: src/parser.cpp:1490
 #, c-format
 msgid "a module %s cannot be exported"
 msgstr ""
 
-#: src/parser.cpp:1486
+#: src/parser.cpp:1495
 #, c-format
 msgid "Expected end of line after a module %s"
 msgstr ""
 
-#: src/parser.cpp:1495
+#: src/parser.cpp:1504
 #, c-format
 msgid "a non-static member procedure cannot be a module %s"
 msgstr ""
 
-#: src/parser.cpp:1909
+#: src/parser.cpp:1918
 #, c-format
 msgid "'%s' is not allowed on a declaration line"
 msgstr ""
 
 #. TRANSLATORS: the first %s is an identifier; the second is the FreeBASIC
 #. keyword Shared, passed as an argument, never translated.
-#: src/resolve.cpp:621
+#: src/resolve.cpp:618
 #, c-format
 msgid ""
 "'%s' is a module-level variable without %s, so it is not visible inside a "
 "procedure"
 msgstr ""
 
-#: src/resolve.cpp:717
+#: src/resolve.cpp:738
 #, c-format
 msgid "'.%s' in typeof requires a %s module-level variable"
 msgstr ""
 
-#: src/resolve.cpp:764
+#: src/resolve.cpp:792
 #, c-format
 msgid "'.%s' requires a %s module-level variable"
 msgstr ""
@@ -187,52 +216,52 @@ msgstr ""
 #. TRANSLATORS: a convention warning. An `Extern` declaration — a
 #. multi-module variable or an `Extern "C"` block — is valid FreeBASIC in a
 #. source module, but belongs in a shared header (.bi).
-#: src/resolve.cpp:807
+#: src/resolve.cpp:835
 #, c-format
 msgid "externs belong in a shared header, not a source module"
 msgstr ""
 
-#: src/session.cpp:1107
+#: src/session.cpp:1183
 #, c-format
 msgid "%s/freebasicd.toml is not valid TOML; keeping defaults"
 msgstr ""
 
-#: src/session.cpp:1119
+#: src/session.cpp:1195
 #, c-format
 msgid ""
 "%s/freebasicd.toml: suppress entry \"%s\" should be \"%s\"; remove the fbc "
 "code"
 msgstr ""
 
-#: src/session.cpp:1133
+#: src/session.cpp:1216
 #, c-format
 msgid "workspace root: %s"
 msgstr ""
 
-#: src/session.cpp:1159
+#: src/session.cpp:1239
 msgid "version-control marker"
 msgstr ""
 
-#: src/session.cpp:1162
+#: src/session.cpp:1242
 #, c-format
 msgid "config file %s"
 msgstr ""
 
-#: src/session.cpp:1165
+#: src/session.cpp:1245
 msgid "source/include directory"
 msgstr ""
 
-#: src/session.cpp:1174
+#: src/session.cpp:1254
 #, c-format
 msgid "workspace root %s (detected via %s; no client root)"
 msgstr ""
 
-#: src/session.cpp:1181
+#: src/session.cpp:1259
 #, c-format
 msgid "workspace root %s (detected via %s; client root %s)"
 msgstr ""
 
-#: src/session.cpp:1661
+#: src/session.cpp:1769
 #, c-format
 msgid ""
 "workspace root %s has no version-control marker or config file; index scope "

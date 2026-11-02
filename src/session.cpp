@@ -4511,6 +4511,32 @@ FreeBasicServer::hierarchyItems(std::vector<fblang::TypeItem> const &types) {
   return out;
 }
 
+bool FreeBasicServer::formattingConfigFor(std::filesystem::path const &path,
+                                          lsFormattingOptions const &options,
+                                          fbformat::FormatConfig *out) {
+  fbformat::ResolvedConfig const resolved =
+      fbformat::resolveConfig(fblang::normalizePath(path));
+  for (std::string const &warning : resolved.warnings) {
+    logToClient(lsMessageType::Log, warning);
+  }
+  if (!resolved.ok) {
+    // Not a protocol error: an editor would raise a notification on every
+    // save. Empty edits plus one log line is the honest answer.
+    logToClient(lsMessageType::Warning, resolved.error);
+    return false;
+  }
+  fbformat::FormatConfig cfg = resolved.config;
+  if (!resolved.foundConfigFile) {
+    cfg = fbformat::applyClientOptions(
+        cfg, options.tabSize, options.insertSpaces,
+        options.trimTrailingWhitespace.value_or(cfg.trimTrailingWhitespace),
+        options.insertFinalNewline.value_or(cfg.insertNewlineAtEOF),
+        options.trimFinalNewlines.value_or(cfg.trimFinalNewlines));
+  }
+  *out = std::move(cfg);
+  return true;
+}
+
 td_formatting::response
 FreeBasicServer::onFormatting(td_formatting::request const &req) {
   td_formatting::response rsp;
@@ -4519,8 +4545,12 @@ FreeBasicServer::onFormatting(td_formatting::request const &req) {
   if (!content) {
     return rsp;
   }
-  std::vector<fbformat::TextEdit> edits = fbformat::formatDocumentLsp(
-      *content, abs.path(), fbformat::loadConfigForPath(abs.path()));
+  fbformat::FormatConfig cfg;
+  if (!formattingConfigFor(abs.path(), req.params.options, &cfg)) {
+    return rsp;
+  }
+  std::vector<fbformat::TextEdit> edits =
+      fbformat::formatDocumentLsp(*content, abs.path(), cfg);
   for (auto &e : edits) {
     lsTextEdit te;
     // Byte offsets in, UTF-16 positions out — the same conversion every
@@ -4541,6 +4571,10 @@ FreeBasicServer::onRangeFormatting(td_rangeFormatting::request const &req) {
   if (!content) {
     return rsp;
   }
+  fbformat::FormatConfig cfg;
+  if (!formattingConfigFor(abs.path(), req.params.options, &cfg)) {
+    return rsp;
+  }
   // The request's range is UTF-16; the format layer speaks bytes. Convert at
   // the boundary, like every other handler here — formatRangeLsp defers to a
   // full-document edit for now, but it already takes the real range, so the
@@ -4553,8 +4587,8 @@ FreeBasicServer::onRangeFormatting(td_rangeFormatting::request const &req) {
   if (end < beg) {
     end = beg;
   }
-  std::vector<fbformat::TextEdit> edits = fbformat::formatRangeLsp(
-      *content, abs.path(), fbformat::loadConfigForPath(abs.path()), beg, end);
+  std::vector<fbformat::TextEdit> edits =
+      fbformat::formatRangeLsp(*content, abs.path(), cfg, beg, end);
   for (auto &e : edits) {
     lsTextEdit te;
     te.range = fblang::utf16Range(*content, static_cast<std::uint32_t>(e.start),

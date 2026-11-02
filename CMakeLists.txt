@@ -193,7 +193,7 @@ if(GETTEXT_FOUND)
     # Extraction: `cmake --build <dir> --target po-template`. Needs xgettext in
     # addition to msgfmt/msgmerge (FindGettext supplies the latter two).
     if(GETTEXT_XGETTEXT_EXECUTABLE)
-        file(GLOB FBLANG_XGETTEXT_SOURCES RELATIVE ${CMAKE_SOURCE_DIR}
+        file(GLOB_RECURSE FBLANG_XGETTEXT_SOURCES RELATIVE ${CMAKE_SOURCE_DIR}
             ${CMAKE_SOURCE_DIR}/src/*.cpp
             ${CMAKE_SOURCE_DIR}/src/*.h
             ${CMAKE_SOURCE_DIR}/tools/*.cpp)
@@ -494,6 +494,18 @@ add_executable(format_engine_checks
 target_include_directories(format_engine_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(format_engine_checks PRIVATE freebasicd_format)
 add_test(NAME format_engine_checks COMMAND format_engine_checks)
+
+# M17 wave 2: the corpus gate — idempotence and significant-token equivalence
+# over every tests/corpus/*.bas under each shipped preset. The corpus lives in
+# the source tree, so the path is compiled in rather than discovered.
+add_executable(format_corpus_checks
+    tests/format_corpus_checks.cpp
+)
+target_include_directories(format_corpus_checks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(format_corpus_checks PRIVATE
+    CORPUS_DIR="${CMAKE_SOURCE_DIR}/tests/corpus")
+target_link_libraries(format_corpus_checks PRIVATE freebasicd_format)
+add_test(NAME format_corpus_checks COMMAND format_corpus_checks)
 
 # The integration driver is one executable built from the shared harness
 # (tests/session_support.{h,cpp}) plus one translation unit per LSP feature, so

@@ -67,6 +67,7 @@
 #include "call_hierarchy_lsp.h"
 #include "code_actions.h"
 #include "code_lens.h"
+#include "format/config.h"
 #include "index.h"
 #include "resolve.h"
 #include "selection.h"
@@ -290,6 +291,13 @@ private:
   td_formatting::response onFormatting(td_formatting::request const &req);
   td_rangeFormatting::response
   onRangeFormatting(td_rangeFormatting::request const &req);
+  // The formatter config for a document plus the request's client options.
+  // Client options are the last layer and apply only when no config file
+  // exists. A config file that cannot be trusted is logged and refused (false),
+  // and the handler answers with no edits rather than a guessed style.
+  bool formattingConfigFor(std::filesystem::path const &path,
+                           lsFormattingOptions const &options,
+                           fbformat::FormatConfig *out);
   // Quick fixes (M12). LspCpp models the response as a bare command list, so
   // each fix ships as `Command{title, "", [WorkspaceEdit]}` — the empty command
   // name is the client's cue to apply `arguments[0]` itself — and the kind

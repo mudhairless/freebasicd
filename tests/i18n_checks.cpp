@@ -103,16 +103,17 @@ struct Literal {
   std::string site; // "file:offset"
 };
 
-// Every translatable literal in src/: direct `tr("..." / `trf("..." /
-// `trn("..." / `gettext("..."` calls with a literal first argument,
-// concatenating adjacent C string literals (the lang-mode message is split over
-// two source lines). For a `trn(` call only argument 1 is collected — the
-// plural form follows the comma — so freshness is checked for the singular
-// while the plural rides along in the pot as its `msgid_plural`.
+// Every translatable literal under src/ (recursively — the formatter lives in
+// src/format/, and a non-recursive walk would silently exempt it): direct
+// `tr("..." / `trf("..." / `trn("..." / `gettext("..."` calls with a literal
+// first argument, concatenating adjacent C string literals (the lang-mode
+// message is split over two source lines). For a `trn(` call only argument 1 is
+// collected — the plural form follows the comma — so freshness is checked for
+// the singular while the plural rides along in the pot as its `msgid_plural`.
 std::vector<Literal> collectLiterals() {
   std::vector<Literal> out;
   const char *const keywords[] = {"tr(", "trf(", "trn(", "gettext("};
-  for (fs::directory_iterator it(SRC_DIR), end; it != end; ++it) {
+  for (fs::recursive_directory_iterator it(SRC_DIR), end; it != end; ++it) {
     fs::path const &p = it->path();
     std::string const ext = p.extension().string();
     if (ext != ".cpp" && ext != ".h") {

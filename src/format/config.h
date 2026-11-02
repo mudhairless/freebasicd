@@ -289,15 +289,47 @@ inline constexpr char const *kLocalStylesDir = ".styles";
 bool parseFormatTable(std::string_view tomlText, FormatConfig *out,
                       std::string *styleName, std::string *inheritName);
 
+// A caller-supplied override of config discovery: either an explicit config
+// file (the CLI's `--config`), an explicit preset (the CLI's `--style`), or
+// both. Empty members mean "discover" / "use the file's own style".
+struct ConfigQuery {
+  std::string configFile;
+  std::string style;
+};
+
+// The outcome of a config resolution. `ok == false` means the configuration
+// could not be trusted (unreadable file, invalid TOML, unknown style, an
+// inheritance cycle) and the caller must not format: "config presence is
+// authoritative" only if a broken config is refused rather than silently
+// replaced by defaults.
+struct ResolvedConfig {
+  FormatConfig config;
+  std::string configFile; // the file used, empty if none
+  bool foundConfigFile = false;
+  bool ok = true;
+  std::string error;                 // reason when !ok
+  std::vector<std::string> warnings; // non-fatal notices for the client log
+};
+
 // Resolve the effective configuration for a document path:
-//   1. the `[format]` keys of `.fbformat` (walking up), else of
-//      `freebasicd.toml` at the discovered root, else nothing;
-//   2. the `[format-style].style` preset, its `inherit` chain, and `FBdocs`
-//      when neither names one;
-//   3. the built-in factory defaults for anything still unset.
+//   1. an explicit `q.configFile` if given, else `.fbformat` walking up from
+//      the document, else `freebasicd.toml` walking up;
+//   2. `q.style`, else the file's `[format-style].style`, else its `inherit`,
+//      else the `FBdocs` preset;
+//   3. the config file's own `[format]` keys over that preset;
+//   4. the built-in factory defaults for anything still unset.
 // Client `FormattingOptions` are deliberately not part of this: they apply only
-// when *no* config file exists, through `applyClientOptions`.
-FormatConfig loadConfigForPath(std::string const &filePath);
+// when *no* config file exists (`!foundConfigFile`), through
+// `applyClientOptions`.
+ResolvedConfig resolveConfig(std::string const &filePath,
+                             ConfigQuery const &q = {});
+
+// Resolve one named preset from scratch, without discovering a config file.
+// `configDir` seeds the local `.styles/` search (the corpus gate passes the
+// corpus directory). An unknown name is `ok == false`, never a silent fallback
+// to `FBdocs`.
+ResolvedConfig configForStyle(std::string const &name,
+                              std::string const &configDir = {});
 
 // Apply client `FormattingOptions` to a config that came from no config file.
 // `insertSpaces == false` means tabs (UseTab::ForIndentation), `true` means

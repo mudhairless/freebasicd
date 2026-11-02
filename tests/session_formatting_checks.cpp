@@ -45,6 +45,16 @@ std::string FormattingFrame(std::string const &id, std::string const &uri) {
          uri + R"("},"options":{"tabSize":4,"insertSpaces":false}}})";
 }
 
+// The same request with an options payload the test chooses, for the
+// client-option precedence tests.
+std::string FormattingFrameWithOptions(std::string const &id,
+                                       std::string const &uri,
+                                       std::string const &options) {
+  return R"({"jsonrpc":"2.0","id":")" + id +
+         R"(","method":"textDocument/formatting","params":{"textDocument":{"uri":")" +
+         uri + R"("},"options":)" + options + "}}";
+}
+
 // The range formatting request: a slice of the middle of the document. It is
 // answered with the whole-document edit until formatRangeLsp honors the
 // range.
@@ -227,6 +237,90 @@ void TestFormatOffRegionSurvivesTheSession() {
   session.stop();
 }
 
+// No config file anywhere: the client's FormattingOptions are the last layer,
+// so `insertSpaces: true` and `tabSize: 2` produce two-space indentation over
+// the FBdocs defaults.
+void TestClientOptionsAppliedWhenUnconfigured() {
+  TwoFileFixture const fix;
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto output = std::make_shared<StringOStream>();
+  FreeBasicServer server(session);
+  auto input = StartIndexedSession(session, server, output, fix,
+                                   {{fix.progUri, kUnformatted}});
+
+  std::string const reply = PollRequest(
+      input, output, "fmtclientspaces",
+      NewTextNeedle("Sub f()\n  x = 1\n  If a Then\n    y = 2\n  End If\n"
+                    "End Sub\n"),
+      [&](std::string const &id) {
+        return FormattingFrameWithOptions(
+            id, fix.progUri, R"({"tabSize":2,"insertSpaces":true})");
+      });
+  Expect(reply.find("\\n  x = 1\\n") != std::string::npos,
+         "an unconfigured document must honor client spaces and tabSize");
+
+  session.stop();
+}
+
+// A `.fbformat` makes the project config authoritative: the same client
+// options that asked for two-space indentation are ignored, and the file's
+// tabs win. "A configured project is not silently re-tabbed by an editor whose
+// defaults are spaces."
+void TestClientOptionsIgnoredWhenConfigured() {
+  TwoFileFixture const fix;
+  {
+    std::ofstream cfg(fix.wsDir / ".fbformat");
+    cfg << "[format]\nUseTab = \"ForIndentation\"\nIndentWidth = 4\n"
+           "TabWidth = 4\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto output = std::make_shared<StringOStream>();
+  FreeBasicServer server(session);
+  auto input = StartIndexedSession(session, server, output, fix,
+                                   {{fix.progUri, kUnformatted}});
+
+  std::string const reply = PollRequest(
+      input, output, "fmtclientignored", NewTextNeedle(kFormatted),
+      [&](std::string const &id) {
+        return FormattingFrameWithOptions(
+            id, fix.progUri, R"({"tabSize":2,"insertSpaces":true})");
+      });
+  Expect(reply.find("\\n\\tx = 1\\n") != std::string::npos,
+         "a config file must outrank the client's spaces/tabSize options");
+
+  session.stop();
+}
+
+// A malformed `.fbformat` is refused: the server answers with no edits and
+// says why in the log, instead of formatting against FBdocs and silently
+// re-tabbing a project whose config it could not read.
+void TestInvalidConfigAnswersNoEdits() {
+  TwoFileFixture const fix;
+  {
+    std::ofstream cfg(fix.wsDir / ".fbformat");
+    cfg << "this is not = = toml\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto output = std::make_shared<StringOStream>();
+  FreeBasicServer server(session);
+  auto input = StartIndexedSession(session, server, output, fix,
+                                   {{fix.progUri, kUnformatted}});
+
+  std::string const reply = PollRequest(
+      input, output, "fmtbadcfg", R"("result":[])",
+      [&](std::string const &id) { return FormattingFrame(id, fix.progUri); });
+  Expect(reply.find("\"newText\":") == std::string::npos,
+         "an untrusted config must produce no edit, not a guessed style");
+
+  session.stop();
+}
+
 // The range request is answered with the whole-document edit while
 // formatRangeLsp defers. Deleting this test when range formatting becomes a
 // true range edit is the deliberate act; letting it pass forever on a
@@ -286,6 +380,9 @@ void RunFormattingTests() {
   RUN_TEST(TestConfigFileDiscoveryChangesBehavior);
   RUN_TEST(TestBlockCommentPreservedThroughTheSession);
   RUN_TEST(TestFormatOffRegionSurvivesTheSession);
+  RUN_TEST(TestClientOptionsAppliedWhenUnconfigured);
+  RUN_TEST(TestClientOptionsIgnoredWhenConfigured);
+  RUN_TEST(TestInvalidConfigAnswersNoEdits);
   RUN_TEST(TestRangeFormattingDefersToTheWholeDocument);
   RUN_TEST(TestFormattingUnknownDocumentAnswersEmpty);
 }

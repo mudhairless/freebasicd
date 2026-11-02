@@ -6,6 +6,8 @@
 
 #include "format/config.h"
 
+#include "i18n.h"
+
 #include <toml++/toml.h>
 
 #include <cstdlib>
@@ -27,7 +29,7 @@ namespace {
 // `FormatConfig` carries its own in-class defaults (config.h), so a
 // default-constructed instance is the built-in default config and the defaults
 // live in exactly one place. The named preset (FBdocs) is applied on top by
-// `loadConfigForPath`.
+// `resolveConfig`.
 FormatConfig factoryDefaults() { return FormatConfig{}; }
 
 // --- value parsers ----------------------------------------------------------
@@ -698,10 +700,15 @@ bool isFile(fs::path const &p) {
   return fs::is_regular_file(p, ec);
 }
 
-std::string readFileOrEmpty(fs::path const &p) {
+// Read a whole file, binary-exact. Returns false when it cannot be opened.
+bool readFile(fs::path const &p, std::string *out) {
   std::ifstream in(p, std::ios::binary);
-  return std::string{std::istreambuf_iterator<char>(in),
-                     std::istreambuf_iterator<char>()};
+  if (!in) {
+    return false;
+  }
+  out->assign(std::istreambuf_iterator<char>(in),
+              std::istreambuf_iterator<char>());
+  return true;
 }
 
 // The directories a preset name is resolved against, highest priority first:
@@ -729,13 +736,19 @@ std::vector<fs::path> styleSearchDirs(fs::path const &configDir) {
   return dirs;
 }
 
+enum class PresetStatus { Loaded, NotFound, Broken };
+
 // Resolve one preset by name into `cfg`, following its `inherit` chain.
 // `seen` breaks cycles: a preset that (directly or transitively) names itself
-// is ignored from that point on, so resolution always terminates.
-bool loadPresetInto(std::string const &name, fs::path const &configDir,
-                    FormatConfig *cfg, std::unordered_set<std::string> *seen) {
+// is a broken config rather than a silent stop, because half of the chain
+// applied would be neither the author's style nor a default.
+PresetStatus loadPresetInto(std::string const &name, fs::path const &configDir,
+                            FormatConfig *cfg,
+                            std::unordered_set<std::string> *seen,
+                            std::string *error) {
   if (name.empty() || !seen->insert(name).second) {
-    return false;
+    *error = fblang::trf("style inheritance cycle at %s", name);
+    return PresetStatus::Broken;
   }
   fs::path found;
   for (fs::path const &dir : styleSearchDirs(configDir)) {
@@ -746,27 +759,39 @@ bool loadPresetInto(std::string const &name, fs::path const &configDir,
     }
   }
   if (found.empty()) {
-    return false;
+    return PresetStatus::NotFound;
   }
-  std::string childStyle;
+  std::string text;
+  if (!readFile(found, &text)) {
+    *error = fblang::trf("cannot read %s", found.generic_string());
+    return PresetStatus::Broken;
+  }
+  FormatConfig scratch = *cfg;
+  std::string ignoreStyle;
   std::string inherit;
-  if (!parseFormatTable(readFileOrEmpty(found), cfg, &childStyle, &inherit)) {
-    return false;
+  if (!parseFormatTable(text, &scratch, &ignoreStyle, &inherit)) {
+    *error = fblang::trf("%s is not valid TOML", found.generic_string());
+    return PresetStatus::Broken;
   }
   if (!inherit.empty()) {
     // A parent is applied first, then the child's own keys — so the child
     // wins. The search dir stays the config file's own dir: "local" is
     // `<config-file-dir>/.styles/`, not relative to each preset in the chain.
-    FormatConfig parent = *cfg;
-    if (loadPresetInto(inherit, configDir, &parent, seen)) {
-      std::string childStyle2;
-      std::string inherit2;
-      parseFormatTable(readFileOrEmpty(found), &parent, &childStyle2,
-                       &inherit2);
-      *cfg = parent;
+    PresetStatus const parent =
+        loadPresetInto(inherit, configDir, cfg, seen, error);
+    if (parent != PresetStatus::Loaded) {
+      if (parent == PresetStatus::NotFound) {
+        *error = fblang::trf("unknown style: %s", inherit);
+      }
+      return parent;
     }
   }
-  return true;
+  if (!parseFormatTable(text, cfg, nullptr, nullptr)) {
+    *error = fblang::trf("%s is not valid TOML", found.generic_string());
+    return PresetStatus::Broken;
+  }
+  cfg->basedOnStyle = name;
+  return PresetStatus::Loaded;
 }
 
 } // namespace
@@ -793,59 +818,131 @@ fs::path findUpwards(fs::path const &startDir, std::string_view name) {
   return {};
 }
 
-FormatConfig loadConfigForPath(std::string const &filePath) {
-  // Discover the config file. Presence decides: `.fbformat` wins outright over
-  // `freebasicd.toml`. Walk up from the document to find either.
-  fs::path const probe = fs::path(filePath).parent_path();
+namespace {
+
+// Find the config file that governs `filePath`: `.fbformat` walking up wins
+// outright over `freebasicd.toml`, which is also walked up (the server's config
+// file carries [format] tables too).
+fs::path discoverConfigFile(std::string const &filePath) {
+  fs::path probe = fs::path(filePath).parent_path();
+  if (probe.empty()) {
+    probe = fs::current_path();
+  }
   fs::path chosen = findUpwards(probe, kFormatFileName);
-  std::string chosenName = kFormatFileName;
   if (chosen.empty()) {
-    // Also look for the server's freebasicd.toml; it carries [format] tables
-    // too.
     chosen = findUpwards(probe, "freebasicd.toml");
-    chosenName = "freebasicd.toml";
   }
-  fs::path const configDir = chosen.empty() ? fs::path() : chosen.parent_path();
-  std::string text = chosen.empty() ? std::string() : readFileOrEmpty(chosen);
+  return chosen;
+}
 
-  std::string style;
-  std::string inherit;
-  if (!text.empty()) {
-    FormatConfig scratch = factoryDefaults();
-    parseFormatTable(text, &scratch, &style, &inherit);
+// The preset a file names, plus the fact that it named one at all. `inherit`
+// without `style` is the plan's single-parent spelling and resolves the same
+// way.
+std::string namedStyle(std::string const &fileStyle,
+                       std::string const &fileInherit) {
+  return !fileStyle.empty() ? fileStyle : fileInherit;
+}
+
+} // namespace
+
+ResolvedConfig resolveConfig(std::string const &filePath,
+                             ConfigQuery const &q) {
+  ResolvedConfig r;
+
+  fs::path chosen;
+  if (!q.configFile.empty()) {
+    chosen = fs::path(q.configFile);
+    if (!isFile(chosen)) {
+      r.ok = false;
+      r.error = fblang::trf("cannot read %s", q.configFile);
+      return r;
+    }
+  } else if (!filePath.empty()) {
+    chosen = discoverConfigFile(filePath);
   }
 
-  // Style first, then the config file's own keys override it.
-  FormatConfig cfg = factoryDefaults();
-  std::unordered_set<std::string> seen;
-  bool applied = false;
-  if (!style.empty()) {
-    applied = loadPresetInto(style, configDir, &cfg, &seen);
-  } else if (!inherit.empty()) {
-    applied = loadPresetInto(inherit, configDir, &cfg, &seen);
-  }
-  if (!applied) {
-    loadPresetInto("FBdocs", configDir, &cfg, &seen); // the default preset
-  }
-  if (!text.empty()) {
-    std::string s2;
-    std::string i2;
-    parseFormatTable(text, &cfg, &s2, &i2);
-    cfg.basedOnStyle = !style.empty() ? style : "FBdocs";
-  }
-
-  // Warn if both .fbformat and freebasicd.toml exist and .fbformat was chosen.
-  if (!chosen.empty() && chosen.filename() == kFormatFileName) {
-    fs::path const fbConfig = configDir / "freebasicd.toml";
-    if (isFile(fbConfig)) {
-      std::fprintf(
-          stderr,
-          "[fbformat] .fbformat at %s overrides freebasicd.toml; "
-          "formatting settings from freebasicd.toml will be ignored.\n",
-          chosen.generic_string().c_str());
+  std::string text;
+  std::string fileStyle;
+  std::string fileInherit;
+  if (!chosen.empty()) {
+    r.foundConfigFile = true;
+    r.configFile = chosen.generic_string();
+    if (!readFile(chosen, &text)) {
+      r.ok = false;
+      r.error = fblang::trf("cannot read %s", r.configFile);
+      return r;
+    }
+    FormatConfig scratch;
+    if (!parseFormatTable(text, &scratch, &fileStyle, &fileInherit)) {
+      r.ok = false;
+      r.error = fblang::trf("%s is not valid TOML", r.configFile);
+      return r;
+    }
+    // `.fbformat` shadows the server's config file in the same directory. The
+    // notice is a warning the caller logs; a library never writes stderr.
+    if (chosen.filename() == kFormatFileName &&
+        isFile(chosen.parent_path() / "freebasicd.toml")) {
+      r.warnings.push_back(fblang::trf(
+          "%s: .fbformat overrides freebasicd.toml; its formatting settings "
+          "are ignored",
+          r.configFile));
     }
   }
-  return cfg;
+
+  fs::path const configDir = chosen.empty() ? fs::path() : chosen.parent_path();
+  std::string const style =
+      !q.style.empty() ? q.style : namedStyle(fileStyle, fileInherit);
+
+  FormatConfig cfg;
+  std::unordered_set<std::string> seen;
+  std::string error;
+  if (!style.empty()) {
+    PresetStatus const ps =
+        loadPresetInto(style, configDir, &cfg, &seen, &error);
+    if (ps != PresetStatus::Loaded) {
+      r.ok = false;
+      r.error = ps == PresetStatus::NotFound
+                    ? fblang::trf("unknown style: %s", style)
+                    : error;
+      return r;
+    }
+  } else if (loadPresetInto("FBdocs", configDir, &cfg, &seen, &error) !=
+             PresetStatus::Loaded) {
+    // The implicit default has a built-in fallback (PLAN M17 §6): a missing
+    // install preset degrades to the factory values, which change no token
+    // spelling. An explicitly named style never gets this treatment.
+    cfg = factoryDefaults();
+  }
+
+  // The config file's own keys override the preset it named.
+  if (!chosen.empty() && !parseFormatTable(text, &cfg, nullptr, nullptr)) {
+    r.ok = false;
+    r.error = fblang::trf("%s is not valid TOML", r.configFile);
+    return r;
+  }
+  r.config = cfg;
+  return r;
+}
+
+ResolvedConfig configForStyle(std::string const &name,
+                              std::string const &configDir) {
+  ResolvedConfig r;
+  std::string error;
+  std::unordered_set<std::string> seen;
+  if (name.empty()) {
+    r.ok = false;
+    r.error = fblang::trf("unknown style: %s", name);
+    return r;
+  }
+  PresetStatus const ps =
+      loadPresetInto(name, fs::path(configDir), &r.config, &seen, &error);
+  if (ps != PresetStatus::Loaded) {
+    r.ok = false;
+    r.error = ps == PresetStatus::NotFound
+                  ? fblang::trf("unknown style: %s", name)
+                  : error;
+  }
+  return r;
 }
 
 FormatConfig applyClientOptions(FormatConfig const &base, int tabSize,
