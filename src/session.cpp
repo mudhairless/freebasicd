@@ -4576,10 +4576,9 @@ FreeBasicServer::onRangeFormatting(td_rangeFormatting::request const &req) {
     return rsp;
   }
   // The request's range is UTF-16; the format layer speaks bytes. Convert at
-  // the boundary, like every other handler here — formatRangeLsp defers to a
-  // full-document edit for now, but it already takes the real range, so the
-  // day it honors it no handler changes. A client that sends an inverted range
-  // gets it clamped, never a negative span.
+  // the boundary, like every other handler here. formatRangeLsp expands the
+  // byte range to whole lines and answers with the confined edit. A client
+  // that sends an inverted range gets it clamped, never a negative span.
   std::uint32_t const beg =
       fblang::byteOffsetForUtf16Position(*content, req.params.range.start);
   std::uint32_t end =

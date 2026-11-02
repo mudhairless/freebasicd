@@ -958,24 +958,17 @@ bool emitLine(Formatter &f, LineShape const &shape) {
   return true;
 }
 
-} // namespace
-
-std::string formatDocument(const std::string &content,
-                           const std::string &filePath,
-                           const FormatConfig &config) {
-  (void)filePath;
-  if (config.disableFormat || content.empty()) {
-    return content;
-  }
-
-  TokenStream ts(content);
-  std::vector<Token> const &toks = ts.tokens();
-  std::vector<Line> lines = splitLines(toks, content);
-
-  Formatter formatter(config, content, toks);
-  std::vector<fblang::BlockKind> stack;
-
-  for (Line const &line : lines) {
+// Process lines [firstIdx, lastIdx] of a split document: raw-region state
+// lives in `formatter`, the block stack in `stack`, and both carry across
+// calls, so a caller can dry-run a prefix into a scratch formatter and then
+// emit a later window with the state the prefix leaves behind (range
+// formatting, §9.6 step 4).
+void processLines(Formatter &formatter, std::vector<Line> const &lines,
+                  std::vector<Token> const &toks, FormatConfig const &config,
+                  std::vector<fblang::BlockKind> &stack, size_t firstIdx,
+                  size_t lastIdx) {
+  for (size_t li = firstIdx; li <= lastIdx; ++li) {
+    Line const &line = lines[li];
     LineShape shape = classifyLine(line, toks);
 
     // --- raw regions -----------------------------------------------------
@@ -1039,7 +1032,7 @@ std::string formatDocument(const std::string &content,
       std::string eol = formatter.eolFor(line);
       formatter.flushBlanks(eol, !formatter.emittedAny);
       formatter.appendVerbatim(
-          content.substr(line.begin, line.end - line.begin));
+          formatter.content.substr(line.begin, line.end - line.begin));
       formatter.out += eol;
       size_t lastSig = line.sig.back();
       formatter.prevContinues = toks[lastSig].kind == TokenKind::Identifier &&
@@ -1058,8 +1051,169 @@ std::string formatDocument(const std::string &content,
       formatter.macroBody = true;
     }
   }
+}
 
+// The line containing a byte offset. An offset on the newline byte belongs
+// to the line it ends; an offset past the last line belongs to the last
+// line. A block comment is one token, so a line that carries one spans the
+// comment's whole display range and this mapping already expands a range
+// that touches the comment to that line (§9.6 step 2).
+size_t lineIndexAt(std::vector<Line> const &lines, size_t offset) {
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (offset < lines[i].begin) {
+      return i == 0 ? 0 : i - 1;
+    }
+    if (offset <= lines[i].end) {
+      return i;
+    }
+  }
+  return lines.size() - 1;
+}
+
+// Does this line continue onto the next line, in the same cases the main
+// loop's `prevContinues` ends up true: a code line whose last code token
+// is `_`, any line whose last significant token is `_`, and a directive
+// whose raw text ends in `_`.
+bool chainContinues(std::string const &content, std::vector<Token> const &toks,
+                    Line const &line) {
+  LineShape shape = classifyLine(line, toks);
+  if (shape.continues) {
+    return true;
+  }
+  if (!line.sig.empty()) {
+    Token const &last = toks[line.sig.back()];
+    if (last.kind == TokenKind::Identifier && last.text == "_") {
+      return true;
+    }
+  }
+  if (shape.firstKind == TokenKind::Directive) {
+    std::string raw = content.substr(line.begin, line.end - line.begin);
+    while (!raw.empty() && (raw.back() == ' ' || raw.back() == '\t')) {
+      raw.pop_back();
+    }
+    return !raw.empty() && raw.back() == '_';
+  }
+  return false;
+}
+
+} // namespace
+
+std::string formatDocument(const std::string &content,
+                           const std::string &filePath,
+                           const FormatConfig &config) {
+  (void)filePath;
+  if (config.disableFormat || content.empty()) {
+    return content;
+  }
+
+  TokenStream ts(content);
+  std::vector<Token> const &toks = ts.tokens();
+  std::vector<Line> lines = splitLines(toks, content);
+  if (lines.empty()) {
+    return content;
+  }
+
+  Formatter formatter(config, content, toks);
+  std::vector<fblang::BlockKind> stack;
+  processLines(formatter, lines, toks, config, stack, 0, lines.size() - 1);
   return formatter.finish();
+}
+
+RangeResult formatRange(const std::string &content, const std::string &filePath,
+                        const FormatConfig &config, size_t rangeStart,
+                        size_t rangeEnd) {
+  (void)filePath;
+  RangeResult result;
+  result.replacementStart = rangeStart;
+  result.replacementEnd = rangeEnd;
+  if (config.disableFormat || content.empty()) {
+    return result;
+  }
+  if (rangeStart > content.size()) {
+    rangeStart = content.size();
+  }
+  if (rangeEnd > content.size()) {
+    rangeEnd = content.size();
+  }
+  if (rangeEnd < rangeStart) {
+    rangeEnd = rangeStart;
+  }
+
+  TokenStream ts(content);
+  std::vector<Token> const &toks = ts.tokens();
+  std::vector<Line> lines = splitLines(toks, content);
+  if (lines.empty()) {
+    return result;
+  }
+
+  // Whole lines only (§9.6 steps 1 and 2): the line at each end of the
+  // range, expanded back to the head of a `_` continuation chain and
+  // forward to its end. An empty range is the line at the offset; a range
+  // end is exclusive, so the last line is the one holding rangeEnd - 1.
+  size_t first = lineIndexAt(lines, rangeStart);
+  size_t last =
+      lineIndexAt(lines, rangeEnd > rangeStart ? rangeEnd - 1 : rangeEnd);
+  if (last < first) {
+    last = first;
+  }
+  while (first > 0 && chainContinues(content, toks, lines[first - 1])) {
+    --first;
+  }
+  while (last + 1 < lines.size() &&
+         chainContinues(content, toks, lines[last])) {
+    ++last;
+  }
+
+  // Blank lines at the edges are not part of the edit; a range over only
+  // blank lines changes nothing (step 3).
+  while (first <= last && lines[first].sig.empty()) {
+    ++first;
+  }
+  while (last > first && lines[last].sig.empty()) {
+    --last;
+  }
+  if (first > last || lines[first].sig.empty()) {
+    return result;
+  }
+
+  // Dry-run the prefix into a scratch formatter so the window opens with
+  // the block stack, raw-region state, and continuation state the lines
+  // before it leave behind (step 4). The window formatter starts with
+  // pendingBlank == 0 and emittedAny == false by construction.
+  std::vector<fblang::BlockKind> stack;
+  Formatter scratch(config, content, toks);
+  if (first > 0) {
+    processLines(scratch, lines, toks, config, stack, 0, first - 1);
+  }
+
+  // EOF normalization belongs to a range that reaches the end of the
+  // document; a mid-document window keeps its own trailing newline and
+  // nothing more (step 5).
+  bool const atEof = last + 1 == lines.size();
+  FormatConfig windowConfig = config;
+  if (!atEof) {
+    windowConfig.trimFinalNewlines = false;
+    windowConfig.insertNewlineAtEOF = false;
+  }
+  Formatter window(windowConfig, content, toks);
+  window.formatOff = scratch.formatOff;
+  window.macroBody = scratch.macroBody;
+  window.asmBody = scratch.asmBody;
+  window.prevContinues = scratch.prevContinues;
+  processLines(window, lines, toks, windowConfig, stack, first, last);
+  std::string const text = window.finish();
+
+  // The replacement span is the window's whole lines, newline of the last
+  // line included (step 6).
+  result.replacementStart = lines[first].begin;
+  result.replacementEnd = atEof ? content.size() : lines[last + 1].begin;
+  std::string const original = content.substr(
+      result.replacementStart, result.replacementEnd - result.replacementStart);
+  result.changed = text != original;
+  if (result.changed) {
+    result.text = text;
+  }
+  return result;
 }
 
 } // namespace fbformat

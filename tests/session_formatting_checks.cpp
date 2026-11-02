@@ -18,10 +18,9 @@
 // caller's side a give-up and an empty reply look identical to a poll, so the
 // test has to see the answer arrive.
 //
-// `textDocument/rangeFormatting` currently defers to the full-document edit
-// (formatRangeLsp's documented stub); its test pins that deferral so the day
-// it becomes a true range edit the test is deleted deliberately, not by
-// accident.
+// `textDocument/rangeFormatting` answers with an edit confined to the
+// selected lines; its test pins that confinement, and the engine's range
+// rules are pinned in format_engine_checks.
 //
 // A new test goes here and in the runner at the bottom of this file;
 // everything it needs is either in session_support.h (the harness) or
@@ -55,9 +54,8 @@ std::string FormattingFrameWithOptions(std::string const &id,
          uri + R"("},"options":)" + options + "}}";
 }
 
-// The range formatting request: a slice of the middle of the document. It is
-// answered with the whole-document edit until formatRangeLsp honors the
-// range.
+// The range formatting request: line 1 of the document, from its first
+// character to the first character of line 2.
 std::string RangeFormattingFrame(std::string const &id,
                                  std::string const &uri) {
   return R"({"jsonrpc":"2.0","id":")" + id +
@@ -321,27 +319,33 @@ void TestInvalidConfigAnswersNoEdits() {
   session.stop();
 }
 
-// The range request is answered with the whole-document edit while
-// formatRangeLsp defers. Deleting this test when range formatting becomes a
-// true range edit is the deliberate act; letting it pass forever on a
-// deferral nobody remembers is not.
-void TestRangeFormattingDefersToTheWholeDocument() {
+// The range request answers with an edit confined to the selected lines:
+// the fixture's surrounding lines are already in FBdocs form and only the
+// middle line is not, so applying the edit (line 1 replaced by one tabbed
+// line) yields exactly the full format of the document.
+void TestRangeFormattingConfinesTheEdit() {
   TwoFileFixture const fix;
+  char const kRangeDoc[] = "Sub f()\nx=1\nEnd Sub\n";
 
   lsp::NullLog log;
   lsp::LanguageSession session(log);
   auto output = std::make_shared<StringOStream>();
   FreeBasicServer server(session);
   auto input = StartIndexedSession(session, server, output, fix,
-                                   {{fix.progUri, kUnformatted}});
+                                   {{fix.progUri, kRangeDoc}});
 
   std::string const reply =
-      PollRequest(input, output, "fmtrange", NewTextNeedle(kFormatted),
+      PollRequest(input, output, "fmtrange", NewTextNeedle("\tx = 1\n"),
                   [&](std::string const &id) {
                     return RangeFormattingFrame(id, fix.progUri);
                   });
-  Expect(reply.find(R"("start":{"line":0,"character":0})") != std::string::npos,
-         "the deferring range edit still spans the whole document");
+  Expect(reply.find(R"("start":{"line":1,"character":0})") != std::string::npos,
+         "the range edit must start at the selected line, not the document");
+  Expect(reply.find(R"("end":{"line":2,"character":0})") != std::string::npos,
+         "the range edit must end where the selection ends");
+  Expect(reply.find(NewTextNeedle("Sub f()\n\tx = 1\nEnd Sub\n")) ==
+             std::string::npos,
+         "the range edit must not rewrite the whole document");
 
   session.stop();
 }
@@ -383,7 +387,7 @@ void RunFormattingTests() {
   RUN_TEST(TestClientOptionsAppliedWhenUnconfigured);
   RUN_TEST(TestClientOptionsIgnoredWhenConfigured);
   RUN_TEST(TestInvalidConfigAnswersNoEdits);
-  RUN_TEST(TestRangeFormattingDefersToTheWholeDocument);
+  RUN_TEST(TestRangeFormattingConfinesTheEdit);
   RUN_TEST(TestFormattingUnknownDocumentAnswersEmpty);
 }
 

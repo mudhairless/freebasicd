@@ -546,6 +546,105 @@ static void TestIdempotence() {
   CHECK_EQ(fmt(once, c), once);
 }
 
+// --- range formatting (§9.6) ----------------------------------------------
+
+static RangeResult rangeOf(std::string const &src, FormatConfig const &c,
+                           size_t start, size_t end) {
+  return formatRange(src, "test.bas", c, start, end);
+}
+
+static std::string applyRange(std::string const &src, RangeResult const &r) {
+  if (!r.changed) {
+    return src;
+  }
+  return src.substr(0, r.replacementStart) + r.text +
+         src.substr(r.replacementEnd);
+}
+
+// A range over one line in the middle of nested blocks: the edit is that
+// line alone, at the depth the prefix leaves. The surrounding lines are
+// already formatted, so applying the edit reproduces the full format.
+static void TestRangeMiddleOfBlock() {
+  FormatConfig c = spaceConfig();
+  std::string const in =
+      "sub f()\n  x = 1\n  if a then\ny=2\n  end if\nend sub\n";
+  size_t const start = in.find("y=2");
+  RangeResult const r = rangeOf(in, c, start, start + 3);
+  CHECK(r.changed);
+  CHECK(r.replacementStart == start);
+  CHECK(r.replacementEnd == in.find("\n  end if") + 1);
+  CHECK_EQ(r.text, std::string("    y = 2\n"));
+  CHECK_EQ(applyRange(in, r), fmt(in, c));
+}
+
+// The dedent of a closer comes from the dry-run stack, not the raw line:
+// selecting only `end if` still lands it at the If body's parent depth.
+static void TestRangeIndentContextFromPrefix() {
+  FormatConfig c = spaceConfig();
+  std::string const in =
+      "sub f()\n  x = 1\n  if a then\n    y = 2\nend if\nend sub\n";
+  size_t const start = in.find("end if");
+  RangeResult const r = rangeOf(in, c, start, start + 6);
+  CHECK(r.changed);
+  CHECK_EQ(r.text, std::string("  end if\n"));
+  CHECK_EQ(applyRange(in, r), fmt(in, c));
+}
+
+// A range that touches the inside of a block comment expands to the whole
+// lines the comment token spans.
+static void TestRangeBlockCommentBoundary() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "sub f()\n/' one\ntwo '/\n  x = 1\nend sub\n";
+  size_t const start = in.find("two");
+  RangeResult const r = rangeOf(in, c, start, start);
+  CHECK(r.changed);
+  CHECK(r.replacementStart == in.find("/'"));
+  CHECK_EQ(applyRange(in, r), fmt(in, c));
+}
+
+// Selecting the tail of a `_` chain pulls the window back to the chain
+// head, so the head formats and the continuation lines stay verbatim.
+static void TestRangeContinuationHead() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "sub f()\nx = 1 + _\n2 + _\n3\nend sub\n";
+  size_t const start = in.find("\n3\n") + 1;
+  RangeResult const r = rangeOf(in, c, start, start + 1);
+  CHECK(r.changed);
+  CHECK(r.replacementStart == in.find("x = 1"));
+  CHECK_EQ(applyRange(in, r), fmt(in, c));
+}
+
+// A range over blank lines only has nothing to format.
+static void TestRangeBlankOnlyIsNoOp() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "sub f()\n\n\nx=1\nend sub\n";
+  size_t const start = in.find("x=1") - 2;
+  RangeResult const r = rangeOf(in, c, start, start + 2);
+  CHECK(!r.changed);
+}
+
+// A range over a line that already reads as formatted changes nothing.
+static void TestRangeAlreadyFormattedIsNoOp() {
+  FormatConfig c = spaceConfig();
+  std::string const in =
+      fmt("sub f()\nx=1\nif a then\ny=2\nend if\nend sub\n", c);
+  size_t const start = in.find("y = 2");
+  RangeResult const r = rangeOf(in, c, start, start + 5);
+  CHECK(!r.changed);
+}
+
+// A mid-document range does not normalize the end of the file: the missing
+// final newline stays missing and the unformatted closer stays untouched.
+static void TestRangeMidDocumentKeepsEofAlone() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "sub f()\nx=1\nend sub";
+  size_t const start = in.find("x=1");
+  RangeResult const r = rangeOf(in, c, start, start + 3);
+  CHECK(r.changed);
+  CHECK(r.replacementEnd == in.find("end sub"));
+  CHECK_EQ(applyRange(in, r), std::string("sub f()\n  x = 1\nend sub"));
+}
+
 int main() {
   TestIndentBlocks();
   TestOneLineIfDoesNotPush();
@@ -575,6 +674,13 @@ int main() {
   TestBareEndIsAStatement();
   TestSpellingTable();
   TestIdempotence();
+  TestRangeMiddleOfBlock();
+  TestRangeIndentContextFromPrefix();
+  TestRangeBlockCommentBoundary();
+  TestRangeContinuationHead();
+  TestRangeBlankOnlyIsNoOp();
+  TestRangeAlreadyFormattedIsNoOp();
+  TestRangeMidDocumentKeepsEofAlone();
 
   if (failures != 0) {
     std::printf("format_engine_checks: %d failure(s)\n", failures);

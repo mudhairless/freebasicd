@@ -21,10 +21,16 @@ std::vector<TextEdit> formatRangeLsp(const std::string &content,
                                      const std::string &filePath,
                                      const FormatConfig &config,
                                      size_t rangeStart, size_t rangeEnd) {
-  (void)rangeStart;
-  (void)rangeEnd;
-  // For now, defer range formatting - return full document edit if changed
-  return formatDocumentLsp(content, filePath, config);
+  RangeResult const range =
+      formatRange(content, filePath, config, rangeStart, rangeEnd);
+  if (!range.changed) {
+    return {};
+  }
+  TextEdit edit;
+  edit.start = range.replacementStart;
+  edit.end = range.replacementEnd;
+  edit.newText = range.text;
+  return {edit};
 }
 
 } // namespace fbformat
