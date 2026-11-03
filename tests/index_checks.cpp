@@ -543,6 +543,16 @@ int main() {
                 "the non-executable fbc decoy must be skipped");
       CHECK(!findFbcExecutableDir(bin0.string()).has_value());
       CHECK(!findFbcExecutableDir("").has_value());
+
+      // A pinned compiler is the whole answer: no PATH fallback, and a pin
+      // that cannot be run leaves the version unknown rather than silently
+      // diagnosing against a different compiler.
+      std::filesystem::path const pinned =
+          findFbcExecutable("", (bin1 / exeName).string()).value_or(fs::path{});
+      CHECK_MSG(!pinned.empty(),
+                "a configured fbc.path must resolve without a PATH search");
+      CHECK(!findFbcExecutable(bin1.string(), (bin0 / exeName).string())
+                 .has_value());
     }
 
     // resolveIncludeTarget precedence with a sandboxed "system" header dir.
@@ -886,6 +896,86 @@ int main() {
     (void)leafNorm;
     idx.close();
     fs::remove_all(typeSandbox);
+  }
+
+  // M21 step 2: adopting a settings snapshot resolves and caches the compiler
+  // facts once, and reports the build.main contradictions only an adopted
+  // snapshot can state.
+  {
+    fs::path const sws = sandbox / "settingsws";
+    fs::create_directories(sws / "src");
+    fs::create_directories(sws / "tools");
+    writeFile(sws / "src" / "main.bas", "print 1\n");
+
+    fs::path fakeFbc;
+#ifdef _WIN32
+    fakeFbc = sws / "tools" / "fbc.bat";
+    writeFile(fakeFbc, "@echo FreeBASIC Compiler - Version 1.2.3 (2023-12-24), "
+                       "built for win64\r\n");
+    fs::path const sysDir = sws / "tools" / "inc";
+#else
+    fakeFbc = sws / "tools" / "fbc";
+    writeFile(fakeFbc, "#!/bin/sh\n"
+                       "echo 'FreeBASIC Compiler - Version 1.2.3 "
+                       "(2023-12-24), built for linux-x86_64'\n");
+    fs::permissions(fakeFbc,
+                    fs::perms::owner_read | fs::perms::owner_write |
+                        fs::perms::owner_exec,
+                    fs::perm_options::replace);
+    fs::path const sysDir = sws / "include" / "freebasic";
+#endif
+    fs::create_directories(sysDir);
+    writeFile(sysDir / "pinned.bi", "dim pinned as integer\n");
+
+    Settings s;
+    s.fbc.path = normalizePath(fakeFbc);
+    s.build.main = normalizePath(sws / "src" / "main.bas");
+
+    WorkspaceIndex idx(sws);
+    std::vector<SuppressNote> notes = idx.applySettings(s);
+    CHECK_MSG(notes.empty(),
+              "a valid exe with an existing main must produce no note");
+    CHECK_MSG(idx.fbcExecutable() == fs::canonical(fakeFbc),
+              "the pinned compiler must be the resolved executable");
+    CHECK_MSG(idx.fbcVersion().has_value() &&
+                  idx.fbcVersion()->toString() == "1.2.3",
+              "the pinned compiler's version must be probed and cached");
+    CHECK_MSG(idx.systemIncludeDir() == fs::canonical(sysDir),
+              "the system header dir must come from the pinned compiler");
+
+    // A main on a non-exe kind is a contradiction, stated once per adoption.
+    s.build.kind = BuildKind::Dll;
+    notes = idx.applySettings(s);
+    CHECK(notes.size() == 1);
+    CHECK(notes[0].kind == SettingsNoteKind::BuildMainOnNonExe);
+    CHECK(notes[0].key == "build.main");
+
+    // An exe main naming no source file under the root is the other one.
+    s.build.kind = BuildKind::Exe;
+    s.build.main = normalizePath(sws / "src" / "missing.bas");
+    notes = idx.applySettings(s);
+    CHECK(notes.size() == 1);
+    CHECK(notes[0].kind == SettingsNoteKind::BuildMainNotIndexed);
+
+    // A live buffer the disk does not have yet is still a valid main: the
+    // check runs at adoption, before the asynchronous scan has parsed it.
+    s.build.main = normalizePath(sws / "src" / "new.bas");
+    AnalyzedDoc const buf = analyze("print 2\n");
+    idx.upsert(indexedFileFromAnalysis(normalizePath(sws / "src" / "new.bas"),
+                                       0, 0, buf, sws, /*fromDisk=*/false));
+    notes = idx.applySettings(s);
+    CHECK_MSG(notes.empty(), "an open-buffer main must count as present");
+
+    // A pin that cannot be run is not silently replaced by a PATH compiler:
+    // the executable and version stay empty, so no version filtering is
+    // applied.
+    s.fbc.path = normalizePath(sws / "tools" / "not-a-compiler");
+    notes = idx.applySettings(s);
+    CHECK(notes.empty());
+    CHECK(idx.fbcExecutable().empty());
+    CHECK(!idx.fbcVersion().has_value());
+    CHECK(idx.systemIncludeDir().empty());
+    idx.close();
   }
 
   fs::remove_all(sandbox);

@@ -163,6 +163,13 @@ diagnosticsOn = true
 semanticTokensOn = true
 inlayHintsOn = true
 codeLensOn = true
+
+[build]
+kind = "exe"                             # "exe" (default), "dll", "staticlib"
+main = "src/main.bas"                    # optional; an exe's main module
+
+[fbc]
+path = "tools/fbc"                       # optional; default is the fbc on PATH
 ```
 
 Every key is optional. See [Configuration](../README.md#configuration) for what

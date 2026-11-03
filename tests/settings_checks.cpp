@@ -9,14 +9,18 @@
 // behind tomlplusplus, exercised directly here (M11).
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
+#include "fbc_version.h"
 #include "settings.h"
+#include "symbols.h"
 
 using namespace fblang;
 
@@ -231,6 +235,162 @@ static void TestConfigFileMarkerAndLoad() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+// M21 step 2: the `[build]` / `[fbc]` sub-tables. Defaults keep today's
+// behavior (an exe with no known main, the first fbc on PATH); unknown values
+// are notes rather than parse failures; relative paths resolve against the
+// config file's own directory. `fbc.version` deliberately does not exist: the
+// version is probed from the resolved compiler.
+static void TestBuildAndFbcParsing() {
+  Settings const defaults = parseSettings("");
+  CHECK(defaults.build.kind == BuildKind::Exe);
+  CHECK(!defaults.build.main.has_value());
+  CHECK(!defaults.fbc.path.has_value());
+
+  Settings const parsed =
+      parseSettings("[build]\nkind = \"dll\"\nmain = \"app.bas\"\n"
+                    "[fbc]\npath = \"tools/fbc\"\n");
+  CHECK(parsed.build.kind == BuildKind::Dll);
+  CHECK(parsed.build.main.has_value());
+  CHECK_EQ(*parsed.build.main, "app.bas");
+  CHECK(parsed.fbc.path.has_value());
+  CHECK_EQ(*parsed.fbc.path, "tools/fbc");
+
+  std::filesystem::path const configDir =
+      (std::filesystem::temp_directory_path() / "fblsp-cfg").lexically_normal();
+  Settings const resolved = parseSettings(
+      "[build]\nmain = \"src/main.bas\"\n[fbc]\npath = \"tools/fbc\"\n",
+      nullptr, nullptr, configDir);
+  CHECK(resolved.build.main.has_value());
+  CHECK(std::filesystem::path(*resolved.build.main) ==
+        configDir / "src" / "main.bas");
+  CHECK(resolved.fbc.path.has_value());
+  CHECK(std::filesystem::path(*resolved.fbc.path) ==
+        configDir / "tools" / "fbc");
+
+  std::vector<SuppressNote> notes;
+  Settings const unknown =
+      parseSettings("[build]\nkind = \"library\"\n", nullptr, &notes);
+  CHECK(unknown.build.kind == BuildKind::Exe);
+  CHECK(notes.size() == 1);
+  CHECK_EQ(notes[0].entry, "library");
+  CHECK_EQ(notes[0].key, "build.kind");
+  CHECK(notes[0].kind == SettingsNoteKind::UnknownBuildKind);
+
+  notes.clear();
+  Settings const wrong = parseSettings(
+      "[build]\nkind = 1\nmain = 2\n[fbc]\npath = 3\n", nullptr, &notes);
+  CHECK(wrong.build.kind == BuildKind::Exe);
+  CHECK(!wrong.build.main.has_value());
+  CHECK(!wrong.fbc.path.has_value());
+  CHECK(notes.size() == 3);
+  for (SuppressNote const &note : notes) {
+    CHECK(note.kind == SettingsNoteKind::WrongType);
+  }
+
+  // The version is not a config key: a leftover `fbc.version` is ignored like
+  // any unknown key, and produces no note.
+  notes.clear();
+  Settings const versionKey =
+      parseSettings("[fbc]\nversion = \"1.10.2\"\n", nullptr, &notes);
+  CHECK(!versionKey.fbc.path.has_value());
+  CHECK(notes.empty());
+}
+
+// M21 step 2: parse the dotted number out of `fbc -version`. The build date and
+// platform triple are ignored; only a complete major.minor.patch token counts.
+static void TestParseFbcVersion() {
+  std::optional<FbcVersion> const real = parseFbcVersion(
+      "FreeBASIC Compiler - Version 1.10.2 (2023-12-24), built for "
+      "linux-x86_64 (64bit)\n");
+  CHECK(real.has_value());
+  CHECK_EQ(real->toString(), "1.10.2");
+
+  std::optional<FbcVersion> const plain = parseFbcVersion("Version 7.6.5\n");
+  CHECK(plain.has_value());
+  CHECK_EQ(plain->toString(), "7.6.5");
+
+  CHECK(!parseFbcVersion("").has_value());
+  CHECK(!parseFbcVersion("FreeBASIC Compiler\n").has_value());
+  CHECK(!parseFbcVersion("Version 1.2\n").has_value());
+  CHECK(!parseFbcVersion("Version 1.2.3.4\n").has_value());
+  CHECK(!parseFbcVersion("Version 1.2.x\n").has_value());
+
+  // The first complete token wins; a second one never replaces it.
+  std::optional<FbcVersion> const first = parseFbcVersion("1.2.3 then 9.9.9");
+  CHECK(first.has_value());
+  CHECK_EQ(first->toString(), "1.2.3");
+}
+
+static void TestFbcVersionComparisonAndGate() {
+  FbcVersion const a{1, 10, 2};
+  FbcVersion const b{1, 10, 3};
+  CHECK(a == a);
+  CHECK(a != b);
+  CHECK(a < b);
+  CHECK(a <= a);
+  CHECK(b > a);
+  CHECK(b >= b);
+
+  Diagnostic finding;
+  CHECK(versionAllows(std::nullopt, finding)); // unknown filters nothing
+  CHECK(versionAllows(a, finding));            // no bounds: all versions
+
+  finding.since = FbcVersion{1, 10, 0};
+  finding.until = FbcVersion{1, 10, 3};
+  CHECK(versionAllows(FbcVersion{1, 10, 0}, finding)); // inclusive
+  CHECK(versionAllows(FbcVersion{1, 10, 3}, finding)); // inclusive
+  CHECK(!versionAllows(FbcVersion{1, 9, 9}, finding));
+  CHECK(!versionAllows(FbcVersion{1, 10, 4}, finding));
+  CHECK(versionAllows(std::nullopt, finding)); // unknown still nothing
+}
+
+static std::filesystem::path writeFakeFbc(std::filesystem::path const &dir,
+                                          std::string const &name,
+                                          std::string const &version) {
+  std::filesystem::create_directories(dir);
+#ifdef _WIN32
+  std::filesystem::path const exe = dir / (name + ".bat");
+  std::ofstream out(exe);
+  out << "@echo FreeBASIC Compiler - Version " << version
+      << " (2023-12-24), built for win64\n";
+#else
+  std::filesystem::path const exe = dir / name;
+  {
+    std::ofstream out(exe);
+    out << "#!/bin/sh\n"
+        << "echo 'FreeBASIC Compiler - Version " << version
+        << " (2023-12-24), built for linux-x86_64 (64bit)'\n";
+  }
+  std::filesystem::permissions(exe,
+                               std::filesystem::perms::owner_read |
+                                   std::filesystem::perms::owner_write |
+                                   std::filesystem::perms::owner_exec,
+                               std::filesystem::perm_options::replace);
+#endif
+  return exe;
+}
+
+// M21 step 2: the probe is bounded and reads only the dotted version; a missing
+// compiler leaves the version unknown rather than throwing or stalling.
+static void TestProbeFbcVersion() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-probe-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+
+  std::filesystem::path const fake = writeFakeFbc(sandbox, "fbc", "7.6.5");
+  std::optional<FbcVersion> const probed =
+      probeFbcVersion(fake, std::chrono::milliseconds(2000));
+  CHECK(probed.has_value());
+  CHECK_EQ(probed->toString(), "7.6.5");
+
+  CHECK(!probeFbcVersion(sandbox / "does-not-exist").has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
 int main() {
   TestParseDefaults();
   TestParseFullSettings();
@@ -240,6 +400,10 @@ int main() {
   TestSuppressParsing();
   TestSuppressWireSuffix();
   TestConfigFileMarkerAndLoad();
+  TestBuildAndFbcParsing();
+  TestParseFbcVersion();
+  TestFbcVersionComparisonAndGate();
+  TestProbeFbcVersion();
 
   if (failures != 0) {
     std::printf("settings_checks: %d failure(s)\n", failures);

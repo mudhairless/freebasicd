@@ -9,8 +9,10 @@
 #include <toml++/toml.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 
 #include "symbols.h" // toLowerChars
@@ -18,6 +20,104 @@
 namespace fblang {
 
 namespace {
+
+// A relative `build.main` / `fbc.path` is relative to the config file's own
+// directory, like `includePaths` (which the owning index resolves the same
+// way). An absolute value is normalized but never rebased.
+std::string resolveConfigPath(std::string value,
+                              std::filesystem::path const &configDir) {
+  if (configDir.empty() || value.empty()) {
+    return value;
+  }
+  std::filesystem::path p(value);
+  if (p.is_relative()) {
+    p = configDir / p;
+  }
+  std::error_code ec;
+  std::filesystem::path const abs = std::filesystem::absolute(p, ec);
+  return (ec ? p : abs).lexically_normal().string();
+}
+
+void noteWrongType(std::vector<SuppressNote> *notes, std::string key) {
+  if (notes != nullptr) {
+    notes->push_back(SuppressNote{std::string{}, std::move(key),
+                                  SettingsNoteKind::WrongType});
+  }
+}
+
+// Read an optional string key from a sub-table. A present non-string value is
+// a note and keeps the default; a missing key is silent.
+std::optional<std::string> stringValue(toml::table const &table,
+                                       std::string const &key,
+                                       std::string const &dotted,
+                                       std::filesystem::path const &configDir,
+                                       std::vector<SuppressNote> *notes) {
+  toml::node const *const node = table.get(key);
+  if (node == nullptr) {
+    return std::nullopt;
+  }
+  std::optional<std::string> const value = node->value<std::string>();
+  if (!value) {
+    noteWrongType(notes, dotted);
+    return std::nullopt;
+  }
+  if (value->empty()) {
+    return std::nullopt;
+  }
+  return resolveConfigPath(*value, configDir);
+}
+
+// Parse the `[build]` table: `kind` and `main` (M21 step 2).
+void parseBuild(toml::table const &root, std::filesystem::path const &configDir,
+                std::vector<SuppressNote> *notes, Settings *s) {
+  toml::node const *const node = root.get("build");
+  if (node == nullptr) {
+    return;
+  }
+  toml::table const *const table = node->as_table();
+  if (table == nullptr) {
+    noteWrongType(notes, "build");
+    return;
+  }
+
+  if (toml::node const *const kindNode = table->get("kind")) {
+    std::optional<std::string> const kind = kindNode->value<std::string>();
+    if (!kind) {
+      noteWrongType(notes, "build.kind");
+    } else if (*kind == "exe") {
+      s->build.kind = BuildKind::Exe;
+    } else if (*kind == "dll") {
+      s->build.kind = BuildKind::Dll;
+    } else if (*kind == "staticlib") {
+      s->build.kind = BuildKind::StaticLib;
+    } else {
+      if (notes != nullptr) {
+        notes->push_back(SuppressNote{*kind, "build.kind",
+                                      SettingsNoteKind::UnknownBuildKind});
+      }
+      s->build.kind = BuildKind::Exe;
+    }
+  }
+
+  s->build.main = stringValue(*table, "main", "build.main", configDir, notes);
+}
+
+// Parse the `[fbc]` table: `path` only. The compiler version is probed at
+// runtime, never configured (M21 step 2: there is deliberately no
+// `fbc.version` key).
+void parseFbc(toml::table const &root, std::filesystem::path const &configDir,
+              std::vector<SuppressNote> *notes, Settings *s) {
+  toml::node const *const node = root.get("fbc");
+  if (node == nullptr) {
+    return;
+  }
+  toml::table const *const table = node->as_table();
+  if (table == nullptr) {
+    noteWrongType(notes, "fbc");
+    return;
+  }
+  s->fbc.path = stringValue(*table, "path", "fbc.path", configDir, notes);
+}
 
 // A routing key never contains a comma, so an entry that has one names more
 // than the key: a wire `Diagnostic.code` was copied in whole
@@ -44,7 +144,8 @@ bool hasConfigFile(std::filesystem::path const &dir) {
 }
 
 Settings parseSettings(std::string_view tomlText, bool *ok,
-                       std::vector<SuppressNote> *notes) {
+                       std::vector<SuppressNote> *notes,
+                       std::filesystem::path const &configDir) {
   if (ok != nullptr) {
     *ok = true;
   }
@@ -81,6 +182,12 @@ Settings parseSettings(std::string_view tomlText, bool *ok,
   if (auto const v = root["codeLensOn"].value<bool>()) {
     s.codeLensOn = *v;
   }
+
+  // M21 step 2: the two sub-tables. Unknown keys inside them are ignored like
+  // every other unknown key; value-shape problems are notes.
+  parseBuild(root, configDir, notes, &s);
+  parseFbc(root, configDir, notes, &s);
+
   // warningLevel: one of fbc's `-w` option names, English only (never
   // translated), matched case-sensitively like the compiler's own option
   // parser. An unknown string keeps the default — `-w none` — as does any
@@ -140,7 +247,7 @@ Settings settingsForDir(std::filesystem::path const &dir, bool *ok,
   std::ifstream in(dir / kConfigFileName);
   std::string const text{std::istreambuf_iterator<char>(in),
                          std::istreambuf_iterator<char>()};
-  return parseSettings(text, ok, notes);
+  return parseSettings(text, ok, notes, dir);
 }
 
 } // namespace fblang

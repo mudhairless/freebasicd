@@ -410,23 +410,16 @@
      exist. Nothing knows that a `.bas` in an include closure may *be* the main
      module, and nothing can: an LSP never sees the build command line, so the
      project's **artifact kind** and **main module** are facts only the user can
-     supply. M21 takes both as optional config with defaults that keep today's
-     behavior.
+     supply. M21 step 2 landed both as optional config (`[build]` / `[fbc]`,
+     with defaults that keep today's behavior); the diagnostics below remain
+     unimplemented.
   6. **Most diagnostic codes are still our own, not fbc's.** The catalog is
      data (M21 step 5: `tools/fbc_catalog.tsv` → `src/fbc_diagnostics.inc`,
      byte-checked by `fbc_diagnostics_checks`) and the block-closer family
      already reports fbc's number and links its wiki page. The statement,
      placement, and warning families and the whole resolve layer still report
      our codes — M23 and M24.
-  7. **Diagnostics are not version-aware** (M21, second half). Nothing records
-     which fbc version a finding assumes, there is no `fbc.path`/`fbc.version`
-     config, and the two sites that locate `fbc` are independent:
-     `findFbcExecutableDir` in `src/index.cpp` (used only for the include dir,
-     behind a magic static that a config change would not invalidate) and a bare
-     `std::system("fbc -version …")` in `tests/corpus_checks.cpp`. The measured
-     basis for the shape: `error.bas` is byte-identical across 1.10.0–1.10.3,
-     so versioning belongs on *behavior*, not on message identity.
-  8. **The name view and the single-file diagnostic gates see one file.** A
+  7. **The name view and the single-file diagnostic gates see one file.** A
      document's name layer — `declAt`, `visibleSymbols`, plain-name completion —
      answers from the file's own parse, so a declaration that enters a program
      through `#include` (a header's `Extern`, `Dim Shared`, procedure, or type)
@@ -437,21 +430,23 @@
      files already exist on the pull path — `relatedDocuments` +
      `workspace/diagnostic` — and push publishes open buffers only.) Closing
      this is M25.
-  9. **Log messages are sent to the client inline, so a send can happen under
-     `indexesMutex_`.** The M16 `window/logMessage` drop (2026-10-13) routes the
-     existing stderr lines — the config-parse notes and the detected/workspace
-     root lines — through `FreeBasicServer::logToClient`, which calls
-     `endpoint().send(window/logMessage)` on the calling thread. That thread can
-     be the background scan thread or a handler, and `ensureWorkspaceIndex` logs
-     its root line from inside its critical section, so a slow client stalls
-     every other handler's index snapshot for the duration of the write. It is
-     safe *today* — LspCpp serializes `send` under its own send mutex and no path
-     takes `indexesMutex_` while holding it — but that is an argument no code
-     enforces, which is why it is written down. The shape to build: one shared
-     log FIFO, producers appending under a small log mutex and a single drain
-     owning the send, which also collapses the interleaved `[freebasicd]` lines
-     into one ordered stream and lets any thread log without a lock-ordering
-     claim. Deferred deliberately; the direct send is not the final form.
+  8. **Log messages are sent to the client inline, so any call site can send
+     under `indexesMutex_`.** The M16 `window/logMessage` drop (2026-10-13)
+     routes the existing stderr lines — the config-parse notes and the
+     detected/workspace root lines — through `FreeBasicServer::logToClient`,
+     which calls `endpoint().send(window/logMessage)` on the calling thread.
+     That thread can be the background scan thread or a handler. The known
+     offender was removed when `ensureWorkspaceIndex` was restructured for the
+     M21 compiler probe: the root line and the settings notes are emitted
+     outside the lock, so no current path holds `indexesMutex_` across a send —
+     a slow client therefore cannot stall another handler's index snapshot.
+     That is safe *today* — LspCpp serializes `send` under its own send mutex —
+     but it is an argument no code enforces, which is why it is written down.
+     The shape to build: one shared log FIFO, producers appending under a small
+     log mutex and a single drain owning the send, which also collapses the
+     interleaved `[freebasicd]` lines into one ordered stream and lets any
+     thread log without a lock-ordering claim. Deferred deliberately; the
+     direct send is not the final form.
 
 ## 5. Forward plan
 
@@ -474,8 +469,8 @@ diagnostics it implies fbc's numbers instead of ours. Gating milestone for M18.
    module constructor and a non-`Static` one may not (`error 17`).
    **Landed (2026-10-11).**
 2. **Project type and main module, as optional config** — the two facts an LSP
-   cannot derive (detailed below). Nothing requires them, and each has a
-   default that keeps today's behavior.
+   cannot derive. **Landed (2026-11-03)** as `[build]` / `[fbc]`, with the
+   compiler version probed at runtime; see `CHANGELOG.md`.
 3. **Module-level executable code outside the main module**, which step 2 makes
    stateable. The fix wraps the run in `Sub <name>() Constructor` — an explicit
    `Constructor` states *when* it runs, an implicit module body does not.
@@ -492,69 +487,6 @@ diagnostics it implies fbc's numbers instead of ours. Gating milestone for M18.
    `fbcMessageDocsUrl`); and `fbc_diagnostics_checks` fails when the include
    drifts from the snapshot. A reader who knows `error 42` now learns something
    from our output.
-
-**Step 2 in detail: what the config says, and what it defaults to.**
-
-An LSP never sees the build command line, so two facts must be told to it or
-guessed: what kind of artifact this is, and which module is `main`. Both go in
-`freebasicd.toml`, both are optional, and both default to the conservative
-answer:
-
-| key | default | setting it buys |
-|-----|---------|-----------------|
-| `build.kind` | `"exe"` | `"dll"` / `"staticlib"` → no module is `main` |
-| `build.main` | unset — unknown | names the main module of an exe |
-| `fbc.path` | first `fbc` found on `PATH` | pins a different compiler |
-| `fbc.version` | the version it reports | asserts the version findings assume |
-
-**`kind` is the load-bearing one.** A dll or a static library has no process
-entry point — probed, not assumed: `-lib` and `-dylib` builds carry module-level
-statements with no diagnostic, emit them as load-time constructors
-(`fb_ctor__*`, `__fb_DllMain_ctor`) with no `main` symbol, and run them before
-the linking exe's `main` (FreeBASIC.md §9) — so in one of those projects every
-module level is initialization, and step 3 can say that flatly. Only an exe
-needs `build.main` on top, and only to sharpen it: with `main` set, step 3 can
-say *"app.bas is the main module, so this level runs before it"*; with it unset
-the finding is phrased against fbc's own default, which is the **first `.bas` on
-the command line** (FreeBASIC.md §9) — "if this file is not the first source on
-the link line, everything here runs before `main`". Both phrasings are honest —
-they differ in how much they assert, not in what they report.
-
-Defaults are what a project with no `freebasicd.toml` gets, so the no-config
-case has to be *right*, not merely legal:
-
-- `build.kind = "exe"` with `build.main` unset ⇒ today's behavior. A single-file
-  project is an exe whose main is that file, and nothing changes.
-- `fbc.path` falls back to the existing `PATH` search, so a machine with fbc
-  installed diagnoses against that compiler with no setup at all, and
-  `fbc.version` defaults to whatever it reports — correct for the compiler
-  actually present, with zero configuration.
-
-`build.main` resolves relative to the config file's own directory, like
-`includePaths` today, and so is root-scoped like every setting since M11.
-Contradictions are reported rather than silently resolved: a `build.main` naming
-a file that is not in the index, or set at all on a non-`exe` `kind`, is a
-configuration error worth saying out loud (AGENTS.md §Architecture, "Boundary
-discipline").
-
-**Config shape.** The new keys go in `[build]` and `[fbc]` sub-tables rather
-than as four more top-level keys. That is one helper in `src/settings.cpp`
-(tomlplusplus indexes a sub-table the same way), and it is free *now* for a
-reason that will not stay true: **no tag exists yet** (`git tag` is empty at
-0.7.0), so reshaping `freebasicd.toml` costs nothing today and becomes a
-breaking 0.x config change — a MINOR — the moment M18 ships. `README.md` and
-`docs/install.md` document the keys and move with them.
-
-**Second half, after the above is green** (gap 7): version awareness, behind
-the `fbc.*` keys. A probe that compares the dotted number only, never the build
-date `fbc -version` embeds; `findFbcExecutableDir` gains the `fbc.path`
-override and stops being a once-only magic static, since a pin set by
-`didChangeConfiguration` has to take effect; and `tests/corpus_checks.cpp`
-resolves `fbc` through the same seam, so the corpus half cannot quietly test a
-different compiler than the server diagnoses against. Findings carry
-`since`/`until`, defaulting to "all 1.10.x" — most carry none, because
-`error.bas` is byte-identical across 1.10.0–1.10.3 and what varies is
-*behavior*, not message identity.
 
 **Acceptance**
 

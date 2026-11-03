@@ -120,7 +120,57 @@ systemIncludeDirForExecutable(std::filesystem::path const &fbcExeDir) {
 }
 
 std::optional<std::filesystem::path>
-findFbcExecutableDir(std::string const &pathEnv) {
+findFbcExecutable(std::string const &pathEnv,
+                  std::string const &configuredPath) {
+  auto regularExecutable = [](std::filesystem::path const &candidate) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(candidate, ec)) {
+      return false;
+    }
+#ifndef _WIN32
+    std::error_code pec;
+    auto const perms = std::filesystem::status(candidate, pec).permissions();
+    bool const executable =
+        !pec && (perms & (std::filesystem::perms::owner_exec |
+                          std::filesystem::perms::group_exec |
+                          std::filesystem::perms::others_exec)) !=
+                    std::filesystem::perms::none;
+    if (!executable) {
+      return false;
+    }
+#endif
+    return true;
+  };
+  // Resolve symlinks so the include dir tracks the real install, not a PATH
+  // shim (e.g. /usr/bin/fbc -> /opt/fb/bin/fbc).
+  auto resolved = [](std::filesystem::path const &candidate) {
+    std::filesystem::path out = candidate;
+    std::error_code cec;
+    if (std::filesystem::path const canon =
+            std::filesystem::canonical(candidate, cec);
+        !cec) {
+      out = canon;
+    }
+    return out;
+  };
+
+  // A pinned executable is the whole answer: a bad pin leaves the version
+  // unknown instead of quietly diagnosing against a different compiler.
+  if (!configuredPath.empty()) {
+    std::filesystem::path candidate(configuredPath);
+    if (candidate.is_relative()) {
+      std::error_code ec;
+      candidate = std::filesystem::absolute(candidate, ec);
+      if (ec) {
+        return std::nullopt;
+      }
+    }
+    if (!regularExecutable(candidate)) {
+      return std::nullopt;
+    }
+    return resolved(candidate);
+  }
+
   std::vector<std::string> dirs;
   {
     char const sep =
@@ -153,52 +203,39 @@ findFbcExecutableDir(std::string const &pathEnv) {
   for (std::string const &dir : dirs) {
     for (char const *name : kExecutables) {
       std::filesystem::path const candidate = std::filesystem::path(dir) / name;
-      std::error_code ec;
-      if (!std::filesystem::is_regular_file(candidate, ec)) {
+      if (!regularExecutable(candidate)) {
         continue;
       }
-#ifndef _WIN32
-      std::error_code pec;
-      auto const perms = std::filesystem::status(candidate, pec).permissions();
-      bool const executable =
-          !pec && (perms & (std::filesystem::perms::owner_exec |
-                            std::filesystem::perms::group_exec |
-                            std::filesystem::perms::others_exec)) !=
-                      std::filesystem::perms::none;
-      if (!executable) {
-        continue;
-      }
-#endif
-      // Resolve symlinks so the include dir tracks the real install, not
-      // a PATH shim (e.g. /usr/bin/fbc -> /opt/fb/bin/fbc).
-      std::filesystem::path resolved = candidate;
-      std::error_code cec;
-      if (std::filesystem::path const canon =
-              std::filesystem::canonical(candidate, cec);
-          !cec) {
-        resolved = canon;
-      }
-      return resolved.parent_path();
+      return resolved(candidate);
     }
   }
   return std::nullopt;
 }
 
+std::optional<std::filesystem::path>
+findFbcExecutableDir(std::string const &pathEnv,
+                     std::string const &configuredPath) {
+  std::optional<std::filesystem::path> const exe =
+      findFbcExecutable(pathEnv, configuredPath);
+  if (!exe) {
+    return std::nullopt;
+  }
+  return exe->parent_path();
+}
+
 std::filesystem::path defaultSystemIncludeDir() {
-  // Magic static: computed once on first use; guaranteed thread-safe.
-  static std::filesystem::path const cached = [] {
-    char const *env = std::getenv("PATH");
-    std::optional<std::filesystem::path> const exeDir =
-        findFbcExecutableDir(env ? env : "");
-    if (!exeDir) {
-      return std::filesystem::path{};
-    }
-    std::filesystem::path const dir = systemIncludeDirForExecutable(*exeDir);
-    std::error_code ec;
-    return std::filesystem::is_directory(dir, ec) ? dir
-                                                  : std::filesystem::path{};
-  }();
-  return cached;
+  // No-root fallback: a WorkspaceIndex caches the settings-resolved answer,
+  // so the server never depends on a once-only PATH snapshot that a config
+  // change could not invalidate.
+  char const *env = std::getenv("PATH");
+  std::optional<std::filesystem::path> const exeDir =
+      findFbcExecutableDir(env ? env : "");
+  if (!exeDir) {
+    return std::filesystem::path{};
+  }
+  std::filesystem::path const dir = systemIncludeDirForExecutable(*exeDir);
+  std::error_code ec;
+  return std::filesystem::is_directory(dir, ec) ? dir : std::filesystem::path{};
 }
 
 // True when `normalizedPath` is `normalizedRoot` itself or lies under it. A
@@ -354,7 +391,8 @@ resolveIncludeTarget(std::string_view literal,
 IndexedFile indexedFileFromAnalysis(
     std::string const &normalizedPath, std::uint64_t mtime, std::uint64_t size,
     AnalyzedDoc const &doc, std::filesystem::path const &workspaceRoot,
-    bool fromDisk, std::vector<std::filesystem::path> const &includeDirs) {
+    bool fromDisk, std::vector<std::filesystem::path> const &includeDirs,
+    std::filesystem::path const &systemIncludeDir) {
   IndexedFile f;
   f.path = normalizedPath;
   f.mtime = mtime;
@@ -370,7 +408,7 @@ IndexedFile indexedFileFromAnalysis(
     e.once = inc.once;
     if (std::optional<std::string> t =
             resolveIncludeTarget(inc.literal, normalizedPath, workspaceRoot,
-                                 defaultSystemIncludeDir(), includeDirs)) {
+                                 systemIncludeDir, includeDirs)) {
       e.target = std::move(*t);
     }
     f.includes.push_back(std::move(e));
@@ -539,8 +577,16 @@ void WorkspaceIndex::scan(bool async) {
   // Snapshot the current include dirs once for the whole run: entries parsed
   // by this scan resolve their include edges against the settings in force
   // when the scan started (a concurrent applySettings re-resolves them under
-  // mu_ anyway, so a mid-scan config change still converges).
-  std::vector<std::filesystem::path> const dirs = includeDirs();
+  // mu_ anyway, so a mid-scan config change still converges). The system
+  // header dir is part of the same snapshot: it was derived from the compiler
+  // this root's settings resolved, not from a PATH walk per file.
+  std::vector<std::filesystem::path> dirs;
+  std::filesystem::path systemDir;
+  {
+    std::lock_guard<std::mutex> const lk(mu_);
+    dirs = includeDirs_;
+    systemDir = systemIncludeDir_;
+  }
   std::filesystem::recursive_directory_iterator it(
       root_, std::filesystem::directory_options::skip_permission_denied, ec);
   std::filesystem::recursive_directory_iterator const end;
@@ -655,7 +701,8 @@ void WorkspaceIndex::scan(bool async) {
         }
       }
     }
-    upsert(indexedFileFromAnalysis(norm, mtime, size, doc, root_, true, dirs));
+    upsert(indexedFileFromAnalysis(norm, mtime, size, doc, root_, true, dirs,
+                                   systemDir));
   }
 
   {
@@ -735,14 +782,72 @@ void WorkspaceIndex::rescanLoop() {
 // Configuration (M11): per-root Settings + the include-dirs seam
 // ---------------------------------------------------------------------------
 
-void WorkspaceIndex::applySettings(Settings const &s) {
+std::vector<SuppressNote> WorkspaceIndex::applySettings(Settings const &s) {
+  // Resolve the compiler and probe it *outside* mu_: the lookup touches the
+  // filesystem and the probe may wait on a child process, and neither may block
+  // the handler pool's snapshots. The probe runs once per adoption, never per
+  // request; an unknown result simply leaves version filtering off.
+  std::string const configuredFbc = s.fbc.path.value_or(std::string{});
+  char const *const pathEnv = std::getenv("PATH");
+  std::optional<std::filesystem::path> const executable =
+      findFbcExecutable(pathEnv != nullptr ? pathEnv : "", configuredFbc);
+  std::filesystem::path systemDir;
+  std::optional<FbcVersion> version;
+  if (executable) {
+    std::error_code ec;
+    std::filesystem::path const candidate =
+        systemIncludeDirForExecutable(executable->parent_path());
+    if (std::filesystem::is_directory(candidate, ec)) {
+      systemDir = candidate;
+    }
+    version = probeFbcVersion(*executable);
+  }
+
+  std::vector<std::filesystem::path> dirs;
+  dirs.reserve(s.includePaths.size());
+  for (std::string const &rel : s.includePaths) {
+    dirs.push_back(std::filesystem::absolute(root_ / rel));
+  }
+
+  // `build.main` is a fact about the configuration, so its contradictions are
+  // stated here, at adoption, rather than discovered by a request. A file that
+  // exists on disk with a source suffix is already the right answer even
+  // before the async scan has parsed it; `files_` below covers a live buffer
+  // the disk does not have yet.
+  std::vector<SuppressNote> notes;
+  std::string mainKey;
+  std::string mainName;
+  bool mainIsSource = false;
+  if (s.build.main) {
+    mainName = *s.build.main;
+    if (s.build.kind != BuildKind::Exe) {
+      notes.push_back(SuppressNote{mainName, "build.main",
+                                   SettingsNoteKind::BuildMainOnNonExe});
+    } else {
+      std::filesystem::path mainPath(mainName);
+      if (mainPath.is_relative()) {
+        mainPath = root_ / mainPath;
+      }
+      mainKey = normalizePath(mainPath);
+      std::error_code ec;
+      mainIsSource = isInsideRoot(mainKey) && hasSourceSuffix(mainPath) &&
+                     std::filesystem::is_regular_file(mainPath, ec);
+    }
+  }
+
   std::lock_guard<std::mutex> const lk(mu_);
   settings_ = s;
-  includeDirs_.clear();
-  for (std::string const &rel : s.includePaths) {
-    includeDirs_.push_back(std::filesystem::absolute(root_ / rel));
-  }
+  includeDirs_ = std::move(dirs);
+  systemIncludeDir_ = std::move(systemDir);
+  fbcExecutable_ = executable.value_or(std::filesystem::path{});
+  fbcVersion_ = version;
   reindexIncludeEdges();
+  if (!mainKey.empty() && !mainIsSource &&
+      files_.find(mainKey) == files_.end()) {
+    notes.push_back(SuppressNote{mainName, "build.main",
+                                 SettingsNoteKind::BuildMainNotIndexed});
+  }
+  return notes;
 }
 
 Settings WorkspaceIndex::settings() const {
@@ -753,6 +858,21 @@ Settings WorkspaceIndex::settings() const {
 std::vector<std::filesystem::path> WorkspaceIndex::includeDirs() const {
   std::lock_guard<std::mutex> const lk(mu_);
   return includeDirs_;
+}
+
+std::filesystem::path WorkspaceIndex::systemIncludeDir() const {
+  std::lock_guard<std::mutex> const lk(mu_);
+  return systemIncludeDir_;
+}
+
+std::filesystem::path WorkspaceIndex::fbcExecutable() const {
+  std::lock_guard<std::mutex> const lk(mu_);
+  return fbcExecutable_;
+}
+
+std::optional<FbcVersion> WorkspaceIndex::fbcVersion() const {
+  std::lock_guard<std::mutex> const lk(mu_);
+  return fbcVersion_;
 }
 
 void WorkspaceIndex::reindexIncludeEdges() {
@@ -767,7 +887,7 @@ void WorkspaceIndex::reindexIncludeEdges() {
       e.target.clear();
       if (std::optional<std::string> const t =
               resolveIncludeTarget(e.literal, rebuilt.path, root_,
-                                   defaultSystemIncludeDir(), includeDirs_)) {
+                                   systemIncludeDir_, includeDirs_)) {
         e.target = *t;
       }
     }

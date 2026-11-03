@@ -173,6 +173,15 @@ private:
   // add/remove or re-root sweep never invalidates an in-flight request.
   // Nothing is ever persisted to disk.
   mutable std::mutex indexesMutex_;
+
+  // Serializes index creation from the check to the insertion, so two handlers
+  // opening files under the same brand-new root cannot both probe a compiler
+  // and scan. Held across applySettings, which may spawn a bounded `fbc
+  // -version` child; `indexesMutex_` is therefore taken only for the table
+  // lookups and the final insert, never across that probe. Ordering:
+  // indexCreateMutex_ before indexesMutex_, and never both inside a handler
+  // that already holds an index snapshot.
+  mutable std::mutex indexCreateMutex_;
   std::map<std::string, std::shared_ptr<fblang::WorkspaceIndex>> indexes_;
   // Registered client workspace folders, in registration order.
   std::vector<std::filesystem::path> workspaceFolders_;
@@ -214,7 +223,7 @@ private:
   // depending on the process's stderr. Called from handler threads and the
   // background scan thread; the endpoint serializes the send. The known cost of
   // sending inline — a line emitted under `indexesMutex_` holds that lock for
-  // the duration of a client write — is tracked as PLAN.md §4 gap 9, whose fix
+  // the duration of a client write — is tracked as PLAN.md §4 gap 8, whose fix
   // is a shared log FIFO with a single drain.
   void logToClient(lsMessageType type, std::string const &message) const;
 
@@ -223,6 +232,17 @@ private:
   // defaults *and* says so, instead of quietly treating a broken config as
   // defaults.
   fblang::Settings settingsForDirLogged(std::filesystem::path const &dir);
+
+  // Route every settings note (a `suppress` wire-code cleanup, an unknown
+  // build.kind, a wrong-typed value, a build.main contradiction) to the log.
+  void logSettingsNotes(std::filesystem::path const &dir,
+                        std::vector<fblang::SuppressNote> const &notes) const;
+
+  // Say which compiler this root adopted and what version was probed from it.
+  // An unknown version is a fact worth stating once: it is why no
+  // version-bounded finding is filtered.
+  void logFbcProbe(std::filesystem::path const &dir, fblang::Settings const &s,
+                   fblang::WorkspaceIndex const &index) const;
 
   // The note explaining a root the server *found* rather than the one the
   // client passed, routed to the log. Silent when the chosen root is the

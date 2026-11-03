@@ -759,6 +759,159 @@ void TestSettingsApplyPerRootOnly() {
   std::error_code ec;
   std::filesystem::remove_all(sandbox, ec);
 }
+// M21 step 2: a pinned `[fbc].path` is the root's compiler. Its version is
+// probed once at adoption (and stated in the log), and the install's system
+// header folder joins include resolution — so an `#include` only that compiler
+// provides resolves after the pin, and the pull report's resultId moves because
+// the probed version is part of what the report answers.
+struct FakeCompilerInstall {
+  std::filesystem::path executable;
+  std::filesystem::path systemDir;
+  std::string configPath;
+};
+
+FakeCompilerInstall writeFakeCompiler(std::filesystem::path const &ws,
+                                      std::string const &version) {
+  std::filesystem::create_directories(ws / "tools");
+  FakeCompilerInstall install;
+#ifdef _WIN32
+  install.executable = ws / "tools" / "fbc.bat";
+  {
+    std::ofstream out(install.executable);
+    out << "@echo FreeBASIC Compiler - Version " << version
+        << " (2023-12-24), built for win64\n";
+  }
+  install.systemDir = ws / "tools" / "inc";
+  install.configPath = "tools/fbc.bat";
+#else
+  install.executable = ws / "tools" / "fbc";
+  {
+    std::ofstream out(install.executable);
+    out << "#!/bin/sh\n"
+        << "echo 'FreeBASIC Compiler - Version " << version
+        << " (2023-12-24), built for linux-x86_64 (64bit)'\n";
+  }
+  std::filesystem::permissions(install.executable,
+                               std::filesystem::perms::owner_read |
+                                   std::filesystem::perms::owner_write |
+                                   std::filesystem::perms::owner_exec,
+                               std::filesystem::perm_options::replace);
+  install.systemDir = ws / "include" / "freebasic";
+  install.configPath = "tools/fbc";
+#endif
+  std::filesystem::create_directories(install.systemDir);
+  return install;
+}
+
+void TestFbcPathPinResolvesSystemIncludeAndMovesResultId() {
+  static std::atomic<long> counter{0};
+  std::filesystem::path const sandbox =
+      std::filesystem::temp_directory_path() /
+      ("fblsp-session-" + std::to_string(::time(nullptr)) + "-" +
+       std::to_string(counter.fetch_add(1)));
+  std::filesystem::path const ws = sandbox / "ws";
+  std::filesystem::create_directories(ws);
+  FakeCompilerInstall const fake = writeFakeCompiler(ws, "1.2.3");
+  {
+    // The header exists only inside the pinned compiler's install, so the
+    // include cannot resolve through any of the workspace-root search steps.
+    std::ofstream out(fake.systemDir / "pinned.bi");
+    out << "dim shared pinnedVal as integer\n";
+  }
+  {
+    std::ofstream out(ws / "freebasicd.toml");
+    out << "[server]\n";
+  }
+
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  std::string const mainUri = FileUri(ws / "main.bas");
+  std::string const rootUri = FileUri(ws);
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"capabilities":)"
+      R"({"textDocument":{"diagnostic":{"relatedDocumentSupport":true}},)"
+      R"("workspace":{"diagnostics":{"refreshSupport":true}}},"rootUri":")" +
+      rootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  Expect(WaitForOutputContaining(output, "\"id\":\"init\"")
+                 .find("\"diagnosticProvider\"") != std::string::npos,
+         "initialize must advertise the pull provider");
+
+  std::string const mainText = "#include \"pinned.bi\"\nprint pinnedVal\n";
+  std::string const openFrame =
+      R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)"
+      R"({"uri":")" +
+      mainUri + R"(","languageId":"basic","version":1,"text":")" +
+      ToJsonString(mainText) + "\"}}}";
+  input->append(MakeLspFrame(openFrame.c_str()));
+  WaitForRefreshes(output, 1); // the didOpen's re-pull hint
+
+  auto pull = [&](std::string const &id, std::string const &previous) {
+    std::string body =
+        R"({"jsonrpc":"2.0","id":")" + id +
+        R"(","method":"textDocument/diagnostic","params":{"textDocument":{"uri":")" +
+        mainUri + "\"}";
+    if (!previous.empty()) {
+      body += R"(,"previousResultId":")" + previous + "\"";
+    }
+    body += "}}";
+    return body;
+  };
+
+  // Unpinned: the compiler's system headers are whatever PATH offers, and the
+  // fake install's header is not one of them.
+  std::string const before = PollRequest(
+      input, output, "pin0", "\"kind\":\"full\"",
+      [&](std::string const &id) { return pull(id, std::string{}); });
+  Expect(before.find("\"code\":\"include-not-found") != std::string::npos,
+         "without the pin the install's header must stay unreachable");
+  std::string const beforeId = ResultIdOf(before);
+  Expect(!beforeId.empty(), "the full report must carry a resultId");
+
+  // Pin the compiler. Adopting it resolves the system header folder and probes
+  // the version, both once for the root.
+  {
+    std::ofstream out(ws / "freebasicd.toml");
+    out << "[fbc]\npath = \"" << fake.configPath << "\"\n";
+  }
+  input->append(MakeLspFrame(kDidChangeConfigurationFrame));
+  WaitForRefreshes(output, 2); // the didOpen's hint + the config change's
+
+  Expect(
+      WaitForOutputContaining(output, "version 1.2.3").find("version 1.2.3") !=
+          std::string::npos,
+      "the log must state the version probed from the pinned compiler");
+
+  std::string const after = PollRequest(
+      input, output, "pin1", "\"kind\":\"full\"",
+      [&](std::string const &id) { return pull(id, std::string{}); });
+  Expect(after.find("\"code\":\"include-not-found") == std::string::npos,
+         "the pinned compiler's system header folder must resolve the include");
+  std::string const afterId = ResultIdOf(after);
+  Expect(afterId != beforeId,
+         "the probed version is part of the report identity, so a pin that "
+         "changes it must move the resultId");
+
+  // A client holding the pre-pin report must not be told `unchanged`: the
+  // version now folded into the id is not the one that produced it.
+  std::string const stale =
+      PollRequest(input, output, "pin2", "\"kind\":\"full\"",
+                  [&](std::string const &id) { return pull(id, beforeId); });
+  Expect(stale.find("\"kind\":\"full\"") != std::string::npos,
+         "a report produced under another compiler version must be recomputed");
+
+  session.stop();
+  std::error_code ec;
+  std::filesystem::remove_all(sandbox, ec);
+}
+
 } // namespace
 
 namespace fbtest {
@@ -771,6 +924,7 @@ void RunSettingsTests() {
   RUN_TEST(TestDidChangeConfigurationSuppressWireCode);
   RUN_TEST(TestSemanticTokensAndInlayHintsGates);
   RUN_TEST(TestSettingsApplyPerRootOnly);
+  RUN_TEST(TestFbcPathPinResolvesSystemIncludeAndMovesResultId);
 }
 
 } // namespace fbtest

@@ -26,6 +26,14 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-03 — M21 step 2: the `[build]` / `[fbc]` config tables, and the compiler version probed at runtime
+
+- **The two facts an LSP cannot derive are now config**: `[build]` in `freebasicd.toml` carries `kind` (`"exe"` by default; `"dll"` / `"staticlib"` mean no module is `main`) and the optional `main`, and `[fbc]` carries the optional `path` pin. Both path values resolve relative to the config file's own directory, root-scoped like every setting since M11. Nothing requires the keys, and each default keeps the previous behavior. Step 3 is what consumes `kind` and `main`; this step parses, validates, and reports them.
+- **There is no `fbc.version` key, and there never will be**: the version is probed from the resolved compiler at workspace adoption (`fbc -version`, dotted number only — the build date and platform triple are ignored), because a version the user asserts in config can drift from the compiler actually installed, and the probed one cannot. No compiler, a failed probe, or unparseable output all mean version *unknown*: no findings are filtered and the session is unaffected.
+- **Contradictions are said out loud**: `build.main` set on a non-`exe` kind, and `build.main` naming a file that is not in the index, are reported through the settings-notes channel instead of being silently resolved.
+- **One compiler seam**: `findFbcExecutableDir`'s once-only magic static is gone; the executable is resolved through the root's `Settings` (`fbc.path` when set, the `PATH` search otherwise), so a pin changed by `didChangeConfiguration` takes effect, and `tests/corpus_checks.cpp` resolves through the same seam instead of its own `std::system("fbc -version")`, so the corpus cannot quietly test a different compiler than the server diagnoses against.
+- **Findings can carry `since` / `until`**: a diagnostic outside the probed version's range is withheld at delivery, beside the `warningLevel` and `suppress` gates. Most findings carry neither bound, because `error.bas` is byte-identical across 1.10.0–1.10.3 and what varies between versions is behavior, not message identity.
+
 ### 2026-11-02 — formatter: compound statements no longer leak blocks
 
 - **Found on a real file**: the one-line loop `for i as integer = 0 to wallListCount - 1 : used(i) = 0 : next` pushed a `For` the classifier never closed, because it read only the line's first statement. The outer loop's `Next` consumed the leaked slot, `End With` and `End Sub` refused to pop behind the leftover `For`, and the file's main body formatted three levels deep. The engine now applies each colon-separated statement in order; a one-line `If` keeps the old treatment, since the statements after `Then` are its body.

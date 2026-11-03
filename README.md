@@ -181,12 +181,34 @@ inlayHintsOn = true
 codeLensOn = true
 warningLevel = "none"                    # fbc's -w names; see below
 suppress = ["bad-continuation"]          # drop diagnostics by routing key
+
+[build]
+kind = "exe"                             # "exe" (default), "dll", "staticlib"
+main = "src/main.bas"                    # optional; an exe's main module
+
+[fbc]
+path = "tools/fbc"                       # optional; default is the fbc on PATH
 ```
 
 Each key has a default, unknown keys are ignored, and a malformed file keeps
 the defaults and logs an error rather than degrading the session. The file is
 re-read on `workspace/didChangeConfiguration`; the notification payload is
 ignored, the file is the truth.
+
+`[build]` supplies the two facts an LSP cannot derive from source. `kind` says
+what the project builds — only an `exe` has a main module, so `dll` and
+`staticlib` mean no module is `main`. `main` names that module for an `exe`;
+it resolves relative to `freebasicd.toml` and must name a source file in the
+workspace. A `main` on a non-`exe` kind, or one that names no source file, is a
+configuration error the server logs rather than silently guesses around.
+
+`[fbc]` chooses the compiler the server diagnoses against. `path` is the
+executable itself, resolved relative to `freebasicd.toml`; when unset the first
+`fbc` on `PATH` is used. The version is **not** a config key: the server runs
+the resolved compiler's `-version` once and compares the dotted number only.
+When no compiler is found, a pin cannot be run, or its output names no version,
+the version is unknown and no version-bounded finding is filtered — the server
+still works, and logs that fact once.
 
 `warningLevel` gates which fbc-numbered warnings the server reports. It takes
 fbc's own `-w` option names — `all`, `none`, `param`, `escape`, `pedantic`,

@@ -432,38 +432,48 @@ lsDiagnostic toLsDiagnostic(std::string_view content,
   return diag;
 }
 
-// M23: the gates one diagnostics payload answers to, pulled from the owning
-// root's Settings. `on` is the M11 master switch (empties everything); a mapped
-// warning otherwise surfaces iff its catalog level reaches the configured
-// warning level; and any diagnostic whose routing key is in `suppressed` is
-// dropped outright.
+// M23/M21: the gates one diagnostics payload answers to, pulled from the owning
+// root's Settings and the compiler probed at its adoption. `on` is the M11
+// master switch (empties everything); a mapped warning otherwise surfaces iff
+// its catalog level reaches the configured warning level; any diagnostic whose
+// routing key is in `suppressed` is dropped outright; and a finding with a
+// `since`/`until` range is dropped when the probed compiler's version falls
+// outside it. An unknown version (no fbc found, or an unparsable `-version`)
+// filters nothing, which is exactly the pre-M21 behavior.
 struct DiagnosticsGate {
   bool on = true;
   int warningLevel = 4; // fbc `-w none`; the config default
   // Lowercased, sorted, deduped (Settings::suppress) — the wire drops any
   // diagnostic whose `code` is in here.
   std::vector<std::string> suppressed;
+  std::optional<fblang::FbcVersion> version;
 };
 
-DiagnosticsGate gateFor(fblang::Settings const &s) {
-  return DiagnosticsGate{s.diagnosticsOn, s.warningLevel, s.suppress};
+DiagnosticsGate
+gateFor(fblang::Settings const &s,
+        std::optional<fblang::FbcVersion> const &version = std::nullopt) {
+  return DiagnosticsGate{s.diagnosticsOn, s.warningLevel, s.suppress, version};
 }
 
 // One language-layer diagnostic through the gate. A root-wide suppression wins
 // over everything: the config names this diagnostic's own routing key, so it
-// never reaches the wire (the parser still recorded it). Otherwise a mapped
-// warning below the configured level is dropped — the parser still records it
-// (it is a language fact), but the wire answers the `-w` gate; the catalog's
-// `level` column is fbc's own, so the gate needs no per-diagnostic copy. An
-// error is never gated by level: what this server diagnoses as an error stays
-// an error, and a mapped warning keeps its Warning severity (fbc's `-w error`
-// is not accepted; see Settings).
+// never reaches the wire (the parser still recorded it). A finding whose
+// version range excludes the probed compiler is dropped next, then a mapped
+// warning below the configured level — the parser still records it (it is a
+// language fact), but the wire answers the `-w` gate; the catalog's `level`
+// column is fbc's own, so the gate needs no per-diagnostic copy. An error is
+// never gated by level: what this server diagnoses as an error stays an error,
+// and a mapped warning keeps its Warning severity (fbc's `-w error` is not
+// accepted; see Settings).
 std::optional<lsDiagnostic> gatedDiagnostic(std::string_view content,
                                             fblang::Diagnostic const &d,
                                             DiagnosticsGate const &gate) {
   if (!gate.suppressed.empty() &&
       std::binary_search(gate.suppressed.begin(), gate.suppressed.end(),
                          fblang::toLowerChars(d.code))) {
+    return std::nullopt;
+  }
+  if (!fblang::versionAllows(gate.version, d)) {
     return std::nullopt;
   }
   if (d.fbcError != 0 && d.fbcKind == fblang::FbcMessageKind::Warning) {
@@ -509,7 +519,10 @@ includeResolverFor(std::filesystem::path documentPath,
   std::vector<std::filesystem::path> const includeDirs =
       index ? index->includeDirs() : std::vector<std::filesystem::path>{};
   // One fact for every include, resolved once (memoized in the language layer).
-  std::filesystem::path const systemDir = fblang::defaultSystemIncludeDir();
+  // The owning index already cached the folder for the compiler its settings
+  // resolved; only a session with no index falls back to a PATH probe.
+  std::filesystem::path const systemDir =
+      index ? index->systemIncludeDir() : fblang::defaultSystemIncludeDir();
   return [documentPath = std::move(documentPath), root, includeDirs,
           systemDir](std::string const &literal) -> std::optional<std::string> {
     return fblang::resolveIncludeTarget(literal, documentPath, root, systemDir,
@@ -640,6 +653,15 @@ std::string diagnosticsResultId(std::string_view content,
       hash = diagnosticsFnv(code, hash);
       hash ^= 0x1c;
     }
+  }
+  // The probed compiler version decides which version-bounded findings reach
+  // the payload, so a discovered/pinned compiler that changes it must move the
+  // id. An unknown version filters nothing and is folded as "no version".
+  if (gate.version) {
+    hash = diagnosticsFnv("\x1f"
+                          "fbcversion",
+                          hash);
+    hash = diagnosticsFnv(gate.version->toString(), hash);
   }
   char buf[32];
   std::snprintf(buf, sizeof(buf), "pd%016llx",
@@ -1169,10 +1191,57 @@ void FreeBasicServer::logToClient(lsMessageType type,
   session_.endpoint().send(notify);
 }
 
-// fblang::settingsForDir with parse-failure logging: a missing or
-// comment-only freebasicd.toml is normal (defaults, nothing logged); a
-// present-but-malformed one also keeps the defaults but says so in the log
-// instead of silently treating a broken config as defaults.
+void FreeBasicServer::logSettingsNotes(
+    std::filesystem::path const &dir,
+    std::vector<fblang::SuppressNote> const &notes) const {
+  for (fblang::SuppressNote const &note : notes) {
+    switch (note.kind) {
+    case fblang::SettingsNoteKind::SuppressWireCode:
+      // A `suppress` entry copied from a diagnostic's wire code names the fbc
+      // number as well (`include-not-found, fbc error: 23`). Only the routing
+      // key is meaningful to the gate, so the loader drops the rest and the
+      // entry still suppresses — but it warns, so a config that was never
+      // cleaned up does not stay quietly wrong.
+      logToClient(
+          lsMessageType::Log,
+          fblang::trf("%s/freebasicd.toml: suppress entry \"%s\" should be "
+                      "\"%s\"; remove the fbc code",
+                      fblang::normalizePath(dir), note.entry, note.key));
+      break;
+    case fblang::SettingsNoteKind::UnknownBuildKind:
+      logToClient(lsMessageType::Log,
+                  fblang::trf("%s/freebasicd.toml: unknown build.kind \"%s\"; "
+                              "using \"exe\"",
+                              fblang::normalizePath(dir), note.entry));
+      break;
+    case fblang::SettingsNoteKind::WrongType:
+      logToClient(lsMessageType::Log,
+                  fblang::trf("%s/freebasicd.toml: %s has the wrong type; "
+                              "keeping its default",
+                              fblang::normalizePath(dir), note.key));
+      break;
+    case fblang::SettingsNoteKind::BuildMainOnNonExe:
+      logToClient(
+          lsMessageType::Log,
+          fblang::trf("%s/freebasicd.toml: build.main is only meaningful for "
+                      "build.kind = \"exe\"; ignoring \"%s\"",
+                      fblang::normalizePath(dir), note.entry));
+      break;
+    case fblang::SettingsNoteKind::BuildMainNotIndexed:
+      logToClient(
+          lsMessageType::Log,
+          fblang::trf("%s/freebasicd.toml: build.main names no source file in "
+                      "this workspace: \"%s\"",
+                      fblang::normalizePath(dir), note.entry));
+      break;
+    }
+  }
+}
+
+// fblang::settingsForDir with parse-failure and value notes routed to the log:
+// a missing or comment-only freebasicd.toml is normal (defaults, nothing
+// logged); a present-but-malformed one also keeps the defaults but says so in
+// the log instead of silently treating a broken config as defaults.
 fblang::Settings
 FreeBasicServer::settingsForDirLogged(std::filesystem::path const &dir) {
   bool ok = true;
@@ -1184,19 +1253,42 @@ FreeBasicServer::settingsForDirLogged(std::filesystem::path const &dir) {
                             "keeping defaults",
                             fblang::normalizePath(dir)));
   }
-  // A `suppress` entry copied from a diagnostic's wire code names the fbc
-  // number as well (`include-not-found, fbc error: 23`). Only the routing key
-  // is meaningful to the gate, so the loader drops the rest and the entry still
-  // suppresses — but it warns, so a config that was never cleaned up does not
-  // stay quietly wrong.
-  for (fblang::SuppressNote const &note : notes) {
+  logSettingsNotes(dir, notes);
+  return s;
+}
+
+void FreeBasicServer::logFbcProbe(std::filesystem::path const &dir,
+                                  fblang::Settings const &s,
+                                  fblang::WorkspaceIndex const &index) const {
+  std::filesystem::path const executable = index.fbcExecutable();
+  std::optional<fblang::FbcVersion> const version = index.fbcVersion();
+  if (executable.empty()) {
+    if (s.fbc.path) {
+      logToClient(lsMessageType::Log,
+                  fblang::trf("%s/freebasicd.toml: fbc.path \"%s\" is not a "
+                              "runnable compiler; version unknown, so no "
+                              "version filtering",
+                              fblang::normalizePath(dir), *s.fbc.path));
+    } else {
+      logToClient(lsMessageType::Log,
+                  fblang::trf("%s: no fbc on PATH; version unknown, so no "
+                              "version filtering",
+                              fblang::normalizePath(dir)));
+    }
+    return;
+  }
+  if (version) {
+    logToClient(lsMessageType::Log,
+                fblang::trf("%s: using fbc %s (version %s)",
+                            fblang::normalizePath(dir), executable.string(),
+                            version->toString()));
+  } else {
     logToClient(
         lsMessageType::Log,
-        fblang::trf("%s/freebasicd.toml: suppress entry \"%s\" should be "
-                    "\"%s\"; remove the fbc code",
-                    fblang::normalizePath(dir), note.entry, note.key));
+        fblang::trf("%s: using fbc %s; its -version output named no version, "
+                    "so no version filtering",
+                    fblang::normalizePath(dir), executable.string()));
   }
-  return s;
 }
 
 void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
@@ -1204,26 +1296,33 @@ void FreeBasicServer::ensureWorkspaceIndex(std::filesystem::path const &root) {
     return;
   }
   std::string const normRoot = fblang::normalizePath(root);
-  std::lock_guard<std::mutex> const lock(indexesMutex_);
-  if (indexes_.find(normRoot) != indexes_.end()) {
-    return;
+  // Creation is serialized from the existence check through the insertion.
+  // The probe below may wait on a bounded child process, so it must not run
+  // under indexesMutex_: that lock only guards the map lookup and the insert.
+  std::lock_guard<std::mutex> const createLock(indexCreateMutex_);
+  {
+    std::lock_guard<std::mutex> const lock(indexesMutex_);
+    if (indexes_.find(normRoot) != indexes_.end()) {
+      return;
+    }
   }
-  // Logged inside the critical section and after the already-indexed check:
-  // the line describes the index this call is about to create, so it fires once
-  // per root rather than once per call. The send therefore happens while
-  // `indexesMutex_` is held — the cost PLAN.md §4 gap 9 tracks, whose fix is a
-  // shared log FIFO drained off the lock.
+  // Logged after the already-indexed check and outside indexesMutex_: the line
+  // describes the index this call is about to create, so it fires once per
+  // root rather than once per call.
   logToClient(lsMessageType::Log, fblang::trf("workspace root: %s", normRoot));
   auto index = std::make_shared<fblang::WorkspaceIndex>(root);
   index->open();
-  index->applySettings(settingsForDirLogged(root));
+  fblang::Settings const settings = settingsForDirLogged(root);
+  logSettingsNotes(root, index->applySettings(settings));
+  logFbcProbe(root, settings, *index);
   // A watched-files rescan can change disk-backed diagnostics (an external
   // edit to an indexed header); its completion is when a pull-mode client's
   // cached reports can be honored again, so that is when the refresh hint
   // fires. Never fires for the initial scan (nothing to refresh yet).
   index->onRescanCompleted([this] { notifyDiagnosticsRefresh(); });
   index->scan(true);
-  indexes_[normRoot] = std::move(index);
+  std::lock_guard<std::mutex> const lock(indexesMutex_);
+  indexes_.emplace(normRoot, std::move(index));
 }
 
 // Note when the server set a root it *found* rather than the one the client
@@ -2021,6 +2120,7 @@ void FreeBasicServer::onDidChangeConfiguration(
       continue;
     }
     bool const includeChanged = fresh.includePaths != old.includePaths;
+    bool const compilerChanged = !(fresh.fbc == old.fbc);
     bool const flippedOff = old.diagnosticsOn && !fresh.diagnosticsOn;
     bool const flippedOn = fresh.diagnosticsOn && !old.diagnosticsOn;
     // The `-w` level and the suppression list are part of the diagnostics
@@ -2029,14 +2129,15 @@ void FreeBasicServer::onDidChangeConfiguration(
     bool const gateChanged = fresh.warningLevel != old.warningLevel ||
                              fresh.suppress != old.suppress;
     // Adopt the new settings for the whole root...
-    index->applySettings(fresh);
+    logSettingsNotes(index->root(), index->applySettings(fresh));
+    logFbcProbe(index->root(), fresh, *index);
     if (pullDiagnostics_) {
       // Pull mode: applySettings already re-resolved every indexed entry's
       // include edges — including the open buffers' — which is the whole
       // reconciliation the pull answers need. The empty-publish / re-publish
       // dance below is push-only; one refresh hint tells the client its
-      // cached reports are stale (a gate flip or an include-path change both
-      // change the reports the pull would return).
+      // cached reports are stale (a gate flip, an include-path change, or a
+      // compiler change both change the reports the pull would return).
       notifyDiagnosticsRefresh();
       continue;
     }
@@ -2044,12 +2145,14 @@ void FreeBasicServer::onDidChangeConfiguration(
     // diffs drive only the work that matters: turning diagnostics off
     // publishes a single empty result per open buffer (publishDiagnostics has
     // no tombstones; the empty publish is the clear), turning them on — or
-    // changing the `-w` warning level or the suppression list — re-publishes
-    // what the buffers hold now, and an include-path change re-resolves the
-    // buffers' include edges so a newly reachable header resolves without an
-    // edit.
+    // changing the `-w` warning level, the suppression list, or the compiler
+    // (a new fbc.path can change both the probed version and the system header
+    // folder) — re-publishes what the buffers hold now, and an include-path
+    // change re-resolves the buffers' include edges so a newly reachable
+    // header resolves without an edit.
     std::string const normRoot = fblang::normalizePath(index->root());
-    bool const rePublish = flippedOn || includeChanged || gateChanged;
+    bool const rePublish =
+        flippedOn || includeChanged || compilerChanged || gateChanged;
     for (std::string const &normFile : openFiles_) {
       if (!isWithinNormalized(normFile, normRoot)) {
         continue; // belongs to another root (or to no root's open set)
@@ -2188,12 +2291,14 @@ void FreeBasicServer::reparseAndPublish(
                          /*fromBuffer=*/true, /*insert=*/true);
   std::string_view const content = cached->content;
   fblang::AnalyzedDoc const &doc = cached->analysis;
-  DiagnosticsGate const gate = gateFor(settingsForDocument(normPath));
+  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  DiagnosticsGate const gate =
+      gateFor(settingsForDocument(normPath),
+              index ? index->fbcVersion() : std::nullopt);
   std::vector<lsDiagnostic> diags =
       convertDiagnostics(content, doc.parse, gate);
   appendExternPlacementDiagnostics(content, normPath, doc, gate, &diags);
 
-  std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
   if (index) {
     std::string const ext =
         fblang::toLowerChars(std::filesystem::path(path).extension().string());
@@ -2209,7 +2314,7 @@ void FreeBasicServer::reparseAndPublish(
       // (which stays pinned for the request path).
       fblang::IndexedFile entry = fblang::indexedFileFromAnalysis(
           normPath, mtime, size, doc, index->root(), false,
-          index->includeDirs());
+          index->includeDirs(), index->systemIncludeDir());
       appendIncludeDiagnostics(content, entry, gate, &diags);
       index->upsert(std::move(entry));
     }
@@ -3663,7 +3768,7 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
     // offered only when the next publish would resolve it.
     ctx.resolveInclude = [&path, index](std::string const &literal) {
       return fblang::resolveIncludeTarget(literal, path, index->root(),
-                                          fblang::defaultSystemIncludeDir(),
+                                          index->systemIncludeDir(),
                                           index->includeDirs());
     };
   }
@@ -4258,7 +4363,9 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
   std::shared_ptr<fblang::IndexedFile const> const entry =
       index ? index->fileAt(normPath) : nullptr;
   bool const on = settingsForDocument(normPath).diagnosticsOn;
-  DiagnosticsGate const gate = gateFor(settingsForDocument(normPath));
+  DiagnosticsGate const gate =
+      gateFor(settingsForDocument(normPath),
+              index ? index->fbcVersion() : std::nullopt);
   std::string const resultId =
       diagnosticsResultId(dc->content, entry.get(), gate, normPath);
 
@@ -4294,7 +4401,7 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
       std::shared_ptr<fblang::IndexedFile const> const relatedEntry =
           index->fileAt(relatedPath);
       DiagnosticsGate const relatedGate =
-          gateFor(settingsForDocument(relatedPath));
+          gateFor(settingsForDocument(relatedPath), index->fbcVersion());
       RelatedDocumentDiagnosticReport report;
       report.resultId.emplace(diagnosticsResultId(
           related->content, relatedEntry.get(), relatedGate, relatedPath));
@@ -4340,7 +4447,8 @@ workspace_diagnostic::response FreeBasicServer::onWorkspaceDiagnostic(
       if (!dc) {
         continue; // vanished between the scan and the pull
       }
-      DiagnosticsGate const gate = gateFor(settingsForDocument(entry->path));
+      DiagnosticsGate const gate =
+          gateFor(settingsForDocument(entry->path), index->fbcVersion());
       std::string const resultId =
           diagnosticsResultId(dc->content, entry.get(), gate, entry->path);
       lsDocumentUri const uri(AbsolutePath(entry->path));
@@ -4457,9 +4565,9 @@ void FreeBasicServer::ensureRequestClosure(
     bool const fromBuffer =
         workingFiles_.GetFileByFilename(AbsolutePath(p)) != nullptr;
     return std::make_shared<fblang::IndexedFile const>(
-        fblang::indexedFileFromAnalysis(p, mtime, size, dc->analysis,
-                                        index->root(), !fromBuffer,
-                                        index->includeDirs()));
+        fblang::indexedFileFromAnalysis(
+            p, mtime, size, dc->analysis, index->root(), !fromBuffer,
+            index->includeDirs(), index->systemIncludeDir()));
   });
 }
 

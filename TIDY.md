@@ -98,6 +98,27 @@ allowlist already covers `it`/`begin`/`end` pairs.
 
 ---
 
+## bugprone-command-processor
+
+**Looks for:** Calls to `std::system` and friends, which run a command
+through the platform shell.
+
+**Why suppressed at one site only:** `probeFbcVersion`
+(`src/fbc_version.cpp`) runs the user's own configured compiler with
+`-version` to learn its version at workspace adoption. The executable path
+comes from the user's own `freebasicd.toml` (or their `PATH`) and is
+shell-quoted by `shellQuote` before the command is built; nothing a
+document or a client sends reaches the command line. There is no portable
+standard-library way to spawn a process with a timeout across Linux,
+macOS, and MSVC, and the probe already carries the timeout thread for the
+same reason. The check stays enabled project-wide; the suppression is a
+`NOLINTNEXTLINE` on that one call, so a second `std::system` anywhere else
+still fails the run.
+
+**Hit count:** 1 (the fbc version probe).
+
+---
+
 ## clang-analyzer-optin.performance.Padding
 
 **Looks for:** Structs where the field layout wastes memory due to alignment

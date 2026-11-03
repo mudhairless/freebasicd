@@ -7,6 +7,7 @@
 #pragma once
 
 #include "fbc_diagnostics.h"
+#include "fbc_version.h"
 
 #include <cstdint>
 #include <optional>
@@ -255,6 +256,16 @@ struct Diagnostic {
   // render an fbc warning as a Hint. `fbcError == 0` means no number, so this
   // is never read.
   FbcMessageKind fbcKind = FbcMessageKind::Error;
+
+  // The fbc version range this finding assumes. Unset on both ends is the
+  // common case and means "all 1.10.x": `error.bas` is byte-identical across
+  // 1.10.0–1.10.3, so message identity needs no version data. A bound is only
+  // for *behavior* that differs between compilers (see
+  // research/fbc-diagnostics.md §7), and the delivery gate drops a finding
+  // whose range excludes the version probed from the configured compiler.
+  // When the probe is unknown nothing is filtered (`versionAllows`).
+  std::optional<FbcVersion> since;
+  std::optional<FbcVersion> until;
 
   std::string message;
 

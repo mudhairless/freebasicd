@@ -183,14 +183,18 @@ public:
   std::filesystem::path root() const;
 
   // Adopt a (possibly changed) configuration for this root: store a copy of
-  // `s` (from `fblang::settingsForDir(root())`) and re-resolve every indexed
-  // entry's include edges against the new include dirs. Cached entries reuse
+  // `s` (from `fblang::settingsForDir(root())`), resolve `s.fbc.path` /
+  // `s.build.main`, probe the compiler version once, and re-resolve every
+  // indexed entry's include edges against the new include dirs. Returns the
+  // build.main contradictions that only an adopted snapshot can state (a
+  // `main` on a non-`exe` kind, or one that names no source file under the
+  // root); the session logs them once per adoption. Cached entries reuse
   // their (mtime, size)-matching parse, so the include edges are re-resolved
   // explicitly here instead of left to a plain rescan (which would keep the
   // old edge targets forever). No file is re-read; the parse cache is
   // untouched. Safe to call from the notification thread while `scanner_` may
   // be running: it takes `mu_` and never starts a second scan.
-  void applySettings(Settings const &s);
+  std::vector<SuppressNote> applySettings(Settings const &s);
 
   // The settings snapshot currently governing this root (defaults until the
   // session applies them).
@@ -199,6 +203,21 @@ public:
   // The resolved absolute include dirs (config includePaths relative to the
   // root), snapshot.
   std::vector<std::filesystem::path> includeDirs() const;
+
+  // The system FreeBASIC header folder derived from the compiler this root's
+  // settings resolved (fbc.path when set, PATH otherwise). Empty when no
+  // compiler was found or the install has no headers. Cached with the settings
+  // snapshot, so include resolution never walks PATH per request.
+  std::filesystem::path systemIncludeDir() const;
+
+  // The executable the root's settings resolved, canonicalized; empty when
+  // none was found. Cached with the settings snapshot.
+  std::filesystem::path fbcExecutable() const;
+
+  // The version probed from `fbcExecutable()` at adoption/re-read. Unset when
+  // no compiler was found, the probe failed, or its output did not parse; the
+  // session then applies no version filtering.
+  std::optional<FbcVersion> fbcVersion() const;
 
 private:
   void rescanLoop();
@@ -234,9 +253,14 @@ private:
   // The configuration governing this root (freebasicd.toml), applied by the
   // session after construction and re-applied on didChangeConfiguration.
   // Guarded by mu_ like the maps above. `includeDirs_` caches
-  // settings_.includePaths resolved to absolute paths against root_.
+  // settings_.includePaths resolved to absolute paths against root_;
+  // `systemIncludeDir_`, `fbcExecutable_`, and `fbcVersion_` are the compiler
+  // facts probed once at the same adoption (M21 step 2).
   Settings settings_;
   std::vector<std::filesystem::path> includeDirs_;
+  std::filesystem::path systemIncludeDir_;
+  std::filesystem::path fbcExecutable_;
+  std::optional<FbcVersion> fbcVersion_;
 
   // Resolution-only closures for documents outside the workspace root (see
   // ensureClosure): the entry plus the disk state it was built from. Never
@@ -290,15 +314,31 @@ private:
 std::filesystem::path
 systemIncludeDirForExecutable(std::filesystem::path const &fbcExeDir);
 
-// Search the given PATH (split per platform) for an `fbc` executable and
-// return its directory (canonicalized so a PATH shim tracks the real install),
-// or nullopt when FreeBASIC is not installed. Does not check the headers dir.
+// Search for an `fbc` executable and return it (canonicalized so a PATH shim
+// tracks the real install). When `configuredPath` is non-empty it names the
+// executable directly and no PATH search happens — a pin that cannot be run
+// leaves the result nullopt rather than silently falling back. When it is
+// empty, `pathEnv` is split per platform (':' or ';') and each directory is
+// searched for `fbc`, `fbc32`, or `fbc64` (Windows) or `fbc` (POSIX).
+// A non-executable decoy is skipped on POSIX. Exposed for the server's probe,
+// the include-dir fallback, and the corpus driver, so all three resolve the
+// *same* compiler.
 std::optional<std::filesystem::path>
-findFbcExecutableDir(std::string const &pathEnv);
+findFbcExecutable(std::string const &pathEnv,
+                  std::string const &configuredPath = {});
 
-// The cached default system include dir: probes PATH for `fbc` once and
-// verifies the derived folder exists on disk. Returns an empty path when fbc
-// is not installed or was installed without its headers; thread-safe.
+// The directory of findFbcExecutable's result, or nullopt when FreeBASIC is
+// not installed (or the pinned executable cannot be run). Does not check the
+// headers dir.
+std::optional<std::filesystem::path>
+findFbcExecutableDir(std::string const &pathEnv,
+                     std::string const &configuredPath = {});
+
+// The no-root fallback system include dir: probes PATH for `fbc` and verifies
+// the derived folder exists on disk. Returns an empty path when fbc is not
+// installed or was installed without its headers. A WorkspaceIndex does not
+// use this — it caches the same result for the root's configured compiler
+// (`WorkspaceIndex::systemIncludeDir`) — but the free include helpers do.
 std::filesystem::path defaultSystemIncludeDir();
 
 // Resolve `literal` as an include target, mirrors fbc's relative-path search
@@ -336,11 +376,14 @@ std::optional<std::string> resolveIncludeTarget(
 // root's config include dirs joining the search as step ② (see
 // resolveIncludeTarget). `doc`'s symbol tree is copied into `roots` (the
 // caller keeps `doc` alive). `fromDisk=false` marks an open-buffer entry,
-// which scan skips rather than re-parsing from disk.
+// which scan skips rather than re-parsing from disk. `systemIncludeDir` is the
+// compiler-derived search step; it defaults to the no-root PATH probe, but a
+// workspace caller passes its index's cached, settings-resolved folder.
 IndexedFile indexedFileFromAnalysis(
     std::string const &normalizedPath, std::uint64_t mtime, std::uint64_t size,
     AnalyzedDoc const &doc, std::filesystem::path const &workspaceRoot,
-    bool fromDisk, std::vector<std::filesystem::path> const &includeDirs = {});
+    bool fromDisk, std::vector<std::filesystem::path> const &includeDirs = {},
+    std::filesystem::path const &systemIncludeDir = defaultSystemIncludeDir());
 
 // Normalization helpers, exposed for tests.
 std::string normalizePath(std::filesystem::path const &path);

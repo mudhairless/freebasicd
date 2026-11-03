@@ -841,15 +841,17 @@ has never had.
   needs no version data. **Version awareness belongs on behavior**, not the
   catalog: what is accepted and what fires.
 - Shape: per-diagnostic `since`/`until` (default "all 1.10.x"); most carry
-  none. Config keys `fbc.path` / `fbc.version` under `[fbc]` in
-  `freebasicd.toml` (M21 second half).
-- Three existing seams, no new architecture: `findFbcExecutableDir`
-  (`src/index.cpp`, currently a once-only magic static that a config change must
-  invalidate), `Settings` (`src/settings.h`), and `tests/corpus_checks.cpp`'s
-  bare `std::system("fbc -version")` — resolve it through the same seam or the
-  corpus tests a different compiler than the server.
+  none. `fbc.path` under `[fbc]` pins the compiler; the version is probed from
+  it at runtime (there is deliberately no `fbc.version` key), and an unknown
+  version filters nothing. (M21, landed 2026-11-03.)
+- Seams: `findFbcExecutable` (`src/index.cpp`, settings-resolved and
+  re-probed on adoption, no once-only magic static), `Settings`
+  (`src/settings.h`), and `tests/corpus_checks.cpp` — all three resolve and
+  probe through `src/fbc_version.{h,cpp}`.
 - Compare the **dotted number only**, never the build date or platform triple.
-  Open: precedence when a pinned version cannot be found; root-scoped ranges.
+  A pin that cannot be run leaves the version unknown rather than falling back
+  to another compiler on `PATH`; ranges are root-scoped through the root's
+  settings snapshot.
 
 ---
 

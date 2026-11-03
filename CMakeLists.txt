@@ -65,6 +65,7 @@ add_library(freebasicd_lang STATIC
     src/code_lens.cpp
     src/document_link.cpp
     src/fbc_diagnostics.cpp
+    src/fbc_version.cpp
     src/i18n.cpp
     src/index.cpp
     src/inlay_hints.cpp

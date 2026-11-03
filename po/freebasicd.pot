@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-11-02 13:54-0600\n"
-"PO-Revision-Date: 2026-11-02 13:54-0600\n"
+"POT-Creation-Date: 2026-11-03 13:54-0600\n"
+"PO-Revision-Date: 2026-11-03 13:54-0600\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -80,13 +80,13 @@ msgid "cannot read %s"
 msgstr ""
 
 #: src/format/config.cpp:773 src/format/config.cpp:790
-#: src/format/config.cpp:878 src/format/config.cpp:921
+#: src/format/config.cpp:878 src/format/config.cpp:920
 #, c-format
 msgid "%s is not valid TOML"
 msgstr ""
 
-#: src/format/config.cpp:784 src/format/config.cpp:906
-#: src/format/config.cpp:935 src/format/config.cpp:943
+#: src/format/config.cpp:784 src/format/config.cpp:905
+#: src/format/config.cpp:934 src/format/config.cpp:942
 #, c-format
 msgid "unknown style: %s"
 msgstr ""
@@ -221,47 +221,94 @@ msgstr ""
 msgid "externs belong in a shared header, not a source module"
 msgstr ""
 
-#: src/session.cpp:1183
-#, c-format
-msgid "%s/freebasicd.toml is not valid TOML; keeping defaults"
-msgstr ""
-
-#: src/session.cpp:1195
+#: src/session.cpp:1207
 #, c-format
 msgid ""
 "%s/freebasicd.toml: suppress entry \"%s\" should be \"%s\"; remove the fbc "
 "code"
 msgstr ""
 
-#: src/session.cpp:1216
+#: src/session.cpp:1213
+#, c-format
+msgid "%s/freebasicd.toml: unknown build.kind \"%s\"; using \"exe\""
+msgstr ""
+
+#: src/session.cpp:1219
+#, c-format
+msgid "%s/freebasicd.toml: %s has the wrong type; keeping its default"
+msgstr ""
+
+#: src/session.cpp:1226
+#, c-format
+msgid ""
+"%s/freebasicd.toml: build.main is only meaningful for build.kind = \"exe\"; "
+"ignoring \"%s\""
+msgstr ""
+
+#: src/session.cpp:1233
+#, c-format
+msgid ""
+"%s/freebasicd.toml: build.main names no source file in this workspace: \"%s\""
+msgstr ""
+
+#: src/session.cpp:1252
+#, c-format
+msgid "%s/freebasicd.toml is not valid TOML; keeping defaults"
+msgstr ""
+
+#: src/session.cpp:1268
+#, c-format
+msgid ""
+"%s/freebasicd.toml: fbc.path \"%s\" is not a runnable compiler; version "
+"unknown, so no version filtering"
+msgstr ""
+
+#: src/session.cpp:1274
+#, c-format
+msgid "%s: no fbc on PATH; version unknown, so no version filtering"
+msgstr ""
+
+#: src/session.cpp:1282
+#, c-format
+msgid "%s: using fbc %s (version %s)"
+msgstr ""
+
+#: src/session.cpp:1288
+#, c-format
+msgid ""
+"%s: using fbc %s; its -version output named no version, so no version "
+"filtering"
+msgstr ""
+
+#: src/session.cpp:1312
 #, c-format
 msgid "workspace root: %s"
 msgstr ""
 
-#: src/session.cpp:1239
+#: src/session.cpp:1338
 msgid "version-control marker"
 msgstr ""
 
-#: src/session.cpp:1242
+#: src/session.cpp:1341
 #, c-format
 msgid "config file %s"
 msgstr ""
 
-#: src/session.cpp:1245
+#: src/session.cpp:1344
 msgid "source/include directory"
 msgstr ""
 
-#: src/session.cpp:1254
+#: src/session.cpp:1353
 #, c-format
 msgid "workspace root %s (detected via %s; no client root)"
 msgstr ""
 
-#: src/session.cpp:1259
+#: src/session.cpp:1358
 #, c-format
 msgid "workspace root %s (detected via %s; client root %s)"
 msgstr ""
 
-#: src/session.cpp:1769
+#: src/session.cpp:1868
 #, c-format
 msgid ""
 "workspace root %s has no version-control marker or config file; index scope "

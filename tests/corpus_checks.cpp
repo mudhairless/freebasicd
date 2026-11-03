@@ -27,6 +27,8 @@
 #include <string>
 #include <vector>
 
+#include "fbc_version.h"
+#include "index.h"
 #include "parser.h"
 
 namespace fs = std::filesystem;
@@ -48,6 +50,21 @@ static int exitCodeOf(int raw) {
 }
 static const char *kNullDev = ">/dev/null 2>&1";
 #endif
+
+// Quote one argument for the platform shell `std::system` uses. The path may
+// contain a space (the build tree on Windows, a user-chosen checkout).
+static std::string shellQuote(const std::string &s) {
+  std::string out = "\"";
+  for (char c : s) {
+    if (c == '"') {
+      out += "\"\"";
+    } else {
+      out += c;
+    }
+  }
+  out += '"';
+  return out;
+}
 
 static std::string readFile(const fs::path &p) {
   std::ifstream in(p, std::ios::binary);
@@ -110,9 +127,24 @@ static void report(const std::string &name, const std::string &reason) {
 int main(int argc, char **argv) {
   fs::path dir = argc > 1 ? fs::path(argv[1]) : fs::path(CORPUS_DIR);
 
-  bool fbcAvailable = (std::system("fbc -version >/dev/null 2>&1") == 0);
+  // Resolve the compiler through the same seam the server uses (PATH or a
+  // pinned fbc.path), and probe the version from that executable. The corpus
+  // half then cannot quietly test a different compiler than the server
+  // diagnoses against.
+  char const *const pathEnv = std::getenv("PATH");
+  std::optional<fs::path> const fbcExe =
+      findFbcExecutable(pathEnv != nullptr ? pathEnv : "");
+  bool const fbcAvailable = fbcExe.has_value();
+  std::optional<FbcVersion> const fbcVersion =
+      fbcExe ? probeFbcVersion(*fbcExe) : std::nullopt;
   if (fbcAvailable) {
-    std::printf("fbc found; compiling agreement checks enabled\n");
+    std::printf("fbc found at %s; compiling agreement checks enabled\n",
+                fbcExe->string().c_str());
+    if (fbcVersion) {
+      std::printf("fbc version %s\n", fbcVersion->toString().c_str());
+    } else {
+      std::printf("fbc version unknown (its -version output did not parse)\n");
+    }
   } else {
     std::printf("fbc NOT found; compiling agreement checks will be skipped\n");
   }
@@ -166,7 +198,8 @@ int main(int argc, char **argv) {
       std::ofstream out(wf, std::ios::binary);
       out << content;
       out.close();
-      std::string cmd = "fbc -c \"" + wf.string() + "\" " + kNullDev;
+      std::string cmd = shellQuote(fbcExe->string()) + " -c " +
+                        shellQuote(wf.string()) + " " + kNullDev;
       int exitCode = exitCodeOf(std::system(cmd.c_str()));
       fbcOk = (exitCode == 0);
     }
