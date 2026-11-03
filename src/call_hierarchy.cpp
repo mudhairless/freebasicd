@@ -92,6 +92,7 @@ bool isStatementHead(std::vector<Token> const &tokens, std::size_t i) {
 std::vector<SourceRange> declNameRanges(std::vector<Symbol> const &roots) {
   std::vector<SourceRange> ranges;
   std::vector<Symbol const *> stack;
+  stack.reserve(roots.size());
   for (auto const &root : roots) {
     stack.push_back(&root);
   }
@@ -161,7 +162,7 @@ std::vector<CalleeRef> callRefsIn(AnalyzedDoc const &doc,
 SourceRange wholeDocument(AnalyzedDoc const &doc) {
   // The token stream always ends in the Eof token, whose offset is the
   // content's length (lexer.h).
-  return SourceRange{0, doc.tokens.empty() ? 0u : doc.tokens.back().end};
+  return SourceRange{0, doc.tokens.empty() ? 0U : doc.tokens.back().end};
 }
 
 } // namespace

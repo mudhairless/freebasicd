@@ -26,7 +26,7 @@ int main() {
   FreeBasicServer server(session);
   Condition<bool> exit_requested;
 
-  server.setExitHandler([&exit_requested]() {
+  server.setExitHandler([&exit_requested] {
     exit_requested.notify(std::make_unique<bool>(true));
   });
   server.registerHandlers();

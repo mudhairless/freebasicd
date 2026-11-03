@@ -28,7 +28,7 @@ bool parseNumber(std::string_view text, std::size_t *pos, int *out) {
   std::size_t const begin = *pos;
   long long value = 0;
   while (*pos < text.size() && text[*pos] >= '0' && text[*pos] <= '9') {
-    value = value * 10 + (text[*pos] - '0');
+    value = (value * 10) + (text[*pos] - '0');
     if (value > std::numeric_limits<int>::max()) {
       return false;
     }
@@ -57,7 +57,7 @@ std::string shellQuote(std::string const &s) {
   return out;
 #else
   std::string out = "'";
-  for (char c : s) {
+  for (char const c : s) {
     if (c == '\'') {
       out += "'\\''";
     } else {
@@ -159,7 +159,7 @@ probeFbcVersion(std::filesystem::path const &executable,
   // caller waits only for the bound. A timeout detaches the worker instead of
   // joining it: a hung compiler must not stall startup, and a future's
   // destructor would block on the same hang.
-  auto promise = std::make_shared<std::promise<int>>();
+  auto const promise = std::make_shared<std::promise<int>>();
   std::future<int> done = promise->get_future();
   std::thread worker([command, promise] {
     // NOLINTNEXTLINE(bugprone-command-processor, cert-env33-c): the command

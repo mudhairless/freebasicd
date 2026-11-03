@@ -598,7 +598,7 @@ std::vector<lsDiagnostic> documentDiagnostics(std::string_view content,
   std::vector<lsDiagnostic> diags =
       convertDiagnostics(content, doc.parse, gate);
   appendExternPlacementDiagnostics(content, path, doc, gate, &diags);
-  if (entry) {
+  if (entry != nullptr) {
     appendIncludeDiagnostics(content, *entry, gate, &diags);
   }
   return diags;
@@ -612,9 +612,9 @@ std::vector<lsDiagnostic> documentDiagnostics(std::string_view content,
 // equal payloads; nothing else is folded in, so a re-request with a matching
 // previousResultId never recomputes the report (the client keeps its copy).
 std::uint64_t diagnosticsFnv(std::string_view bytes, std::uint64_t hash) {
-  for (char c : bytes) {
+  for (char const c : bytes) {
     hash ^= static_cast<unsigned char>(c);
-    hash *= 1099511628211ull;
+    hash *= 1099511628211ULL;
   }
   return hash;
 }
@@ -628,9 +628,9 @@ std::string diagnosticsResultId(std::string_view content,
     // The extern-placement lint does not fire in a `.bi`: two documents whose
     // bytes are identical must still not share a result id when one is a
     // header and the other a source module, because their payloads differ.
-    hash ^= 0x0d0e0a01ull;
+    hash ^= 0x0d0e0a01ULL;
   }
-  if (entry) {
+  if (entry != nullptr) {
     for (fblang::IncludeEdge const &edge : entry->includes) {
       hash = diagnosticsFnv(edge.literal, hash);
       hash = diagnosticsFnv(edge.target, hash);
@@ -641,7 +641,7 @@ std::string diagnosticsResultId(std::string_view content,
     hash ^= 0x55;
   }
   if (gate.warningLevel != 4) {
-    hash ^= static_cast<std::uint64_t>(gate.warningLevel + 1) * 0x01010101ull;
+    hash ^= static_cast<std::uint64_t>(gate.warningLevel + 1) * 0x01010101ULL;
   }
   // Suppressions are part of the payload's identity too: dropping or
   // re-adding a diagnostic must move the id. The list is lowercased, sorted,
@@ -726,21 +726,20 @@ CodeAction quickFixCodeAction(std::string const &uri, std::string_view content,
 // context — or sends one for a diagnostic we no longer publish — still get an
 // answer.
 std::vector<fblang::Diagnostic>
-requestedDiagnostics(fblang::AnalyzedDoc const &doc, std::string_view content,
-                     lsRange const &range,
+requestedDiagnostics(std::string_view content, lsRange const &range,
                      std::vector<fblang::Diagnostic> const &published,
                      std::vector<lsDiagnostic> const &fromClient) {
   std::uint32_t const beg =
       fblang::byteOffsetForUtf16Position(content, range.start);
   std::uint32_t const end =
       fblang::byteOffsetForUtf16Position(content, range.end);
-  auto inRange = [beg, end](fblang::SourceRange const &r) {
+  auto const inRange = [beg, end](fblang::SourceRange const &r) {
     // A zero-width request is a cursor: the diagnostic must cover the point.
     return r.beg <= end && r.end >= beg;
   };
 
   std::vector<fblang::Diagnostic> out;
-  auto add = [&out](fblang::Diagnostic d) {
+  auto const add = [&out](fblang::Diagnostic d) {
     for (fblang::Diagnostic const &seen : out) {
       if (seen.code == d.code && seen.range.beg == d.range.beg) {
         return; // the client restating a diagnostic we already have
@@ -885,7 +884,7 @@ std::string symbolKindLine(fblang::Symbol const *decl,
       blocks.push_back(cur->name);
     }
   }
-  auto blockSuffix = [&]() -> std::string {
+  auto const blockSuffix = [&]() -> std::string {
     return blocks.empty() ? std::string()
                           : ", inside the `" + blocks.front() + "` block";
   };
@@ -1038,7 +1037,7 @@ char const *const kBlockOpeners[] = {
 bool tokenEqual(std::vector<std::int32_t> const &x, std::size_t a,
                 std::vector<std::int32_t> const &y, std::size_t b) {
   return std::equal(x.begin() + static_cast<std::ptrdiff_t>(a * 5),
-                    x.begin() + static_cast<std::ptrdiff_t>(a * 5 + 5),
+                    x.begin() + static_cast<std::ptrdiff_t>((a * 5) + 5),
                     y.begin() + static_cast<std::ptrdiff_t>(b * 5));
 }
 
@@ -2372,7 +2371,7 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
   // live in different files when resolution is cross-file).
   fblang::SourceRange const tokRange = fblang::tokenRangeAt(doc, offset);
 
-  auto setRange = [&](fblang::SourceRange const &r) {
+  auto const setRange = [&](fblang::SourceRange const &r) {
     if (r.beg < r.end && r.end <= content.size()) {
       rsp.result.range.emplace(fblang::utf16Range(content, r.beg, r.end));
     }
@@ -2538,7 +2537,7 @@ td_hover::response FreeBasicServer::onHover(td_hover::request const &req) {
       rsp.result.range.emplace(fblang::utf16Range(content, beg, end));
       return rsp;
     }
-    std::string bare = fblang::toLowerChars(std::string(raw));
+    std::string bare = fblang::toLowerChars(raw);
     if (!bare.empty() && fblang::isSuffixChar(bare.back())) {
       bare.pop_back();
     }
@@ -2670,8 +2669,8 @@ FreeBasicServer::onDefinition(td_definition::request const &req) {
 // file's own bytes, which is the only thing the offsets in a reply are relative
 // to. `content` is the open buffer when the client has one, else the file on
 // disk, fetched by the caller because it is a member of the server.
-lsLocation locationIn(std::string const &path, std::string_view content,
-                      fblang::SourceRange const &range) {
+static lsLocation locationIn(std::string const &path, std::string_view content,
+                             fblang::SourceRange const &range) {
   return lsLocation(lsDocumentUri(AbsolutePath(path)),
                     fblang::utf16Range(content, range.beg, range.end));
 }
@@ -2683,9 +2682,9 @@ lsLocation locationIn(std::string const &path, std::string_view content,
 // `typeHierarchyIdentity`). `parents`/`children` are filled by the caller —
 // the two halves of a hierarchy are answered from different scopes, and an item
 // whose list is "not resolved yet" is a thing a client has to poll for.
-TypeHierarchyItem typeHierarchyItem(std::string const &path,
-                                    std::string_view content,
-                                    fblang::TypeItem const &type) {
+static TypeHierarchyItem typeHierarchyItem(std::string const &path,
+                                           std::string_view content,
+                                           fblang::TypeItem const &type) {
   TypeHierarchyItem out;
   out.name = type.name;
   out.kind = toLspSymbolKind(type.kind);
@@ -2703,8 +2702,8 @@ TypeHierarchyItem typeHierarchyItem(std::string const &path,
 // with the same trade as `callHierarchyIdentity`: a (path, name-token range)
 // pair is what a (path, selection) pair means, and a client that trimmed the
 // range gets nothing rather than a type picked by name.
-fblang::DeclIdentity typeHierarchyIdentity(TypeHierarchyItem const &item,
-                                           std::string_view content) {
+static fblang::DeclIdentity typeHierarchyIdentity(TypeHierarchyItem const &item,
+                                                  std::string_view content) {
   fblang::DeclIdentity id;
   id.path = fblang::normalizePath(item.uri.GetAbsolutePath().path());
   id.beg =
@@ -2909,7 +2908,8 @@ std::vector<fblang::OccurrenceSite> FreeBasicServer::referenceSites(
   // one declaration is a different Symbol object in each of them. Identity also
   // gets the shadowing case right for free — a same-named local in a candidate
   // file resolves to that local's own identity and is simply not a match.
-  auto collect = [&](fblang::AnalyzedDoc const &d, std::string const &fpath) {
+  auto const collect = [&](fblang::AnalyzedDoc const &d,
+                           std::string const &fpath) {
     for (fblang::Token const &t : d.tokens) {
       if (t.kind != fblang::TokenKind::Identifier ||
           fblang::canonicalKey(t.text(), d.parse.lang) != target.decl->key) {
@@ -3048,7 +3048,7 @@ FreeBasicServer::onHighlight(td_highlight::request const &req) {
     return rsp;
   }
 
-  auto add = [&](fblang::SourceRange range) {
+  auto const add = [&](fblang::SourceRange range) {
     lsDocumentHighlight hl;
     hl.range = fblang::utf16Range(content, range.beg, range.end);
     hl.kind.emplace(lsDocumentHighlightKind::Text);
@@ -3425,7 +3425,7 @@ FreeBasicServer::onCompletion(td_completion::request const &req) {
     std::size_t const cut = signature.find_first_of(" (");
     std::string_view const name =
         cut == std::string_view::npos ? signature : signature.substr(0, cut);
-    std::string const labelLower = fblang::toLowerChars(std::string(name));
+    std::string const labelLower = fblang::toLowerChars(name);
     if (!hasPrefix(labelLower, prefix)) {
       continue;
     }
@@ -3684,13 +3684,13 @@ FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
     }
   }
 
-  for (auto &hit : hits) {
+  for (auto const &hit : hits) {
     std::optional<std::string> const src = contentForPath(hit.file->path);
     if (!src) {
       continue;
     }
     std::string_view const content = *src;
-    for (auto &m : hit.matches) {
+    for (auto const &m : hit.matches) {
       lsSymbolInformation info;
       info.name = m.sym->name;
       info.kind = toLspSymbolKind(m.sym->kind);
@@ -3774,7 +3774,7 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
   }
 
   for (fblang::Diagnostic const &d :
-       requestedDiagnostics(doc, content, req.params.range, published,
+       requestedDiagnostics(content, req.params.range, published,
                             req.params.context.diagnostics)) {
     fblang::QuickFixProvider const *const provider =
         fblang::quickFixProviderFor(d.code);
@@ -4657,9 +4657,9 @@ FreeBasicServer::onFormatting(td_formatting::request const &req) {
   if (!formattingConfigFor(abs.path(), req.params.options, &cfg)) {
     return rsp;
   }
-  std::vector<fbformat::TextEdit> edits =
+  std::vector<fbformat::TextEdit> const edits =
       fbformat::formatDocumentLsp(*content, abs.path(), cfg);
-  for (auto &e : edits) {
+  for (auto const &e : edits) {
     lsTextEdit te;
     // Byte offsets in, UTF-16 positions out — the same conversion every
     // other range in this file makes.
@@ -4691,12 +4691,10 @@ FreeBasicServer::onRangeFormatting(td_rangeFormatting::request const &req) {
       fblang::byteOffsetForUtf16Position(*content, req.params.range.start);
   std::uint32_t end =
       fblang::byteOffsetForUtf16Position(*content, req.params.range.end);
-  if (end < beg) {
-    end = beg;
-  }
-  std::vector<fbformat::TextEdit> edits =
+  end = std::max(end, beg);
+  std::vector<fbformat::TextEdit> const edits =
       fbformat::formatRangeLsp(*content, abs.path(), cfg, beg, end);
-  for (auto &e : edits) {
+  for (auto const &e : edits) {
     lsTextEdit te;
     te.range = fblang::utf16Range(*content, static_cast<std::uint32_t>(e.start),
                                   static_cast<std::uint32_t>(e.end));

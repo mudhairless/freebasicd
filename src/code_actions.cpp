@@ -35,7 +35,7 @@ bool isSpaceOrTab(char c) { return c == ' ' || c == '\t'; }
 
 // A line that carries nothing but whitespace and its line ending.
 bool isBlankLine(std::string_view line) {
-  for (char c : line) {
+  for (char const c : line) {
     if (!isSpaceOrTab(c) && c != '\r') {
       return false;
     }
@@ -164,7 +164,7 @@ bool looksLikeFilenameLiteral(std::string_view text) {
   if (text.empty() || text.front() == '/' || text.back() == '/') {
     return false;
   }
-  for (char c : text) {
+  for (char const c : text) {
     if (c == '"' || c == '\n' || c == '\r') {
       return false;
     }
@@ -279,7 +279,7 @@ std::vector<QuickFix> renameReservedMemberName(Diagnostic const &d,
     return {};
   }
   for (char const c : name) {
-    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
+    if ((c < 'a' || c > 'z') && (c < 'A' || c > 'Z')) {
       return {};
     }
   }

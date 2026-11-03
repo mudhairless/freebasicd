@@ -291,7 +291,7 @@ private:
   void onDidOpen(Notify_TextDocumentDidOpen::notify &notify);
   void onDidChange(Notify_TextDocumentDidChange::notify const &notify);
   void onDidSave(Notify_TextDocumentDidSave::notify const &notify);
-  void onWillSave(td_willSave::notify const &notify);
+  static void onWillSave(td_willSave::notify const &notify);
   void onDidClose(Notify_TextDocumentDidClose::notify const &notify);
 
   td_initialize::response onInitialize(td_initialize::request const &req);

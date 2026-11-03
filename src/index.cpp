@@ -87,7 +87,7 @@ bool statFile(std::filesystem::path const &path, std::uint64_t *mtime,
   if (ec || !std::filesystem::is_regular_file(st)) {
     return false;
   }
-  auto lm = std::filesystem::last_write_time(path, ec);
+  auto const lm = std::filesystem::last_write_time(path, ec);
   if (ec) {
     return false;
   }
@@ -122,7 +122,7 @@ systemIncludeDirForExecutable(std::filesystem::path const &fbcExeDir) {
 std::optional<std::filesystem::path>
 findFbcExecutable(std::string const &pathEnv,
                   std::string const &configuredPath) {
-  auto regularExecutable = [](std::filesystem::path const &candidate) {
+  auto const regularExecutable = [](std::filesystem::path const &candidate) {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(candidate, ec)) {
       return false;
@@ -143,7 +143,7 @@ findFbcExecutable(std::string const &pathEnv,
   };
   // Resolve symlinks so the include dir tracks the real install, not a PATH
   // shim (e.g. /usr/bin/fbc -> /opt/fb/bin/fbc).
-  auto resolved = [](std::filesystem::path const &candidate) {
+  auto const resolved = [](std::filesystem::path const &candidate) {
     std::filesystem::path out = candidate;
     std::error_code cec;
     if (std::filesystem::path const canon =
@@ -229,7 +229,7 @@ std::filesystem::path defaultSystemIncludeDir() {
   // change could not invalidate.
   char const *env = std::getenv("PATH");
   std::optional<std::filesystem::path> const exeDir =
-      findFbcExecutableDir(env ? env : "");
+      findFbcExecutableDir((env != nullptr) ? env : "");
   if (!exeDir) {
     return std::filesystem::path{};
   }
@@ -240,8 +240,8 @@ std::filesystem::path defaultSystemIncludeDir() {
 
 // True when `normalizedPath` is `normalizedRoot` itself or lies under it. A
 // mirror of WorkspaceIndex::isInsideRoot for the free include-search helpers.
-bool pathAtOrUnder(std::string const &normalizedPath,
-                   std::string const &normalizedRoot) {
+static bool pathAtOrUnder(std::string const &normalizedPath,
+                          std::string const &normalizedRoot) {
   if (normalizedPath.size() < normalizedRoot.size()) {
     return false;
   }
@@ -261,7 +261,8 @@ bool pathAtOrUnder(std::string const &normalizedPath,
 // the source tree. Used as an additional include-search anchor for documents
 // opened from a sibling project outside the workspace root. Returns an empty
 // path when no ancestor matches.
-std::filesystem::path projectIncludeDirOf(std::filesystem::path const &file) {
+static std::filesystem::path
+projectIncludeDirOf(std::filesystem::path const &file) {
   std::filesystem::path dir = file.parent_path();
   for (;;) {
     if (dir.empty()) {
@@ -429,7 +430,7 @@ namespace {
 // which is the only thing the callers need to know.
 bool dropKeyedFrom(std::map<std::string, std::vector<KeyedDecl>> &map,
                    std::string const &key, IndexedFile const *const file) {
-  auto it = map.find(key);
+  auto const it = map.find(key);
   if (it == map.end()) {
     return true;
   }
@@ -630,7 +631,7 @@ void WorkspaceIndex::scan(bool async) {
     }
     {
       std::lock_guard<std::mutex> const lk(mu_);
-      auto found = files_.find(norm);
+      auto const found = files_.find(norm);
       if (found != files_.end()) {
         // An open buffer outranks disk, so the scan must not re-parse it. The
         // two are the same file with potentially different bytes -- unsaved
@@ -662,42 +663,43 @@ void WorkspaceIndex::scan(bool async) {
     auto const ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(dt).count();
     if (ms > 10) {
-      (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n", norm.c_str(),
-                   static_cast<long long>(ms));
+      (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n",
+                         norm.c_str(), static_cast<long long>(ms));
     } else {
       auto const ns =
           std::chrono::duration_cast<std::chrono::nanoseconds>(dt).count();
       if (ns == 0) {
-        (void)std::fprintf(stderr, "[freebasicd] %s parsed in <1 us\n", norm.c_str());
+        (void)std::fprintf(stderr, "[freebasicd] %s parsed in <1 us\n",
+                           norm.c_str());
       } else if (ns < 1000) {
         (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ns\n",
-                     norm.c_str(), static_cast<long long>(ns));
+                           norm.c_str(), static_cast<long long>(ns));
       } else if (ns < 100000) {
         double const us = static_cast<double>(ns) / 1000.0;
         if (us < 10.0) {
           (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f us\n",
-                       norm.c_str(), us);
+                             norm.c_str(), us);
         } else {
           (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.0f us\n",
-                       norm.c_str(), us);
+                             norm.c_str(), us);
         }
       } else if (ns < 1000000) {
         double const us = static_cast<double>(ns) / 1000.0;
         if (us < 10.0) {
           (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f us\n",
-                       norm.c_str(), us);
+                             norm.c_str(), us);
         } else {
           (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.0f us\n",
-                       norm.c_str(), us);
+                             norm.c_str(), us);
         }
       } else {
         double const msecs = static_cast<double>(ns) / 1000000.0;
         if (msecs >= 10.0) {
           (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n",
-                       norm.c_str(), static_cast<long long>(ms));
+                             norm.c_str(), static_cast<long long>(ms));
         } else {
           (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f ms\n",
-                       norm.c_str(), msecs);
+                             norm.c_str(), msecs);
         }
       }
     }
@@ -921,7 +923,7 @@ void WorkspaceIndex::upsert(IndexedFile entry) {
   std::shared_ptr<IndexedFile const> ptr;
   {
     std::lock_guard<std::mutex> const lk(mu_);
-    auto existing = files_.find(key);
+    auto const existing = files_.find(key);
     if (existing != files_.end()) {
       // An open buffer outranks disk — and that has to be enforced here, at the
       // write, not only in the scan. The scan reads this same flag, then reads
@@ -950,7 +952,7 @@ void WorkspaceIndex::remove(std::string const &path) {
   std::string const norm = normalizePath(path);
   {
     std::lock_guard<std::mutex> const lk(mu_);
-    auto it = files_.find(norm);
+    auto const it = files_.find(norm);
     if (it != files_.end()) {
       subtractFromProjections(it->second);
       files_.erase(it);
@@ -981,7 +983,7 @@ std::size_t WorkspaceIndex::size() const {
 
 std::vector<KeyedDecl> WorkspaceIndex::byKey(std::string const &key) const {
   std::lock_guard<std::mutex> const lk(mu_);
-  auto it = byKey_.find(key);
+  auto const it = byKey_.find(key);
   if (it == byKey_.end()) {
     return {};
   }
@@ -991,7 +993,7 @@ std::vector<KeyedDecl> WorkspaceIndex::byKey(std::string const &key) const {
 std::vector<KeyedDecl>
 WorkspaceIndex::extendingTypes(std::string const &typeKey) const {
   std::lock_guard<std::mutex> const lk(mu_);
-  auto it = byBaseKey_.find(typeKey);
+  auto const it = byBaseKey_.find(typeKey);
   if (it == byBaseKey_.end()) {
     return {};
   }
@@ -1002,11 +1004,11 @@ std::shared_ptr<IndexedFile const>
 WorkspaceIndex::fileAt(std::string const &normalizedPath) const {
   std::lock_guard<std::mutex> const lk(mu_);
   std::string const norm = normalizePath(normalizedPath);
-  auto it = files_.find(norm);
+  auto const it = files_.find(norm);
   if (it != files_.end()) {
     return it->second;
   }
-  auto cit = closureFiles_.find(norm);
+  auto const cit = closureFiles_.find(norm);
   if (cit != closureFiles_.end()) {
     return cit->second.entry;
   }
@@ -1022,11 +1024,11 @@ WorkspaceIndex::transitiveIncludes(std::string const &normalizedPath) const {
   std::function<void(std::string const &)> visit =
       [&](std::string const &node) {
         std::vector<IncludeEdge> const *edges = nullptr;
-        auto it = outInc_.find(node);
+        auto const it = outInc_.find(node);
         if (it != outInc_.end()) {
           edges = &it->second;
         } else {
-          auto cit = closureFiles_.find(node);
+          auto const cit = closureFiles_.find(node);
           if (cit != closureFiles_.end()) {
             edges = &cit->second.entry->includes;
           }
@@ -1071,7 +1073,7 @@ void WorkspaceIndex::ensureClosure(std::string const &normalizedPath,
       std::shared_ptr<IndexedFile const> entry;
       {
         std::lock_guard<std::mutex> const lk(mu_);
-        auto it = files_.find(p);
+        auto const it = files_.find(p);
         if (it != files_.end()) {
           // The workspace scan or open-buffer upsert already owns this file;
           // its include edges stay current through the normal update path.
@@ -1082,7 +1084,7 @@ void WorkspaceIndex::ensureClosure(std::string const &normalizedPath,
         bool useCached = false;
         {
           std::lock_guard<std::mutex> const lk(mu_);
-          auto it = closureFiles_.find(p);
+          auto const it = closureFiles_.find(p);
           if (it != closureFiles_.end()) {
             // The requesting file is a live buffer: re-resolve it every time
             // so unsaved include edits are honored. A cached open-buffer

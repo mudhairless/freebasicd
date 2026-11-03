@@ -510,9 +510,9 @@ bool dotIsLeading(std::vector<Token> const &tokens, std::size_t dotIdx) {
   case TokenKind::Identifier:
     return false;
   case TokenKind::Keyword:
-    return !(dotIdx >= 2 && tokens[dotIdx - 2].kind == TokenKind::Symbol &&
-             (tokens[dotIdx - 2].text() == "." ||
-              tokens[dotIdx - 2].text() == "->"));
+    return dotIdx < 2 || tokens[dotIdx - 2].kind != TokenKind::Symbol ||
+           (tokens[dotIdx - 2].text() != "." &&
+            tokens[dotIdx - 2].text() != "->");
   case TokenKind::Symbol:
     return lhs.text() != ")" && lhs.text() != "]";
   case TokenKind::Newline:
@@ -888,7 +888,7 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
   std::string const key = canonicalKey(tok->text(), doc.parse.lang);
   bool const storageGated =
       insideProcedureBody(doc.parse, innermostScope(doc.parse, off));
-  auto gated = [storageGated](Symbol const &root) {
+  auto const gated = [storageGated](Symbol const &root) {
     return storageGated && root.kind == SymbolKind::Dim && !root.shared;
   };
 
@@ -928,7 +928,7 @@ std::vector<std::string> referencingFiles(std::string const &normalizedPath,
   // Insertion order keeps the requesting file first, the closure
   // textual-pre-order next (matches resolveAcross), and reverse files after.
   std::vector<std::string> files;
-  auto addFile = [&files](std::string const &f) {
+  auto const addFile = [&files](std::string const &f) {
     if (std::find(files.begin(), files.end(), f) == files.end()) {
       files.push_back(f);
     }
@@ -1817,8 +1817,9 @@ CrossDecl memberEdge(AnalyzedDoc const &doc, std::string const &normalizedPath,
             s.kind == SymbolKind::Property) &&
            s.ownerKey.empty();
   };
-  auto scan = [&](std::vector<Symbol> const &roots,
-                  std::shared_ptr<IndexedFile const> const &file) -> CrossDecl {
+  auto const scan =
+      [&](std::vector<Symbol> const &roots,
+          std::shared_ptr<IndexedFile const> const &file) -> CrossDecl {
     if (wantOwner) {
       for (Symbol const &root : roots) {
         if (matches(root)) {
@@ -1885,7 +1886,7 @@ CrossDecl implementationTarget(AnalyzedDoc const &doc,
   // The three-tier lookup, so a member procedure reached through the include
   // closure (the `declare` in a header, the `sub t.go()` in the includer .bas)
   // dispatches the same way an in-file one does.
-  CrossDecl const target = index
+  CrossDecl const target = (index != nullptr)
                                ? resolveAcross(doc, normalizedPath, off, *index)
                                : CrossDecl{nullptr, resolveAt(doc, off)};
   if (target.decl == nullptr) {

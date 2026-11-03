@@ -492,7 +492,7 @@ Token Lexer::lexIdentifier() {
       while (r < end_ && isWhitespace(*r)) {
         ++r;
       }
-      if (!(r < end_ && *r == '#')) {
+      if (r >= end_ || *r != '#') {
         p_ = q;
         consumeNewline();
         return lexNext();
@@ -516,7 +516,7 @@ Token Lexer::lexIdentifier() {
   // is never a keyword suffix, because PRINT#1 is PRINT + "#1" (a file
   // channel), not PRINT suffixed.
   bool skippedKeywordSuffix = false;
-  if (p_ < end_ && isSuffixChar(*p_) && !(isKeywordBase && *p_ == '#')) {
+  if (p_ < end_ && isSuffixChar(*p_) && (!isKeywordBase || *p_ != '#')) {
     if (isKeywordBase) {
       skippedKeywordSuffix = true;
     }
@@ -536,12 +536,11 @@ Token Lexer::lexIdentifier() {
   // raw slice through the '=' — for `and%=` that is "and%=", because the
   // suffix char sits between the base and the '=' and no single slice is
   // "and="; isCombinedAssignKeyword strips the char before the '='.
-  if (isKeywordBase && p_ < end_ && *p_ == '=') {
-    if (base == "and" || base == "or" || base == "xor" || base == "eqv" ||
-        base == "imp" || base == "mod" || base == "shl" || base == "shr") {
-      ++p_;
-      end = static_cast<uint32_t>(p_ - src_.data());
-    }
+  if ((isKeywordBase && p_ < end_ && *p_ == '=') &&
+      (base == "and" || base == "or" || base == "xor" || base == "eqv" ||
+       base == "imp" || base == "mod" || base == "shl" || base == "shr")) {
+    ++p_;
+    end = static_cast<uint32_t>(p_ - src_.data());
   }
 
   Token t;
@@ -560,7 +559,7 @@ Token Lexer::lexIdentifier() {
 
 Token Lexer::lexNumber() {
   uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
-  auto radixDigit = [](char c, int radix) {
+  auto const radixDigit = [](char c, int radix) {
     if (c >= '0' && c <= '9') {
       return c - '0' < radix;
     }
@@ -636,7 +635,7 @@ Token Lexer::lexNumber() {
 Token Lexer::lexSymbol() {
   uint32_t beg = static_cast<uint32_t>(p_ - src_.data());
   char const c = *p_;
-  auto finish = [&](uint32_t end, std::string_view text) -> Token {
+  auto const finish = [&](uint32_t end, std::string_view text) -> Token {
     Token t;
     t.kind = TokenKind::Symbol;
     t.beg = beg;

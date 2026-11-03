@@ -30,7 +30,7 @@
 namespace fblang {
 namespace {
 
-using TokenKind = fblang::TokenKind;
+using fblang::TokenKind;
 
 std::string uppercase(std::string_view s) {
   std::string out;
@@ -722,16 +722,17 @@ private:
           k == TokenKind::Comment || k == TokenKind::DocComment) {
         return;
       }
-      if (k == TokenKind::Symbol && cur_.text() == ":") {
-        // A `:` in a record body may be a bitfield width separator — the one
-        // colon a member carries — and a width is a number, so `a : 7 as
-        // ulong` goes on, while `type t : a as integer : end type` ends its
-        // member and its closer at the `:`. Outside a record body every `:`
-        // separates statements (FreeBASIC.md §7).
-        if (!inRecord || lex_.peek(0).kind != TokenKind::Number) {
-          return;
-        }
+      if ((k == TokenKind::Symbol && cur_.text() == ":") &&
+          (!inRecord || lex_.peek(0).kind != TokenKind::Number))
+      // A `:` in a record body may be a bitfield width separator — the one
+      // colon a member carries — and a width is a number, so `a : 7 as
+      // ulong` goes on, while `type t : a as integer : end type` ends its
+      // member and its closer at the `:`. Outside a record body every `:`
+      // separates statements (FreeBASIC.md §7).
+      {
+        return;
       }
+
       if (k == TokenKind::Symbol && cur_.text() == "_") {
         // Inactive preprocessor regions never reach here (their tokens are
         // consumed by the main loop), so a `_` this statement parsing sees
@@ -758,59 +759,60 @@ private:
         // (`= { lgt.x, lgt.y }` must not re-arm the capture per element).
         captureMember = true;
       }
-      if (captureMember && k == TokenKind::Keyword &&
-          toLowerChars(cur_.text()) == "as") {
-        // `as integer as` names a field `as` — fbc accepts it (probed;
-        // FreeBASIC.md §7, tools/probe_member_names.sh), and without this the
-        // type-skipping below read the name as a second type-introducer and
-        // registered nothing at all. An `as` with no token behind it can only
-        // be the name: the line has no room for a type and then none for a
-        // name.
-        if (!endsStatement(lex_.peek(0))) {
-          // Type-first member: `as <type> name`. Skip the type name (builtin
-          // keyword or user-defined type) so the *member* is captured, not the
-          // type — `as Wall walls(MAX_WALLS - 1)` used to register `wall`. The
-          // member's signature still covers the full
-          // line so the declared type survives for hover/resolve.
+      if ((captureMember && k == TokenKind::Keyword &&
+           toLowerChars(cur_.text()) == "as") &&
+          (!endsStatement(lex_.peek(0))))
+      // `as integer as` names a field `as` — fbc accepts it (probed;
+      // FreeBASIC.md §7, tools/probe_member_names.sh), and without this the
+      // type-skipping below read the name as a second type-introducer and
+      // registered nothing at all. An `as` with no token behind it can only
+      // be the name: the line has no room for a type and then none for a
+      // name.
+      {
+        // Type-first member: `as <type> name`. Skip the type name (builtin
+        // keyword or user-defined type) so the *member* is captured, not the
+        // type — `as Wall walls(MAX_WALLS - 1)` used to register `wall`. The
+        // member's signature still covers the full
+        // line so the declared type survives for hover/resolve.
+        advance();
+        // The type is one name token; a keyword is consumed as part of the
+        // type only while a member name still follows, so `as integer name`
+        // keeps `name` as the member while `as name n` (`name` is a keyword
+        // *type* name) keeps `n`. Reserved words are valid field names
+        // (fbc-verified): `as string name`.
+        if (cur_.kind == TokenKind::Identifier) {
           advance();
-          // The type is one name token; a keyword is consumed as part of the
-          // type only while a member name still follows, so `as integer name`
-          // keeps `name` as the member while `as name n` (`name` is a keyword
-          // *type* name) keeps `n`. Reserved words are valid field names
-          // (fbc-verified): `as string name`.
-          if (cur_.kind == TokenKind::Identifier) {
-            advance();
-          } else if (cur_.kind == TokenKind::Keyword) {
-            Token const nxt = lex_.peek(0);
-            bool const memberFollows = nxt.kind == TokenKind::Identifier ||
-                                       (nxt.kind == TokenKind::Keyword &&
-                                        toLowerChars(nxt.text()) != "as");
-            if (isBuiltinType(toLowerChars(cur_.text())) || memberFollows) {
-              advance();
-            }
-          }
-          // The type half is a chain, not one word: `as integer ptr p`,
-          // `as integer const ptr c`, `as const integer c`, `as udt ptr ptr m`
-          // (probed; fbc compiles every one). Keep consuming type words while
-          // a member name still follows, or `ptr` stops here and reaches the
-          // never-field report below as though it were the field name — the
-          // field is `p`/`c`/`m`, and `ptr` is only its modifier. A chain
-          // word with no name behind it is left alone: `as integer ptr` is
-          // `error 14: Expected identifier` in fbc, and the report on the
-          // dangling word is the closest this parser gets to that error.
-          while (isTypeChainWord(cur_)) {
-            Token const nxt = lex_.peek(0);
-            bool const memberFollows = nxt.kind == TokenKind::Identifier ||
-                                       (nxt.kind == TokenKind::Keyword &&
-                                        toLowerChars(nxt.text()) != "as");
-            if (!memberFollows) {
-              break;
-            }
+        } else if (cur_.kind == TokenKind::Keyword) {
+          Token const nxt = lex_.peek(0);
+          bool const memberFollows = nxt.kind == TokenKind::Identifier ||
+                                     (nxt.kind == TokenKind::Keyword &&
+                                      toLowerChars(nxt.text()) != "as");
+          if (isBuiltinType(toLowerChars(cur_.text())) || memberFollows) {
             advance();
           }
-          continue;
         }
+        // The type half is a chain, not one word: `as integer ptr p`,
+        // `as integer const ptr c`, `as const integer c`, `as udt ptr ptr m`
+        // (probed; fbc compiles every one). Keep consuming type words while
+        // a member name still follows, or `ptr` stops here and reaches the
+        // never-field report below as though it were the field name — the
+        // field is `p`/`c`/`m`, and `ptr` is only its modifier. A chain
+        // word with no name behind it is left alone: `as integer ptr` is
+        // `error 14: Expected identifier` in fbc, and the report on the
+        // dangling word is the closest this parser gets to that error.
+        while (isTypeChainWord(cur_)) {
+          Token const nxt = lex_.peek(0);
+          bool const memberFollows = nxt.kind == TokenKind::Identifier ||
+                                     (nxt.kind == TokenKind::Keyword &&
+                                      toLowerChars(nxt.text()) != "as");
+          if (!memberFollows) {
+            break;
+          }
+          advance();
+        }
+        continue;
       }
+
       if (captureMember && k == TokenKind::Keyword &&
           toLowerChars(cur_.text()) == "static" && cur_.beg == stmtStart.beg &&
           cur_.end == stmtStart.end &&
@@ -1400,7 +1402,7 @@ private:
       if (d >= base) {
         return -1;
       }
-      value = value * base + d;
+      value = (value * base) + d;
       if (value > 0x7fffffffLL) {
         return value; // saturates above the 65535 ceiling; still reported
       }
@@ -1650,7 +1652,7 @@ private:
         std::string sig;
         for (const Token &e : entry) {
           if (!sig.empty()) {
-            sig += " ";
+            sig += ' ';
           }
           sig.append(e.text());
         }
@@ -2061,7 +2063,7 @@ private:
           // (const/make-typedef-const-2.bas), so identifiers are consumed
           // while a name still follows, and `as udt name` ends the chain at
           // `name`.
-          auto nameStillFollows = [&]() {
+          auto const nameStillFollows = [&] {
             Token const n = lex_.peek(0);
             if (n.kind == TokenKind::Identifier) {
               return true;
@@ -2231,7 +2233,7 @@ private:
       return;
     }
 
-    closeBeforeMismatchedCloser(endTok.beg, top, c);
+    closeBeforeMismatchedCloser(endTok.beg, top);
     if (!topClosesWith(c)) {
       resetDoc();
       skipStatement();
@@ -2253,8 +2255,7 @@ private:
   // in a `TYPE` body is just a statement that body cannot accept, which is
   // fbc's `error 19`, and the `unterminated-block` already names the expected
   // closer.
-  void closeBeforeMismatchedCloser(uint32_t at, Block const &top,
-                                   BlockCloser const &c) {
+  void closeBeforeMismatchedCloser(uint32_t at, Block const &top) {
     if (!isMemberBodyKind(top.kind)) {
       addDiagnostic(at, cur_.end, Severity::Error, "closer-mismatch",
                     trf("Expected '%s'", displayFor(top)),
@@ -2300,7 +2301,7 @@ private:
       skipStatement();
       return;
     }
-    closeBeforeMismatchedCloser(closerTok.beg, top, c);
+    closeBeforeMismatchedCloser(closerTok.beg, top);
     if (!topClosesWith(c)) {
       resetDoc();
       skipStatement();
@@ -2340,8 +2341,7 @@ private:
     if (i == b) {
       return; // nothing after the word: nothing to remove
     }
-    closeOpenDefines(toLowerChars(std::string(text.substr(b, i - b))),
-                     cur_.beg);
+    closeOpenDefines(toLowerChars(text.substr(b, i - b)), cur_.beg);
   }
 
   // Close every open (`defineEnd == UINT32_MAX`) Define of `key` from the

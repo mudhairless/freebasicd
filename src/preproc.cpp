@@ -368,7 +368,7 @@ struct Tokenizer {
         continue;
       }
       if (isIdentStart(c)) {
-        std::size_t b = i;
+        std::size_t const b = i;
         while (i < s.size() && isIdentChar(s[i])) {
           ++i;
         }
@@ -439,7 +439,7 @@ private:
     std::int64_t v = 0;
     bool any = false;
     while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
-      v = v * 10 + (s[i] - '0');
+      v = (v * 10) + (s[i] - '0');
       ++i;
       any = true;
     }
@@ -479,7 +479,7 @@ private:
       if (digit < 0 || digit >= radix) {
         break;
       }
-      v = v * radix + digit;
+      v = (v * radix) + digit;
       ++i;
       any = true;
     }
@@ -693,7 +693,7 @@ private:
       std::uint64_t const a = static_cast<std::uint64_t>(v->num);
       v = Value{false,
                 left ? static_cast<std::int64_t>(a << b->num)
-                     : static_cast<std::int64_t>(v->num >> b->num),
+                     : (v->num >> b->num),
                 {}};
     }
     return v;
@@ -858,8 +858,8 @@ Preprocessor::Preprocessor() {
   // Resolve `defs_` by copying each seed in the constructor body rather than
   // delegating to a helper that would need the member set first.
   std::unordered_map<std::string, PreprocEntry> seed;
-  auto def = [&seed](std::string_view name, std::string_view value,
-                     bool functionLike = false) {
+  auto const def = [&seed](std::string_view name, std::string_view value,
+                           bool functionLike = false) {
     seed[toLowerChars(name)] = PreprocEntry{functionLike, std::string(value)};
   };
 
@@ -898,7 +898,7 @@ Preprocessor::Preprocessor() {
   // Platform flags are defined-empty: usable through `#ifdef`/`defined()` only
   // (`#if __FB_LINUX__` is fbc error 20). The set describes the host this
   // server runs on — the same truth fbc would probe.
-#if defined(_WIN32)
+#ifdef _WIN32
   def("__FB_WIN32__", "");
 #elif defined(__APPLE__)
   def("__FB_DARWIN__", "");

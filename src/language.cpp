@@ -190,7 +190,7 @@ constexpr std::string_view kIncludeDirNames[] = {
 // name with toLowerChars first (ASCII case-insensitive); the generated table is
 // already lowercase, non-ASCII entries byte-exact.
 bool isSourceDirName(std::string_view lowerName) {
-  for (std::string_view name : kSourceDirNames) {
+  for (std::string_view const name : kSourceDirNames) {
     if (name == lowerName) {
       return true;
     }
@@ -199,7 +199,7 @@ bool isSourceDirName(std::string_view lowerName) {
 }
 
 bool isIncludeDirName(std::string_view lowerName) {
-  for (std::string_view name : kIncludeDirNames) {
+  for (std::string_view const name : kIncludeDirNames) {
     if (name == lowerName) {
       return true;
     }
@@ -1604,7 +1604,7 @@ bool statementPosition(std::vector<Token> const &tokens, std::uint32_t off) {
     return true;
   }
   if (last->kind == TokenKind::Keyword) {
-    std::string const lower = toLowerChars(std::string(last->text()));
+    std::string const lower = toLowerChars(last->text());
     return lower == "then" || lower == "else";
   }
   return false;
@@ -1636,13 +1636,12 @@ bool insideRecordBodyAt(std::vector<Token> const &tokens, std::uint32_t beg) {
     if (t.kind != TokenKind::Keyword) {
       continue;
     }
-    std::string const w = toLowerChars(std::string(t.text()));
+    std::string const w = toLowerChars(t.text());
     if (w != "type" && w != "union") {
       continue;
     }
-    bool const isCloser =
-        i > 0 && tokens[i - 1].kind == TokenKind::Keyword &&
-        toLowerChars(std::string(tokens[i - 1].text())) == "end";
+    bool const isCloser = i > 0 && tokens[i - 1].kind == TokenKind::Keyword &&
+                          toLowerChars(tokens[i - 1].text()) == "end";
     if (isCloser) {
       ++depth;
     } else if (depth > 0) {
@@ -1673,7 +1672,7 @@ std::string expectedCloserAt(std::vector<Token> const &tokens,
   }
   if (opener->kind == TokenKind::Keyword) {
     BlockCloser closer;
-    if (!blockForOpener(toLowerChars(std::string(opener->text())), &closer)) {
+    if (!blockForOpener(toLowerChars(opener->text()), &closer)) {
       return {};
     }
     // `sub` and `function` are deliberately not gated here: they are the two
@@ -1865,8 +1864,7 @@ namespace {
 // `error 17`, and so is `Field = 4` (an opener-line modifier, never a member).
 bool hasAsClause(std::vector<Token> const &stmt) {
   for (Token const &t : stmt) {
-    if (t.kind == TokenKind::Keyword &&
-        toLowerChars(std::string(t.text())) == "as") {
+    if (t.kind == TokenKind::Keyword && toLowerChars(t.text()) == "as") {
       return true;
     }
   }
@@ -1879,10 +1877,10 @@ bool hasAsClause(std::vector<Token> const &stmt) {
 // `Dim` is optional in front of a field (wiki KeyPgUserDefTypes), so the bare
 // form is answered by `hasAsClause` instead of being listed.
 bool isRecordMemberOpener(std::vector<Token> const &stmt, BlockKind kind) {
-  std::string const w = toLowerChars(std::string(stmt.front().text()));
-  auto nextIsKeyword = [&stmt](std::size_t i, char const *want) {
+  std::string const w = toLowerChars(stmt.front().text());
+  auto const nextIsKeyword = [&stmt](std::size_t i, char const *want) {
     return i < stmt.size() && stmt[i].kind == TokenKind::Keyword &&
-           toLowerChars(std::string(stmt[i].text())) == want;
+           toLowerChars(stmt[i].text()) == want;
   };
   if (w == "as" || w == "static" || w == "const" || w == "declare" ||
       w == "type" || w == "union" || w == "enum") {
@@ -1943,7 +1941,7 @@ bool isSelfReferentialField(std::vector<Token> const &stmt,
   if (isSuffixChar(enclosingKey.back())) {
     enclosingKey.remove_suffix(1);
   }
-  std::string const head = toLowerChars(std::string(stmt.front().text()));
+  std::string const head = toLowerChars(stmt.front().text());
   if (head == "static" || head == "const") {
     return false;
   }
@@ -1959,7 +1957,7 @@ bool isSelfReferentialField(std::vector<Token> const &stmt,
   }
   for (std::size_t i = 0; i + 1 < stmt.size(); ++i) {
     if (stmt[i].kind != TokenKind::Keyword ||
-        toLowerChars(std::string(stmt[i].text())) != "as") {
+        toLowerChars(stmt[i].text()) != "as") {
       continue;
     }
     Token const &typeTok = stmt[i + 1];
@@ -1970,7 +1968,7 @@ bool isSelfReferentialField(std::vector<Token> const &stmt,
       // ordinary code and the name arrives as a keyword.
       continue;
     }
-    std::string type = toLowerChars(std::string(typeTok.text()));
+    std::string type = toLowerChars(typeTok.text());
     if (!type.empty() && isSuffixChar(type.back())) {
       type.pop_back();
     }
@@ -1978,8 +1976,8 @@ bool isSelfReferentialField(std::vector<Token> const &stmt,
       // Another type, or a forward reference — this layer judges neither.
       continue;
     }
-    return !(i + 2 < stmt.size() && stmt[i + 2].kind == TokenKind::Keyword &&
-             toLowerChars(std::string(stmt[i + 2].text())) == "ptr");
+    return i + 2 >= stmt.size() || stmt[i + 2].kind != TokenKind::Keyword ||
+           toLowerChars(stmt[i + 2].text()) != "ptr";
   }
   return false;
 }
@@ -1990,7 +1988,7 @@ bool isCloserStatement(std::vector<Token> const &stmt) {
   if (stmt.empty() || stmt.front().kind != TokenKind::Keyword) {
     return false;
   }
-  std::string const w = toLowerChars(std::string(stmt.front().text()));
+  std::string const w = toLowerChars(stmt.front().text());
   if (w != "end" && w != "endif" && w != "next" && w != "wend" && w != "loop") {
     return false;
   }
@@ -2021,7 +2019,7 @@ bool acceptsBodyMember(BlockKind kind, std::vector<Token> const &stmt,
   // away before parsing, so a `#macro` call inside a TYPE body (pp/defined-udt)
   // must not end the body. The parser supplies the names it saw declared.
   if (macroNames != nullptr && first.kind == TokenKind::Identifier &&
-      macroNames->count(toLowerChars(std::string(first.text()))) != 0) {
+      macroNames->count(toLowerChars(first.text())) != 0) {
     return true;
   }
   if (kind == BlockKind::Enum) {
@@ -2253,8 +2251,8 @@ bool langFromMetaDirective(std::string_view text, LangMode *out) {
   // followed by whitespace, an optional ':', and a quoted dialect name.
   // Case-insensitive compare: ORing an ASCII letter with the space bit (0x20)
   // lowercases it, so `want` can be given lowercase.
-  auto ci = [](char c, char want) { return (c | ' ') == want; };
-  auto ws = [](char c) {
+  auto const ci = [](char c, char want) { return (c | ' ') == want; };
+  auto const ws = [](char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
   };
   size_t const n = text.size();
