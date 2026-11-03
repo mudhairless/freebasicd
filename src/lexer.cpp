@@ -250,7 +250,7 @@ Token Lexer::lexNext() {
     // Line-leading '#' is a preprocessor directive (swallows the line).
     if (c == '#' && atLineStart()) {
       uint32_t const beg = static_cast<uint32_t>(p_ - src_.data());
-      uint32_t tokEnd = beg;
+      uint32_t tokEnd;
       for (;;) {
         while (p_ < end_ && *p_ != '\n' && *p_ != '\r') {
           ++p_;

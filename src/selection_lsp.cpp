@@ -70,7 +70,7 @@ selectionRanges(std::vector<std::vector<SourceRange>> const &chains,
       }
       innermost = node;
     }
-    result.push_back(*innermost);
+    result.push_back(arena.back());
   }
   return result;
 }
