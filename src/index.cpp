@@ -662,41 +662,41 @@ void WorkspaceIndex::scan(bool async) {
     auto const ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(dt).count();
     if (ms > 10) {
-      std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n", norm.c_str(),
+      (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n", norm.c_str(),
                    static_cast<long long>(ms));
     } else {
       auto const ns =
           std::chrono::duration_cast<std::chrono::nanoseconds>(dt).count();
       if (ns == 0) {
-        std::fprintf(stderr, "[freebasicd] %s parsed in <1 us\n", norm.c_str());
+        (void)std::fprintf(stderr, "[freebasicd] %s parsed in <1 us\n", norm.c_str());
       } else if (ns < 1000) {
-        std::fprintf(stderr, "[freebasicd] %s parsed in %lld ns\n",
+        (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ns\n",
                      norm.c_str(), static_cast<long long>(ns));
       } else if (ns < 100000) {
-        double const us = ns / 1000.0;
+        double const us = static_cast<double>(ns) / 1000.0;
         if (us < 10.0) {
-          std::fprintf(stderr, "[freebasicd] %s parsed in %.2f us\n",
+          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f us\n",
                        norm.c_str(), us);
         } else {
-          std::fprintf(stderr, "[freebasicd] %s parsed in %.0f us\n",
+          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.0f us\n",
                        norm.c_str(), us);
         }
       } else if (ns < 1000000) {
-        double const us = ns / 1000.0;
+        double const us = static_cast<double>(ns) / 1000.0;
         if (us < 10.0) {
-          std::fprintf(stderr, "[freebasicd] %s parsed in %.2f us\n",
+          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f us\n",
                        norm.c_str(), us);
         } else {
-          std::fprintf(stderr, "[freebasicd] %s parsed in %.0f us\n",
+          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.0f us\n",
                        norm.c_str(), us);
         }
       } else {
-        double const msecs = ns / 1000000.0;
+        double const msecs = static_cast<double>(ns) / 1000000.0;
         if (msecs >= 10.0) {
-          std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n",
+          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n",
                        norm.c_str(), static_cast<long long>(ms));
         } else {
-          std::fprintf(stderr, "[freebasicd] %s parsed in %.2f ms\n",
+          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f ms\n",
                        norm.c_str(), msecs);
         }
       }

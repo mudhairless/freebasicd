@@ -41,6 +41,11 @@ bool operator>=(FbcVersion const &a, FbcVersion const &b);
 // number that is not exactly three dotted components.
 std::optional<FbcVersion> parseFbcVersion(std::string_view output);
 
+// The default bound on a version probe: long enough for a cold `fbc
+// -version` on a slow disk, short enough that a hung one cannot stall
+// workspace adoption.
+inline constexpr std::chrono::milliseconds kFbcProbeTimeout{2000};
+
 // Run `executable -version` and parse its output. The call is bounded by
 // `timeout`: a compiler that hangs, is missing, or writes nothing usable leaves
 // the result unknown rather than stalling startup. The capture uses only
@@ -48,7 +53,7 @@ std::optional<FbcVersion> parseFbcVersion(std::string_view output);
 // serves Linux, macOS, and Windows/MSVC.
 std::optional<FbcVersion> probeFbcVersion(
     std::filesystem::path const &executable,
-    std::chrono::milliseconds timeout = std::chrono::milliseconds(2000));
+    std::chrono::milliseconds timeout = kFbcProbeTimeout);
 
 // The delivery gate for version-aware findings. A finding with no bounds
 // applies to every version; an unknown probe version never filters anything

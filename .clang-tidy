@@ -9,6 +9,8 @@
 #   -readability-function-cognitive-complexity     # informational only
 #   -misc-no-recursion                             # parser is recursive
 #   -misc-non-private-member-variables-in-classes  # POD data structs
+#   -misc-include-cleaner                          # headers are self-contained
+#   -readability-trailing-comma                    # clang-format owns layout
 #   -bugprone-easily-swappable-parameters          # call sites self-explain
 #   -clang-analyzer-optin.performance.Padding      # struct-packing micro-opt
 #   -performance-enum-size                         # enums not layout-critical
@@ -28,6 +30,8 @@ Checks: >
   -readability-function-cognitive-complexity,
   -misc-no-recursion,
   -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner,
+  -readability-trailing-comma,
   -bugprone-easily-swappable-parameters,
   -clang-analyzer-optin.performance.Padding,
   -performance-enum-size,
@@ -41,3 +45,17 @@ WarningsAsErrors: >
 # Only our headers emit diagnostics; ours live directly under src/, unlike
 # third-party (LspCpp/rapidjson) which sits deeper or under include/.
 HeaderFilterRegex: 'src/[^/]*\.h$'
+
+# readability-magic-numbers stays enabled (see TIDY.md): the values below are
+# the idioms it may not flag — small counts, the decimal base, and the
+# nanosecond/microsecond/millisecond unit ratios of the timing code. Powers
+# of two (buffer sizes, bit widths) are likewise idiomatic. Anything else
+# still reports, and a value with a meaning of its own gets a named constant,
+# not a place on this list.
+CheckOptions:
+  - key: readability-magic-numbers.IgnoredIntegerValues
+    value: '0;1;2;5;10;1000;100000;1000000'
+  - key: readability-magic-numbers.IgnoredFloatingPointValues
+    value: '10.0'
+  - key: readability-magic-numbers.IgnorePowerOfTwoIntegerValues
+    value: true

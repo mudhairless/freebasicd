@@ -55,6 +55,43 @@ recursive-descent parser.
 
 ---
 
+## readability-magic-numbers
+
+**Looks for:** Numeric literals used directly in code, on the theory that
+an unexplained number hides a meaning a named constant would state.
+
+**Why configured, not suppressed:** The check stays enabled, because the
+theory is right for values that carry a meaning of their own (the fbc
+probe's timeout became a named constant the day the check flagged it).
+What it may not flag is set once, in `.clang-tidy`'s `CheckOptions`, so no
+call site needs a comment: small counts and the decimal base (`0;1;2;5;10`),
+the nanosecond/microsecond/millisecond unit ratios of the timing code
+(`1000;100000;1000000`, and the `10.0` display threshold that pairs with
+them), and powers of two (buffer sizes, bit widths). A value with a real
+meaning still reports, and the remedy is a named constant, never a new
+entry on the ignore list and never a per-site suppression.
+
+**Hit count:** 24 before configuration, across the four files of the
+2026-11-03 run; the residue after configuration is expected to be zero or
+named constants waiting to happen.
+
+---
+
+## readability-trailing-comma
+
+**Looks for:** Multi-line initializer lists whose last element has no
+trailing comma.
+
+**Why suppressed:** Initializer layout in this repo belongs to
+clang-format, whose output does not add trailing commas to the two-field
+braced initializers this codebase is full of. The check would flag new
+code as fast as it is written, and the comma carries no meaning the layout
+does not already show.
+
+**Hit count:** 12 in the 2026-11-03 run.
+
+---
+
 ## misc-no-recursion
 
 **Looks for:** Any function that calls itself, directly or indirectly,
@@ -79,6 +116,25 @@ them to be private with accessor functions.
 field access *is* the design.  Accessor boilerplate would add nothing.
 
 **Hit count:** ~7 (the POD structs listed above).
+
+---
+
+## misc-include-cleaner
+
+**Looks for:** Symbols used in a file whose providing header is not
+directly included there, and includes no symbol in the file needs.
+
+**Why suppressed:** This codebase's headers are self-contained by design:
+a file includes the headers of the modules it talks to, and those headers
+provide what they name. The check instead demands a direct include for
+every standard-library symbol a header already brings in (`std::string`
+via the project's own header was its first hit), which churns every file
+whenever a header's internals move and fights the convention the rest of
+the tree follows. Include discipline here is reviewed by eye, not by this
+check.
+
+**Hit count:** 127 in the 2026-11-03 run, the large majority of all
+findings that day.
 
 ---
 
