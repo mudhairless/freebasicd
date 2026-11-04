@@ -383,7 +383,9 @@ static void TestProbeFbcVersion() {
   std::optional<FbcVersion> const probed =
       probeFbcVersion(fake, std::chrono::milliseconds(2000));
   CHECK(probed.has_value());
-  CHECK_EQ(probed->toString(), "7.6.5");
+  if (probed.has_value()) {
+    CHECK_EQ(probed->toString(), "7.6.5");
+  }
 
   CHECK(!probeFbcVersion(sandbox / "does-not-exist").has_value());
 

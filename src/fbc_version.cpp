@@ -152,8 +152,18 @@ probeFbcVersion(std::filesystem::path const &executable,
   std::filesystem::path const capture =
       tempDir / ("freebasicd-fbc-" + std::to_string(stamp) + "-" +
                  std::to_string(counter.fetch_add(1)) + ".txt");
-  std::string const command = shellQuote(executable.string()) + " -version > " +
-                              shellQuote(capture.string()) + " 2>&1";
+  std::string command = shellQuote(executable.string()) + " -version > " +
+                        shellQuote(capture.string()) + " 2>&1";
+#ifdef _WIN32
+  // `std::system` hands the string to `cmd.exe /c`, and cmd strips the
+  // first and last quote characters on the line when the line holds more
+  // than one quoted string: here the executable's opening quote and the
+  // capture path's closing quote are the pair removed, which leaves the
+  // command malformed ("The filename, directory name, or volume label
+  // syntax is incorrect"). One extra pair around the whole command is the
+  // pair cmd strips instead, leaving both quoted paths intact.
+  command = "\"" + command + "\"";
+#endif
 
   // `std::system` has no timeout, so the child runs on its own thread and the
   // caller waits only for the bound. A timeout detaches the worker instead of
