@@ -200,6 +200,13 @@ int main(int argc, char **argv) {
       out.close();
       std::string cmd = shellQuote(fbcExe->string()) + " -c " +
                         shellQuote(wf.string()) + " " + kNullDev;
+#ifdef _WIN32
+      // Same cmd.exe /c quote stripping as the version probe in
+      // src/fbc_version.cpp: with both paths quoted, cmd removes the
+      // first and last quote characters on the line and the command is
+      // malformed, so wrap the whole command in the pair it strips.
+      cmd = "\"" + cmd + "\"";
+#endif
       int exitCode = exitCodeOf(std::system(cmd.c_str()));
       fbcOk = (exitCode == 0);
     }
