@@ -51,9 +51,9 @@ inline constexpr std::chrono::milliseconds kFbcProbeTimeout{2000};
 // the result unknown rather than stalling startup. The capture uses only
 // standard C++ and a shell redirection to a temporary file, so the same code
 // serves Linux, macOS, and Windows/MSVC.
-std::optional<FbcVersion> probeFbcVersion(
-    std::filesystem::path const &executable,
-    std::chrono::milliseconds timeout = kFbcProbeTimeout);
+std::optional<FbcVersion>
+probeFbcVersion(std::filesystem::path const &executable,
+                std::chrono::milliseconds timeout = kFbcProbeTimeout);
 
 // The delivery gate for version-aware findings. A finding with no bounds
 // applies to every version; an unknown probe version never filters anything
