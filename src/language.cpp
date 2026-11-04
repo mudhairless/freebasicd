@@ -190,21 +190,15 @@ constexpr std::string_view kIncludeDirNames[] = {
 // name with toLowerChars first (ASCII case-insensitive); the generated table is
 // already lowercase, non-ASCII entries byte-exact.
 bool isSourceDirName(std::string_view lowerName) {
-  for (std::string_view const name : kSourceDirNames) {
-    if (name == lowerName) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(
+      std::begin(kSourceDirNames), std::end(kSourceDirNames),
+      [lowerName](std::string_view name) { return name == lowerName; });
 }
 
 bool isIncludeDirName(std::string_view lowerName) {
-  for (std::string_view const name : kIncludeDirNames) {
-    if (name == lowerName) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(
+      std::begin(kIncludeDirNames), std::end(kIncludeDirNames),
+      [lowerName](std::string_view name) { return name == lowerName; });
 }
 
 namespace {
@@ -1349,26 +1343,23 @@ constexpr bool memberNameTablesReserved() {
   // Search kReserved directly rather than calling isReservedWord: that is not
   // constexpr, and a static_assert must be. The tables are keyed by the same
   // catalog, so "is in kReserved" is the property worth pinning at compile
-  // time.
+  // time. The folds stay loops because std::any_of/all_of are not constexpr
+  // before C++20 and this runs in a static_assert.
   auto const inCatalog = [](std::string_view w) {
+    bool found = false;
     for (char const *r : kReserved) {
-      if (std::string_view(r) == w) {
-        return true;
-      }
+      found = found || std::string_view(r) == w;
     }
-    return false;
+    return found;
   };
+  bool all = true;
   for (char const *w : kNeverFieldNames) {
-    if (!inCatalog(w)) {
-      return false;
-    }
+    all = all && inCatalog(w);
   }
   for (char const *w : kConditionalFieldNames) {
-    if (!inCatalog(w)) {
-      return false;
-    }
+    all = all && inCatalog(w);
   }
-  return true;
+  return all;
 }
 static_assert(memberNameTablesReserved(),
               "every member-name table entry must be a reserved word");
@@ -1863,12 +1854,9 @@ namespace {
 // the clause rather than the leading token. A bare `x` in a record body is
 // `error 17`, and so is `Field = 4` (an opener-line modifier, never a member).
 bool hasAsClause(std::vector<Token> const &stmt) {
-  for (Token const &t : stmt) {
-    if (t.kind == TokenKind::Keyword && toLowerChars(t.text()) == "as") {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(stmt.begin(), stmt.end(), [](Token const &t) {
+    return t.kind == TokenKind::Keyword && toLowerChars(t.text()) == "as";
+  });
 }
 
 // The keywords that open a legal `TYPE`/`UNION` body member. Every entry was
@@ -2251,7 +2239,10 @@ bool langFromMetaDirective(std::string_view text, LangMode *out) {
   // followed by whitespace, an optional ':', and a quoted dialect name.
   // Case-insensitive compare: ORing an ASCII letter with the space bit (0x20)
   // lowercases it, so `want` can be given lowercase.
-  auto const ci = [](char c, char want) { return (c | ' ') == want; };
+  auto const ci = [](char c, char want) {
+    return (static_cast<unsigned>(c) | static_cast<unsigned>(' ')) ==
+           static_cast<unsigned>(want);
+  };
   auto const ws = [](char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
   };

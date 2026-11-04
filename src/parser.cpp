@@ -32,6 +32,10 @@ namespace {
 
 using fblang::TokenKind;
 
+// fbc's constructor/destructor priority bounds (error 189; FreeBASIC.md §12).
+constexpr long long kModuleCtorPriorityMin = 101;
+constexpr long long kModuleCtorPriorityMax = 65535;
+
 std::string uppercase(std::string_view s) {
   std::string out;
   out.reserve(s.size());
@@ -928,9 +932,13 @@ private:
     if ((w == "private" || w == "public" || w == "protected") &&
         lex_.peek(0).kind == TokenKind::Symbol && lex_.peek(0).text() == ":") {
       if (!blocks_.empty() && blocks_.back().kind == BlockKind::Type) {
-        containers_.back().access = w == "private"     ? Access::Private
-                                    : w == "protected" ? Access::Protected
-                                                       : Access::Public;
+        Access access = Access::Public;
+        if (w == "private") {
+          access = Access::Private;
+        } else if (w == "protected") {
+          access = Access::Protected;
+        }
+        containers_.back().access = access;
       }
       resetDoc();
       advance(); // the section keyword
@@ -1010,9 +1018,12 @@ private:
       if ((w == "function" || w == "operator" || w == "property") &&
           lex_.peek(0).kind == TokenKind::Symbol &&
           lex_.peek(0).text() == "=") {
-        BlockKind const want = w == "function"   ? BlockKind::Function
-                               : w == "operator" ? BlockKind::Operator
-                                                 : BlockKind::Property;
+        BlockKind want = BlockKind::Property;
+        if (w == "function") {
+          want = BlockKind::Function;
+        } else if (w == "operator") {
+          want = BlockKind::Operator;
+        }
         if (nearestProcedureIs(want)) {
           resetDoc();
           skipStatement();
@@ -1469,7 +1480,7 @@ private:
     }
     if (cur_.kind == TokenKind::Number) {
       long long const value = priorityLiteralValue(cur_.text());
-      if (value < 101 || value > 65535) {
+      if (value < kModuleCtorPriorityMin || value > kModuleCtorPriorityMax) {
         addDiagnostic(
             cur_.beg, cur_.end, Severity::Error, "module-ctor-priority",
             tr("invalid priority attribute; expected 101 to 65535"), 189);

@@ -135,11 +135,10 @@ findFbcExecutable(std::string const &pathEnv,
                           std::filesystem::perms::group_exec |
                           std::filesystem::perms::others_exec)) !=
                     std::filesystem::perms::none;
-    if (!executable) {
-      return false;
-    }
-#endif
+    return executable;
+#else
     return true;
+#endif
   };
   // Resolve symlinks so the include dir tracks the real install, not a PATH
   // shim (e.g. /usr/bin/fbc -> /opt/fb/bin/fbc).
@@ -238,10 +237,12 @@ std::filesystem::path defaultSystemIncludeDir() {
   return std::filesystem::is_directory(dir, ec) ? dir : std::filesystem::path{};
 }
 
+namespace {
+
 // True when `normalizedPath` is `normalizedRoot` itself or lies under it. A
 // mirror of WorkspaceIndex::isInsideRoot for the free include-search helpers.
-static bool pathAtOrUnder(std::string const &normalizedPath,
-                          std::string const &normalizedRoot) {
+bool pathAtOrUnder(std::string const &normalizedPath,
+                   std::string const &normalizedRoot) {
   if (normalizedPath.size() < normalizedRoot.size()) {
     return false;
   }
@@ -261,8 +262,7 @@ static bool pathAtOrUnder(std::string const &normalizedPath,
 // the source tree. Used as an additional include-search anchor for documents
 // opened from a sibling project outside the workspace root. Returns an empty
 // path when no ancestor matches.
-static std::filesystem::path
-projectIncludeDirOf(std::filesystem::path const &file) {
+std::filesystem::path projectIncludeDirOf(std::filesystem::path const &file) {
   std::filesystem::path dir = file.parent_path();
   for (;;) {
     if (dir.empty()) {
@@ -282,6 +282,8 @@ projectIncludeDirOf(std::filesystem::path const &file) {
   }
   return {};
 }
+
+} // namespace
 
 std::optional<std::string>
 resolveIncludeTarget(std::string_view literal,

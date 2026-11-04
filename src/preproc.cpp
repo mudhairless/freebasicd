@@ -9,6 +9,7 @@
 #include "language.h"
 #include "symbols.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -208,8 +209,8 @@ std::string normalizedValue(std::string_view line, std::size_t from) {
     if (c == '_') {
       // Only a fresh `_` token continues the line; an identifier tail
       // (`#define X abc_`) is ordinary replacement text (FreeBASIC.md §6).
-      bool const continuation = trailingUnderscoreIsContinuation(
-          std::string_view(line.data(), i + 1));
+      bool const continuation =
+          trailingUnderscoreIsContinuation(line.substr(0, i + 1));
       if (continuation) {
         std::size_t j = i + 1;
         while (j < line.size() && (line[j] == ' ' || line[j] == '\t')) {
@@ -458,9 +459,12 @@ private:
     ++i; // '&'
     char const base = s[i];
     ++i;
-    int const radix = base == 'h' || base == 'H'   ? 16
-                      : base == 'o' || base == 'O' ? 8
-                                                   : 2;
+    int radix = 2;
+    if (base == 'h' || base == 'H') {
+      radix = 16;
+    } else if (base == 'o' || base == 'O') {
+      radix = 8;
+    }
     std::int64_t v = 0;
     bool any = false;
     for (;;) {
@@ -538,7 +542,10 @@ private:
       if (!b) {
         return fail();
       }
-      v = bitwise(v, b, [](std::int64_t a, std::int64_t c) { return a ^ c; });
+      v = bitwise(v, b, [](std::int64_t a, std::int64_t c) {
+        return static_cast<std::int64_t>(static_cast<std::uint64_t>(a) ^
+                                         static_cast<std::uint64_t>(c));
+      });
     }
     return v;
   }
@@ -551,8 +558,10 @@ private:
       if (!b) {
         return fail();
       }
-      v = bitwise(v, b,
-                  [](std::int64_t a, std::int64_t c) { return (~a) | c; });
+      v = bitwise(v, b, [](std::int64_t a, std::int64_t c) {
+        return static_cast<std::int64_t>(~static_cast<std::uint64_t>(a) |
+                                         static_cast<std::uint64_t>(c));
+      });
     }
     return v;
   }
@@ -565,8 +574,10 @@ private:
       if (!b) {
         return fail();
       }
-      v = bitwise(v, b,
-                  [](std::int64_t a, std::int64_t c) { return ~(a ^ c); });
+      v = bitwise(v, b, [](std::int64_t a, std::int64_t c) {
+        return static_cast<std::int64_t>(
+            ~(static_cast<std::uint64_t>(a) ^ static_cast<std::uint64_t>(c)));
+      });
     }
     return v;
   }
@@ -579,7 +590,10 @@ private:
       if (!b) {
         return fail();
       }
-      v = bitwise(v, b, [](std::int64_t a, std::int64_t c) { return a | c; });
+      v = bitwise(v, b, [](std::int64_t a, std::int64_t c) {
+        return static_cast<std::int64_t>(static_cast<std::uint64_t>(a) |
+                                         static_cast<std::uint64_t>(c));
+      });
     }
     return v;
   }
@@ -592,7 +606,10 @@ private:
       if (!b) {
         return fail();
       }
-      v = bitwise(v, b, [](std::int64_t a, std::int64_t c) { return a & c; });
+      v = bitwise(v, b, [](std::int64_t a, std::int64_t c) {
+        return static_cast<std::int64_t>(static_cast<std::uint64_t>(a) &
+                                         static_cast<std::uint64_t>(c));
+      });
     }
     return v;
   }
@@ -604,7 +621,10 @@ private:
       if (!v || v->isStr) {
         return fail();
       }
-      return Value{false, ~v->num, {}};
+      return Value{
+          false,
+          static_cast<std::int64_t>(~static_cast<std::uint64_t>(v->num)),
+          {}};
     }
     return parseCmp();
   }
@@ -628,18 +648,34 @@ private:
       if (v->isStr != b->isStr) {
         return fail();
       }
-      int cmp;
+      int cmp = 0;
       if (v->isStr) {
-        cmp = v->str == b->str ? 0 : (v->str < b->str ? -1 : 1);
+        if (v->str < b->str) {
+          cmp = -1;
+        } else if (v->str > b->str) {
+          cmp = 1;
+        }
       } else {
-        cmp = v->num == b->num ? 0 : (v->num < b->num ? -1 : 1);
+        if (v->num < b->num) {
+          cmp = -1;
+        } else if (v->num > b->num) {
+          cmp = 1;
+        }
       }
-      bool const truth = op == "="    ? cmp == 0
-                         : op == "<>" ? cmp != 0
-                         : op == "<"  ? cmp < 0
-                         : op == "<=" ? cmp <= 0
-                         : op == ">"  ? cmp > 0
-                                      : cmp >= 0;
+      bool truth = false;
+      if (op == "=") {
+        truth = cmp == 0;
+      } else if (op == "<>") {
+        truth = cmp != 0;
+      } else if (op == "<") {
+        truth = cmp < 0;
+      } else if (op == "<=") {
+        truth = cmp <= 0;
+      } else if (op == ">") {
+        truth = cmp > 0;
+      } else {
+        truth = cmp >= 0;
+      }
       v = Value{false, truth ? -1 : 0, {}};
     }
     return v;
@@ -691,10 +727,13 @@ private:
         return fail();
       }
       std::uint64_t const a = static_cast<std::uint64_t>(v->num);
-      v = Value{false,
-                left ? static_cast<std::int64_t>(a << b->num)
-                     : (v->num >> b->num),
-                {}};
+      v = Value{
+          false,
+          left ? static_cast<std::int64_t>(
+                     a << static_cast<std::uint64_t>(b->num))
+               : static_cast<std::int64_t>(static_cast<std::uint64_t>(v->num) >>
+                                           static_cast<std::uint64_t>(b->num)),
+          {}};
     }
     return v;
   }
@@ -946,12 +985,8 @@ bool Preprocessor::isDefined(std::string_view name) const {
 }
 
 bool Preprocessor::outerActive() const {
-  for (Frame const &f : frames_) {
-    if (!f.curActive) {
-      return false;
-    }
-  }
-  return true;
+  return std::all_of(frames_.begin(), frames_.end(),
+                     [](Frame const &f) { return f.curActive; });
 }
 
 bool Preprocessor::active() const { return !inMacroBody_ && outerActive(); }
@@ -1041,9 +1076,7 @@ PreprocFeedResult Preprocessor::feed(std::string_view line) {
       return r;
     }
     Frame &f = frames_.back();
-    if (f.undecided) {
-      f.curActive = false;
-    } else if (!f.taken) {
+    if (!f.undecided && !f.taken) {
       f.taken = true;
       f.curActive = f.parentActive;
     } else {

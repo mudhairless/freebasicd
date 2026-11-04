@@ -23,11 +23,11 @@
 #define UTF8_LEAD2_MIN 0xC0              // first lead byte of a 2-byte sequence
 #define UTF8_LEAD3_MIN 0xE0              // first lead byte of a 3-byte sequence
 #define UTF8_LEAD4_MIN 0xF0              // first lead byte of a 4-byte sequence
-#define UTF8_LEAD2_PAYLOAD_MASK 0x1F     // payload bits kept in a 2-byte lead
-#define UTF8_LEAD3_PAYLOAD_MASK 0x0F     // payload bits kept in a 3-byte lead
-#define UTF8_LEAD4_PAYLOAD_MASK 0x07     // payload bits kept in a 4-byte lead
-#define UTF8_CONT_PAYLOAD_MASK 0x3F      // payload bits kept per continuation
-#define UTF8_CONT_BITS 6                 // payload bits added per continuation
+#define UTF8_LEAD2_PAYLOAD_MASK 0x1FU    // payload bits kept in a 2-byte lead
+#define UTF8_LEAD3_PAYLOAD_MASK 0x0FU    // payload bits kept in a 3-byte lead
+#define UTF8_LEAD4_PAYLOAD_MASK 0x07U    // payload bits kept in a 4-byte lead
+#define UTF8_CONT_PAYLOAD_MASK 0x3FU     // payload bits kept per continuation
+#define UTF8_CONT_BITS 6U                // payload bits added per continuation
 #define UTF16_SURROGATE_PAIR_MIN 0x10000 // first codepoint needing 2 units
 
 namespace fblang {
@@ -65,8 +65,8 @@ enum Type : std::uint32_t {
 };
 
 enum Modifier : std::uint32_t {
-  kModDeclaration = 1U << 0,
-  kModReadonly = 1U << 1,
+  kModDeclaration = 1U << 0U,
+  kModReadonly = 1U << 1U,
 };
 
 // Width in UTF-16 code units of the code point starting at text[i]. Advances
@@ -99,8 +99,9 @@ int utf16UnitsOfCodePoint(std::string_view text, std::size_t &i) {
   }
   for (int k = 1; k < len; ++k) {
     cp = (cp << UTF8_CONT_BITS) |
-         static_cast<std::uint32_t>(text[i + static_cast<std::size_t>(k)] &
-                                    UTF8_CONT_PAYLOAD_MASK);
+         static_cast<std::uint32_t>(
+             static_cast<unsigned char>(text[i + static_cast<std::size_t>(k)]) &
+             UTF8_CONT_PAYLOAD_MASK);
   }
   i += static_cast<std::size_t>(len);
   return cp >= UTF16_SURROGATE_PAIR_MIN ? 2 : 1;

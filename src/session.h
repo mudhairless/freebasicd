@@ -485,8 +485,8 @@ private:
   // Resolution-only — the entries never surface through workspace/symbol (see
   // WorkspaceIndex::ensureClosure). The index-holding overload pins the
   // snapshot for the whole walk.
-  void ensureRequestClosure(std::string const &normalizedPath);
+  void ensureRequestClosure(std::string const &normPath);
   void
-  ensureRequestClosure(std::string const &normalizedPath,
+  ensureRequestClosure(std::string const &normPath,
                        std::shared_ptr<fblang::WorkspaceIndex> const &index);
 };

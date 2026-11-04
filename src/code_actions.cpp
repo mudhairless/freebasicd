@@ -35,12 +35,8 @@ bool isSpaceOrTab(char c) { return c == ' ' || c == '\t'; }
 
 // A line that carries nothing but whitespace and its line ending.
 bool isBlankLine(std::string_view line) {
-  for (char const c : line) {
-    if (!isSpaceOrTab(c) && c != '\r') {
-      return false;
-    }
-  }
-  return true;
+  return std::all_of(line.begin(), line.end(),
+                     [](char c) { return isSpaceOrTab(c) || c == '\r'; });
 }
 
 // The buffer's line ending, so an inserted closer never introduces a lone LF
@@ -164,12 +160,8 @@ bool looksLikeFilenameLiteral(std::string_view text) {
   if (text.empty() || text.front() == '/' || text.back() == '/') {
     return false;
   }
-  for (char const c : text) {
-    if (c == '"' || c == '\n' || c == '\r') {
-      return false;
-    }
-  }
-  return true;
+  return std::all_of(text.begin(), text.end(),
+                     [](char c) { return c != '"' && c != '\n' && c != '\r'; });
 }
 
 // `include-not-found` -> point the existing directive at a file that exists.

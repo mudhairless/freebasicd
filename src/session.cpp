@@ -86,9 +86,9 @@
 
 // LSP WatchKind bitmask (didChangeWatchedFiles.h):
 // Create=1, Change=2, Delete=4.
-#define WATCH_KIND_CREATE 1
-#define WATCH_KIND_CHANGE 2
-#define WATCH_KIND_DELETE 4
+#define WATCH_KIND_CREATE 1U
+#define WATCH_KIND_CHANGE 2U
+#define WATCH_KIND_DELETE 4U
 
 namespace {
 
@@ -341,12 +341,10 @@ lsSymbolKind toLspSymbolKind(fblang::SymbolKind kind) {
 // `select`/`case` pair and for any run of nested blocks whose declarations all
 // sit at the bottom.
 bool declaresHere(fblang::Symbol const &s) {
-  for (fblang::Symbol const &child : s.children) {
-    if (child.kind != fblang::SymbolKind::Scope) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(s.children.begin(), s.children.end(),
+                     [](fblang::Symbol const &child) {
+                       return child.kind != fblang::SymbolKind::Scope;
+                     });
 }
 
 // The outline entries `s` contributes at *this* level: `s` itself, or — a
@@ -612,9 +610,10 @@ std::vector<lsDiagnostic> documentDiagnostics(std::string_view content,
 // equal payloads; nothing else is folded in, so a re-request with a matching
 // previousResultId never recomputes the report (the client keeps its copy).
 std::uint64_t diagnosticsFnv(std::string_view bytes, std::uint64_t hash) {
+  constexpr std::uint64_t kFnvPrime = 1099511628211ULL;
   for (char const c : bytes) {
     hash ^= static_cast<unsigned char>(c);
-    hash *= 1099511628211ULL;
+    hash *= kFnvPrime;
   }
   return hash;
 }
@@ -634,11 +633,11 @@ std::string diagnosticsResultId(std::string_view content,
     for (fblang::IncludeEdge const &edge : entry->includes) {
       hash = diagnosticsFnv(edge.literal, hash);
       hash = diagnosticsFnv(edge.target, hash);
-      hash ^= edge.once ? 0x9e : 0x00;
+      hash ^= edge.once ? 0x9eULL : 0x00ULL;
     }
   }
   if (!gate.on) {
-    hash ^= 0x55;
+    hash ^= 0x55ULL;
   }
   if (gate.warningLevel != 4) {
     hash ^= static_cast<std::uint64_t>(gate.warningLevel + 1) * 0x01010101ULL;
@@ -651,7 +650,7 @@ std::string diagnosticsResultId(std::string_view content,
     hash = diagnosticsFnv("\x1fsuppress", hash);
     for (std::string const &code : gate.suppressed) {
       hash = diagnosticsFnv(code, hash);
-      hash ^= 0x1c;
+      hash ^= 0x1cULL;
     }
   }
   // The probed compiler version decides which version-bounded findings reach
@@ -664,8 +663,8 @@ std::string diagnosticsResultId(std::string_view content,
     hash = diagnosticsFnv(gate.version->toString(), hash);
   }
   char buf[32];
-  std::snprintf(buf, sizeof(buf), "pd%016llx",
-                static_cast<unsigned long long>(hash));
+  (void)std::snprintf(buf, sizeof(buf), "pd%016llx",
+                      static_cast<unsigned long long>(hash));
   return buf;
 }
 
@@ -676,16 +675,12 @@ std::string diagnosticsResultId(std::string_view content,
 // string prefix.
 bool kindRequested(std::vector<std::string> const &only,
                    std::string const &kind) {
-  for (std::string const &filter : only) {
-    if (filter == kind) {
-      return true;
-    }
-    if (filter.size() < kind.size() && kind[filter.size()] == '.' &&
-        kind.compare(0, filter.size(), filter) == 0) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(
+      only.begin(), only.end(), [&kind](std::string const &filter) {
+        return filter == kind ||
+               (filter.size() < kind.size() && kind[filter.size()] == '.' &&
+                kind.compare(0, filter.size(), filter) == 0);
+      });
 }
 
 // One quick fix as the client consumes it: a `CodeAction` carrying the kind we
@@ -1773,10 +1768,13 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
         true);
     rsp.result.capabilities.diagnosticProvider->workspaceDiagnostics.emplace(
         true);
-    if (req.params.capabilities.textDocument->diagnostic
-            ->relatedDocumentSupport) {
-      relatedDocumentSupport_ = *req.params.capabilities.textDocument
-                                     ->diagnostic->relatedDocumentSupport;
+    if (req.params.capabilities.textDocument &&
+        req.params.capabilities.textDocument->diagnostic) {
+      auto const &diagnostic =
+          *req.params.capabilities.textDocument->diagnostic;
+      if (diagnostic.relatedDocumentSupport) {
+        relatedDocumentSupport_ = *diagnostic.relatedDocumentSupport;
+      }
     }
     if (req.params.capabilities.workspace &&
         req.params.capabilities.workspace->diagnostics &&
@@ -1807,8 +1805,8 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   if (!watchedFilesDynamic_) {
     lsFileSystemWatcher watcher;
     watcher.globPattern = "**/*.{bas,bi}";
-    watcher.kind.emplace(WATCH_KIND_CREATE | WATCH_KIND_CHANGE |
-                         WATCH_KIND_DELETE);
+    watcher.kind.emplace(static_cast<int>(
+        WATCH_KIND_CREATE | WATCH_KIND_CHANGE | WATCH_KIND_DELETE));
     rsp.result.capabilities.workspace->didChangeWatchedFiles.emplace();
     rsp.result.capabilities.workspace->didChangeWatchedFiles->watchers
         .push_back(std::move(watcher));
@@ -2665,12 +2663,14 @@ FreeBasicServer::onDefinition(td_definition::request const &req) {
 // content of the file that declares it (never the request's own bytes), and a
 // file that cannot be read is skipped rather than reported at a guessed offset.
 
+namespace {
+
 // One `Location` for a byte range in `path`, converted against `content` — the
 // file's own bytes, which is the only thing the offsets in a reply are relative
 // to. `content` is the open buffer when the client has one, else the file on
 // disk, fetched by the caller because it is a member of the server.
-static lsLocation locationIn(std::string const &path, std::string_view content,
-                             fblang::SourceRange const &range) {
+lsLocation locationIn(std::string const &path, std::string_view content,
+                      fblang::SourceRange const &range) {
   return lsLocation(lsDocumentUri(AbsolutePath(path)),
                     fblang::utf16Range(content, range.beg, range.end));
 }
@@ -2682,9 +2682,9 @@ static lsLocation locationIn(std::string const &path, std::string_view content,
 // `typeHierarchyIdentity`). `parents`/`children` are filled by the caller —
 // the two halves of a hierarchy are answered from different scopes, and an item
 // whose list is "not resolved yet" is a thing a client has to poll for.
-static TypeHierarchyItem typeHierarchyItem(std::string const &path,
-                                           std::string_view content,
-                                           fblang::TypeItem const &type) {
+TypeHierarchyItem typeHierarchyItem(std::string const &path,
+                                    std::string_view content,
+                                    fblang::TypeItem const &type) {
   TypeHierarchyItem out;
   out.name = type.name;
   out.kind = toLspSymbolKind(type.kind);
@@ -2702,8 +2702,8 @@ static TypeHierarchyItem typeHierarchyItem(std::string const &path,
 // with the same trade as `callHierarchyIdentity`: a (path, name-token range)
 // pair is what a (path, selection) pair means, and a client that trimmed the
 // range gets nothing rather than a type picked by name.
-static fblang::DeclIdentity typeHierarchyIdentity(TypeHierarchyItem const &item,
-                                                  std::string_view content) {
+fblang::DeclIdentity typeHierarchyIdentity(TypeHierarchyItem const &item,
+                                           std::string_view content) {
   fblang::DeclIdentity id;
   id.path = fblang::normalizePath(item.uri.GetAbsolutePath().path());
   id.beg =
@@ -2711,6 +2711,8 @@ static fblang::DeclIdentity typeHierarchyIdentity(TypeHierarchyItem const &item,
   id.end = fblang::byteOffsetForUtf16Position(content, item.selectionRange.end);
   return id;
 }
+
+} // namespace
 
 td_typeDefinition::response
 FreeBasicServer::onTypeDefinition(td_typeDefinition::request const &req) {

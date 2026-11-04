@@ -69,6 +69,25 @@ std::string shellQuote(std::string const &s) {
 #endif
 }
 
+// Assemble the version-probe command line. On Windows, `std::system` hands
+// the string to `cmd.exe /c`, which strips the first and last quote characters
+// on the line when the line holds more than one quoted string: here the
+// executable's opening quote and the capture path's closing quote are the pair
+// removed, which leaves the command malformed ("The filename, directory name,
+// or volume label syntax is incorrect"). One extra pair around the whole
+// command is the pair cmd strips instead, leaving both quoted paths intact.
+// Keeping the wrap here lets the caller hold the final command as `const` on
+// every platform.
+std::string probeCommand(std::string const &executable,
+                         std::string const &capture) {
+  std::string command =
+      shellQuote(executable) + " -version > " + shellQuote(capture) + " 2>&1";
+#ifdef _WIN32
+  command = "\"" + command + "\"";
+#endif
+  return command;
+}
+
 } // namespace
 
 std::string FbcVersion::toString() const {
@@ -152,18 +171,8 @@ probeFbcVersion(std::filesystem::path const &executable,
   std::filesystem::path const capture =
       tempDir / ("freebasicd-fbc-" + std::to_string(stamp) + "-" +
                  std::to_string(counter.fetch_add(1)) + ".txt");
-  std::string command = shellQuote(executable.string()) + " -version > " +
-                        shellQuote(capture.string()) + " 2>&1";
-#ifdef _WIN32
-  // `std::system` hands the string to `cmd.exe /c`, and cmd strips the
-  // first and last quote characters on the line when the line holds more
-  // than one quoted string: here the executable's opening quote and the
-  // capture path's closing quote are the pair removed, which leaves the
-  // command malformed ("The filename, directory name, or volume label
-  // syntax is incorrect"). One extra pair around the whole command is the
-  // pair cmd strips instead, leaving both quoted paths intact.
-  command = "\"" + command + "\"";
-#endif
+  std::string const command =
+      probeCommand(executable.string(), capture.string());
 
   // `std::system` has no timeout, so the child runs on its own thread and the
   // caller waits only for the bound. A timeout detaches the worker instead of
@@ -172,9 +181,9 @@ probeFbcVersion(std::filesystem::path const &executable,
   auto const promise = std::make_shared<std::promise<int>>();
   std::future<int> done = promise->get_future();
   std::thread worker([command, promise] {
-    // NOLINTNEXTLINE(bugprone-command-processor, cert-env33-c): the command
-    // is the user's own configured compiler, shell-quoted in shellQuote; see
-    // TIDY.md, bugprone-command-processor.
+    // The command is the user's own configured compiler, shell-quoted in
+    // shellQuote; see TIDY.md, bugprone-command-processor.
+    // NOLINTNEXTLINE(bugprone-command-processor, cert-env33-c)
     int const status = std::system(command.c_str());
     promise->set_value(status);
   });

@@ -630,12 +630,10 @@ std::string notVisibleInProcedureMessage(std::string_view name) {
 // `declAt`/`visibleDeclNamed` resolving the `Extern` root; the leading-dot
 // shapes have no visibility walk, so they need this direct check.
 bool hasSharedModuleRoot(ParseResult const &parse, std::string const &key) {
-  for (Symbol const &r : parse.roots) {
-    if (r.kind == SymbolKind::Dim && r.shared && r.key == key) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(
+      parse.roots.begin(), parse.roots.end(), [&key](Symbol const &r) {
+        return r.kind == SymbolKind::Dim && r.shared && r.key == key;
+      });
 }
 
 // `typeof` inside a `#print`/`#if`/`#elseif` directive. A directive is one
@@ -1087,13 +1085,13 @@ std::string declaredTypeName(Symbol const &decl) {
     if (toLowerChars(w) != "as") {
       continue;
     }
-    std::string const t{nextSigWord(sig, i)};
+    std::string t{nextSigWord(sig, i)};
     std::string const tl = toLowerChars(t);
     // `as const integer x`, `as byref UDT x`: drop a leading type modifier
     // so the type name itself is returned.
     if (tl == "const" || tl == "byref" || tl == "byval" || tl == "shared" ||
         tl == "static" || tl == "export") {
-      std::string const t2{nextSigWord(sig, i)};
+      std::string t2{nextSigWord(sig, i)};
       if (t2.empty()) {
         return {};
       }
