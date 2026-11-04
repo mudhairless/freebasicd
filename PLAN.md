@@ -5,8 +5,9 @@
 > what it cost — including the defects found on the way and the lessons worth
 > keeping. Do not add a finished milestone here: add a dated entry to the
 > changelog and delete the milestone's sketch from §5, leaving at most a pointer.
-> The durable engineering rules are in [`AGENTS.md`](AGENTS.md) and the language
-> facts in [`FreeBASIC.md`](FreeBASIC.md).
+> The core engineering rules are in [`AGENTS.md`](AGENTS.md), their detailed
+> form is in [`docs/development/`](docs/development/README.md), and the language
+> facts are in [`FreeBASIC.md`](FreeBASIC.md).
 
 ## 1. State summary
 
@@ -550,7 +551,7 @@ suggesting it.
   "no source-order gating" convenience — update that divergence's text when it
   ships.
 - New messages through `fblang::trf` and `po/freebasicd.pot` regeneration
-  (AGENTS.md §Message catalogs).
+  (`docs/development/architecture.md`, Message catalogs).
 
 **Acceptance**
 
@@ -910,8 +911,10 @@ Remaining of a milestone whose CI and install work landed 2026-09-25 and whose
 - **Concurrency (implemented as-is):** LspCpp handler pool runs requests
   concurrently; the index is snapshot-based and mutex-guarded, responses build
   lock-free. New handlers must follow the same snapshot discipline
-  (shared_ptr copies only, and a result type that hands out a pointer into a
-  snapshot must carry the pin — AGENTS.md §ThreadSanitizer).
+  (shared_ptr copies only; a result type that hands out a pointer into a
+  snapshot must carry the pin). See
+  [`docs/development/testing.md`](docs/development/testing.md),
+  ThreadSanitizer.
 - **Per-milestone acceptance:** `cmake --build` + `ctest` green, milestone
   deliverable complete, a dated `CHANGELOG.md` entry, commit on `main`, push only
   on request.

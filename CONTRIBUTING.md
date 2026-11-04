@@ -4,9 +4,10 @@ The server is early and the API is not stable. That cuts both ways: small
 pull requests are easy to review and land quickly, and there is a lot of ground
 still uncovered.
 
-Read [`AGENTS.md`](AGENTS.md) before you start. It is the working agreement
-for this repository, and most of the rules below are summaries of what it
-already says.
+Read [`AGENTS.md`](AGENTS.md) before you start. It is the short working
+agreement for this repository and points to the detailed development
+documents for the area you are changing. Most of the rules below summarize
+that material.
 
 ## Contributions come with a disclosure
 
@@ -101,8 +102,9 @@ that gap and adds a dated entry to `CHANGELOG.md` instead, in the same wave.
 
 One function plus one row in the registry table. A provider is a pure function
 of a diagnostic and a context object, and it must never guess: offer a candidate
-only when the context's own seams accept it. `AGENTS.md` §Quick fixes has the
-contract. Fixes ship as LSP `CodeAction`s carrying an `edit`, never as
+only when the context's own seams accept it. The quick-fix section of
+[`docs/development/architecture.md`](docs/development/architecture.md) has
+the contract. Fixes ship as LSP `CodeAction`s carrying an `edit`, never as
 `Command`s.
 
 ## Patching LspCpp

@@ -15,5 +15,8 @@ are, and where the server's lexer diverges from `fbc` — see
 [`FreeBASIC.md`](../FreeBASIC.md). That is the reference for *what the language
 is*; these pages are about *running the server*.
 
-For development — module layout, tests, the milestone plan — see
-[`CONTRIBUTING.md`](../CONTRIBUTING.md) and [`PLAN.md`](../PLAN.md).
+For development, see [`AGENTS.md`](../AGENTS.md) for the short working
+agreement, [`CONTRIBUTING.md`](../CONTRIBUTING.md) for contributor rules,
+and [`PLAN.md`](../PLAN.md) for the milestone plan. Detailed dependency,
+architecture, testing, and concurrency documents are in
+[Development documents](development/README.md).

@@ -261,8 +261,8 @@ entirely in memory: nothing is ever written to disk.
   remaining gaps — what is still to do.
 - [`CHANGELOG.md`](CHANGELOG.md) records what has shipped, when, and what it
   cost. Nothing has been released yet, so it is all under `## [Unreleased]`.
-- [`AGENTS.md`](AGENTS.md) is the working agreement for the agent that drives
-  this repo.
+- [`AGENTS.md`](AGENTS.md) is the short working agreement for the agent that
+  drives this repo and the index to the detailed development documents.
 - [`TIDY.md`](TIDY.md) explains every `clang-tidy` suppression, with a reason.
 
 ## Tests
