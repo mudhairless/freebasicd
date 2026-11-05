@@ -113,7 +113,7 @@ FbcNumberRange const &rangeFor(std::optional<FbcVersion> const &version) {
   if (!version) {
     return kNumberRanges.back();
   }
-  auto const *const it =
+  auto const it =
       std::upper_bound(kNumberRanges.begin(), kNumberRanges.end(), *version,
                        [](FbcVersion const &v, FbcNumberRange const &range) {
                          return v < range.first;
