@@ -173,7 +173,7 @@ public:
     for (auto it = blocks_.rbegin(); it != blocks_.rend(); ++it) {
       addDiagnostic(it->begOpen, it->endOpen, Severity::Error,
                     "unterminated-block", trf("Expected '%s'", displayFor(*it)),
-                    fbcExpectedCloserError(it->kind));
+                    fbcExpectedCloser(it->kind));
     }
     // Close the leftover blocks at EOF (innermost first) so their symbols get
     // sane ranges extending to the end of the source. Without this, a block
@@ -210,7 +210,7 @@ private:
         preproc_.active()) {
       addDiagnostic(cur_.beg, cur_.end, Severity::Warning,
                     "unterminated-string", tr("unterminated string literal"),
-                    12, FbcMessageKind::Warning);
+                    FbcDiagId::NoClosingQuote, FbcMessageKind::Warning);
     }
     // A suffix that rode on a reserved word is ignored (fbc warning 44) and
     // the token has already shed it; the diagnostic sits on the suffix char
@@ -225,8 +225,8 @@ private:
       wordWithSuffix.push_back(src_[cur_.suffixBeg]);
       addDiagnostic(cur_.suffixBeg, cur_.suffixBeg + 1, Severity::Warning,
                     "keyword-suffix",
-                    trf("Suffix ignored in '%s'", wordWithSuffix), 44,
-                    FbcMessageKind::Warning);
+                    trf("Suffix ignored in '%s'", wordWithSuffix),
+                    FbcDiagId::SuffixIgnored, FbcMessageKind::Warning);
     }
     cur_ = lex_.next();
   }
@@ -416,14 +416,14 @@ private:
   }
 
   void addDiagnostic(uint32_t beg, uint32_t end, Severity sev, const char *code,
-                     std::string msg, int fbcError = 0,
+                     std::string msg, FbcDiagId fbcId = FbcDiagId::None,
                      FbcMessageKind fbcKind = FbcMessageKind::Error) {
     Diagnostic d;
     d.range.beg = beg;
     d.range.end = end;
     d.severity = sev;
     d.code = code;
-    d.fbcError = fbcError;
+    d.fbcId = fbcId;
     d.fbcKind = fbcKind;
     d.message = std::move(msg);
     out_.diagnostics.push_back(std::move(d));
@@ -507,7 +507,8 @@ private:
         // squiggle shouting.
         addDiagnostic(s.selection.beg, s.selection.end, Severity::Warning,
                       "duplicate-definition",
-                      trf("duplicate definition: '%s'", s.name), 4);
+                      trf("duplicate definition: '%s'", s.name),
+                      FbcDiagId::DupDefinition);
       }
       if (set.count(s.key) == 0) {
         set.insert(s.key);
@@ -568,7 +569,7 @@ private:
                     trf("'%s' is a reserved word and cannot be a field name in "
                         "a type with member functions",
                         m.name),
-                    238 /* KEYWORDFIELDSNOTALLOWEDINCLASSES */);
+                    FbcDiagId::KeywordFieldsNotAllowedInClasses);
       kids.erase(kids.begin() + static_cast<std::ptrdiff_t>(i));
     }
   }
@@ -602,7 +603,7 @@ private:
     d.range = SourceRange{b.begOpen, b.endOpen};
     d.severity = Severity::Error;
     d.code = "unterminated-block";
-    d.fbcError = fbcExpectedCloserError(b.kind);
+    d.fbcId = fbcExpectedCloser(b.kind);
     d.message = trf("Expected '%s'", displayFor(b));
     d.closerAt = end;
     out_.diagnostics.push_back(std::move(d));
@@ -647,7 +648,7 @@ private:
                     trf("'%s' is a reserved word and cannot be an enum member "
                         "name",
                         stmt.front().text()),
-                    3 /* EXPECTEDEOL: fbc anchors its report on the name */);
+                    FbcDiagId::ExpectedEol);
     }
     closeBlockUnterminated(cur_.beg);
     return true;
@@ -842,7 +843,7 @@ private:
                       "invalid-member-name",
                       trf("'%s' is a reserved word and cannot be a field name",
                           cur_.text()),
-                      14 /* EXPECTEDIDENTIFIER */);
+                      FbcDiagId::ExpectedIdentifier);
         captureMember = false;
         advance();
         continue;
@@ -1097,7 +1098,8 @@ private:
         // fbc numbers these apart: 117 ELSEWITHOUTIF, 116 ELSEIFWITHOUTIF.
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
                       trf("%s without %s", uppercase(w), "IF"),
-                      w == "else" ? 117 : 116);
+                      w == "else" ? FbcDiagId::ElseWithoutIf
+                                  : FbcDiagId::ElseIfWithoutIf);
       } else {
         openBranchScope(w);
       }
@@ -1108,7 +1110,8 @@ private:
     if (w == "case") {
       if (blocks_.empty() || blocks_.back().kind != BlockKind::Select) {
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      trf("%s without %s", "CASE", "SELECT"), 118);
+                      trf("%s without %s", "CASE", "SELECT"),
+                      FbcDiagId::CaseWithoutSelect);
       } else {
         openBranchScope("case");
       }
@@ -1475,15 +1478,17 @@ private:
       // fbc reports the argument-count mismatch and looks no further.
       addDiagnostic(markerTok.beg, markerTok.end, Severity::Error,
                     "module-ctor-params",
-                    trf("a module %s cannot take parameters", marker), 1);
+                    trf("a module %s cannot take parameters", marker),
+                    FbcDiagId::ArgCntMismatch);
       return;
     }
     if (cur_.kind == TokenKind::Number) {
       long long const value = priorityLiteralValue(cur_.text());
       if (value < kModuleCtorPriorityMin || value > kModuleCtorPriorityMax) {
-        addDiagnostic(
-            cur_.beg, cur_.end, Severity::Error, "module-ctor-priority",
-            tr("invalid priority attribute; expected 101 to 65535"), 189);
+        addDiagnostic(cur_.beg, cur_.end, Severity::Error,
+                      "module-ctor-priority",
+                      tr("invalid priority attribute; expected 101 to 65535"),
+                      FbcDiagId::InvalidPriority);
       } else {
         s.constructorPriority = static_cast<int>(value);
       }
@@ -1500,12 +1505,14 @@ private:
     if (cur_.kind == TokenKind::Keyword &&
         toLowerChars(cur_.text()) == "export") {
       addDiagnostic(cur_.beg, cur_.end, Severity::Error, "module-ctor-export",
-                    trf("a module %s cannot be exported", marker), 17);
+                    trf("a module %s cannot be exported", marker),
+                    FbcDiagId::SyntaxError);
       return;
     }
     if (!endsStatement(cur_)) {
       addDiagnostic(cur_.beg, cur_.end, Severity::Error, "module-ctor-tail",
-                    trf("Expected end of line after a module %s", marker), 3);
+                    trf("Expected end of line after a module %s", marker),
+                    FbcDiagId::ExpectedEol);
       return;
     }
     // A UDT member sub may be one only when it is `Static`; a module-level
@@ -1515,7 +1522,7 @@ private:
           markerTok.beg, markerTok.end, Severity::Error,
           "module-ctor-nonstatic",
           trf("a non-static member procedure cannot be a module %s", marker),
-          17);
+          FbcDiagId::SyntaxError);
     }
   }
 
@@ -1929,7 +1936,7 @@ private:
       if (tail == "constructor" || tail == "destructor" || tail == "export") {
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "decl-decorator",
                       trf("'%s' is not allowed on a declaration line", tail),
-                      3);
+                      FbcDiagId::ExpectedEol);
       }
     }
     addSymbol(std::move(s));
@@ -2042,7 +2049,8 @@ private:
               containers_.back().keys.count(s.key) != 0) {
             addDiagnostic(s.selection.beg, s.selection.end, Severity::Warning,
                           "duplicate-definition",
-                          trf("duplicate definition: '%s'", s.name), 4);
+                          trf("duplicate definition: '%s'", s.name),
+                          FbcDiagId::DupDefinition);
           }
           s.declOnly = declOnly;
           s.signature = headerText(openTok);
@@ -2111,7 +2119,7 @@ private:
                           trf("'%s' is a reserved word and cannot be a field "
                               "name",
                               cur_.text()),
-                          14 /* EXPECTEDIDENTIFIER */);
+                          FbcDiagId::ExpectedIdentifier);
           }
           advance();
         }
@@ -2205,7 +2213,7 @@ private:
     if (w == "for" || w == "while") {
       std::string const expected = w == "for" ? "NEXT" : "WEND";
       addDiagnostic(word.beg, word.end, Severity::Error, "invalid-end",
-                    trf("Expected '%s'", expected), 33 /* ILLEGALEND */);
+                    trf("Expected '%s'", expected), FbcDiagId::IllegalEnd);
       // No block can be closed by `END FOR` / `END WHILE` (fbc rejects both
       // with `error 33: Illegal 'END'`), so this token is itself the evidence
       // that the innermost block ends before it — fbc's `error 13: Expected
@@ -2229,7 +2237,7 @@ private:
     if (blocks_.empty()) {
       addDiagnostic(endTok.beg, word.end, Severity::Error, "stray-closer",
                     trf("%s without %s", "END " + uppercase(w), uppercase(w)),
-                    fbcCloserWithoutOpenerError(c.kind));
+                    fbcCloserWithoutOpener(c.kind));
       resetDoc();
       skipStatement();
       return;
@@ -2270,7 +2278,7 @@ private:
     if (!isMemberBodyKind(top.kind)) {
       addDiagnostic(at, cur_.end, Severity::Error, "closer-mismatch",
                     trf("Expected '%s'", displayFor(top)),
-                    fbcExpectedCloserError(top.kind));
+                    fbcExpectedCloser(top.kind));
     }
     closeBlockUnterminated(at);
   }
@@ -2299,7 +2307,7 @@ private:
       addDiagnostic(closerTok.beg, closerTok.end, Severity::Error,
                     "stray-closer",
                     trf("%s without %s", uppercase(c.closeWord), openerName),
-                    fbcCloserWithoutOpenerError(c.kind));
+                    fbcCloserWithoutOpener(c.kind));
       resetDoc();
       skipStatement();
       return;
@@ -2440,7 +2448,8 @@ private:
         // fbc 1.10.2: "error 44: Illegal outside a compound statement"
         // (probed; the preprocessor shares ILLEGALOUTSIDECOMP with `else`).
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      trf("%s without %s", "#" + uppercase(w), "#IF"), 44);
+                      trf("%s without %s", "#" + uppercase(w), "#IF"),
+                      FbcDiagId::IllegalOutsideComp);
       }
     } else if (w == "endmacro") {
       if (!blocks_.empty() && blocks_.back().kind == BlockKind::PreprocMacro) {
@@ -2448,7 +2457,8 @@ private:
       } else {
         // fbc: "error 17: Syntax error, found 'endmacro'".
         addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                      trf("%s without %s", "#" + uppercase(w), "#MACRO"), 17);
+                      trf("%s without %s", "#" + uppercase(w), "#MACRO"),
+                      FbcDiagId::SyntaxError);
       }
     } else if (w == "lang") {
       LangMode m;
@@ -2466,7 +2476,8 @@ private:
       // #else / #elseif / #elseifdef / #elseifndef with no open #if: fbc
       // 1.10.2 error 44, ILLEGALOUTSIDECOMP (probed for #else and #elseif).
       addDiagnostic(cur_.beg, cur_.end, Severity::Error, "stray-closer",
-                    trf("%s without %s", "#" + uppercase(w), "#IF"), 44);
+                    trf("%s without %s", "#" + uppercase(w), "#IF"),
+                    FbcDiagId::IllegalOutsideComp);
     }
 
     if (f.define) {

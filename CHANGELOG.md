@@ -26,6 +26,12 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-05 — diagnostics: fbc message identities and version-range number tables
+
+- **A diagnostic now names fbc's meaning, not its number**: `Diagnostic::fbcId` carries an `FbcDiagId`, and `fbcNumber` resolves it to the catalog number in the appropriate error or warning space for the compiler version probed at runtime. The 1.10.x numbers live in one table whose first version is `{1, 10, 0}`; a future renumbering adds a range entry, with no call-site edits. An unknown version resolves through the newest table; a probed version below every known range takes the oldest table, and one above takes the newest applicable, matching the delivery gates' "unknown version filters nothing" posture.
+- **The resultId salts are named**: the header, include-once, diagnostics-off, warning-level, and per-suppression fold constants in `diagnosticsResultId` are file-local `constexpr` values. Their values did not move, so every resultId a client compares across requests is unchanged.
+- **No user-visible behavior change for fbc 1.10.x**: wire code strings, warning gating, hrefs, and resultIds are byte-identical; this is the change that names the 54 remaining `readability-magic-numbers` sites in the fbc-number plumbing.
+
 ### 2026-11-03 — M21 step 2: the `[build]` / `[fbc]` config tables, and the compiler version probed at runtime
 
 - **The two facts an LSP cannot derive are now config**: `[build]` in `freebasicd.toml` carries `kind` (`"exe"` by default; `"dll"` / `"staticlib"` mean no module is `main`) and the optional `main`, and `[fbc]` carries the optional `path` pin. Both path values resolve relative to the config file's own directory, root-scoped like every setting since M11. Nothing requires the keys, and each default keeps the previous behavior. Step 3 is what consumes `kind` and `main`; this step parses, validates, and reports them.

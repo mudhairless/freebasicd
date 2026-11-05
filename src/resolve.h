@@ -112,7 +112,7 @@ std::optional<std::uint32_t> sharedInsertionOffset(std::string_view content,
 // file-type-agnostic; whether it fires is the caller's choice, because only
 // the caller knows the extension (the session keeps `.bi` files silent).
 // `end extern` closes the block form, so that word is not a declaration.
-// Every hit is our own convention Warning (fbcError 0): fbc compiles an
+// Every hit is our own convention Warning (no fbc identity): fbc compiles an
 // `Extern` in a `.bas` fine, so there is no parity number to claim.
 void externPlacementDiagnostics(std::vector<Token> const &tokens,
                                 std::vector<Diagnostic> *out);

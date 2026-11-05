@@ -542,16 +542,16 @@ bool precededByNonValue(std::vector<Token> const &tokens, std::size_t idx) {
   return w == "." || w == "->" || w == "as" || w == "goto" || w == "gosub";
 }
 
-// A single diagnostic of the family: fbc's number (`42`/`8`/`9`) and its
-// message, anchored on the identifier token's bytes.
+// A single diagnostic of the family: fbc's identity and its message, anchored
+// on the identifier token's bytes.
 void addNotShared(ParseResult &parse, std::uint32_t beg, std::uint32_t end,
-                  int fbcError, std::string msg) {
+                  FbcDiagId fbcId, std::string msg) {
   Diagnostic d;
   d.range.beg = beg;
   d.range.end = end;
   d.severity = Severity::Error;
   d.code = "module-var-not-shared";
-  d.fbcError = fbcError;
+  d.fbcId = fbcId;
   d.message = std::move(msg);
   parse.diagnostics.push_back(std::move(d));
 }
@@ -732,7 +732,7 @@ void typeofDiagnostics(ParseResult &parse, std::string_view source,
         // TRANSLATORS: the first %s is an identifier (e.g. var1); the second
         // is the FreeBASIC keyword Shared, passed as an argument, never
         // translated.
-        addNotShared(parse, nameBeg, nameEnd, 9,
+        addNotShared(parse, nameBeg, nameEnd, FbcDiagId::ExpectedExpression,
                      trf("'.%s' in typeof requires a %s module-level variable",
                          code.substr(nbeg, i - nbeg), "Shared"));
       }
@@ -740,7 +740,7 @@ void typeofDiagnostics(ParseResult &parse, std::string_view source,
       // No local/parameter/shared declaration of the name is visible here, so
       // the module `Dim` is the only one and it is gated — the same `error 42`
       // a bare read produces.
-      addNotShared(parse, nameBeg, nameEnd, 42,
+      addNotShared(parse, nameBeg, nameEnd, FbcDiagId::VariableNotDeclared,
                    notVisibleInProcedureMessage(code.substr(nbeg, i - nbeg)));
     }
     pos = i;
@@ -786,7 +786,7 @@ void sharedGateDiagnostics(ParseResult &parse, std::vector<Token> const &tokens,
       // TRANSLATORS: the first %s is an identifier; the second is the
       // FreeBASIC keyword Shared, passed as an argument, never translated.
       addNotShared(
-          parse, t.beg, t.end, 8,
+          parse, t.beg, t.end, FbcDiagId::UndefinedSymbol,
           trf("'.%s' requires a %s module-level variable", t.text(), "Shared"));
       continue;
     }
@@ -797,7 +797,7 @@ void sharedGateDiagnostics(ParseResult &parse, std::vector<Token> const &tokens,
     }
     // TRANSLATORS: the first %s is an identifier; the second is the
     // FreeBASIC keyword Shared, passed as an argument, never translated.
-    addNotShared(parse, t.beg, t.end, 42,
+    addNotShared(parse, t.beg, t.end, FbcDiagId::VariableNotDeclared,
                  notVisibleInProcedureMessage(t.text()));
   }
 }
@@ -825,7 +825,7 @@ void externPlacementDiagnostics(std::vector<Token> const &tokens,
     d.range.beg = t.beg;
     d.range.end = t.end;
     d.severity = Severity::Warning;
-    d.fbcError = 0;
+    d.fbcId = FbcDiagId::None;
     d.code = "extern-in-source";
     // TRANSLATORS: a convention warning. An `Extern` declaration — a
     // multi-module variable or an `Extern "C"` block — is valid FreeBASIC in a

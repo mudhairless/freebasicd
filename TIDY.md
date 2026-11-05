@@ -71,9 +71,21 @@ them), and powers of two (buffer sizes, bit widths). A value with a real
 meaning still reports, and the remedy is a named constant, never a new
 entry on the ignore list and never a per-site suppression.
 
+The fbc message numbers are no longer literals at report sites: a
+diagnostic carries an `FbcDiagId`, and the number is resolved through a
+version-range table selected by the probed compiler version. The resultId
+fold salts in `session.cpp` are likewise named constants beside
+`diagnosticsResultId`. What remains flagged is a small set of
+self-describing literals — the radix bases of the literal parsers, the
+integer saturation bound, the `typeof` needle length, the shift bound, and
+the reserve slack — where the number is the clearest statement of the
+operation. They stay flagged by decision; the rule above still holds for
+every other value.
+
 **Hit count:** 24 before configuration, across the four files of the
-2026-11-03 run; the residue after configuration is expected to be zero or
-named constants waiting to happen.
+2026-11-03 run; the 2026-11-05 pass named 54 of the 68 remaining sites
+(fbc identities plus resultId salts), leaving only the self-describing
+literals above.
 
 ---
 

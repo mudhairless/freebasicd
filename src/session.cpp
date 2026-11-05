@@ -401,27 +401,32 @@ void appendOutline(std::string_view content, fblang::Symbol const &s,
 // code always names our own routing key first — the stable identifier a
 // suppression/whitelist config and the quick fixes key on, so a diagnostic is
 // never addressable only by a number that may not exist. When the parser also
-// mapped it to an fbc catalog number, that follows after a comma:
-// `include-not-found, fbc error: 23`, `keyword-suffix, fbc warning: 44`. A
-// diagnostic fbc has no number for carries the key alone (`bad-continuation`).
-// A mapped diagnostic also carries `codeDescription.href`, the wiki page for
-// the whole catalog — the same page for every message, which is why it is one
-// constant and not a per-number table.
+// mapped it to an fbc catalog identity, that resolves to the number for the
+// probed compiler and follows after a comma: `include-not-found, fbc error:
+// 23`, `keyword-suffix, fbc warning: 44`. A diagnostic fbc has no identity for
+// carries the key alone (`bad-continuation`). A mapped diagnostic also carries
+// `codeDescription.href`, the wiki page for the whole catalog — the same page
+// for every message, which is why it is one constant and not a per-number
+// table.
 lsDiagnostic toLsDiagnostic(std::string_view content,
-                            fblang::Diagnostic const &d) {
+                            fblang::Diagnostic const &d,
+                            std::optional<fblang::FbcVersion> const &version) {
   lsDiagnostic diag;
   diag.range = fblang::utf16Range(content, d.range.beg, d.range.end);
   diag.severity = static_cast<lsDiagnosticSeverity>(d.severity);
+  int const fbcNumber = d.fbcId == fblang::FbcDiagId::None
+                            ? 0
+                            : fblang::fbcNumber(d.fbcId, d.fbcKind, version);
   std::string code = d.code;
-  if (d.fbcError != 0) {
-    std::string const fbc = fblang::fbcCode(d.fbcKind, d.fbcError);
+  if (fbcNumber != 0) {
+    std::string const fbc = fblang::fbcCode(d.fbcKind, fbcNumber);
     code = code.empty() ? fbc : code + ", " + fbc;
   }
   if (!code.empty()) {
     diag.code.emplace(
         std::make_pair<optional<std::string>, optional<int>>(code, {}));
   }
-  if (d.fbcError != 0) {
+  if (fbcNumber != 0) {
     diag.codeDescription.emplace();
     diag.codeDescription->href = std::string(fblang::fbcMessageDocsUrl());
   }
@@ -474,14 +479,17 @@ std::optional<lsDiagnostic> gatedDiagnostic(std::string_view content,
   if (!fblang::versionAllows(gate.version, d)) {
     return std::nullopt;
   }
-  if (d.fbcError != 0 && d.fbcKind == fblang::FbcMessageKind::Warning) {
+  if (d.fbcId != fblang::FbcDiagId::None &&
+      d.fbcKind == fblang::FbcMessageKind::Warning) {
+    int const number = fblang::fbcNumber(
+        d.fbcId, fblang::FbcMessageKind::Warning, gate.version);
     fblang::FbcCatalogEntry const *const entry =
-        fblang::fbcMessage(fblang::FbcMessageKind::Warning, d.fbcError);
+        fblang::fbcMessage(fblang::FbcMessageKind::Warning, number);
     if (entry == nullptr || entry->level < gate.warningLevel) {
       return std::nullopt;
     }
   }
-  return toLsDiagnostic(content, d);
+  return toLsDiagnostic(content, d, gate.version);
 }
 
 std::vector<lsDiagnostic> convertDiagnostics(std::string_view content,
@@ -618,6 +626,12 @@ std::uint64_t diagnosticsFnv(std::string_view bytes, std::uint64_t hash) {
   return hash;
 }
 
+constexpr std::uint64_t kResultIdHeaderMarker = 0x0d0e0a01ULL;
+constexpr std::uint64_t kResultIdIncludeOnceMarker = 0x9eULL;
+constexpr std::uint64_t kResultIdGateOffMarker = 0x55ULL;
+constexpr std::uint64_t kResultIdWarningLevelSpread = 0x01010101ULL;
+constexpr std::uint64_t kResultIdSuppressionMarker = 0x1cULL;
+
 std::string diagnosticsResultId(std::string_view content,
                                 fblang::IndexedFile const *entry,
                                 DiagnosticsGate const &gate,
@@ -627,20 +641,21 @@ std::string diagnosticsResultId(std::string_view content,
     // The extern-placement lint does not fire in a `.bi`: two documents whose
     // bytes are identical must still not share a result id when one is a
     // header and the other a source module, because their payloads differ.
-    hash ^= 0x0d0e0a01ULL;
+    hash ^= kResultIdHeaderMarker;
   }
   if (entry != nullptr) {
     for (fblang::IncludeEdge const &edge : entry->includes) {
       hash = diagnosticsFnv(edge.literal, hash);
       hash = diagnosticsFnv(edge.target, hash);
-      hash ^= edge.once ? 0x9eULL : 0x00ULL;
+      hash ^= edge.once ? kResultIdIncludeOnceMarker : 0x00ULL;
     }
   }
   if (!gate.on) {
-    hash ^= 0x55ULL;
+    hash ^= kResultIdGateOffMarker;
   }
   if (gate.warningLevel != 4) {
-    hash ^= static_cast<std::uint64_t>(gate.warningLevel + 1) * 0x01010101ULL;
+    hash ^= static_cast<std::uint64_t>(gate.warningLevel + 1) *
+            kResultIdWarningLevelSpread;
   }
   // Suppressions are part of the payload's identity too: dropping or
   // re-adding a diagnostic must move the id. The list is lowercased, sorted,
@@ -650,7 +665,7 @@ std::string diagnosticsResultId(std::string_view content,
     hash = diagnosticsFnv("\x1fsuppress", hash);
     for (std::string const &code : gate.suppressed) {
       hash = diagnosticsFnv(code, hash);
-      hash ^= 0x1cULL;
+      hash ^= kResultIdSuppressionMarker;
     }
   }
   // The probed compiler version decides which version-bounded findings reach
@@ -692,12 +707,13 @@ bool kindRequested(std::vector<std::string> const &only,
 // edit", so a fix shipped that way shows up in the menu and then does nothing.
 CodeAction quickFixCodeAction(std::string const &uri, std::string_view content,
                               fblang::Diagnostic const &d,
+                              std::optional<fblang::FbcVersion> const &version,
                               fblang::QuickFix const &fix) {
   CodeAction action;
   action.title = fix.title;
   action.kind = std::string("quickfix");
   action.diagnostics.emplace();
-  action.diagnostics->push_back(toLsDiagnostic(content, d));
+  action.diagnostics->push_back(toLsDiagnostic(content, d, version));
 
   lsWorkspaceEdit edit;
   edit.changes.emplace();
@@ -3743,6 +3759,8 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
   // `include-not-found` set M6 publishes, taken from the same live entry).
   std::vector<fblang::Diagnostic> published = doc.parse.diagnostics;
   std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
+  std::optional<fblang::FbcVersion> const version =
+      index ? index->fbcVersion() : std::nullopt;
   if (index) {
     if (std::shared_ptr<fblang::IndexedFile const> const entry =
             index->fileAt(normPath)) {
@@ -3789,7 +3807,7 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
       // silently drops.
       rsp.result.emplace_back();
       rsp.result.back().second = quickFixCodeAction(
-          req.params.textDocument.uri.raw_uri_, content, d, fix);
+          req.params.textDocument.uri.raw_uri_, content, d, version, fix);
     }
   }
   return rsp;

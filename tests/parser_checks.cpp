@@ -43,15 +43,16 @@ static int diagnosticCount(const ParseResult &r, const char *code) {
   return n;
 }
 
-// The fbc number carried by the first diagnostic with this routing code, or 0
-// when the parse reported none (or reported one fbc has no number for).
-static int fbcErrorFor(const ParseResult &r, const char *code) {
+// The fbc identity carried by the first diagnostic with this routing code, or
+// `None` when the parse reported none (or reported one fbc has no identity
+// for).
+static FbcDiagId fbcErrorFor(const ParseResult &r, const char *code) {
   for (const auto &d : r.diagnostics) {
     if (d.code == code) {
-      return d.fbcError;
+      return d.fbcId;
     }
   }
-  return 0;
+  return FbcDiagId::None;
 }
 
 static const Symbol *find(const std::vector<Symbol> &scope,
@@ -734,13 +735,13 @@ static void TestModuleConstructors() {
   {
     ParseResult r =
         parseDocument("sub Bad(x as integer) constructor\nend sub\n");
-    CHECK(fbcErrorFor(r, "module-ctor-params") == 1);
+    CHECK(fbcErrorFor(r, "module-ctor-params") == FbcDiagId::ArgCntMismatch);
     CHECK(diagnosticCount(r, "module-ctor-params") == 1);
     CHECK(diagnosticCount(r, "module-ctor-priority") == 0);
     CHECK(diagnosticCount(r, "module-ctor-tail") == 0);
     // The same argument-count rule for a destructor.
     ParseResult d = parseDocument("sub d(x as integer) destructor\nend sub\n");
-    CHECK(fbcErrorFor(d, "module-ctor-params") == 1);
+    CHECK(fbcErrorFor(d, "module-ctor-params") == FbcDiagId::ArgCntMismatch);
   }
   // Priority outside 101..65535, and a non-integer literal, are both
   // `error 189: Invalid priority attribute` (probed).
@@ -749,9 +750,10 @@ static void TestModuleConstructors() {
                           "sub f() constructor 101.0\nend sub\n",
                           "sub f() constructor 101!\nend sub\n"}) {
     ParseResult r = parseDocument(src);
-    if (fbcErrorFor(r, "module-ctor-priority") != 189) {
-      std::printf("FAIL ctor priority \"%s\": fbc %d, want 189\n", src,
-                  fbcErrorFor(r, "module-ctor-priority"));
+    if (fbcErrorFor(r, "module-ctor-priority") != FbcDiagId::InvalidPriority) {
+      std::printf("FAIL ctor priority \"%s\": fbc %d, want InvalidPriority\n",
+                  src,
+                  static_cast<int>(fbcErrorFor(r, "module-ctor-priority")));
       ++failures;
     }
   }
@@ -761,16 +763,16 @@ static void TestModuleConstructors() {
                           "sub Init() constructor -5\nend sub\n",
                           "sub Init() constructor 101 102\nend sub\n"}) {
     ParseResult r = parseDocument(src);
-    if (fbcErrorFor(r, "module-ctor-tail") != 3) {
-      std::printf("FAIL ctor tail \"%s\": fbc %d, want 3\n", src,
-                  fbcErrorFor(r, "module-ctor-tail"));
+    if (fbcErrorFor(r, "module-ctor-tail") != FbcDiagId::ExpectedEol) {
+      std::printf("FAIL ctor tail \"%s\": fbc %d, want ExpectedEol\n", src,
+                  static_cast<int>(fbcErrorFor(r, "module-ctor-tail")));
       ++failures;
     }
   }
   // `Export` after the marker is `error 17` (fbc's global-ctor check), not 3.
   {
     ParseResult r = parseDocument("sub f() constructor export\nend sub\n");
-    CHECK(fbcErrorFor(r, "module-ctor-export") == 17);
+    CHECK(fbcErrorFor(r, "module-ctor-export") == FbcDiagId::SyntaxError);
   }
 
   // `Constructor`/`Destructor`/`Export` on a `Declare` line is `error 3` in
@@ -779,15 +781,15 @@ static void TestModuleConstructors() {
   // `declare constructor()` prototype the parser does not model.
   {
     ParseResult r = parseDocument("declare sub Init() constructor\n");
-    CHECK(fbcErrorFor(r, "decl-decorator") == 3);
+    CHECK(fbcErrorFor(r, "decl-decorator") == FbcDiagId::ExpectedEol);
   }
   {
     ParseResult r = parseDocument("declare sub Init() destructor\n");
-    CHECK(fbcErrorFor(r, "decl-decorator") == 3);
+    CHECK(fbcErrorFor(r, "decl-decorator") == FbcDiagId::ExpectedEol);
   }
   {
     ParseResult r = parseDocument("declare sub f() export\n");
-    CHECK(fbcErrorFor(r, "decl-decorator") == 3);
+    CHECK(fbcErrorFor(r, "decl-decorator") == FbcDiagId::ExpectedEol);
   }
   {
     ParseResult r = parseDocument("type t\n"
@@ -820,7 +822,7 @@ static void TestModuleConstructors() {
                                   "end type\n"
                                   "sub t.Init() constructor\n"
                                   "end sub\n");
-    CHECK(fbcErrorFor(r, "module-ctor-nonstatic") == 17);
+    CHECK(fbcErrorFor(r, "module-ctor-nonstatic") == FbcDiagId::SyntaxError);
   }
   {
     ParseResult r = parseDocument("type t\n"
@@ -829,7 +831,7 @@ static void TestModuleConstructors() {
                                   "end type\n"
                                   "sub t.Init() destructor\n"
                                   "end sub\n");
-    CHECK(fbcErrorFor(r, "module-ctor-nonstatic") == 17);
+    CHECK(fbcErrorFor(r, "module-ctor-nonstatic") == FbcDiagId::SyntaxError);
   }
   // The owner type or its prototype in another file: the check stays silent
   // rather than guessing (a header cannot be seen from here).
@@ -1089,98 +1091,120 @@ int main() {
   // `tools/fbc_catalog.tsv` is the imported copy this mapping is read against.
   {
     CHECK(fbcErrorFor(parseDocument("sub foo()\n"), "unterminated-block") ==
-          125);
+          FbcDiagId::ExpectedEndSub);
     CHECK(fbcErrorFor(parseDocument("function foo()\n"),
-                      "unterminated-block") == 126);
+                      "unterminated-block") == FbcDiagId::ExpectedEndFunction);
     CHECK(fbcErrorFor(parseDocument("type t\n  as integer i\n"),
-                      "unterminated-block") == 19);
+                      "unterminated-block") == FbcDiagId::ExpectedEndType);
     CHECK(fbcErrorFor(parseDocument("union u\n  as integer i\n"),
-                      "unterminated-block") == 19);
+                      "unterminated-block") == FbcDiagId::ExpectedEndType);
     CHECK(fbcErrorFor(parseDocument("enum e\n  a = 1\n"),
-                      "unterminated-block") == 74);
+                      "unterminated-block") == FbcDiagId::ExpectedEndEnum);
     CHECK(fbcErrorFor(parseDocument("namespace n\n  dim x as integer\n"),
-                      "unterminated-block") == 121);
+                      "unterminated-block") == FbcDiagId::ExpectedEndNamespace);
     CHECK(fbcErrorFor(parseDocument("scope\n  dim x as integer\n"),
-                      "unterminated-block") == 95);
+                      "unterminated-block") == FbcDiagId::ExpectedEndScope);
     CHECK(fbcErrorFor(parseDocument("extern \"C\"\n  declare sub foo()\n"),
-                      "unterminated-block") == 124);
+                      "unterminated-block") == FbcDiagId::ExpectedEndExtern);
     CHECK(fbcErrorFor(parseDocument("for i = 1 to 3\n  print i\n"),
-                      "unterminated-block") == 13);
+                      "unterminated-block") == FbcDiagId::ExpectedNext);
     CHECK(fbcErrorFor(parseDocument("while 1\n  print 1\n"),
-                      "unterminated-block") == 30);
+                      "unterminated-block") == FbcDiagId::ExpectedWend);
     CHECK(fbcErrorFor(parseDocument("do\n  print 1\n"), "unterminated-block") ==
-          29);
+          FbcDiagId::ExpectedLoop);
     CHECK(fbcErrorFor(parseDocument("if a then\n  print 1\n"),
-                      "unterminated-block") == 32);
+                      "unterminated-block") == FbcDiagId::ExpectedEndIf);
     CHECK(fbcErrorFor(parseDocument("select case a\n  case 1\n"),
-                      "unterminated-block") == 35);
+                      "unterminated-block") == FbcDiagId::ExpectedEndSelect);
     CHECK(fbcErrorFor(parseDocument("type t\n  as integer i\nend type\nwith t\n"
                                     "  .i = 1\n"),
-                      "unterminated-block") == 60);
+                      "unterminated-block") == FbcDiagId::ExpectedEndWith);
     CHECK(fbcErrorFor(parseDocument("asm\n  nop\n"), "unterminated-block") ==
-          45);
+          FbcDiagId::ExpectedEndAsm);
   }
   {
     // A closer with no opener: fbc names each one, and the record/union/enum
-    // spellings collapse onto `33 ILLEGALEND` because that is what fbc reports
+    // spellings collapse onto `IllegalEnd` because that is what fbc reports
     // for a bare `end type`/`end enum` (probed: "error 33: Illegal 'END'").
-    CHECK(fbcErrorFor(parseDocument("next\n"), "stray-closer") == 107);
-    CHECK(fbcErrorFor(parseDocument("loop\n"), "stray-closer") == 106);
-    CHECK(fbcErrorFor(parseDocument("wend\n"), "stray-closer") == 108);
-    CHECK(fbcErrorFor(parseDocument("else\n"), "stray-closer") == 117);
-    CHECK(fbcErrorFor(parseDocument("elseif 1 then\n"), "stray-closer") == 116);
-    CHECK(fbcErrorFor(parseDocument("case 1\n"), "stray-closer") == 118);
-    CHECK(fbcErrorFor(parseDocument("end if\n"), "stray-closer") == 110);
-    CHECK(fbcErrorFor(parseDocument("end select\n"), "stray-closer") == 111);
-    CHECK(fbcErrorFor(parseDocument("end with\n"), "stray-closer") == 109);
-    CHECK(fbcErrorFor(parseDocument("end sub\n"), "stray-closer") == 112);
-    CHECK(fbcErrorFor(parseDocument("end namespace\n"), "stray-closer") == 114);
-    CHECK(fbcErrorFor(parseDocument("end scope\n"), "stray-closer") == 113);
-    CHECK(fbcErrorFor(parseDocument("end extern\n"), "stray-closer") == 115);
-    CHECK(fbcErrorFor(parseDocument("end type\n"), "stray-closer") == 33);
-    CHECK(fbcErrorFor(parseDocument("end enum\n"), "stray-closer") == 33);
+    CHECK(fbcErrorFor(parseDocument("next\n"), "stray-closer") ==
+          FbcDiagId::NextWithoutFor);
+    CHECK(fbcErrorFor(parseDocument("loop\n"), "stray-closer") ==
+          FbcDiagId::LoopWithoutDo);
+    CHECK(fbcErrorFor(parseDocument("wend\n"), "stray-closer") ==
+          FbcDiagId::WendWithoutWhile);
+    CHECK(fbcErrorFor(parseDocument("else\n"), "stray-closer") ==
+          FbcDiagId::ElseWithoutIf);
+    CHECK(fbcErrorFor(parseDocument("elseif 1 then\n"), "stray-closer") ==
+          FbcDiagId::ElseIfWithoutIf);
+    CHECK(fbcErrorFor(parseDocument("case 1\n"), "stray-closer") ==
+          FbcDiagId::CaseWithoutSelect);
+    CHECK(fbcErrorFor(parseDocument("end if\n"), "stray-closer") ==
+          FbcDiagId::EndIfWithoutIf);
+    CHECK(fbcErrorFor(parseDocument("end select\n"), "stray-closer") ==
+          FbcDiagId::EndSelectWithoutSelect);
+    CHECK(fbcErrorFor(parseDocument("end with\n"), "stray-closer") ==
+          FbcDiagId::EndWithWithoutWith);
+    CHECK(fbcErrorFor(parseDocument("end sub\n"), "stray-closer") ==
+          FbcDiagId::EndSubWithoutSub);
+    CHECK(fbcErrorFor(parseDocument("end namespace\n"), "stray-closer") ==
+          FbcDiagId::EndNamespaceWithoutNamespace);
+    CHECK(fbcErrorFor(parseDocument("end scope\n"), "stray-closer") ==
+          FbcDiagId::EndScopeWithoutScope);
+    CHECK(fbcErrorFor(parseDocument("end extern\n"), "stray-closer") ==
+          FbcDiagId::EndExternWithoutExtern);
+    CHECK(fbcErrorFor(parseDocument("end type\n"), "stray-closer") ==
+          FbcDiagId::IllegalEnd);
+    CHECK(fbcErrorFor(parseDocument("end enum\n"), "stray-closer") ==
+          FbcDiagId::IllegalEnd);
   }
   {
-    // `END FOR`/`END WHILE` are an illegal `END` (error 33), and the block that
-    // the token proves is unterminated keeps its own expected-closer number.
+    // `END FOR`/`END WHILE` are an illegal `END` (IllegalEnd), and the block
+    // that the token proves is unterminated keeps its own expected-closer
+    // identity.
     CHECK(fbcErrorFor(parseDocument("for i = 1 to 3\nnext\nend for\n"),
-                      "invalid-end") == 33);
+                      "invalid-end") == FbcDiagId::IllegalEnd);
     CHECK(fbcErrorFor(parseDocument("if a then\nend select\n"),
-                      "closer-mismatch") == 32);
-    // The preprocessor closers carry the numbers fbc names for them: a stray
-    // #else/#endif is 44 ILLEGALOUTSIDECOMP, a stray #endmacro is 17
-    // SYNTAXERROR, and an unterminated chain keeps its expected-closer number
-    // (290 EXPECTEDPPENDIF, 134 EXPECTEDMACRO) — all probed against 1.10.2 and
-    // present in tools/fbc_catalog.tsv.
-    CHECK(fbcErrorFor(parseDocument("#endif\n"), "stray-closer") == 44);
-    CHECK(fbcErrorFor(parseDocument("#else\n"), "stray-closer") == 44);
-    CHECK(fbcErrorFor(parseDocument("#endmacro\n"), "stray-closer") == 17);
+                      "closer-mismatch") == FbcDiagId::ExpectedEndIf);
+    // The preprocessor closers carry the identities fbc names for them: a
+    // stray #else/#endif is IllegalOutsideComp, a stray #endmacro is
+    // SyntaxError, and an unterminated chain keeps its expected-closer
+    // identity (ExpectedPpEndIf, ExpectedMacro) — all probed against 1.10.2
+    // and present in tools/fbc_catalog.tsv.
+    CHECK(fbcErrorFor(parseDocument("#endif\n"), "stray-closer") ==
+          FbcDiagId::IllegalOutsideComp);
+    CHECK(fbcErrorFor(parseDocument("#else\n"), "stray-closer") ==
+          FbcDiagId::IllegalOutsideComp);
+    CHECK(fbcErrorFor(parseDocument("#endmacro\n"), "stray-closer") ==
+          FbcDiagId::SyntaxError);
     CHECK(fbcErrorFor(parseDocument("#if 1\nprint 1\n"),
-                      "unterminated-block") == 290);
+                      "unterminated-block") == FbcDiagId::ExpectedPpEndIf);
     CHECK(fbcErrorFor(parseDocument("#macro m\nprint 1\n"),
-                      "unterminated-block") == 134);
+                      "unterminated-block") == FbcDiagId::ExpectedMacro);
   }
   {
-    // The diagnostics that predate the closer split now carry fbc's number for
-    // their specific trigger too, each re-probed against fbc 1.10.2: a suffix
-    // on a keyword is warning 44, an unterminated string warning 12, a
-    // duplicate definition error 4, and a reserved word as a member name is
-    // 14 (a field), 238 (a field in a TYPE that has member functions), or 3
-    // (an enum member — fbc anchors its report on the name, not a missing
-    // closer).
-    CHECK(fbcErrorFor(parseDocument("print% 1\n"), "keyword-suffix") == 44);
+    // The diagnostics that predate the closer split now carry fbc's identity
+    // for their specific trigger too, each re-probed against fbc 1.10.2: a
+    // suffix on a keyword is SuffixIgnored, an unterminated string
+    // NoClosingQuote, a duplicate definition DupDefinition, and a reserved
+    // word as a member name is ExpectedIdentifier (a field),
+    // KeywordFieldsNotAllowedInClasses (a field in a TYPE that has member
+    // functions), or ExpectedEol (an enum member — fbc anchors its report on
+    // the name, not a missing closer).
+    CHECK(fbcErrorFor(parseDocument("print% 1\n"), "keyword-suffix") ==
+          FbcDiagId::SuffixIgnored);
     CHECK(fbcErrorFor(parseDocument("print \"abc\n"), "unterminated-string") ==
-          12);
+          FbcDiagId::NoClosingQuote);
     CHECK(fbcErrorFor(parseDocument("dim x as integer\ndim x as integer\n"),
-                      "duplicate-definition") == 4);
+                      "duplicate-definition") == FbcDiagId::DupDefinition);
     CHECK(fbcErrorFor(parseDocument("type t\n  as integer and\nend type\n"),
-                      "invalid-member-name") == 14);
+                      "invalid-member-name") == FbcDiagId::ExpectedIdentifier);
     CHECK(fbcErrorFor(
               parseDocument("type t\n  declare sub f()\n  as integer next\n"
                             "end type\n"),
-              "invalid-member-name") == 238);
+              "invalid-member-name") ==
+          FbcDiagId::KeywordFieldsNotAllowedInClasses);
     CHECK(fbcErrorFor(parseDocument("enum e\n  next = 1\nend enum\n"),
-                      "invalid-member-name") == 3);
+                      "invalid-member-name") == FbcDiagId::ExpectedEol);
     // The two warnings number into the warning catalog: without fbcKind they
     // would render as `fbc error: 44` / `fbc error: 12` on the wire.
     for (char const *src : {"print% 1\n", "print \"abc\n"}) {

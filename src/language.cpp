@@ -1753,96 +1753,91 @@ std::string closerDisplay(const BlockCloser &closer) {
   return s;
 }
 
-// The fbc 1.10.2 numbers below were read back out of the compiler by
-// `tools/fbc_catalog.tsv` (this repo's imported copy) and re-probed with the
-// pinned `/usr/bin/fbc` for every spelling, including the ones the catalog
-// names once for a family (19 EXPECTEDENDTYPE covers both TYPE and UNION).
-int fbcExpectedCloserError(BlockKind kind) {
+FbcDiagId fbcExpectedCloser(BlockKind kind) {
   switch (kind) {
   case BlockKind::Sub:
-    return 125; // EXPECTEDENDSUB
+    return FbcDiagId::ExpectedEndSub;
   case BlockKind::Function:
-    return 126; // EXPECTEDENDFUNCTION
+    return FbcDiagId::ExpectedEndFunction;
   case BlockKind::Constructor:
-    return 127; // EXPECTEDENDCTOR
+    return FbcDiagId::ExpectedEndCtor;
   case BlockKind::Destructor:
-    return 128; // EXPECTEDENDDTOR
+    return FbcDiagId::ExpectedEndDtor;
   case BlockKind::Operator:
-    return 129; // EXPECTEDENDOPERATOR
+    return FbcDiagId::ExpectedEndOperator;
   case BlockKind::Property:
-    return 130; // EXPECTEDENDPROPERTY
+    return FbcDiagId::ExpectedEndProperty;
   case BlockKind::Type:
   case BlockKind::Union:
-    return 19; // EXPECTEDENDTYPE, "Expected 'END TYPE' or 'END UNION'"
+    return FbcDiagId::ExpectedEndType;
   case BlockKind::Enum:
-    return 74; // EXPECTEDENDENUM
+    return FbcDiagId::ExpectedEndEnum;
   case BlockKind::Namespace:
-    return 121; // EXPECTEDENDNAMESPACE
+    return FbcDiagId::ExpectedEndNamespace;
   case BlockKind::Scope:
-    return 95; // EXPECTEDENDSCOPE
+    return FbcDiagId::ExpectedEndScope;
   case BlockKind::Extern:
-    return 124; // EXPECTEDENDEXTERN
+    return FbcDiagId::ExpectedEndExtern;
   case BlockKind::With:
-    return 60; // EXPECTEDENDWITH
+    return FbcDiagId::ExpectedEndWith;
   case BlockKind::Select:
-    return 35; // EXPECTEDENDSELECT
+    return FbcDiagId::ExpectedEndSelect;
   case BlockKind::If:
-    return 32; // EXPECTEDENDIF
+    return FbcDiagId::ExpectedEndIf;
   case BlockKind::For:
-    return 13; // EXPECTEDNEXT
+    return FbcDiagId::ExpectedNext;
   case BlockKind::While:
-    return 30; // EXPECTEDWEND
+    return FbcDiagId::ExpectedWend;
   case BlockKind::Do:
-    return 29; // EXPECTEDLOOP
+    return FbcDiagId::ExpectedLoop;
   case BlockKind::Asm:
-    return 45; // EXPECTEDENDASM
+    return FbcDiagId::ExpectedEndAsm;
   case BlockKind::PreprocIf:
-    return 290; // EXPECTEDPPENDIF, "Expected '#ENDIF'" (fbc 1.10.2, probed)
+    return FbcDiagId::ExpectedPpEndIf;
   case BlockKind::PreprocMacro:
-    return 134; // EXPECTEDMACRO, "Expected 'ENDMACRO'"
+    return FbcDiagId::ExpectedMacro;
   default:
-    return 0;
+    return FbcDiagId::None;
   }
 }
 
-int fbcCloserWithoutOpenerError(BlockKind kind) {
+FbcDiagId fbcCloserWithoutOpener(BlockKind kind) {
   switch (kind) {
   case BlockKind::Do:
-    return 106; // LOOPWITHOUTDO
+    return FbcDiagId::LoopWithoutDo;
   case BlockKind::For:
-    return 107; // NEXTWITHOUTFOR
+    return FbcDiagId::NextWithoutFor;
   case BlockKind::While:
-    return 108; // WENDWITHOUTWHILE
+    return FbcDiagId::WendWithoutWhile;
   case BlockKind::With:
-    return 109; // ENDWITHWITHOUTWITH
+    return FbcDiagId::EndWithWithoutWith;
   case BlockKind::If:
-    return 110; // ENDIFWITHOUTIF
+    return FbcDiagId::EndIfWithoutIf;
   case BlockKind::Select:
-    return 111; // ENDSELECTWITHOUTSELECT
+    return FbcDiagId::EndSelectWithoutSelect;
   case BlockKind::Sub:
   case BlockKind::Function:
   case BlockKind::Constructor:
   case BlockKind::Destructor:
   case BlockKind::Operator:
   case BlockKind::Property:
-    return 112; // ENDSUBWITHOUTSUB (fbc names the whole procedure family once)
+    return FbcDiagId::EndSubWithoutSub;
   case BlockKind::Scope:
-    return 113; // ENDSCOPEWITHOUTSCOPE
+    return FbcDiagId::EndScopeWithoutScope;
   case BlockKind::Namespace:
-    return 114; // ENDNAMESPACEWITHOUTNAMESPACE
+    return FbcDiagId::EndNamespaceWithoutNamespace;
   case BlockKind::Extern:
-    return 115; // ENDEXTERNWITHOUTEXTERN
+    return FbcDiagId::EndExternWithoutExtern;
   case BlockKind::Type:
   case BlockKind::Union:
   case BlockKind::Enum:
   case BlockKind::Asm:
     // fbc rejects a bare `end type`/`end union`/`end enum`/`end asm` as an
-    // illegal `END` outright (probed: "error 33: Illegal 'END'"), not as a
-    // closer-without-opener, so it shares ILLEGALEND with `end for`/`end
-    // while`.
-    return 33; // ILLEGALEND
+    // illegal `END` outright, not as a closer-without-opener, so it shares
+    // the IllegalEnd identity with `end for`/`end while`.
+    return FbcDiagId::IllegalEnd;
   default:
-    return 0;
+    return FbcDiagId::None;
   }
 }
 

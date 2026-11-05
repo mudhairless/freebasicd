@@ -229,32 +229,33 @@ struct Diagnostic {
   // The parser's own routing key for this diagnostic, stable per *kind* of
   // problem (`unterminated-block`, `stray-closer`, ...). Quick fixes, the
   // suppression/whitelist config, and the corpus goldens key on it, and it is
-  // deliberately coarse: splitting a family onto fbc's numbers changes
-  // `fbcError` below, never this string, so a fix registered once keeps
-  // covering every number the family can report. The wire always carries this
-  // key (as the leading part of the code; see `fbcError`).
+  // deliberately coarse: splitting a family onto different fbc identities
+  // changes `fbcId` below, never this string, so a fix registered once keeps
+  // covering every identity the family can report. The wire always carries
+  // this key (as the leading part of the code; see `fbcId`).
   std::string code;
 
-  // fbc's own message number for this diagnostic (its `error N`), or 0 for a
-  // diagnostic fbc has no number for (our conventions, and every preprocessor
-  // shape: fbc's catalog covers neither). When set, the session reports the
-  // code as our routing key followed by fbc's number —
+  // The meaning of fbc's own message for this diagnostic, or `None` for a
+  // diagnostic fbc has no message for (our conventions, and every preprocessor
+  // shape: fbc's catalog covers neither). The session resolves the identity to
+  // the catalog number for the compiler version probed at runtime and reports
+  // the code as our routing key followed by fbc's number —
   // `<code>, fbc error: N` (`include-not-found, fbc error: 23`) — and links
   // `codeDescription.href` to the wiki page that documents the whole catalog.
-  // When 0, the wire code is the routing key alone (`bad-continuation`). The
-  // number is keyed off the block kind at each report site, so it names the
-  // *specific* closer fbc would name (125 EXPECTEDENDSUB, 13 EXPECTEDNEXT, ...)
+  // With `None`, the wire code is the routing key alone (`bad-continuation`).
+  // The identity is keyed off the block kind at each report site, so it names
+  // the *specific* closer fbc would name (ExpectedEndSub, ExpectedNext, ...)
   // rather than the coarse family.
-  int fbcError = 0;
+  FbcDiagId fbcId = FbcDiagId::None;
 
-  // Which half of the catalog `fbcError` numbers into, because a warning must
-  // render as `fbc warning: N`: `keyword-suffix` (44) and `unterminated-string`
-  // (12) are warnings, everything else we map is an error. It is a field rather
-  // than something derived from `severity`, because the two are deliberately
-  // independent: a duplicated definition is fbc's `error 4` but our Warning
-  // (a re-declaration is normal mid-edit), and a later warning-level gate may
-  // render an fbc warning as a Hint. `fbcError == 0` means no number, so this
-  // is never read.
+  // Which half of the catalog `fbcId` resolves into, because a warning must
+  // render as `fbc warning: N`: `keyword-suffix` (SuffixIgnored) and
+  // `unterminated-string` (NoClosingQuote) are warnings, everything else we map
+  // is an error. It is a field rather than something derived from `severity`,
+  // because the two are deliberately independent: a duplicated definition is
+  // fbc's `DupDefinition` error but our Warning (a re-declaration is normal
+  // mid-edit), and a later warning-level gate may render an fbc warning as a
+  // Hint. `fbcId == None` means no identity, so this is never read.
   FbcMessageKind fbcKind = FbcMessageKind::Error;
 
   // The fbc version range this finding assumes. Unset on both ends is the

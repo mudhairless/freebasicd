@@ -6,8 +6,11 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
+
+#include "fbc_version.h"
 
 // The fbc diagnostic catalog, as data.
 //
@@ -21,6 +24,72 @@
 namespace fblang {
 
 enum class FbcMessageKind { Error, Warning };
+
+// The meaning of an fbc message, independent of the number fbc gives it. fbc
+// numbers errors and warnings in separate spaces and has renumbered them
+// occasionally, so a finding stores one of these identities and the number is
+// resolved against the table for the compiler version probed at runtime.
+// `None` means fbc has no message for this finding.
+enum class FbcDiagId {
+  None = 0,
+  ExpectedEndSub,
+  ExpectedEndFunction,
+  ExpectedEndCtor,
+  ExpectedEndDtor,
+  ExpectedEndOperator,
+  ExpectedEndProperty,
+  ExpectedEndType,
+  ExpectedEndEnum,
+  ExpectedEndNamespace,
+  ExpectedEndScope,
+  ExpectedEndExtern,
+  ExpectedEndWith,
+  ExpectedEndSelect,
+  ExpectedEndIf,
+  ExpectedNext,
+  ExpectedWend,
+  ExpectedLoop,
+  ExpectedEndAsm,
+  ExpectedPpEndIf,
+  ExpectedMacro,
+  LoopWithoutDo,
+  NextWithoutFor,
+  WendWithoutWhile,
+  EndWithWithoutWith,
+  EndIfWithoutIf,
+  EndSelectWithoutSelect,
+  EndSubWithoutSub,
+  EndScopeWithoutScope,
+  EndNamespaceWithoutNamespace,
+  EndExternWithoutExtern,
+  IllegalEnd,
+  NoClosingQuote,
+  SuffixIgnored,
+  KeywordFieldsNotAllowedInClasses,
+  ExpectedIdentifier,
+  ElseWithoutIf,
+  ElseIfWithoutIf,
+  CaseWithoutSelect,
+  SyntaxError,
+  ExpectedEol,
+  ArgCntMismatch,
+  InvalidPriority,
+  DupDefinition,
+  IllegalOutsideComp,
+  ExpectedExpression,
+  VariableNotDeclared,
+  UndefinedSymbol,
+  FileNotFound,
+  Count
+};
+
+// The catalog number `id` carries in `kind`'s space under `version`. A nullopt
+// version resolves through the newest table (the posture the delivery gates
+// already take: unknown version filters nothing); a probed version below
+// every known range takes the oldest table, and one above takes the newest
+// applicable. `None` resolves to 0.
+int fbcNumber(FbcDiagId id, FbcMessageKind kind,
+              std::optional<FbcVersion> const &version);
 
 // One row of the imported catalog. `text` is fbc's own wording; `level` is a
 // warning's `-w` gate level (0 means off by default) and 0 for errors.

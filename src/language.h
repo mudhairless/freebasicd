@@ -104,19 +104,19 @@ bool blockForCloser(std::string_view wordLower, BlockCloser *out);
 // Display form of the expected closer, e.g. "END SUB", "NEXT", "WEND".
 std::string closerDisplay(const BlockCloser &closer);
 
-// fbc's message number for the "Expected '<closer>'" error of an unterminated
-// block of `kind` (`13 EXPECTEDNEXT`, `125 EXPECTEDENDSUB`, `19
-// EXPECTEDENDTYPE`, ...), or 0 for the preprocessor blocks, which fbc's
-// catalog does not cover. One declaration per block kind: fbc names the
-// *specific* closer, so the coarse `unterminated-block` family reports the
-// number of the closer it actually wanted.
-int fbcExpectedCloserError(BlockKind kind);
+// The fbc identity for the "Expected '<closer>'" error of an unterminated
+// block of `kind` (`ExpectedNext`, `ExpectedEndSub`, `ExpectedEndType`, ...),
+// or `None` for the preprocessor blocks, which fbc's catalog does not cover.
+// One declaration per block kind: fbc names the *specific* closer, so the
+// coarse `unterminated-block` family reports the identity of the closer it
+// actually wanted.
+FbcDiagId fbcExpectedCloser(BlockKind kind);
 
-// fbc's message number for a closer written with no opener (`106
-// LOOPWITHOUTDO`, `110 ENDIFWITHOUTIF`, `112 ENDSUBWITHOUTSUB`, ...), or 0 for
-// the preprocessor blocks. `33 ILLEGALEND` covers the `END TYPE`/`END
-// UNION`/`END ENUM`/`END ASM` shapes fbc rejects as an illegal `END` outright.
-int fbcCloserWithoutOpenerError(BlockKind kind);
+// The fbc identity for a closer written with no opener (`LoopWithoutDo`,
+// `EndIfWithoutIf`, `EndSubWithoutSub`, ...), or `None` for the preprocessor
+// blocks. `IllegalEnd` covers the `END TYPE`/`END UNION`/`END ENUM`/`END ASM`
+// shapes fbc rejects as an illegal `END` outright.
+FbcDiagId fbcCloserWithoutOpener(BlockKind kind);
 
 // First identifier word of a preprocessor line (e.g. "#IF X" -> "if").
 std::string_view preprocessorWord(std::string_view line);

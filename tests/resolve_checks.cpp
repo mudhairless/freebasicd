@@ -2092,22 +2092,26 @@ static void TestModuleVarNotSharedDiagnostics() {
   AnalyzedDoc const doc = analyze(src);
 
   struct Hit {
-    int fbcError;
+    FbcDiagId fbcId;
     std::string text;
   };
   std::vector<Hit> hits;
   for (Diagnostic const &d : doc.parse.diagnostics) {
     if (d.code == "module-var-not-shared") {
       hits.push_back(
-          {d.fbcError, src.substr(d.range.beg, d.range.end - d.range.beg)});
+          {d.fbcId, src.substr(d.range.beg, d.range.end - d.range.beg)});
     }
   }
   CHECK_MSG(hits.size() == 4, "the four gated uses produce four diagnostics");
   if (hits.size() == 4) {
-    CHECK(hits[0].fbcError == 42 && hits[0].text == "var1");
-    CHECK(hits[1].fbcError == 8 && hits[1].text == "var1");
-    CHECK(hits[2].fbcError == 9 && hits[2].text == "var1");
-    CHECK(hits[3].fbcError == 42 && hits[3].text == "var1");
+    CHECK(hits[0].fbcId == FbcDiagId::VariableNotDeclared &&
+          hits[0].text == "var1");
+    CHECK(hits[1].fbcId == FbcDiagId::UndefinedSymbol &&
+          hits[1].text == "var1");
+    CHECK(hits[2].fbcId == FbcDiagId::ExpectedExpression &&
+          hits[2].text == "var1");
+    CHECK(hits[3].fbcId == FbcDiagId::VariableNotDeclared &&
+          hits[3].text == "var1");
   }
   // The shared variable is visible, so its use is not one of them.
   CHECK_MSG(hits.size() == 4, "only the non-Shared variable is reported");
@@ -2173,7 +2177,8 @@ static void TestModuleVarNotSharedDiagnostics() {
                               "end sub\n";
     AnalyzedDoc const d = analyze(noDot);
     CHECK_MSG(d.parse.diagnostics.size() == 1 &&
-                  d.parse.diagnostics[0].fbcError == 42,
+                  d.parse.diagnostics[0].fbcId ==
+                      FbcDiagId::VariableNotDeclared,
               "typeof(var1) inside a procedure is fbc error 42");
   }
   {
@@ -2333,7 +2338,7 @@ static void TestModuleVarNotSharedDiagnostics() {
     AnalyzedDoc const d = analyze(moduleDot);
     CHECK(d.parse.diagnostics.size() == 1);
     if (d.parse.diagnostics.size() == 1) {
-      CHECK(d.parse.diagnostics[0].fbcError == 8);
+      CHECK(d.parse.diagnostics[0].fbcId == FbcDiagId::UndefinedSymbol);
     }
   }
   // Each keyword `Shared` may follow makes a candidate; `const`/`extern`
@@ -2369,7 +2374,8 @@ static void TestModuleVarNotSharedDiagnostics() {
     AnalyzedDoc const d = analyze(withComment);
     int nines = 0;
     for (Diagnostic const &diag : d.parse.diagnostics) {
-      if (diag.code == "module-var-not-shared" && diag.fbcError == 9) {
+      if (diag.code == "module-var-not-shared" &&
+          diag.fbcId == FbcDiagId::ExpectedExpression) {
         ++nines;
       }
     }
@@ -2385,7 +2391,8 @@ static void TestModuleVarNotSharedDiagnostics() {
     AnalyzedDoc const d = analyze(withComment);
     int fortyTwos = 0;
     for (Diagnostic const &diag : d.parse.diagnostics) {
-      if (diag.code == "module-var-not-shared" && diag.fbcError == 42) {
+      if (diag.code == "module-var-not-shared" &&
+          diag.fbcId == FbcDiagId::VariableNotDeclared) {
         ++fortyTwos;
       }
     }
@@ -2397,11 +2404,11 @@ static void TestModuleVarNotSharedDiagnostics() {
 // The extern-placement lint (resolve.h): both `Extern` forms — the
 // multi-module variable (`extern x as integer`) and the C-library block
 // (`Extern "C" ... End Extern`) — are the same placement problem, one Warning
-// of our own (fbcError 0: fbc compiles a .bas `Extern` fine, so there is no
-// parity number to claim) at the keyword's own range. The `end extern` closer's
-// `extern` word is not a declaration, and a comment or string that merely
-// mentions the keyword lexes to a non-Keyword token, so neither is a hit.
-// Whether the lint fires is the caller's choice (the session keeps `.bi`
+// of our own (no fbc identity: fbc compiles a .bas `Extern` fine, so there is
+// no parity number to claim) at the keyword's own range. The `end extern`
+// closer's `extern` word is not a declaration, and a comment or string that
+// merely mentions the keyword lexes to a non-Keyword token, so neither is a
+// hit. Whether the lint fires is the caller's choice (the session keeps `.bi`
 // files silent) — this scan itself is file-type-agnostic.
 static void TestExternPlacementDiagnostics() {
   std::string const src =
@@ -2421,7 +2428,7 @@ static void TestExternPlacementDiagnostics() {
     for (Diagnostic const &d : hits) {
       CHECK(d.code == "extern-in-source");
       CHECK(d.severity == Severity::Warning);
-      CHECK(d.fbcError == 0);
+      CHECK(d.fbcId == FbcDiagId::None);
       CHECK_MSG(src.substr(d.range.beg, d.range.end - d.range.beg) == "extern",
                 "the range covers the extern keyword itself");
       CHECK_MSG(d.message.find("shared header") != std::string::npos,

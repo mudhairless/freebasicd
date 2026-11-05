@@ -409,7 +409,7 @@ unresolvedIncludeDiagnostics(std::vector<IncludeEdge> const &edges,
     // fbc's own number for an unresolved `#include` (probed 1.10.2:
     // "error 23: File not found"). The fix still keys on the routing `code`
     // above, never the wire string.
-    d.fbcError = 23 /* FILENOTFOUND */;
+    d.fbcId = FbcDiagId::FileNotFound;
     d.message = trf("include file not found: \"%s\"", e.literal);
     out.push_back(std::move(d));
   }

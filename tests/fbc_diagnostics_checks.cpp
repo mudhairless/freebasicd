@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -169,6 +170,42 @@ void TestCodeIdentity() {
         "https://www.freebasic.net/wiki/CompilerErrMsg");
 }
 
+void TestVersionedNumber() {
+  using fblang::FbcDiagId;
+  using fblang::FbcMessageKind;
+  using fblang::FbcVersion;
+  std::optional<FbcVersion> const v1102 = FbcVersion{1, 10, 2};
+
+  // A representative error and warning at the probed 1.10.x version.
+  CHECK(fblang::fbcNumber(FbcDiagId::VariableNotDeclared, FbcMessageKind::Error,
+                          v1102) == 42);
+  CHECK(fblang::fbcNumber(FbcDiagId::SuffixIgnored, FbcMessageKind::Warning,
+                          v1102) == 44);
+
+  // The two identities that hold 44 today are in different spaces.
+  CHECK(fblang::fbcNumber(FbcDiagId::SuffixIgnored, FbcMessageKind::Warning,
+                          v1102) == 44);
+  CHECK(fblang::fbcNumber(FbcDiagId::IllegalOutsideComp, FbcMessageKind::Error,
+                          v1102) == 44);
+  CHECK(fblang::fbcNumber(FbcDiagId::SuffixIgnored, FbcMessageKind::Error,
+                          v1102) == 0);
+  CHECK(fblang::fbcNumber(FbcDiagId::IllegalOutsideComp,
+                          FbcMessageKind::Warning, v1102) == 0);
+
+  // An unknown version and one below every known range both resolve through
+  // the 1.10 table.
+  std::optional<FbcVersion> const unknown;
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedEndSub, FbcMessageKind::Error,
+                          unknown) == 125);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedEndSub, FbcMessageKind::Error,
+                          FbcVersion{1, 9, 9}) == 125);
+
+  // No identity is no number, in either space.
+  CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Error, v1102) == 0);
+  CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Warning, v1102) ==
+        0);
+}
+
 } // namespace
 
 int main() {
@@ -176,6 +213,7 @@ int main() {
   TestSnapshotShape();
   TestRuntimeLookup();
   TestCodeIdentity();
+  TestVersionedNumber();
 
   if (failures == 0) {
     std::printf("fbc_diagnostics_checks: all passed\n");
