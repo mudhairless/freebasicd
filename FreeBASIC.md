@@ -1421,6 +1421,40 @@ to "the language is what the lexer does":
     build facts, `kind`/`main`/is-main fold into the diagnostics report
     identity and a build flip re-publishes or refreshes like any other gate flip.
 
+31. **The `select` family (M23 G1) reports the probed shapes, with five
+    recorded limits.** `62` fires for a statement directly under a `Select`
+    that has not yet seen a `Case` (one per statement, declarations and
+    labels included), `34` for a `Select` not followed by `Case` and for an
+    `End Select` with no Case ever seen, `242` for `Exit Select` with no
+    enclosing `Select`, `246`/`250` in the multi-target `Exit Select,
+    <target>` form, and `323` only in `Select Case As Const`, where the
+    Case bounds are constant. The limits, each a miss or a wrong-number
+    report rather than a guess at a new check:
+    - `Continue` before the first Case is silent here (fbc answers
+      `239`/`240`/`241` from the loop families; fbc's `Continue` handler
+      never asks the region question, so `62` is not reported for it).
+    - `Private`/`Public Sub`, `Common`, and an `Extern` declaration before
+      the first Case draw `62` here, where fbc answers `96` (the placement
+      family, G4); the diagnostic still names the illegal region, with
+      fbc's Select number rather than the placement one.
+    - A `Case` inside a nested block before the first Case draws an extra
+      `118` here: fbc skips the whole nested compound after reporting its
+      opener as `62`, so the inner Case is never judged and the `End
+      Select` draws `34` alone. The after-Case nested Case is `118` in
+      both, as probed.
+    - A `Case` or statement inside a `#if` region inside a `Select` is not
+      seen as directly under the `Select` (the same transparency limit
+      every branch word shares, since the preprocessor regions sit on the
+      block stack): the Case draws `118` and the `End Select` draws `34`
+      where fbc, which treats the region as transparent, compiles the
+      file.
+    - The `323` constant folder reads numeric literals, arithmetic and
+      bitwise expressions, `Abs` calls, `#define` replacements, top-level
+      `Const` values, and explicitly-valued enum members. An enum member
+      with no written value, any other call, and variable or string bounds
+      in an As Const Select (fbc `11`/`24`, outside this family) stay
+      silent for `323`.
+
 ## 13. Where the diagnostics come from (compiler source)
 
 Every `error N` / `warning N` in this file is a real fbc message, and fbc's

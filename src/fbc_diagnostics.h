@@ -80,6 +80,12 @@ enum class FbcDiagId {
   VariableNotDeclared,
   UndefinedSymbol,
   FileNotFound,
+  IllegalInsideSelect,
+  ExpectedCase,
+  IllegalOutsideSelect,
+  ExpectedSelect,
+  NoEnclosedSelect,
+  InvalidCaseRange,
   Count
 };
 

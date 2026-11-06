@@ -40,7 +40,7 @@
   | M21 — module model, constructors, and fbc's codes (complete 2026-11-06; summary in CHANGELOG.md) | done |
   | M18 — public release: editor setup docs, first tag | blocked on M22, M23, M24, and the VS Code extension |
   | M22 — fbc declaration-order parity: use-before-declaration | next |
-  | M23 — fbc parser diagnostics: statements, placement, warnings (early families landed; groups G1–G7 remain) | backlog |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (early families landed; groups G2–G7 remain) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
   | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
@@ -556,13 +556,18 @@ landing as their own step.
   §12.25), `include-not-found` → `23`, and `invalid-member-name` →
   `14`/`238`/`3` by trigger. `bad-continuation` was probed a false positive
   (fbc accepts a mid-line `_`) and stays unmapped (FreeBASIC.md §12.26).
-- **G1 — the `select` family.** `62 ILLEGALINSIDESELECT` first (a statement
-  between `Select Case` and the first `Case`; the research ties it to a whole
-  cluster of real files), then `34 EXPECTEDCASE`, `118 CASEWITHOUTSELECT`,
+- **G1 — the `select` family — landed (2026-11-06).** `62
+  ILLEGALINSIDESELECT` (a statement between `Select Case` and the first
+  `Case`), `34 EXPECTEDCASE`, `118 CASEWITHOUTSELECT`,
   `111 ENDSELECTWITHOUTSELECT`, `246 EXPECTEDSELECT`, `242
   ILLEGALOUTSIDESELSTMT`, `250 NOENCLOSEDSELSTMT`, and `323
-  INVALIDCASERANGE`. All token- and stack-keyed off the `Select` handling
-  that already exists.
+  INVALIDCASERANGE`, all token- and stack-keyed off the `Select` handling
+  that already exists (a `Select` block carries `seenCase`/`selectConst`;
+  118/111 were already routed and are pinned). The probe shaped two of
+  them: 34 also fires at an `End Select` with no Case seen, 246/250 only
+  in the multi-target `Exit Select, <target>` form, and 323 only in
+  `Select Case As Const`. Limits are recorded at `FreeBASIC.md` §12.31;
+  the dated entry is in `CHANGELOG.md`.
 - **G2 — the loop families.** `For`: `EXPECTEDNEXT`, `107 NEXTWITHOUTFOR`,
   `283 FORNEXTVARIABLEMISMATCH`; `Do` / `While`: the `WHILE`/`WEND` pair not
   already covered by the landed closer family. Warning `26

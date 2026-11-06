@@ -26,6 +26,77 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-06 — M23 G1: the `select` diagnostic family
+
+- **Six new messages, all carrying fbc's number and wiki link.** `62
+  ILLEGALINSIDESELECT` (`illegal-inside-select`), `34 EXPECTEDCASE`
+  (`expected-case`), `242 ILLEGALOUTSIDESELSTMT` (`illegal-outside-select`),
+  `246 EXPECTEDSELECT` (`expected-select`), `250 NOENCLOSEDSELSTMT`
+  (`no-enclosed-select`), and `323 INVALIDCASERANGE`
+  (`invalid-case-range`) are new `FbcDiagId` identities resolved through
+  the version-range table; the texts stay translatable `trf` strings with
+  the keywords as arguments, and `Expected '%s'` is reused for 34/246.
+  `118 CASEWITHOUTSELECT` and `111 ENDSELECTWITHOUTSELECT` already
+  resolved through the landed `stray-closer` routing and needed no new
+  work beyond pinning tests each (`parser_checks` anchors and identities,
+  `fbc_diagnostics_checks` numbers). `po/freebasicd.pot` regenerated.
+- **The probe table (fbc 1.10.3, one line per number).** `62`: any
+  statement directly under a `Select` before the first `Case` — a print,
+  an assignment, a `Dim`/`Const`/`Var`, a label, a nested opener (the
+  opener only), `Exit` — one diagnostic per statement (two statements
+  draw two, a colon compound draws per statement, a label-plus-statement
+  draws two). `34`: `select <expr>` and a bare `select` (no `Case` on the
+  statement), *and* an `End Select` that arrives with no Case ever seen
+  under its Select. `118`: a stray `Case`, `Case Else` included. `111`: a
+  stray `End Select`. `242`: `Exit Select` with no enclosing `Select`
+  anywhere up the stack. `246`: the multi-target form `Exit Select,
+  <not-Select>` (`for`, an identifier, a trailing comma). `250`: the same
+  form with a `Select` target and no outer Select left (`Exit Select,
+  Select` inside one Select). `323`: only in `Select Case As Const`,
+  where a Case range's folded start exceeds its folded end — literals,
+  constant expressions, `#define`/`Const`/enum names are judged; a
+  regular Select's reversed range compiles clean and is silent.
+- **The region is the block stack, not a parallel tracker.** A `Select`
+  block carries `seenCase` (set by the `Case` marker handled directly
+  under it) and `selectConst` (read from the opener's tokens); 62 fires
+  while the innermost block is such a Select, and the branch and closer
+  words keep their own reports instead of cascading — an `Exit Select`
+  before the first Case is 62 alone, an `End Select` with no Case is 34
+  alone, and an unterminated Select at end of file keeps only its
+  expected-closer report. `Exit Select` counts enclosing Selects anywhere
+  up the stack, so an `Exit Select` inside an `If` inside a Select is
+  silent, and the multi-target walk stops at the first failure (246
+  before 250, 242 before both).
+- **323 is a small constant folder, scoped to where fbc judges.** It folds
+  numeric literals (decimal, hex/octal/binary, suffixes, floats),
+  parentheses, unary `-`/`+`/`not`, the arithmetic, shift, and bitwise
+  operators, `Abs` calls, and constant names read from the file (`#define`
+  replacements, top-level `Const` values, explicitly-valued enum
+  members). A variable, a string, any other call, or an enum member with
+  no written value makes the bound unknown and the range silent — in an
+  As Const Select those are fbc errors 11/24, outside this family. One
+  diagnostic per Case statement, however many ranges it carries.
+- **Tests.** `parser_checks` gains `TestSelectFamily`: one block per
+  implemented number on its probed shape (severity, identity, anchor),
+  the 118/111 pinning pair, silence for statements inside Case bodies,
+  variable and string case ranges, a regular Select's reversed range, and
+  `Exit Select` inside a Select (including through an If and through two
+  nested Selects for the multi-target form). `fbc_diagnostics_checks`
+  pins all eight numbers. The corpus gains six `@fbc:fail` examples
+  (`err_select_inside`, `err_select_expected_case`,
+  `err_select_exit_outside`, `err_select_exit_expected`,
+  `err_select_exit_no_enclosed`, `err_select_case_range`; 71 files), each
+  with its `.diag` golden, all rejected by fbc as expected and covered by
+  the format corpus gate too.
+- **Deliberate limits, recorded at `FreeBASIC.md` §12.31.** `Continue`
+  before the first Case stays silent (fbc's loop-family numbers);
+  `Private`/`Public Sub`, `Common`, and an `Extern` declaration there
+  draw 62 rather than fbc's placement number 96; a `Case` inside a nested
+  block before the first Case draws an extra 118 (fbc skips the nested
+  compound after its 62); a `Case` inside a `#if` region inside a Select
+  is not seen as directly under it (the shared preprocessor-transparency
+  limit); and the 323 folder's unreadable bounds stay silent.
+
 ### 2026-11-06 — M21 complete: the module model, module constructors, and fbc's own codes
 
 - **The server now knows the module model it documents.** All five steps landed: `Constructor` / `Destructor` lexing and parsing with fbc's malformed-form errors (step 1, 2026-10-11); the catalog as data, with fbc's numbers resolved from message identities through version ranges (steps 5 and the enum rework); `[build]` / `[fbc]` optional config with the compiler version probed at runtime (step 2, 2026-11-03); module-level code outside the main module reported with its wrap-in-a-constructor fix (step 3); and duplicate `Public` procedure collisions across a root's include closure reported at edit time (step 4). The PLAN.md sketch is retired; the dated entries below are the step-by-step record.

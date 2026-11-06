@@ -13,8 +13,11 @@
 #include "symbols.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -35,6 +38,13 @@ using fblang::TokenKind;
 // fbc's constructor/destructor priority bounds (error 189; FreeBASIC.md §12).
 constexpr long long kModuleCtorPriorityMin = 101;
 constexpr long long kModuleCtorPriorityMax = 65535;
+// Case-range constant folding (323): recursion is bounded, shifts above
+// this count are not folded, and a boolean is -1 / 0 as fbc represents it.
+constexpr int kConstEvalMaxDepth = 32;
+constexpr int kConstLookupMaxDepth = 8;
+constexpr long long kMaxConstShiftCount = 62;
+constexpr double kConstTrue = -1;
+constexpr double kConstFalse = 0;
 
 std::string uppercase(std::string_view s) {
   std::string out;
@@ -66,6 +76,11 @@ struct Block {
   // module-level executable control block (M21 step 3): the entry's range
   // starts at the opener and its end is set when the block closes.
   std::size_t moduleStatement = static_cast<std::size_t>(-1);
+  // `Select` state (M23 G1): whether a `Case` marker directly under this
+  // block has been seen yet, and whether the opener was `Select Case As
+  // Const` (the only form whose Case ranges fbc judges, error 323).
+  bool seenCase = false;
+  bool selectConst = false;
 };
 
 struct Container {
@@ -1071,6 +1086,582 @@ private:
     }
   }
 
+  // The `select` family (M23 G1). The region for 62 is the innermost
+  // block itself: a `Select` that has not yet seen a `Case` directly
+  // under it. `Case` markers set `seenCase` on that same block when they
+  // are handled, so no parallel tracker can drift from the structure.
+  bool inSelectBeforeCase() const {
+    return !blocks_.empty() && blocks_.back().kind == BlockKind::Select &&
+           !blocks_.back().seenCase;
+  }
+
+  static bool tokenIsKeyword(Token const &t, const char *word) {
+    return t.kind == TokenKind::Keyword && toLowerChars(t.text()) == word;
+  }
+
+  static bool tokenIsSymbol(Token const &t, const char *text) {
+    return t.kind == TokenKind::Symbol && t.text() == text;
+  }
+
+  // fbc error 62: a statement between SELECT and the first CASE, one per
+  // statement (probed: two statements draw two errors, a `Dim` draws it,
+  // a nested opener draws it for the opener only, and a label draws it).
+  // Branch and closer words are not statements in the region: `Case`
+  // opens the body, `Else`/`ElseIf` and the closers keep the reports they
+  // already have, `Continue` is judged by the loop families (its handler
+  // never asks the region question in fbc), and an access section is a
+  // TYPE-body line, not a statement. A bare `End` is a statement and does
+  // draw it (probed), while `End <word>` is a closer and does not. A
+  // modifier that recurses into the real opener (`Private Sub`, ...) is
+  // judged on the recursive call, so the statement draws exactly once.
+  void checkIllegalInsideSelect() {
+    if (!inSelectBeforeCase()) {
+      return;
+    }
+    if (cur_.kind == TokenKind::Keyword) {
+      std::string const w = toLowerChars(cur_.text());
+      if (w == "case" || w == "else" || w == "elseif" || w == "continue") {
+        return;
+      }
+      if ((w == "private" || w == "public" || w == "protected") &&
+          lex_.peek(0).kind == TokenKind::Symbol &&
+          lex_.peek(0).text() == ":") {
+        return;
+      }
+      if ((w == "virtual" || w == "const") &&
+          lex_.peek(0).kind == TokenKind::Keyword &&
+          isDeclOpenerWord(toLowerChars(lex_.peek(0).text()))) {
+        return;
+      }
+      if ((w == "private" || w == "public" || w == "export" || w == "static") &&
+          lex_.peek(0).kind == TokenKind::Keyword &&
+          (isDeclOpenerWord(toLowerChars(lex_.peek(0).text())) ||
+           toLowerChars(lex_.peek(0).text()) == "type")) {
+        return;
+      }
+      // A bare `End` terminates the program: it is a statement here.
+      // `End <word>` is a closer and keeps its own report.
+      bool const bareEnd =
+          w == "end" && lex_.peek(0).kind != TokenKind::Keyword;
+      if (isCloserStatement(statementTokens()) && !bareEnd) {
+        return;
+      }
+    }
+    addDiagnostic(cur_.beg, cur_.end, Severity::Error, "illegal-inside-select",
+                  trf("statement in between %s and first %s", "SELECT", "CASE"),
+                  FbcDiagId::IllegalInsideSelect);
+  }
+
+  // The `Exit Select` family (242/246/250), probed: with no enclosing
+  // Select anywhere up the stack it is 242; in the multi-target form
+  // `Exit Select, <target>` a target that is not `Select` is 246, and a
+  // `Select` target with no outer Select left is 250. One diagnostic per
+  // statement: the first failure ends the check, as fbc's error recovery
+  // does. Before the first Case the statement is already 62 and the Exit
+  // questions are not asked again.
+  void checkExitSelect() {
+    std::vector<Token> const toks = statementTokens();
+    if (toks.size() < 2 || !tokenIsKeyword(toks[1], "select")) {
+      return;
+    }
+    if (inSelectBeforeCase()) {
+      return;
+    }
+    int enclosing = 0;
+    for (Block const &b : blocks_) {
+      if (b.kind == BlockKind::Select) {
+        ++enclosing;
+      }
+    }
+    if (enclosing == 0) {
+      addDiagnostic(toks[1].beg, toks[1].end, Severity::Error,
+                    "illegal-outside-select",
+                    trf("illegal outside a %s compound statement", "SELECT"),
+                    FbcDiagId::IllegalOutsideSelect);
+      return;
+    }
+    int targets = 1;
+    for (std::size_t i = 2; i < toks.size(); ++i) {
+      if (!tokenIsSymbol(toks[i], ",")) {
+        break;
+      }
+      if (i + 1 >= toks.size()) {
+        addDiagnostic(toks[i].beg, toks[i].end, Severity::Error,
+                      "expected-select", trf("Expected '%s'", "SELECT"),
+                      FbcDiagId::ExpectedSelect);
+        return;
+      }
+      Token const &tgt = toks[i + 1];
+      if (!tokenIsKeyword(tgt, "select")) {
+        addDiagnostic(tgt.beg, tgt.end, Severity::Error, "expected-select",
+                      trf("Expected '%s'", "SELECT"),
+                      FbcDiagId::ExpectedSelect);
+        return;
+      }
+      ++targets;
+      if (targets > enclosing) {
+        addDiagnostic(tgt.beg, tgt.end, Severity::Error, "no-enclosed-select",
+                      trf("no outer %s compound statement found", "SELECT"),
+                      FbcDiagId::NoEnclosedSelect);
+        return;
+      }
+      ++i;
+    }
+  }
+
+  // A constant value for a Case bound in an As Const Select (323). The
+  // evaluator folds numeric literals, parentheses, unary operators, and
+  // the arithmetic/bitwise operators fbc folds, plus constant names it
+  // can read from the file (a `#define` replacement, a top-level `Const`,
+  // or an enum member). Anything else — a variable, a string, a call
+  // other than `Abs` — is unknown, and an unknown bound draws no 323.
+  using ConstValue = std::optional<double>;
+
+  static ConstValue parseNumericLiteral(std::string_view text) {
+    if (text.empty()) {
+      return std::nullopt;
+    }
+    constexpr int kDecimalBase = 10;
+    constexpr int kHexBase = 16;
+    constexpr int kOctalBase = 8;
+    constexpr int kBinaryBase = 2;
+    int base = kDecimalBase;
+    std::string_view digits = text;
+    if (text.size() >= 2 && text[0] == '&') {
+      char const c = text[1];
+      if (c == 'h' || c == 'H') {
+        base = kHexBase;
+      } else if (c == 'o' || c == 'O') {
+        base = kOctalBase;
+      } else if (c == 'b' || c == 'B') {
+        base = kBinaryBase;
+      } else {
+        return std::nullopt;
+      }
+      digits.remove_prefix(2);
+      while (!digits.empty() &&
+             (digits.back() == '%' || digits.back() == '&')) {
+        digits.remove_suffix(1);
+      }
+      if (digits.empty()) {
+        return std::nullopt;
+      }
+      double value = 0;
+      for (char const c : digits) {
+        int d;
+        if (c >= '0' && c <= '9') {
+          d = c - '0';
+        } else if (base == kHexBase && c >= 'a' && c <= 'f') {
+          d = c - 'a' + kDecimalBase;
+        } else if (base == kHexBase && c >= 'A' && c <= 'F') {
+          d = c - 'A' + kDecimalBase;
+        } else {
+          return std::nullopt;
+        }
+        if (d >= base) {
+          return std::nullopt;
+        }
+        value = (value * base) + d;
+      }
+      return value;
+    }
+    std::string cleaned(digits);
+    while (!cleaned.empty() &&
+           (cleaned.back() == '%' || cleaned.back() == '&' ||
+            cleaned.back() == '!' || cleaned.back() == '#')) {
+      cleaned.pop_back();
+    }
+    if (cleaned.empty()) {
+      return std::nullopt;
+    }
+    char *endPtr = nullptr;
+    double const value = std::strtod(cleaned.c_str(), &endPtr);
+    if (endPtr == cleaned.c_str() || *endPtr != '\0') {
+      return std::nullopt;
+    }
+    return value;
+  }
+
+  static std::vector<Token> lexAll(std::string_view text) {
+    Lexer lex(text);
+    std::vector<Token> out;
+    for (;;) {
+      Token const t = lex.next();
+      if (t.kind == TokenKind::Eof || t.kind == TokenKind::Newline ||
+          t.kind == TokenKind::Comment || t.kind == TokenKind::DocComment) {
+        break;
+      }
+      out.push_back(t);
+      if (out.size() > MAX_LINE_PEEK) {
+        break;
+      }
+    }
+    return out;
+  }
+
+  ConstValue lookupConstName(std::string_view name, int depth) {
+    if (depth > kConstLookupMaxDepth) {
+      return std::nullopt;
+    }
+    std::string const key = keyFor(name);
+    if (PreprocEntry const *entry = preproc_.entryFor(name);
+        entry != nullptr && !entry->functionLike && !entry->value.empty()) {
+      std::vector<Token> const toks = lexAll(entry->value);
+      return evalConstSlice(toks, 0, toks.size(), depth + 1);
+    }
+    for (Symbol const &root : out_.roots) {
+      if (root.kind == SymbolKind::Const && root.key == key) {
+        std::string const sig = root.signature;
+        return constFromSignature(sig, depth + 1);
+      }
+      if (root.kind == SymbolKind::Enum) {
+        for (Symbol const &child : root.children) {
+          if (child.kind == SymbolKind::Const && child.key == key) {
+            std::string const sig = child.signature;
+            return constFromSignature(sig, depth + 1);
+          }
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
+  ConstValue evalConstPrimary(std::vector<Token> const &toks, std::size_t &pos,
+                              int depth) {
+    if (depth > kConstEvalMaxDepth || pos >= toks.size()) {
+      return std::nullopt;
+    }
+    Token const &t = toks[pos];
+    if (t.kind == TokenKind::Number) {
+      ++pos;
+      return parseNumericLiteral(t.text());
+    }
+    if (tokenIsSymbol(t, "(")) {
+      ++pos;
+      ConstValue v = evalConstExpr(toks, pos, depth + 1);
+      if (pos < toks.size() && tokenIsSymbol(toks[pos], ")")) {
+        ++pos;
+      } else {
+        return std::nullopt;
+      }
+      return v;
+    }
+    if (t.kind == TokenKind::Identifier || t.kind == TokenKind::Keyword) {
+      std::string const word = toLowerChars(t.text());
+      ++pos;
+      if (word == "true") {
+        return kConstTrue;
+      }
+      if (word == "false") {
+        return kConstFalse;
+      }
+      if (pos < toks.size() && tokenIsSymbol(toks[pos], "(")) {
+        // A call: only `Abs` is folded (probed: `abs(-5)` is judged).
+        std::size_t const innerBeg = pos + 1;
+        int paren = 1;
+        std::size_t i = innerBeg;
+        while (i < toks.size() && paren > 0) {
+          if (tokenIsSymbol(toks[i], "(")) {
+            ++paren;
+          } else if (tokenIsSymbol(toks[i], ")")) {
+            --paren;
+            if (paren == 0) {
+              break;
+            }
+          }
+          ++i;
+        }
+        if (i >= toks.size()) {
+          return std::nullopt;
+        }
+        ConstValue arg = evalConstSlice(toks, innerBeg, i, depth + 1);
+        pos = i + 1;
+        if (word == "abs" && arg) {
+          return std::fabs(*arg);
+        }
+        return std::nullopt;
+      }
+      return lookupConstName(t.text(), depth + 1);
+    }
+    ++pos;
+    return std::nullopt;
+  }
+
+  // Binary operator precedence, lowest first. Returns None when the
+  // token is not a binary operator.
+  enum class ConstOpPrec : int {
+    None = 0,
+    EqvImp = 1,
+    Or = 2,
+    Xor = 3,
+    And = 4,
+    Compare = 5,
+    Shift = 6,
+    Add = 7,
+    Mul = 8,
+    Pow = 9,
+    Unary = 10
+  };
+
+  static int constOpPrecedence(Token const &t) {
+    if (t.kind == TokenKind::Keyword) {
+      std::string const w = toLowerChars(t.text());
+      if (w == "eqv" || w == "imp") {
+        return static_cast<int>(ConstOpPrec::EqvImp);
+      }
+      if (w == "or") {
+        return static_cast<int>(ConstOpPrec::Or);
+      }
+      if (w == "xor") {
+        return static_cast<int>(ConstOpPrec::Xor);
+      }
+      if (w == "and") {
+        return static_cast<int>(ConstOpPrec::And);
+      }
+      if (w == "shl" || w == "shr") {
+        return static_cast<int>(ConstOpPrec::Shift);
+      }
+      if (w == "mod") {
+        return static_cast<int>(ConstOpPrec::Mul);
+      }
+      return static_cast<int>(ConstOpPrec::None);
+    }
+    if (t.kind != TokenKind::Symbol) {
+      return static_cast<int>(ConstOpPrec::None);
+    }
+    std::string_view const s = t.text();
+    if (s == "=" || s == "<>" || s == "<" || s == ">" || s == "<=" ||
+        s == ">=") {
+      return static_cast<int>(ConstOpPrec::Compare);
+    }
+    if (s == "+" || s == "-") {
+      return static_cast<int>(ConstOpPrec::Add);
+    }
+    if (s == "*" || s == "/" || s == "\\") {
+      return static_cast<int>(ConstOpPrec::Mul);
+    }
+    if (s == "^") {
+      return static_cast<int>(ConstOpPrec::Pow);
+    }
+    return static_cast<int>(ConstOpPrec::None);
+  }
+
+  static ConstValue applyConstOp(std::string const &op, double a, double b) {
+    if (op == "eqv") {
+      return static_cast<double>(
+          ~(static_cast<long long>(a) ^ static_cast<long long>(b)));
+    }
+    if (op == "imp") {
+      return static_cast<double>(~static_cast<long long>(a) |
+                                 static_cast<long long>(b));
+    }
+    if (op == "or") {
+      return static_cast<double>(static_cast<long long>(a) |
+                                 static_cast<long long>(b));
+    }
+    if (op == "xor") {
+      return static_cast<double>(static_cast<long long>(a) ^
+                                 static_cast<long long>(b));
+    }
+    if (op == "and") {
+      return static_cast<double>(static_cast<long long>(a) &
+                                 static_cast<long long>(b));
+    }
+    if (op == "=") {
+      return a == b ? kConstTrue : kConstFalse;
+    }
+    if (op == "<>") {
+      return a != b ? kConstTrue : kConstFalse;
+    }
+    if (op == "<") {
+      return a < b ? kConstTrue : kConstFalse;
+    }
+    if (op == ">") {
+      return a > b ? kConstTrue : kConstFalse;
+    }
+    if (op == "<=") {
+      return a <= b ? kConstTrue : kConstFalse;
+    }
+    if (op == ">=") {
+      return a >= b ? kConstTrue : kConstFalse;
+    }
+    if (op == "shl" || op == "shr") {
+      long long const count = static_cast<long long>(b);
+      if (count < 0 || count > kMaxConstShiftCount) {
+        return std::nullopt;
+      }
+      long long const v = static_cast<long long>(a);
+      return static_cast<double>(op == "shl" ? v << count : v >> count);
+    }
+    if (op == "+") {
+      return a + b;
+    }
+    if (op == "-") {
+      return a - b;
+    }
+    if (op == "*") {
+      return a * b;
+    }
+    if (op == "/") {
+      if (b == 0) {
+        return std::nullopt;
+      }
+      return a / b;
+    }
+    if (op == "\\") {
+      long long const divisor = static_cast<long long>(b);
+      if (divisor == 0) {
+        return std::nullopt;
+      }
+      return static_cast<double>(static_cast<long long>(a) / divisor);
+    }
+    if (op == "mod") {
+      if (b == 0) {
+        return std::nullopt;
+      }
+      return std::fmod(a, b);
+    }
+    if (op == "^") {
+      return std::pow(a, b);
+    }
+    return std::nullopt;
+  }
+
+  ConstValue evalConstPrec(std::vector<Token> const &toks, std::size_t &pos,
+                           int depth, int minPrec) {
+    if (depth > kConstEvalMaxDepth || pos >= toks.size()) {
+      return std::nullopt;
+    }
+    // Unary operators bind tighter than every binary one.
+    ConstValue lhs;
+    if (tokenIsSymbol(toks[pos], "-") || tokenIsSymbol(toks[pos], "+") ||
+        tokenIsKeyword(toks[pos], "not")) {
+      std::string const op = toLowerChars(toks[pos].text());
+      ++pos;
+      ConstValue v = evalConstPrec(toks, pos, depth + 1,
+                                   static_cast<int>(ConstOpPrec::Unary));
+      if (!v) {
+        lhs = std::nullopt;
+      } else if (op == "-") {
+        lhs = -*v;
+      } else if (op == "+") {
+        lhs = v;
+      } else {
+        lhs = static_cast<double>(~static_cast<long long>(*v));
+      }
+    } else {
+      lhs = evalConstPrimary(toks, pos, depth);
+    }
+    while (pos < toks.size()) {
+      int const prec = constOpPrecedence(toks[pos]);
+      if (prec == 0 || prec < minPrec) {
+        break;
+      }
+      std::string const op = toLowerChars(toks[pos].text());
+      ++pos;
+      int const nextMin = op == "^" ? prec : prec + 1;
+      ConstValue rhs = evalConstPrec(toks, pos, depth + 1, nextMin);
+      if (lhs && rhs) {
+        lhs = applyConstOp(op, *lhs, *rhs);
+      } else {
+        lhs = std::nullopt;
+      }
+    }
+    return lhs;
+  }
+
+  ConstValue evalConstExpr(std::vector<Token> const &toks, std::size_t &pos,
+                           int depth) {
+    return evalConstPrec(toks, pos, depth, 0);
+  }
+
+  ConstValue evalConstSlice(std::vector<Token> const &toks, std::size_t beg,
+                            std::size_t end, int depth) {
+    if (beg >= end) {
+      return std::nullopt;
+    }
+    std::vector<Token> const slice(
+        toks.begin() + static_cast<std::ptrdiff_t>(beg),
+        toks.begin() + static_cast<std::ptrdiff_t>(end));
+    std::size_t pos = 0;
+    ConstValue v = evalConstExpr(slice, pos, depth);
+    if (pos != slice.size()) {
+      return std::nullopt;
+    }
+    return v;
+  }
+
+  // Evaluate the tail after the first `=` in a declaration signature
+  // (`const k as integer = 5`, an enum member `a = 5`); no `=` means the
+  // constant carries no value this parser can read.
+  ConstValue constFromSignature(std::string const &sig, int depth) {
+    std::vector<Token> const toks = lexAll(sig);
+    for (std::size_t i = 0; i < toks.size(); ++i) {
+      if (tokenIsSymbol(toks[i], "=")) {
+        return evalConstSlice(toks, i + 1, toks.size(), depth);
+      }
+    }
+    return std::nullopt;
+  }
+
+  // fbc error 323, As Const Select only: a Case range whose folded start
+  // is greater than its folded end. One diagnostic per Case statement,
+  // anchored on the `case` token, however many ranges it carries.
+  void checkInvalidCaseRange(Token const &caseTok) {
+    std::vector<Token> const toks = statementTokens();
+    if (toks.size() < 2 || tokenIsKeyword(toks[1], "else") ||
+        tokenIsKeyword(toks[1], "is")) {
+      return;
+    }
+    // Split the Case list on depth-0 commas; each item is a value or a
+    // `value To value` range.
+    std::size_t segBeg = 1;
+    int paren = 0;
+    auto const judgeSegment = [&](std::size_t beg, std::size_t end) -> bool {
+      std::size_t toAt = end;
+      int depth = 0;
+      for (std::size_t i = beg; i < end; ++i) {
+        if (tokenIsSymbol(toks[i], "(")) {
+          ++depth;
+        } else if (tokenIsSymbol(toks[i], ")") && depth > 0) {
+          --depth;
+        } else if (depth == 0 && tokenIsKeyword(toks[i], "to")) {
+          toAt = i;
+          break;
+        }
+      }
+      if (toAt == end) {
+        return false;
+      }
+      ConstValue lo = evalConstSlice(toks, beg, toAt, 0);
+      ConstValue hi = evalConstSlice(toks, toAt + 1, end, 0);
+      if (lo && hi && *lo > *hi) {
+        addDiagnostic(caseTok.beg, caseTok.end, Severity::Error,
+                      "invalid-case-range",
+                      trf("invalid %s range, start value is greater than "
+                          "the end value",
+                          "CASE"),
+                      FbcDiagId::InvalidCaseRange);
+        return true;
+      }
+      return false;
+    };
+    for (std::size_t i = 1; i <= toks.size(); ++i) {
+      bool const atEnd = i == toks.size();
+      if (!atEnd && tokenIsSymbol(toks[i], "(")) {
+        ++paren;
+      } else if (!atEnd && tokenIsSymbol(toks[i], ")") && paren > 0) {
+        --paren;
+      }
+      if (atEnd || (paren == 0 && tokenIsSymbol(toks[i], ","))) {
+        if (judgeSegment(segBeg, i)) {
+          return;
+        }
+        segBeg = i + 1;
+      }
+    }
+  }
+
   void handleStatement() {
     // An Asm body is raw assembly: no statement dispatch, no declaration
     // handling, no symbol capture, no diagnostics from its contents. The
@@ -1088,6 +1679,8 @@ private:
       // One pass closes one body and re-judges the same statement against the
       // one now on top, which is what makes nested records nest the failure.
     }
+
+    checkIllegalInsideSelect();
 
     // Line label: Identifier directly followed by ':'. A record body has no
     // statement list, so `Identifier :` there is a bitfield field
@@ -1331,6 +1924,10 @@ private:
                       trf("%s without %s", "CASE", "SELECT"),
                       FbcDiagId::CaseWithoutSelect);
       } else {
+        blocks_.back().seenCase = true;
+        if (blocks_.back().selectConst) {
+          checkInvalidCaseRange(cur_);
+        }
         openBranchScope("case");
       }
       resetDoc();
@@ -1338,6 +1935,9 @@ private:
       return;
     }
     if (w == "exit" || w == "continue") {
+      if (w == "exit") {
+        checkExitSelect();
+      }
       resetDoc();
       skipStatement();
       return;
@@ -1377,6 +1977,22 @@ private:
     b.needsEnd = c.needsEnd;
     b.begOpen = cur_.beg;
     b.endOpen = cur_.end;
+    if (c.kind == BlockKind::Select) {
+      // fbc error 34: `Select` must be followed by `Case` on the same
+      // statement (probed: `select q`, a bare `select`). The As Const
+      // form (`Select Case As Const`) is the one whose Case ranges 323
+      // judges, so it is recorded on the block here.
+      std::vector<Token> const toks = statementTokens();
+      bool const hasCase = toks.size() >= 2 && tokenIsKeyword(toks[1], "case");
+      if (!hasCase) {
+        Token const &anchor = toks.size() >= 2 ? toks[1] : cur_;
+        addDiagnostic(anchor.beg, anchor.end, Severity::Error, "expected-case",
+                      trf("Expected '%s'", "CASE"), FbcDiagId::ExpectedCase);
+      } else if (toks.size() >= 4 && tokenIsKeyword(toks[2], "as") &&
+                 tokenIsKeyword(toks[3], "const")) {
+        b.selectConst = true;
+      }
+    }
     // A module-level control block is one executable statement (M21 step 3):
     // the entry starts at the opener and `closeBlock` ends it at the closer.
     // `Extern` is excluded — its body is declarations, not code.
@@ -2518,6 +3134,13 @@ private:
 
     Block const &top = blocks_.back();
     if (top.kind == c.kind && top.needsEnd) {
+      // fbc error 34: an `End Select` with no Case ever seen under the
+      // Select it closes (probed). Anchored on the `end` token, where
+      // fbc's "found 'end'" points.
+      if (c.kind == BlockKind::Select && !top.seenCase) {
+        addDiagnostic(endTok.beg, endTok.end, Severity::Error, "expected-case",
+                      trf("Expected '%s'", "CASE"), FbcDiagId::ExpectedCase);
+      }
       closeBlock(word.end);
       advance();
       resetDoc();
@@ -2530,6 +3153,10 @@ private:
       resetDoc();
       skipStatement();
       return;
+    }
+    if (c.kind == BlockKind::Select && !blocks_.back().seenCase) {
+      addDiagnostic(endTok.beg, endTok.end, Severity::Error, "expected-case",
+                    trf("Expected '%s'", "CASE"), FbcDiagId::ExpectedCase);
     }
     closeBlock(word.end);
     advance();

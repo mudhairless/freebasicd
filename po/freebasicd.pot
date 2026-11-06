@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-11-06 14:36-0600\n"
-"PO-Revision-Date: 2026-11-06 14:36-0600\n"
+"POT-Creation-Date: 2026-11-06 15:58-0600\n"
+"PO-Revision-Date: 2026-11-06 15:58-0600\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -110,7 +110,7 @@ msgid ""
 "%s: .fbformat overrides freebasicd.toml; its formatting settings are ignored"
 msgstr ""
 
-#: src/parser.cpp:128
+#: src/parser.cpp:143
 #, c-format
 msgid "/// is not a %s comment; use '' for doc comments"
 msgstr ""
@@ -118,91 +118,112 @@ msgstr ""
 #. TRANSLATORS: %s = the proper noun "FreeBASIC" (never
 #. translated); the second %s is an example directive kept
 #. verbatim.
-#: src/parser.cpp:147
+#: src/parser.cpp:162
 #, c-format
 msgid ""
 "bare '$' is not a valid metacommand; %s metacommands are written as "
 "comments, e.g. %s"
 msgstr ""
 
-#: src/parser.cpp:179 src/parser.cpp:638 src/parser.cpp:2489
-#: src/parser.cpp:2553
+#: src/parser.cpp:194 src/parser.cpp:653 src/parser.cpp:1190
+#: src/parser.cpp:1197 src/parser.cpp:1990 src/parser.cpp:3105
+#: src/parser.cpp:3142 src/parser.cpp:3159 src/parser.cpp:3180
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
 
-#: src/parser.cpp:221
+#: src/parser.cpp:236
 msgid "unterminated string literal"
 msgstr ""
 
-#: src/parser.cpp:237
+#: src/parser.cpp:252
 #, c-format
 msgid "Suffix ignored in '%s'"
 msgstr ""
 
-#: src/parser.cpp:264
+#: src/parser.cpp:279
 #, c-format
 msgid "dialect '%s' is not supported yet; parsing in '%s' mode"
 msgstr ""
 
-#: src/parser.cpp:538 src/parser.cpp:2297
+#: src/parser.cpp:553 src/parser.cpp:2913
 #, c-format
 msgid "duplicate definition: '%s'"
 msgstr ""
 
-#: src/parser.cpp:597
+#: src/parser.cpp:612
 #, c-format
 msgid ""
 "'%s' is a reserved word and cannot be a field name in a type with member "
 "functions"
 msgstr ""
 
-#: src/parser.cpp:679
+#: src/parser.cpp:694
 #, c-format
 msgid "'%s' is a reserved word and cannot be an enum member name"
 msgstr ""
 
-#: src/parser.cpp:870
+#: src/parser.cpp:885
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:999 src/parser.cpp:2386
+#: src/parser.cpp:1014 src/parser.cpp:3002
 #, c-format
 msgid "'%s' is a reserved word and cannot be a field name"
 msgstr ""
 
-#: src/parser.cpp:1318 src/parser.cpp:1331 src/parser.cpp:2512
-#: src/parser.cpp:2582 src/parser.cpp:2724 src/parser.cpp:2733
-#: src/parser.cpp:2752
+#: src/parser.cpp:1151
+#, c-format
+msgid "statement in between %s and first %s"
+msgstr ""
+
+#: src/parser.cpp:1179
+#, c-format
+msgid "illegal outside a %s compound statement"
+msgstr ""
+
+#: src/parser.cpp:1204
+#, c-format
+msgid "no outer %s compound statement found"
+msgstr ""
+
+#: src/parser.cpp:1641
+#, c-format
+msgid "invalid %s range, start value is greater than the end value"
+msgstr ""
+
+#: src/parser.cpp:1911 src/parser.cpp:1924 src/parser.cpp:3128
+#: src/parser.cpp:3209 src/parser.cpp:3351 src/parser.cpp:3360
+#: src/parser.cpp:3379
 #, c-format
 msgid "%s without %s"
 msgstr ""
 
-#: src/parser.cpp:1705
+#: src/parser.cpp:2321
 #, c-format
 msgid "a module %s cannot take parameters"
 msgstr ""
 
-#: src/parser.cpp:1714
+#: src/parser.cpp:2330
 msgid "invalid priority attribute; expected 101 to 65535"
 msgstr ""
 
-#: src/parser.cpp:1732
+#: src/parser.cpp:2348
 #, c-format
 msgid "a module %s cannot be exported"
 msgstr ""
 
-#: src/parser.cpp:1738
+#: src/parser.cpp:2354
 #, c-format
 msgid "Expected end of line after a module %s"
 msgstr ""
 
-#: src/parser.cpp:1748
+#: src/parser.cpp:2364
 #, c-format
 msgid "a non-static member procedure cannot be a module %s"
 msgstr ""
 
-#: src/parser.cpp:2183
+#: src/parser.cpp:2799
 #, c-format
 msgid "'%s' is not allowed on a declaration line"
 msgstr ""

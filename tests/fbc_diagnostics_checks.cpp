@@ -200,6 +200,25 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::ExpectedEndSub, FbcMessageKind::Error,
                           FbcVersion{1, 9, 9}) == 125);
 
+  // The `select` family (M23 G1), each pinned to the catalog number the
+  // probe read back from fbc 1.10.3 (tools/fbc_catalog.tsv).
+  CHECK(fblang::fbcNumber(FbcDiagId::IllegalInsideSelect, FbcMessageKind::Error,
+                          v1102) == 62);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedCase, FbcMessageKind::Error,
+                          v1102) == 34);
+  CHECK(fblang::fbcNumber(FbcDiagId::CaseWithoutSelect, FbcMessageKind::Error,
+                          v1102) == 118);
+  CHECK(fblang::fbcNumber(FbcDiagId::EndSelectWithoutSelect,
+                          FbcMessageKind::Error, v1102) == 111);
+  CHECK(fblang::fbcNumber(FbcDiagId::IllegalOutsideSelect,
+                          FbcMessageKind::Error, v1102) == 242);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedSelect, FbcMessageKind::Error,
+                          v1102) == 246);
+  CHECK(fblang::fbcNumber(FbcDiagId::NoEnclosedSelect, FbcMessageKind::Error,
+                          v1102) == 250);
+  CHECK(fblang::fbcNumber(FbcDiagId::InvalidCaseRange, FbcMessageKind::Error,
+                          v1102) == 323);
+
   // No identity is no number, in either space.
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Error, v1102) == 0);
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Warning, v1102) ==

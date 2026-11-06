@@ -1260,6 +1260,434 @@ static void TestModuleLevelStatementRanges() {
   }
 }
 
+// The `select` diagnostic family (M23 G1): 62 IllegalInsideSelect,
+// 34 ExpectedCase, 118 CaseWithoutSelect, 111 EndSelectWithoutSelect,
+// 242 IllegalOutsideSelect, 246 ExpectedSelect, 250 NoEnclosedSelect, and
+// 323 InvalidCaseRange. Every shape was probed against fbc 1.10.3; the
+// anchor is the statement's first token for 62, the offending token for
+// 34/246/250, the `select` target token for 242, and the `case` token for
+// 323.
+static void TestSelectFamily() {
+  // 62: a statement between `Select Case` and the first `Case`, one
+  // diagnostic per statement (probed: two statements, two errors).
+  {
+    std::string const src = "dim q as integer = 1\n"
+                            "select case q\n"
+                            "print \"x\"\n"
+                            "case 1\n"
+                            "print \"y\"\n"
+                            "end select\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "illegal-inside-select") == 1);
+    CHECK(fbcErrorFor(r, "illegal-inside-select") ==
+          FbcDiagId::IllegalInsideSelect);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].range.beg ==
+            static_cast<uint32_t>(src.find("print \"x\"")));
+      CHECK(r.diagnostics[0].range.end ==
+            static_cast<uint32_t>(src.find("print \"x\"") + 5));
+    }
+  }
+  {
+    // Two statements before the first Case: fbc prints 62 twice, so does
+    // this parser (per statement, not once per block).
+    ParseResult r = parseDocument("dim q as integer = 1\n"
+                                  "select case q\n"
+                                  "print \"a\"\n"
+                                  "print \"b\"\n"
+                                  "case 1\n"
+                                  "print \"c\"\n"
+                                  "end select\n");
+    CHECK(diagnosticCount(r, "illegal-inside-select") == 2);
+  }
+  {
+    // A declaration in the region is a statement for this rule (probed:
+    // `Dim` and `Const` both draw 62), as is a label and a nested block
+    // opener (only the opener, not its body, is directly under the Select).
+    ParseResult dim = parseDocument("dim q as integer = 1\n"
+                                    "select case q\n"
+                                    "dim x as integer\n"
+                                    "case 1\n"
+                                    "print \"c\"\n"
+                                    "end select\n");
+    CHECK(diagnosticCount(dim, "illegal-inside-select") == 1);
+    ParseResult label = parseDocument("dim q as integer = 1\n"
+                                      "select case q\n"
+                                      "myLabel:\n"
+                                      "case 1\n"
+                                      "print \"c\"\n"
+                                      "end select\n");
+    CHECK(diagnosticCount(label, "illegal-inside-select") == 1);
+    ParseResult nested = parseDocument("dim q as integer = 1\n"
+                                       "select case q\n"
+                                       "if q then\n"
+                                       "print \"x\"\n"
+                                       "end if\n"
+                                       "case 1\n"
+                                       "print \"c\"\n"
+                                       "end select\n");
+    CHECK(diagnosticCount(nested, "illegal-inside-select") == 1);
+    // A colon compound is two statements: two diagnostics (probed).
+    ParseResult colon = parseDocument("dim q as integer = 1\n"
+                                      "select case q : print \"a\" : print "
+                                      "\"b\"\n"
+                                      "case 1\n"
+                                      "print \"c\"\n"
+                                      "end select\n");
+    CHECK(diagnosticCount(colon, "illegal-inside-select") == 2);
+  }
+  {
+    // Silence: statements inside Case bodies are ordinary code.
+    ParseResult r = parseDocument("dim q as integer = 1\n"
+                                  "select case q\n"
+                                  "case 1\n"
+                                  "print \"a\"\n"
+                                  "dim x as integer\n"
+                                  "case else\n"
+                                  "print \"b\"\n"
+                                  "end select\n");
+    CHECK(diagnosticCount(r, "illegal-inside-select") == 0);
+    CHECK(r.diagnostics.empty());
+  }
+
+  // 34 ExpectedCase: `Select` not followed by `Case` (probed: `select q`
+  // and a bare `select`), and an `End Select` that arrives with no Case
+  // ever seen (probed: `select case q` / `end select`).
+  {
+    std::string const src = "dim q as integer = 1\n"
+                            "select q\n"
+                            "case 1\n"
+                            "print \"x\"\n"
+                            "end select\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "expected-case") == 1);
+    CHECK(fbcErrorFor(r, "expected-case") == FbcDiagId::ExpectedCase);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].range.beg ==
+            static_cast<uint32_t>(src.find("select q") + 7));
+      CHECK(r.diagnostics[0].range.end ==
+            static_cast<uint32_t>(src.find("select q") + 8));
+    }
+  }
+  {
+    std::string const src = "select\n"
+                            "case 1\n"
+                            "print \"x\"\n"
+                            "end select\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "expected-case") == 1);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].range.beg == 0);
+      CHECK(r.diagnostics[0].range.end == 6);
+    }
+  }
+  {
+    std::string const src = "dim q as integer = 1\n"
+                            "select case q\n"
+                            "end select\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "expected-case") == 1);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].range.beg ==
+            static_cast<uint32_t>(src.find("end select")));
+      CHECK(r.diagnostics[0].range.end ==
+            static_cast<uint32_t>(src.find("end select") + 3));
+    }
+    // The As Const spelling takes the same End Select check (probed).
+    ParseResult k = parseDocument("dim q as integer = 1\n"
+                                  "select case as const q\n"
+                                  "end select\n");
+    CHECK(diagnosticCount(k, "expected-case") == 1);
+  }
+  {
+    // A well-formed Select is silent, and the Case after a malformed
+    // opener still counts as the Select's Case (no second 34 at End
+    // Select, probed).
+    ParseResult r = parseDocument("dim q as integer = 1\n"
+                                  "select case q\n"
+                                  "case 1\n"
+                                  "print \"x\"\n"
+                                  "end select\n");
+    CHECK(diagnosticCount(r, "expected-case") == 0);
+    CHECK(r.diagnostics.empty());
+  }
+
+  // 118 / 111 pinning: the stray Case and stray End Select carry their
+  // identities and anchor on the stray word (already routed through
+  // `stray-closer`; these pin the Select pair the family owns).
+  {
+    std::string const src = "case 1\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "stray-closer") == 1);
+    CHECK(fbcErrorFor(r, "stray-closer") == FbcDiagId::CaseWithoutSelect);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].range.beg == 0);
+      CHECK(r.diagnostics[0].range.end == 4);
+    }
+    // `Case Else` outside a Select is the same 118 (probed), not 242.
+    ParseResult els = parseDocument("case else\n");
+    CHECK(fbcErrorFor(els, "stray-closer") == FbcDiagId::CaseWithoutSelect);
+    CHECK(diagnosticCount(els, "illegal-outside-select") == 0);
+  }
+  {
+    std::string const src = "end select\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "stray-closer") == 1);
+    CHECK(fbcErrorFor(r, "stray-closer") == FbcDiagId::EndSelectWithoutSelect);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].range.beg == 0);
+      // The landed stray-closer anchor spans `end select` whole.
+      CHECK(r.diagnostics[0].range.end == 10);
+    }
+  }
+
+  // 242 IllegalOutsideSelect: `Exit Select` with no enclosing Select
+  // anywhere up the stack (probed, including inside an If and a Sub).
+  {
+    std::string const src = "exit select\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "illegal-outside-select") == 1);
+    CHECK(fbcErrorFor(r, "illegal-outside-select") ==
+          FbcDiagId::IllegalOutsideSelect);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].range.beg == 5);
+      CHECK(r.diagnostics[0].range.end == 11);
+    }
+    ParseResult inIf = parseDocument("if 1 then\n"
+                                     "exit select\n"
+                                     "end if\n");
+    CHECK(diagnosticCount(inIf, "illegal-outside-select") == 1);
+    ParseResult inSub = parseDocument("sub foo()\n"
+                                      "exit select\n"
+                                      "end sub\n");
+    CHECK(diagnosticCount(inSub, "illegal-outside-select") == 1);
+    // No enclosing Select: the multi-target form is still 242, and does
+    // not cascade into 246/250 (probed).
+    ParseResult multi = parseDocument("exit select, select\n");
+    CHECK(diagnosticCount(multi, "illegal-outside-select") == 1);
+    CHECK(diagnosticCount(multi, "expected-select") == 0);
+    CHECK(diagnosticCount(multi, "no-enclosed-select") == 0);
+  }
+  {
+    // Silence: Exit Select inside a Select, even through an If (the
+    // enclosing Select is what matters, not the innermost block).
+    ParseResult r = parseDocument("dim q as integer = 1\n"
+                                  "select case q\n"
+                                  "case 1\n"
+                                  "if q then\n"
+                                  "exit select\n"
+                                  "end if\n"
+                                  "end select\n");
+    CHECK(diagnosticCount(r, "illegal-outside-select") == 0);
+    CHECK(r.diagnostics.empty());
+    // Before the first Case an Exit Select is 62, not a second 242
+    // (probed: fbc reports 62 and skips the statement).
+    ParseResult before = parseDocument("dim q as integer = 1\n"
+                                       "select case q\n"
+                                       "exit select\n"
+                                       "case 1\n"
+                                       "print \"x\"\n"
+                                       "end select\n");
+    CHECK(diagnosticCount(before, "illegal-inside-select") == 1);
+    CHECK(diagnosticCount(before, "illegal-outside-select") == 0);
+  }
+
+  // 246 ExpectedSelect: in the multi-target `Exit Select, <target>` form,
+  // a target after the comma that is not `Select` (probed: `for`, an
+  // identifier, and a trailing comma).
+  {
+    std::string const src = "dim q as integer = 1\n"
+                            "select case q\n"
+                            "case 1\n"
+                            "exit select, for\n"
+                            "end select\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "expected-select") == 1);
+    CHECK(fbcErrorFor(r, "expected-select") == FbcDiagId::ExpectedSelect);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].range.beg ==
+            static_cast<uint32_t>(src.find("exit select, for") + 13));
+      CHECK(r.diagnostics[0].range.end ==
+            static_cast<uint32_t>(src.find("exit select, for") + 16));
+    }
+    ParseResult ident = parseDocument("dim q as integer = 1\n"
+                                      "select case q\n"
+                                      "case 1\n"
+                                      "exit select, foo\n"
+                                      "end select\n");
+    CHECK(diagnosticCount(ident, "expected-select") == 1);
+    ParseResult trailing = parseDocument("dim q as integer = 1\n"
+                                         "select case q\n"
+                                         "case 1\n"
+                                         "exit select,\n"
+                                         "end select\n");
+    CHECK(diagnosticCount(trailing, "expected-select") == 1);
+  }
+
+  // 250 NoEnclosedSelect: a repeated `Select` target with no outer Select
+  // left to exit (probed: one enclosing Select, two targets).
+  {
+    std::string const src = "dim q as integer = 1\n"
+                            "select case q\n"
+                            "case 1\n"
+                            "exit select, select\n"
+                            "end select\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "no-enclosed-select") == 1);
+    CHECK(fbcErrorFor(r, "no-enclosed-select") == FbcDiagId::NoEnclosedSelect);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].range.beg ==
+            static_cast<uint32_t>(src.find("exit select, select") + 13));
+      CHECK(r.diagnostics[0].range.end ==
+            static_cast<uint32_t>(src.find("exit select, select") + 19));
+    }
+    ParseResult three = parseDocument("dim q as integer = 1\n"
+                                      "dim r as integer = 1\n"
+                                      "select case q\n"
+                                      "case 1\n"
+                                      "select case r\n"
+                                      "case 1\n"
+                                      "exit select, select, select\n"
+                                      "end select\n"
+                                      "end select\n");
+    CHECK(diagnosticCount(three, "no-enclosed-select") == 1);
+  }
+  {
+    // Silence: two targets, two enclosing Selects.
+    ParseResult r = parseDocument("dim q as integer = 1\n"
+                                  "dim r as integer = 1\n"
+                                  "select case q\n"
+                                  "case 1\n"
+                                  "select case r\n"
+                                  "case 1\n"
+                                  "exit select, select\n"
+                                  "end select\n"
+                                  "end select\n");
+    CHECK(diagnosticCount(r, "no-enclosed-select") == 0);
+    CHECK(diagnosticCount(r, "expected-select") == 0);
+    CHECK(r.diagnostics.empty());
+  }
+
+  // 323 InvalidCaseRange: only in an `As Const` Select, where the Case
+  // bounds must be constant (probed: literals, constant expressions, and
+  // constant names are judged; a variable bound is fbc error 11, not 323;
+  // a regular Select never judges the range at all).
+  {
+    std::string const src = "dim q as integer = 1\n"
+                            "select case as const q\n"
+                            "case 5 to 2\n"
+                            "print \"x\"\n"
+                            "end select\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "invalid-case-range") == 1);
+    CHECK(fbcErrorFor(r, "invalid-case-range") == FbcDiagId::InvalidCaseRange);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].range.beg ==
+            static_cast<uint32_t>(src.find("case 5 to 2")));
+      CHECK(r.diagnostics[0].range.end ==
+            static_cast<uint32_t>(src.find("case 5 to 2") + 4));
+    }
+    ParseResult expr = parseDocument("dim q as integer = 1\n"
+                                     "select case as const q\n"
+                                     "case 1 + 3 to 2\n"
+                                     "print \"x\"\n"
+                                     "end select\n");
+    CHECK(diagnosticCount(expr, "invalid-case-range") == 1);
+    ParseResult second = parseDocument("dim q as integer = 1\n"
+                                       "select case as const q\n"
+                                       "case 1, 5 to 2\n"
+                                       "print \"x\"\n"
+                                       "end select\n");
+    CHECK(diagnosticCount(second, "invalid-case-range") == 1);
+    // One diagnostic per Case statement, even with two bad ranges
+    // (probed).
+    ParseResult two = parseDocument("dim q as integer = 1\n"
+                                    "select case as const q\n"
+                                    "case 5 to 2, 9 to 1\n"
+                                    "print \"x\"\n"
+                                    "end select\n");
+    CHECK(diagnosticCount(two, "invalid-case-range") == 1);
+    ParseResult define = parseDocument("#define LO 5\n"
+                                       "#define HI 2\n"
+                                       "dim q as integer = 1\n"
+                                       "select case as const q\n"
+                                       "case LO to HI\n"
+                                       "print \"x\"\n"
+                                       "end select\n");
+    CHECK(diagnosticCount(define, "invalid-case-range") == 1);
+    ParseResult constName = parseDocument("const k as integer = 5\n"
+                                          "dim q as integer = 1\n"
+                                          "select case as const q\n"
+                                          "case k to 2\n"
+                                          "print \"x\"\n"
+                                          "end select\n");
+    CHECK(diagnosticCount(constName, "invalid-case-range") == 1);
+    ParseResult enumName = parseDocument("enum e\n"
+                                         "a = 5\n"
+                                         "b = 2\n"
+                                         "end enum\n"
+                                         "dim q as integer = 1\n"
+                                         "select case as const q\n"
+                                         "case a to b\n"
+                                         "print \"x\"\n"
+                                         "end select\n");
+    CHECK(diagnosticCount(enumName, "invalid-case-range") == 1);
+  }
+  {
+    // Silence: a forward range, a single value, Case Else, a regular
+    // Select's reversed range (fbc accepts it), variable bounds, and
+    // string bounds.
+    ParseResult ok = parseDocument("dim q as integer = 1\n"
+                                   "select case as const q\n"
+                                   "case 2 to 5\n"
+                                   "print \"x\"\n"
+                                   "case 5\n"
+                                   "print \"y\"\n"
+                                   "case else\n"
+                                   "print \"z\"\n"
+                                   "end select\n");
+    CHECK(diagnosticCount(ok, "invalid-case-range") == 0);
+    CHECK(ok.diagnostics.empty());
+    ParseResult regular = parseDocument("dim q as integer = 1\n"
+                                        "select case q\n"
+                                        "case 5 to 2\n"
+                                        "print \"x\"\n"
+                                        "end select\n");
+    CHECK(diagnosticCount(regular, "invalid-case-range") == 0);
+    ParseResult var = parseDocument("dim q as integer = 1\n"
+                                    "dim a as integer = 5\n"
+                                    "select case as const q\n"
+                                    "case a to 2\n"
+                                    "print \"x\"\n"
+                                    "end select\n");
+    CHECK(diagnosticCount(var, "invalid-case-range") == 0);
+    ParseResult str = parseDocument("dim s as string = \"x\"\n"
+                                    "select case s\n"
+                                    "case \"b\" to \"a\"\n"
+                                    "print \"x\"\n"
+                                    "end select\n");
+    CHECK(diagnosticCount(str, "invalid-case-range") == 0);
+  }
+}
+
 int main() {
   // A realistic multi-construct program must parse with zero diagnostics.
   {
@@ -2936,6 +3364,7 @@ int main() {
   TestModuleConstructors();
   TestAsmBlockRawBody();
   TestModuleLevelStatementRanges();
+  TestSelectFamily();
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

@@ -1,0 +1,2 @@
+'@fbc:fail
+exit select
