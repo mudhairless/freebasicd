@@ -11,6 +11,7 @@
 
 #include "language.h"
 #include "parser.h"
+#include "resolve.h"
 #include "symbols.h"
 
 using namespace fblang;
@@ -980,6 +981,129 @@ static void TestModuleConstructors() {
     ParseResult r = parseDocument("function f() constructor\nend function\n");
     CHECK(diagnosticCount(r, "module-ctor-tail") == 0);
     CHECK(diagnosticCount(r, "module-ctor-params") == 0);
+  }
+}
+
+// An `Asm ... End Asm` body is raw assembly, not a statement list
+// (FreeBASIC.md §7): fbc hands the lines to the assembler, so a mnemonic
+// that is also a FreeBASIC keyword — `sub eax, 1` — declares nothing and
+// opens nothing. The body used to run through statement dispatch, which
+// opened a phantom block (two false diagnostics plus an outline symbol),
+// split `:`-compound lines into statements, and captured asm labels as
+// FreeBASIC labels. Only the block's own closer is recognized.
+static void TestAsmBlockRawBody() {
+  // The reproduction: a keyword mnemonic inside a procedure, closed
+  // normally. `demo` has no parameters, so any child of it is the phantom
+  // `Sub` the `sub` instruction used to declare.
+  {
+    ParseResult const r = parseDocument("sub demo()\n"
+                                        "    asm\n"
+                                        "        mov eax, 1\n"
+                                        "        sub eax, 1\n"
+                                        "    end asm\n"
+                                        "end sub\n");
+    CHECK(r.diagnostics.empty());
+    const Symbol *demo = find(r.roots, "demo", SymbolKind::Sub);
+    CHECK(demo != nullptr);
+    CHECK(demo->children.empty());
+  }
+  // Module level, keyword mnemonics and an asm label: nothing reports, no
+  // phantom `Sub`, and the label declares no FreeBASIC symbol.
+  {
+    ParseResult const r = parseDocument("sub noop()\n"
+                                        "end sub\n"
+                                        "asm\n"
+                                        "    push rax\n"
+                                        "    call noop\n"
+                                        "    sub rax, 1\n"
+                                        "    jmp done\n"
+                                        "    done:\n"
+                                        "    pop rax\n"
+                                        "end asm\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(find(r.roots, "rax", SymbolKind::Sub) == nullptr);
+    CHECK(find(r.roots, "done", SymbolKind::Label) == nullptr);
+  }
+  // A `:`-compound line stays raw as a whole: inside the block a colon is
+  // label syntax, never a statement separator, so the head is not captured
+  // as a FreeBASIC label and the tail is not dispatched as a statement.
+  {
+    ParseResult const r = parseDocument("asm\n"
+                                        "    mov eax, 1\n"
+                                        "    done: sub eax, 1\n"
+                                        "    jmp done\n"
+                                        "end asm\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(find(r.roots, "done", SymbolKind::Label) == nullptr);
+    CHECK(find(r.roots, "eax", SymbolKind::Sub) == nullptr);
+  }
+  // A conditional region inside the body keeps its own directive handling
+  // and its block sits above the Asm block; the assembly in the live arm
+  // is still raw, so the keyword mnemonic declares nothing there either.
+  {
+    ParseResult const r = parseDocument("asm\n"
+                                        "    #ifdef __FB_DEBUG__\n"
+                                        "        sub rax, 1\n"
+                                        "    #endif\n"
+                                        "    nop\n"
+                                        "end asm\n");
+    CHECK(r.diagnostics.empty());
+    CHECK(find(r.roots, "rax", SymbolKind::Sub) == nullptr);
+  }
+  // An unclosed block still reports at end of file through the open-block
+  // sweep. At module level that is the single expected closer.
+  {
+    ParseResult const r = parseDocument("asm\n"
+                                        "    mov eax, 1\n");
+    CHECK(diagnosticCount(r, "unterminated-block") == 1);
+    CHECK(r.diagnostics.front().message == "Expected 'END ASM'");
+    CHECK(fbcErrorFor(r, "unterminated-block") == FbcDiagId::ExpectedEndAsm);
+  }
+  // Inside a procedure the `end sub` is assembly text too, so both the Asm
+  // and the Sub are unterminated — the same pair fbc reports for this
+  // source (its errors 45 and 125), innermost block first.
+  {
+    ParseResult const r = parseDocument("sub demo()\n"
+                                        "    asm\n"
+                                        "        mov eax, 1\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "unterminated-block") == 2);
+    CHECK(r.diagnostics.front().message == "Expected 'END ASM'");
+    CHECK(r.diagnostics.back().message == "Expected 'END SUB'");
+  }
+  // A nested `asm` word is raw text, not an opener: the first `end asm`
+  // closes the block, and the leftover closer is the closer machinery's
+  // own stray report (fbc: error 33, Illegal 'END' — probed).
+  {
+    ParseResult const r = parseDocument("asm\n"
+                                        "    mov eax, 1\n"
+                                        "    asm\n"
+                                        "        nop\n"
+                                        "    end asm\n"
+                                        "end asm\n");
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(diagnosticCount(r, "stray-closer") == 1);
+    CHECK(fbcErrorFor(r, "stray-closer") == FbcDiagId::IllegalEnd);
+  }
+  // Code after `End Asm` parses exactly as before: a declaration after the
+  // block exists and a use of it resolves to it.
+  {
+    std::string const src = "sub demo()\n"
+                            "    asm\n"
+                            "        sub eax, 1\n"
+                            "    end asm\n"
+                            "    dim after as integer\n"
+                            "    after = 1\n"
+                            "end sub\n";
+    AnalyzedDoc const doc = analyze(src);
+    CHECK(doc.parse.diagnostics.empty());
+    const Symbol *demo = find(doc.parse.roots, "demo", SymbolKind::Sub);
+    CHECK(demo != nullptr);
+    const Symbol *after = find(demo->children, "after", SymbolKind::Dim);
+    CHECK(after != nullptr);
+    std::size_t const use = src.find("after = 1");
+    Symbol const *decl = resolveAt(doc, static_cast<std::uint32_t>(use));
+    CHECK(decl == after);
   }
 }
 
@@ -2657,6 +2781,7 @@ int main() {
   TestAnonymousDeclarationsNameAndSelect();
   TestPreprocessorSymbolsAndBranches();
   TestModuleConstructors();
+  TestAsmBlockRawBody();
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

@@ -315,6 +315,25 @@ private:
            blocks_.back().kind != BlockKind::Enum;
   }
 
+  // The innermost open *language* block is an Asm body, so the statement at
+  // `cur_` is raw assembly rather than FreeBASIC: fbc hands `Asm ... End Asm`
+  // bodies to the assembler, and a mnemonic that is also a FreeBASIC keyword
+  // (`sub eax, 1`) is an instruction there, not a declaration (FreeBASIC.md
+  // §7). A `#if`/`#macro` region opened inside the body keeps its own
+  // directive handling above statement level, and its block sits above the
+  // Asm block in the stack, so the walk skips preprocessor blocks: the
+  // assembly text around — and inside — those regions stays raw.
+  bool inAsmBody() const {
+    for (auto it = blocks_.rbegin(); it != blocks_.rend(); ++it) {
+      if (it->kind == BlockKind::PreprocIf ||
+          it->kind == BlockKind::PreprocMacro) {
+        continue;
+      }
+      return it->kind == BlockKind::Asm;
+    }
+    return false;
+  }
+
   // A procedure body: the blocks whose bodies are statement lists and whose
   // keyword is also a result variable (`function = expr`, `operator = expr`,
   // `property = expr`).
@@ -914,7 +933,48 @@ private:
     }
   }
 
+  // One line of an Asm body: the block's own closer, or raw text.
+  void handleAsmBodyLine() {
+    // `end asm` is the closer — handleEnd runs the ordinary matching,
+    // mismatch, and stray reporting rather than a special-case pop, so a
+    // closer met over a still-open `#if` region reports exactly as it would
+    // anywhere else.
+    if (cur_.kind == TokenKind::Keyword && toLowerChars(cur_.text()) == "end" &&
+        lex_.peek(0).kind == TokenKind::Keyword &&
+        toLowerChars(lex_.peek(0).text()) == "asm") {
+      handleEnd();
+      return;
+    }
+    skipRawAsmLine();
+  }
+
+  // Consume the rest of one raw assembly line. Nothing in it is FreeBASIC
+  // to judge: a `:` is label and segment-override syntax there, not a
+  // statement separator, so the whole line is swallowed at once, and the
+  // per-token warnings `advance` raises (an unterminated string, a suffixed
+  // keyword) are withheld with it — they would be diagnostics about
+  // assembly content. A trailing comment still ends the line the way the
+  // lexer ruled; comment lines never reach statement dispatch.
+  void skipRawAsmLine() {
+    for (;;) {
+      TokenKind const k = cur_.kind;
+      if (k == TokenKind::Newline || k == TokenKind::Eof ||
+          k == TokenKind::Comment || k == TokenKind::DocComment) {
+        return;
+      }
+      cur_ = lex_.next();
+    }
+  }
+
   void handleStatement() {
+    // An Asm body is raw assembly: no statement dispatch, no declaration
+    // handling, no symbol capture, no diagnostics from its contents. The
+    // block's own closer is the one statement still recognized.
+    if (inAsmBody()) {
+      handleAsmBodyLine();
+      return;
+    }
+
     // A record/enum body is a member list, not a statement list: close it at
     // the first statement its grammar cannot accept, before anything below
     // reads it as a field or a member. Re-enter so the statement is parsed in
