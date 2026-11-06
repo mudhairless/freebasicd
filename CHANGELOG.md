@@ -26,6 +26,13 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-06 — M21 complete: the module model, module constructors, and fbc's own codes
+
+- **The server now knows the module model it documents.** All five steps landed: `Constructor` / `Destructor` lexing and parsing with fbc's malformed-form errors (step 1, 2026-10-11); the catalog as data, with fbc's numbers resolved from message identities through version ranges (steps 5 and the enum rework); `[build]` / `[fbc]` optional config with the compiler version probed at runtime (step 2, 2026-11-03); module-level code outside the main module reported with its wrap-in-a-constructor fix (step 3); and duplicate `Public` procedure collisions across a root's include closure reported at edit time (step 4). The PLAN.md sketch is retired; the dated entries below are the step-by-step record.
+- **The acceptance held on the default case.** No config key is required for any of it: a project with no `freebasicd.toml` reports exactly what it reported before M21, pinned by tests at steps 3 and 4. The one divergence the milestone bakes in is written down at `FreeBASIC.md` §12.30: without a configured main module the server stays silent rather than guess which module is `main`, because that fact lives on a link command line an LSP never sees.
+- **One planned scope moved on evidence.** Step 4 was sketched as constructors only; the fbc probe showed the link rule covers every `Public` procedure, with `Overload` procedures keyed by signature, and the check follows the probe. Constructor *order* is claimed nowhere: fbc does not specify it and it is not stable across link orders.
+- **What this unblocks.** M18's parity gate now rests on M23 and M24 and the VS Code extension. One diagnostic from the module model remains open and moves to the resolve layer (M24): a module global read from a module constructor without `Shared` (fbc `error 42`).
+
 ### 2026-11-06 — M21 step 4: duplicate `Public` procedure collisions across one root's include closure
 
 - **A cross-file link error is now reported while editing.** Two `Public` procedures that define the same uppercased name in different files of one root's include closure collide at link time (`multiple definition`). The server reports them as Errors (`duplicate-public-procedure`, no `fbcId` — each file compiles alone, so fbc has no message for this cross-file fact), anchored on each defining file's own name token and naming the uppercased symbol and the other file(s). A file with two definitions of the key reports once per key; a duplicate pair inside one file alone still yields nothing from this check (the in-file `duplicate-definition` family owns it).

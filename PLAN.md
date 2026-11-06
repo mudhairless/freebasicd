@@ -37,8 +37,8 @@
   | Milestone | Status |
   |-----------|--------|
   | M17 — FreeBASIC formatter (wave 2 complete 2026-11-02; summary in CHANGELOG.md) | done |
-  | M21 — module model, constructors, and fbc's codes | next |
-  | M18 — public release: editor setup docs, first tag | blocked on M21, M23, M24, and the VS Code extension |
+  | M21 — module model, constructors, and fbc's codes (complete 2026-11-06; summary in CHANGELOG.md) | done |
+  | M18 — public release: editor setup docs, first tag | blocked on M23, M24, and the VS Code extension |
   | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
   | M23 — fbc parser diagnostics: statements, placement, warnings (block structure + false-positive gate + code identity landed) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
@@ -402,18 +402,16 @@
      `typeDefinition` / `implementation` / `typeHierarchy` shipped with M15 —
      `typeHierarchy/resolve` excepted, since prepare fills both lists — and
      `completionItem/resolve` shipped with M16.)
-  5. **The module model is documented but not implemented** (FreeBASIC.md §9,
-     M21). `Constructor`/`Destructor` are neither lexed nor parsed, a module's
-     *main-ness* is not tracked, and the diagnostics that fall out of the model
-     — module-level code outside the main module running before `main`, a module
-     global read from a constructor without `Shared` (fbc `error 42`), two
-     `Public` constructors colliding across modules (an fbc link error) — do not
-     exist. Nothing knows that a `.bas` in an include closure may *be* the main
-     module, and nothing can: an LSP never sees the build command line, so the
-     project's **artifact kind** and **main module** are facts only the user can
-     supply. M21 step 2 landed both as optional config (`[build]` / `[fbc]`,
-     with defaults that keep today's behavior); the diagnostics below remain
-     unimplemented.
+  5. **One diagnostic from the module model is still unimplemented.** The
+     model itself shipped with M21 (complete 2026-11-06): `Constructor` /
+     `Destructor` are lexed and parsed, `[build]` / `[fbc]` supply the
+     artifact kind and main module the command line would have decided, and
+     module-level code outside the main module and duplicate `Public`
+     procedure collisions across a closure are both reported. What remains
+     is a module global read from a module constructor without `Shared`
+     (fbc `error 42`): a constructor is a procedure for §8 visibility, so
+     the shared gate should fire there. It belongs to the resolve layer
+     (M24).
   6. **Most diagnostic codes are still our own, not fbc's.** The catalog is
      data (M21 step 5: `tools/fbc_catalog.tsv` → `src/fbc_diagnostics.inc`,
      byte-checked by `fbc_diagnostics_checks`) and the block-closer family
@@ -455,58 +453,6 @@
   its own acceptance tests. A milestone that ships leaves this section: its entry
   goes to [`CHANGELOG.md`](CHANGELOG.md) and its sketch is deleted here. Commits
   happen per milestone (AGENTS.md).
-
-### M21 — Module model, module constructors, and fbc's own codes
-
-Make the module model (§9) something the server actually knows, and give the
-diagnostics it implies fbc's numbers instead of ours. Gating milestone for M18.
-
-**Core, in order** — each step is independently testable:
-
-1. **Lex and parse `Constructor` / `Destructor`**, with optional `priority`.
-   Reject the malformed forms the way fbc does: a non-empty parameter list
-   (`error 1`), appearing on a `Declare` line (`error 3`), and `priority`
-   outside 101–65535 (`error 189`). A `Static` UDT member procedure may be a
-   module constructor and a non-`Static` one may not (`error 17`).
-   **Landed (2026-10-11).**
-2. **Project type and main module, as optional config** — the two facts an LSP
-   cannot derive. **Landed (2026-11-03)** as `[build]` / `[fbc]`, with the
-   compiler version probed at runtime; see `CHANGELOG.md`.
-3. **Module-level executable code outside the main module**, which step 2 makes
-   stateable. The fix wraps the run in `Sub <name>() Constructor` — an explicit
-   `Constructor` states *when* it runs, an implicit module body does not.
-   **Landed (2026-11-06)** as `module-code-outside-main`, with the
-   wrap-in-a-constructor fix; see `CHANGELOG.md`.
-4. **Two `Public` constructors sharing a name across the include closure** is
-   an fbc link error; report it while editing, case-insensitively. Say nothing
-   about constructor *order*: fbc does not specify it, it is not stable across
-   link orders (probed — two link orders of the same three modules interleave
-   differently), so neither is any claim we make.
-   **Landed (2026-11-06)** as `duplicate-public-procedure` (the probe widened
-   the scope from constructors to every `Public` plain procedure — see
-   `CHANGELOG.md` and `FreeBASIC.md` §9).
-5. **The catalog as data — landed (2026-10-09).**
-   `tools/extract_fbc_catalog.py` reads `error.bas` at the pinned tag into the
-   checked-in `tools/fbc_catalog.tsv`; `tools/gen_fbc_catalog.cpp` (the
-   `fbc-catalog` target) emits `src/fbc_diagnostics.inc`;
-   `src/fbc_diagnostics.{h,cpp}` is the reader (`fbcMessage`, `fbcCode`,
-   `fbcMessageDocsUrl`); and `fbc_diagnostics_checks` fails when the include
-   drifts from the snapshot. A reader who knows `error 42` now learns something
-   from our output.
-
-**Acceptance**
-
-- `Constructor`/`Destructor` parse; each malformed form has a test naming fbc's
-  code.
-- Generated catalog table plus a staleness test, and our emitted codes are
-  fbc's for the covered set.
-- **No config key is required for any diagnostic to fire.** Each one either
-  firms up a default or sharpens a phrasing, and a test asserts that a project
-  with no `freebasicd.toml` reports exactly what it reports today — the
-  no-config case is the default case, so it is the one that has to be right.
-- Every divergence this bakes in is written into FreeBASIC.md §12, main-module
-  unknowability above all.
-- `ctest` green, changed files clang-format clean.
 
 ### M22 — fbc declaration-order parity: use-before-declaration (backlog note)
 
@@ -863,9 +809,10 @@ M24), and the lint checks accrue after the tag.
 
 ### M18 — Public release: first tag
 
-**Gated on M21, M23, and M24**: the initial release bar is parity with fbc
-diagnostics (decided 2026-11-02). M21 delivers the module model and fbc's
-numbers for its covered set, M23 the parser-reachable statement, placement,
+**Gated on M23 and M24**: the initial release bar is parity with fbc
+diagnostics (decided 2026-11-02). M21 (complete 2026-11-06) delivered the
+module model and fbc's numbers for its covered set, M23 the parser-reachable
+statement, placement,
 and warning families, and M24 the resolve-layer semantic set; together that
 is the parity the tag claims. Shipping earlier, with the module model
 documented but undetected and diagnostic numbers that do not match the
