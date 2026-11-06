@@ -809,14 +809,88 @@ void RedundantDotFixRemovesOnlyTheDot() {
             .empty());
 }
 
+void WrapInConstructorTest() {
+  // The fix wraps the whole run, its text verbatim, between a `Sub
+  // <name>() Constructor` line and `End Sub`; the name is the file stem
+  // sanitized (`second.bas` -> `SecondInit`).
+  std::string const src = "print 1\nprint 2\n";
+  AnalyzedDoc const doc = analyze(src);
+  std::filesystem::path const filePath = "/ws/second.bas";
+  QuickFixContext ctx = bareContext(src, doc);
+  ctx.documentPath = &filePath;
+
+  std::vector<Diagnostic> hits;
+  moduleCodeDiagnostics(doc.parse, BuildKind::Dll, std::nullopt, false, &hits);
+  CHECK(hits.size() == 1);
+  if (hits.size() != 1) {
+    return;
+  }
+
+  std::vector<QuickFix> const fixes =
+      fixesFor("module-code-outside-main", hits[0], ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() != 1) {
+    return;
+  }
+  CHECK(fixes[0].title == "Wrap in constructor 'SecondInit'");
+  CHECK(fixes[0].code == "module-code-outside-main");
+  CHECK(fixes[0].edits.size() == 2);
+  if (fixes[0].edits.size() == 2) {
+    CHECK(fixes[0].edits[0].range.beg == 0 && fixes[0].edits[0].range.end == 0);
+    CHECK(fixes[0].edits[0].newText == "Sub SecondInit() Constructor\n");
+    CHECK(fixes[0].edits[1].range.beg == src.find("print 2") + 7);
+    CHECK(fixes[0].edits[1].newText == "\nEnd Sub");
+  }
+  // Applying the two insertions wraps the run verbatim.
+  std::string const applied =
+      src.substr(0, fixes[0].edits[0].range.beg) + fixes[0].edits[0].newText +
+      src.substr(0, fixes[0].edits[1].range.beg) + fixes[0].edits[1].newText +
+      src.substr(fixes[0].edits[1].range.beg);
+  CHECK(applied == "Sub SecondInit() Constructor\nprint 1\nprint 2\nEnd Sub\n");
+  // The wrapped file parses with the run inside a constructor and draws no
+  // module-level-code diagnostic.
+  AnalyzedDoc const after = analyze(applied);
+  CHECK(after.parse.moduleLevelStatements.empty());
+  bool foundCtor = false;
+  for (Symbol const &root : after.parse.roots) {
+    if (root.key == "secondinit" && root.isModuleConstructor) {
+      foundCtor = true;
+    }
+  }
+  CHECK(foundCtor);
+  std::vector<Diagnostic> gone;
+  moduleCodeDiagnostics(after.parse, BuildKind::Dll, std::nullopt, false,
+                        &gone);
+  CHECK(gone.empty());
+
+  // A diagnostic whose range is not a run's head offers nothing: the buffer
+  // moved under a stale range, or the run was interrupted.
+  CHECK(fixesFor("module-code-outside-main",
+                 diagAt("module-code-outside-main", 1, 7), ctx)
+            .empty());
+
+  // The sanitized name drops non-identifier characters and stays valid even
+  // when the stem opens with a digit.
+  std::filesystem::path const oddPath = "/ws/my-mod2.bas";
+  QuickFixContext oddCtx = bareContext(src, doc);
+  oddCtx.documentPath = &oddPath;
+  std::vector<QuickFix> const oddFixes =
+      fixesFor("module-code-outside-main", hits[0], oddCtx);
+  CHECK(oddFixes.size() == 1);
+  if (oddFixes.size() == 1) {
+    CHECK(oddFixes[0].title == "Wrap in constructor 'Mymod2Init'");
+  }
+}
+
 void RegistryAnswersTheFixableCodes() {
-  CHECK(quickFixProviders().size() == 6);
+  CHECK(quickFixProviders().size() == 7);
   CHECK(quickFixProviderFor("unterminated-block") != nullptr);
   CHECK(quickFixProviderFor("invalid-member-name") != nullptr);
   CHECK(quickFixProviderFor("include-not-found") != nullptr);
   CHECK(quickFixProviderFor("keyword-suffix") != nullptr);
   CHECK(quickFixProviderFor("module-var-not-shared") != nullptr);
   CHECK(quickFixProviderFor("redundant-leading-dot") != nullptr);
+  CHECK(quickFixProviderFor("module-code-outside-main") != nullptr);
   // Every registered code is a real diagnostic code, and the registry is
   // stable across calls (the session serves it from the handler pool).
   CHECK(quickFixProviders().data() == quickFixProviders().data());
@@ -846,6 +920,7 @@ int main() {
   SharedFixInsertsTheKeywordOnTheDeclaration();
   SharedFixRefusesAnUnfixableDeclaration();
   RedundantDotFixRemovesOnlyTheDot();
+  WrapInConstructorTest();
   RegistryAnswersTheFixableCodes();
 
   if (failures == 0) {

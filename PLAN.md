@@ -475,6 +475,8 @@ diagnostics it implies fbc's numbers instead of ours. Gating milestone for M18.
 3. **Module-level executable code outside the main module**, which step 2 makes
    stateable. The fix wraps the run in `Sub <name>() Constructor` — an explicit
    `Constructor` states *when* it runs, an implicit module body does not.
+   **Landed (2026-11-06)** as `module-code-outside-main`, with the
+   wrap-in-a-constructor fix; see `CHANGELOG.md`.
 4. **Two `Public` constructors sharing a name across the include closure** is
    an fbc link error; report it while editing, case-insensitively. Say nothing
    about constructor *order*: fbc does not specify it, it is not stable across

@@ -312,6 +312,18 @@ struct ParseResult {
   std::vector<SourceRange>
       blockRanges; // every nested block, useful for folding
 
+  // The byte ranges of the statements at module level that are not
+  // declarations (M21 step 3): assignments, calls, `Print`, and module-level
+  // control blocks (`If`, `For`, `Do`, `Select`, `Scope`, ...). A control
+  // block is one entry spanning from its opener to its closer; its body's
+  // statements are not separate entries. Declarations never appear here:
+  // `Dim`/`Const`/`Common`, `Declare`, `Type`/`Enum`/`Namespace` bodies
+  // (the whole block), `Extern` declarations, and procedure bodies are all
+  // absent. The parser records them; grouping them into maximal runs (a
+  // declaration interrupts a run, blank lines and comments do not) happens
+  // where the `module-code-outside-main` diagnostic is built.
+  std::vector<SourceRange> moduleLevelStatements;
+
   // Dialect the file declares via #LANG; "fb" when none or unsupported. Only
   // "fb" is implemented; other modes are parsed best-effort for now.
   std::string lang = "fb";

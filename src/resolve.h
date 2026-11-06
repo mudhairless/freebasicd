@@ -117,6 +117,30 @@ std::optional<std::uint32_t> sharedInsertionOffset(std::string_view content,
 void externPlacementDiagnostics(std::vector<Token> const &tokens,
                                 std::vector<Diagnostic> *out);
 
+// Maximal runs of module-level executable statements (M21 step 3): one
+// vector per run, in source order; each statement is its recorded
+// `moduleLevelStatements` range. A declaration interrupts a run — a
+// `Dim`/`Const`/`Declare`/`Type`/`Enum`/`Namespace`/`Extern` root, or a
+// procedure definition, beginning between the earlier statement's end and
+// the later one's start splits it — while blank lines and comments record
+// no statement, so they never end a run. A control block is one statement,
+// so its body is one run member however the block is laid out.
+std::vector<std::vector<SourceRange>> moduleCodeRuns(ParseResult const &parse);
+
+// The module-level-code diagnostics (M21 step 3) for one file, before the
+// delivery gate. One Warning (`module-code-outside-main`, no fbc identity:
+// fbc does not diagnose this at all) per run in `moduleCodeRuns`, anchored
+// on the run's first statement. The firing matrix is a caller's facts:
+// `kind` is the root's configured build kind, `mainModuleName` the
+// configured main module's display name when one is set, and
+// `isMainModule` whether this file is that module under an exe. An exe
+// fires only when a main is configured and this file is not it; a library
+// (dll/staticlib) has no entry point, so it fires in every file. Header
+// exclusion is the caller's choice, as with `externPlacementDiagnostics`.
+void moduleCodeDiagnostics(ParseResult const &parse, BuildKind kind,
+                           std::optional<std::string> const &mainModuleName,
+                           bool isMainModule, std::vector<Diagnostic> *out);
+
 // Parent of `node` in the parse symbol tree (the declaration block or module
 // root owning it), or nullptr for a file root. Enum members are Const
 // children of their Enum root — use this to tell an enum member from a

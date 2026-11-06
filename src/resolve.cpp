@@ -872,6 +872,104 @@ void externPlacementDiagnostics(std::vector<Token> const &tokens,
   }
 }
 
+// The declaration kinds that end a module-level statement run (M21 step 3):
+// the forms FreeBASIC.md §9 / the task list counts as declarations, not
+// executable code. `Label`/`Scope`/`Define` roots never break a run — a
+// label is a marker, not a statement, and preprocessor windows are not
+// statements at all.
+namespace {
+
+bool isInterruptingDecl(SymbolKind kind) {
+  switch (kind) {
+  case SymbolKind::Sub:
+  case SymbolKind::Function:
+  case SymbolKind::Property:
+  case SymbolKind::Constructor:
+  case SymbolKind::Destructor:
+  case SymbolKind::Operator:
+  case SymbolKind::Type:
+  case SymbolKind::Union:
+  case SymbolKind::Enum:
+  case SymbolKind::Namespace:
+  case SymbolKind::Dim:
+  case SymbolKind::Const:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool declarationBetween(ParseResult const &parse, std::uint32_t prevEnd,
+                        std::uint32_t nextBeg) {
+  for (Symbol const &root : parse.roots) {
+    if (isInterruptingDecl(root.kind) && root.range.beg >= prevEnd &&
+        root.range.beg < nextBeg) {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
+std::vector<std::vector<SourceRange>> moduleCodeRuns(ParseResult const &parse) {
+  std::vector<std::vector<SourceRange>> runs;
+  std::vector<SourceRange> current;
+  for (SourceRange const &stmt : parse.moduleLevelStatements) {
+    if (!current.empty() &&
+        declarationBetween(parse, current.back().end, stmt.beg)) {
+      runs.push_back(std::move(current));
+      current.clear();
+    }
+    current.push_back(stmt);
+  }
+  if (!current.empty()) {
+    runs.push_back(std::move(current));
+  }
+  return runs;
+}
+
+void moduleCodeDiagnostics(ParseResult const &parse, BuildKind kind,
+                           std::optional<std::string> const &mainModuleName,
+                           bool isMainModule, std::vector<Diagnostic> *out) {
+  // The firing matrix (M21 step 3): an exe is judged only against a
+  // configured main — without one the server stays silent rather than guess
+  // which module is main — and its own main module is the entry point's
+  // home, so it stays silent. A library has no entry point, so every module
+  // is non-main by definition.
+  if (kind == BuildKind::Exe) {
+    if (!mainModuleName.has_value() || isMainModule) {
+      return;
+    }
+  }
+  for (std::vector<SourceRange> const &run : moduleCodeRuns(parse)) {
+    if (run.empty()) {
+      continue;
+    }
+    Diagnostic d;
+    d.range = run.front();
+    d.severity = Severity::Warning;
+    d.fbcId = FbcDiagId::None;
+    d.code = "module-code-outside-main";
+    if (kind == BuildKind::Exe) {
+      // TRANSLATORS: %s is the configured main module's file name (e.g.
+      // main.bas) the user named in freebasicd.toml; it is never translated.
+      d.message =
+          trf("module-level code runs before the program's entry point as "
+              "load-time initialization, in an order fbc does not specify "
+              "(main module: %s)",
+              mainModuleName.value_or(std::string{}));
+    } else {
+      // TRANSLATORS: a library target (dll/staticlib) has no entry point,
+      // so every module's level code is load-time initialization there.
+      d.message =
+          tr("module-level code runs as load-time initialization for a "
+             "target with no entry point, in an order fbc does not specify");
+    }
+    out->push_back(std::move(d));
+  }
+}
+
 AnalyzedDoc analyze(std::string_view source) {
   AnalyzedDoc doc;
   doc.parse = parseDocument(source);

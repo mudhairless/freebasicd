@@ -2599,6 +2599,103 @@ static void TestExternPlacementDiagnostics() {
   }
 }
 
+static void TestModuleCodeDiagnostics() {
+  // The firing matrix across the build facts the session hands over
+  // (M21 step 3): an exe fires only with a configured main and never in
+  // the main module; a library fires everywhere; without a main the exe
+  // is never judged (the server must not guess which module is main).
+  auto fires = [](std::string const &src, BuildKind kind,
+                  std::optional<std::string> const &mainName, bool isMain) {
+    AnalyzedDoc const doc = analyze(src);
+    std::vector<Diagnostic> hits;
+    moduleCodeDiagnostics(doc.parse, kind, mainName, isMain, &hits);
+    return hits;
+  };
+  std::string const code = "print 1\nprint 2\n";
+  std::string const declOnly = "dim a as integer\n";
+  {
+    std::vector<Diagnostic> const hits =
+        fires(code, BuildKind::Exe, std::string{"main.bas"}, false);
+    CHECK(hits.size() == 1);
+    if (hits.size() == 1) {
+      CHECK(hits[0].code == "module-code-outside-main");
+      CHECK(hits[0].severity == Severity::Warning);
+      CHECK(hits[0].fbcId == FbcDiagId::None);
+      CHECK(hits[0].range.beg == 0);
+      CHECK(hits[0].message ==
+            "module-level code runs before the program's entry point as "
+            "load-time initialization, in an order fbc does not specify "
+            "(main module: main.bas)");
+    }
+  }
+  CHECK(fires(code, BuildKind::Exe, std::string{"main.bas"}, true)
+            .empty()); // the main module itself IS the entry point
+  CHECK(fires(code, BuildKind::Exe, std::nullopt, false)
+            .empty()); // no configured main: never judged
+  CHECK(fires(declOnly, BuildKind::Exe, std::string{"main.bas"}, false)
+            .empty()); // declarations only: nothing runs
+  {
+    std::vector<Diagnostic> const hits =
+        fires(code, BuildKind::Dll, std::nullopt, false);
+    CHECK(hits.size() == 1);
+    if (hits.size() == 1) {
+      CHECK(hits[0].message ==
+            "module-level code runs as load-time initialization for a "
+            "target with no entry point, in an order fbc does not specify");
+    }
+  }
+  CHECK(fires(code, BuildKind::StaticLib, std::nullopt, false).size() == 1);
+  // A blank line and a comment never end a run; a `Dim` does.
+  {
+    std::string const src = "print 1\n"
+                            "\n"
+                            "' between\n"
+                            "print 2\n";
+    CHECK(fires(src, BuildKind::Exe, std::string{"main.bas"}, false).size() ==
+          1);
+  }
+  {
+    std::string const src = "print 1\n"
+                            "dim x as integer\n"
+                            "print 2\n";
+    std::vector<Diagnostic> const hits =
+        fires(src, BuildKind::Exe, std::string{"main.bas"}, false);
+    CHECK(hits.size() == 2);
+    if (hits.size() == 2) {
+      CHECK(hits[0].range.beg == 0);
+      CHECK(hits[1].range.beg == src.find("print 2"));
+    }
+  }
+  // A run spanning a module-level `If` block is one diagnostic: the block is
+  // one statement for this purpose, and so is the code around it.
+  {
+    std::string const src = "print 1\n"
+                            "if 1 then\n"
+                            "  print 2\n"
+                            "end if\n"
+                            "print 3\n";
+    std::vector<Diagnostic> const hits =
+        fires(src, BuildKind::Exe, std::string{"main.bas"}, false);
+    CHECK(hits.size() == 1);
+    if (hits.size() == 1) {
+      CHECK(hits[0].range.beg == 0);
+      CHECK(src.substr(hits[0].range.beg, 7) == "print 1");
+    }
+  }
+  // Runs are exposed for the quick fix, in statement order.
+  {
+    AnalyzedDoc const doc =
+        analyze("print 1\ndim x as integer\nprint 2\nprint 3\n");
+    std::vector<std::vector<SourceRange>> const runs =
+        moduleCodeRuns(doc.parse);
+    CHECK(runs.size() == 2);
+    if (runs.size() == 2) {
+      CHECK(runs[0].size() == 1);
+      CHECK(runs[1].size() == 2);
+    }
+  }
+}
+
 int main() {
   TestScopingResolvesCorrectly();
   TestDeclAtIdentityFindsBySelectionRange();
@@ -2628,6 +2725,7 @@ int main() {
   TestDeclaredTypeNameScansPastPunctuation();
   TestModuleVarNotSharedDiagnostics();
   TestExternPlacementDiagnostics();
+  TestModuleCodeDiagnostics();
   TestOccurrencesAcrossCrossFile();
   TestPreprocessorDefineWindows();
   std::printf("resolve_checks: %s\n", failures == 0 ? "PASS" : "FAIL");

@@ -1107,6 +1107,159 @@ static void TestAsmBlockRawBody() {
   }
 }
 
+static void TestModuleLevelStatementRanges() {
+  // Module-level executable statements are recorded; declarations are not.
+  // M21 step 3: only the recorded ranges below feed the
+  // `module-code-outside-main` diagnostic.
+  {
+    std::string const src = "dim total as integer\n"
+                            "total = 5\n"
+                            "helper()\n"
+                            "print total\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.moduleLevelStatements.size() == 3);
+    if (r.moduleLevelStatements.size() == 3) {
+      CHECK(src.substr(r.moduleLevelStatements[0].beg,
+                       r.moduleLevelStatements[0].end -
+                           r.moduleLevelStatements[0].beg) == "total = 5");
+      CHECK(src.substr(r.moduleLevelStatements[1].beg,
+                       r.moduleLevelStatements[1].end -
+                           r.moduleLevelStatements[1].beg) == "helper()");
+      CHECK(src.substr(r.moduleLevelStatements[2].beg,
+                       r.moduleLevelStatements[2].end -
+                           r.moduleLevelStatements[2].beg) == "print total");
+    }
+  }
+  // A module-level control block is ONE statement spanning its closer; the
+  // statements in its body are not separate entries.
+  {
+    std::string const src = "if total then\n"
+                            "  print 1\n"
+                            "end if\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.moduleLevelStatements.size() == 1);
+    if (r.moduleLevelStatements.size() == 1) {
+      SourceRange const m = r.moduleLevelStatements[0];
+      CHECK(m.beg == 0);
+      CHECK(src.substr(m.beg, m.end - m.beg) ==
+            "if total then\n  print 1\nend if");
+    }
+  }
+  // Nested control blocks collapse to the outermost statement.
+  {
+    std::string const src = "if 1 then\n"
+                            "  for i = 1 to 3\n"
+                            "    print i\n"
+                            "  next\n"
+                            "end if\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.moduleLevelStatements.size() == 1);
+    if (r.moduleLevelStatements.size() == 1) {
+      CHECK(r.moduleLevelStatements[0].beg == 0);
+      CHECK(r.moduleLevelStatements[0].end == src.size() - 1);
+    }
+  }
+  // Every module-level control opener counts as one executable statement.
+  {
+    std::string const src = "for i = 1 to 3\n"
+                            "  print i\n"
+                            "next\n"
+                            "do\n"
+                            "  print 2\n"
+                            "loop\n"
+                            "while 0\n"
+                            "  print 3\n"
+                            "wend\n"
+                            "select case 1\n"
+                            "  case 1\n"
+                            "    print 4\n"
+                            "end select\n"
+                            "scope\n"
+                            "  print 5\n"
+                            "end scope\n"
+                            "with 1\n"
+                            "  print 6\n"
+                            "end with\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.moduleLevelStatements.size() == 6);
+  }
+  // A one-line `if` is one statement, as is a colon compound's each part.
+  {
+    ParseResult r = parseDocument("if x then print 1\n");
+    CHECK(r.moduleLevelStatements.size() == 1);
+  }
+  {
+    std::string const src = "print 1 : print 2\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.moduleLevelStatements.size() == 2);
+  }
+  // A bare `end` terminates; a goto target label is not a statement.
+  {
+    ParseResult r = parseDocument("print 1\nend\n");
+    CHECK(r.moduleLevelStatements.size() == 2);
+  }
+  {
+    std::string const src = "goto skip\n"
+                            "skip: print 1\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.moduleLevelStatements.size() == 2);
+    if (r.moduleLevelStatements.size() == 2) {
+      CHECK(src.substr(r.moduleLevelStatements[1].beg,
+                       r.moduleLevelStatements[1].end -
+                           r.moduleLevelStatements[1].beg) == "print 1");
+    }
+  }
+  // Statements inside a procedure body are not module-level statements.
+  {
+    ParseResult r = parseDocument("sub work()\n  print 1\nend sub\nprint 2\n");
+    CHECK(r.moduleLevelStatements.size() == 1);
+    if (r.moduleLevelStatements.size() == 1) {
+      CHECK(r.moduleLevelStatements[0].beg ==
+            std::string("sub work()\n  print 1\nend sub\nprint 2\n")
+                .find("print 2"));
+    }
+  }
+  // None of the declaration forms is a module-level executable statement:
+  // `Dim` / `Const` / `Common` (with initializers), `Declare`, `Type` /
+  // `Enum` / `Namespace` bodies, `Extern` declarations, and procedure
+  // bodies, including module constructors and destructors themselves.
+  {
+    std::string const src = "dim a as integer\n"
+                            "dim b as integer = 5\n"
+                            "const k = 7\n"
+                            "common c as integer\n"
+                            "common shared d as integer\n"
+                            "declare sub f()\n"
+                            "declare function g() as integer\n"
+                            "type point\n"
+                            "  x as single\n"
+                            "  y as single\n"
+                            "end type\n"
+                            "enum color\n"
+                            "  red\n"
+                            "  green\n"
+                            "end enum\n"
+                            "namespace geo\n"
+                            "  const origin = 0\n"
+                            "end namespace\n"
+                            "extern ext1 as integer\n"
+                            "extern \"C\"\n"
+                            "  declare sub cfn()\n"
+                            "end extern\n"
+                            "sub work()\n"
+                            "  print 1\n"
+                            "end sub\n"
+                            "sub init() constructor\n"
+                            "  print 2\n"
+                            "end sub\n"
+                            "sub done() destructor\n"
+                            "  print 3\n"
+                            "end sub\n";
+    ParseResult r = parseDocument(src);
+    CHECK(r.moduleLevelStatements.empty());
+  }
+}
+
 int main() {
   // A realistic multi-construct program must parse with zero diagnostics.
   {
@@ -2782,6 +2935,7 @@ int main() {
   TestPreprocessorSymbolsAndBranches();
   TestModuleConstructors();
   TestAsmBlockRawBody();
+  TestModuleLevelStatementRanges();
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

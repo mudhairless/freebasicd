@@ -450,12 +450,21 @@ struct DiagnosticsGate {
   // diagnostic whose `code` is in here.
   std::vector<std::string> suppressed;
   std::optional<fblang::FbcVersion> version;
+  // The root's module-model facts (M21 steps 2–3): which build kind it
+  // declares and which module it names as main. Both decide whether
+  // `module-code-outside-main` fires for a document, and both are part of
+  // the payload's identity (see diagnosticsResultId).
+  fblang::BuildKind buildKind = fblang::BuildKind::Exe;
+  std::optional<std::string> buildMain;
 };
 
 DiagnosticsGate
 gateFor(fblang::Settings const &s,
         std::optional<fblang::FbcVersion> const &version = std::nullopt) {
-  return DiagnosticsGate{s.diagnosticsOn, s.warningLevel, s.suppress, version};
+  DiagnosticsGate gate{s.diagnosticsOn, s.warningLevel, s.suppress, version};
+  gate.buildKind = s.build.kind;
+  gate.buildMain = s.build.main;
+  return gate;
 }
 
 // One language-layer diagnostic through the gate. A root-wide suppression wins
@@ -587,10 +596,58 @@ void appendExternPlacementDiagnostics(std::string_view content,
   }
 }
 
+// The module-level-code diagnostics this file's payload carries, before the
+// delivery gate (resolve.cpp builds the runs; the firing matrix is applied
+// here, where the root's adopted settings and this file's path meet). A
+// header never fires: its statements execute in the including module's
+// context, so judging them against this root's `main` would judge them
+// against the wrong program. `path` is the normalized file path.
+void moduleDiagnosticsForFile(std::string_view path,
+                              fblang::AnalyzedDoc const &doc,
+                              DiagnosticsGate const &gate,
+                              std::vector<fblang::Diagnostic> *out) {
+  if (isHeaderFile(path)) {
+    return;
+  }
+  bool isMainModule = false;
+  std::optional<std::string> display;
+  if (gate.buildMain) {
+    isMainModule = fblang::normalizePath(*gate.buildMain) == std::string(path);
+    // The message names the configured main module; the config value is an
+    // absolute path (settingsForDir resolved it), so its file name is the
+    // name a reader recognizes.
+    std::string const name =
+        std::filesystem::path(*gate.buildMain).filename().string();
+    display = name.empty() ? *gate.buildMain : name;
+  }
+  fblang::moduleCodeDiagnostics(doc.parse, gate.buildKind, display,
+                                isMainModule, out);
+}
+
+// The module-code lint as a document's payload member: the runs grouped by
+// `moduleCodeRuns` (resolve.cpp), gated like every other diagnostic — a
+// suppression drops the code, and the master switch empties it with the
+// rest of the payload (a fbc-number-less lint is never `-w` gated).
+void appendModuleCodeDiagnostics(std::string_view content,
+                                 std::string_view path,
+                                 fblang::AnalyzedDoc const &doc,
+                                 DiagnosticsGate const &gate,
+                                 std::vector<lsDiagnostic> *out) {
+  std::vector<fblang::Diagnostic> raw;
+  moduleDiagnosticsForFile(path, doc, gate, &raw);
+  for (fblang::Diagnostic const &d : raw) {
+    if (std::optional<lsDiagnostic> ls = gatedDiagnostic(content, d, gate)) {
+      out->push_back(std::move(*ls));
+    }
+  }
+}
+
 // The diagnostics payload one document carries: the parse diagnostics (through
 // the `-w` gate), the extern-placement lint (resolve.cpp, only for non-header
-// files — a `.bi` is where `Extern` belongs), plus the unresolved include
-// edges of the index entry that describes it (M6's include-not-found). One
+// files — a `.bi` is where `Extern` belongs), the module-level-code lint
+// (M21 step 3, only for source modules the root's build facts judge), plus the
+// unresolved include edges of the index entry that describes it (M6's
+// include-not-found). One
 // definition shared by the push path and both pull handlers, so a client that
 // negotiated either delivery can never see a different answer for the same
 // bytes — the M12 rule ("the fix keys on the range the publish reports")
@@ -604,6 +661,7 @@ std::vector<lsDiagnostic> documentDiagnostics(std::string_view content,
   std::vector<lsDiagnostic> diags =
       convertDiagnostics(content, doc.parse, gate);
   appendExternPlacementDiagnostics(content, path, doc, gate, &diags);
+  appendModuleCodeDiagnostics(content, path, doc, gate, &diags);
   if (entry != nullptr) {
     appendIncludeDiagnostics(content, *entry, gate, &diags);
   }
@@ -631,6 +689,8 @@ constexpr std::uint64_t kResultIdIncludeOnceMarker = 0x9eULL;
 constexpr std::uint64_t kResultIdGateOffMarker = 0x55ULL;
 constexpr std::uint64_t kResultIdWarningLevelSpread = 0x01010101ULL;
 constexpr std::uint64_t kResultIdSuppressionMarker = 0x1cULL;
+constexpr std::uint64_t kResultIdBuildKindMarker = 0x2bULL;
+constexpr std::uint64_t kResultIdBuildMainMarker = 0x42ULL;
 
 std::string diagnosticsResultId(std::string_view content,
                                 fblang::IndexedFile const *entry,
@@ -676,6 +736,24 @@ std::string diagnosticsResultId(std::string_view content,
                           "fbcversion",
                           hash);
     hash = diagnosticsFnv(gate.version->toString(), hash);
+  }
+  // The module-level-code lint decides whether the payload carries the
+  // load-time-initialization warnings from the root's build kind, whether a
+  // main module is configured and what it names, and whether this file is
+  // that module (M21 step 3) — a flip of any of them is a payload change and
+  // must move the id, or a client caching by resultId would be told
+  // "unchanged" the moment the warnings appeared or vanished.
+  hash = diagnosticsFnv("\x1f"
+                        "buildkind",
+                        hash);
+  hash ^= (static_cast<std::uint64_t>(gate.buildKind) + 1) *
+          kResultIdBuildKindMarker;
+  if (gate.buildMain) {
+    hash = diagnosticsFnv(*gate.buildMain, hash);
+    hash ^= kResultIdBuildMainMarker;
+    bool const isMainModule =
+        fblang::normalizePath(*gate.buildMain) == std::string(path);
+    hash ^= isMainModule ? kResultIdBuildMainMarker * 2 : 0x00ULL;
   }
   char buf[32];
   (void)std::snprintf(buf, sizeof(buf), "pd%016llx",
@@ -2138,9 +2216,13 @@ void FreeBasicServer::onDidChangeConfiguration(
     bool const flippedOn = fresh.diagnosticsOn && !old.diagnosticsOn;
     // The `-w` level and the suppression list are part of the diagnostics
     // payload: either flip drops or re-adds diagnostics, so it is a
-    // re-publish (push) / refresh (pull) event like the master switch.
+    // re-publish (push) / refresh (pull) event like the master switch. So is
+    // a build flip (`[build]` kind / main): it turns the module-level-code
+    // lint on, off, or toward a different entry point without touching a
+    // single byte of source.
     bool const gateChanged = fresh.warningLevel != old.warningLevel ||
-                             fresh.suppress != old.suppress;
+                             fresh.suppress != old.suppress ||
+                             !(fresh.build == old.build);
     // Adopt the new settings for the whole root...
     logSettingsNotes(index->root(), index->applySettings(fresh));
     logFbcProbe(index->root(), fresh, *index);
@@ -2311,6 +2393,7 @@ void FreeBasicServer::reparseAndPublish(
   std::vector<lsDiagnostic> diags =
       convertDiagnostics(content, doc.parse, gate);
   appendExternPlacementDiagnostics(content, normPath, doc, gate, &diags);
+  appendModuleCodeDiagnostics(content, normPath, doc, gate, &diags);
 
   if (index) {
     std::string const ext =
@@ -3768,6 +3851,17 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
           fblang::unresolvedIncludeDiagnostics(entry->includes, content.size());
       published.insert(published.end(), unresolved.begin(), unresolved.end());
     }
+  }
+  // The module-level-code warnings the next publish would carry, taken from
+  // the same builder and the same root settings the payload path uses, so
+  // the wrap-in-a-constructor fix answers exactly the ranges the publish
+  // reports.
+  {
+    std::vector<fblang::Diagnostic> modCode;
+    moduleDiagnosticsForFile(normPath, doc,
+                             gateFor(settingsForDocument(normPath), version),
+                             &modCode);
+    published.insert(published.end(), modCode.begin(), modCode.end());
   }
 
   // One snapshot for the whole reply: a fix provider may mine it for candidate

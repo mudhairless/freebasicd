@@ -379,6 +379,70 @@ std::vector<QuickFix> removeRedundantLeadingDot(Diagnostic const &d,
   return {std::move(fix)};
 }
 
+// The constructor name the wrap fix gives a module: its file stem,
+// kept to identifier characters, capitalized, with `Init` appended
+// (`second.bas` -> `SecondInit`). A stem that keeps nothing becomes
+// `ModuleInit`, and one that opens with a digit gains a letter prefix so the
+// result is a valid identifier.
+std::string constructorNameForPath(std::filesystem::path const &path) {
+  std::string kept;
+  for (char const c : path.stem().string()) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '_') {
+      kept.push_back(c);
+    }
+  }
+  if (kept.empty()) {
+    kept = "Module";
+  }
+  if (kept.front() >= '0' && kept.front() <= '9') {
+    kept.insert(kept.begin(), 'A');
+  }
+  if (kept.front() >= 'a' && kept.front() <= 'z') {
+    kept.front() = static_cast<char>(kept.front() - 'a' + 'A');
+  }
+  return kept + "Init";
+}
+
+// `module-code-outside-main` -> wrap the run in `Sub <name>() Constructor`.
+//
+// The diagnostic is anchored on the run's first statement, and the fix
+// wraps the whole run: the run's text is preserved verbatim between two new
+// lines — the constructor opener before the first statement and `End Sub`
+// after the last. The run is recovered from the parse (the same grouping
+// the diagnostic was built from), so a fix is offered exactly when the
+// diagnostic's range is a run's head; anything else is a buffer that moved
+// under a stale diagnostic, and gets nothing.
+std::vector<QuickFix> wrapInModuleConstructor(Diagnostic const &d,
+                                              QuickFixContext const &ctx) {
+  if (ctx.doc == nullptr || ctx.documentPath == nullptr) {
+    return {};
+  }
+  if (d.range.beg >= d.range.end || d.range.end > ctx.content.size()) {
+    return {};
+  }
+  for (std::vector<SourceRange> const &run : moduleCodeRuns(ctx.doc->parse)) {
+    if (run.empty() || run.front().beg != d.range.beg ||
+        run.front().end != d.range.end) {
+      continue;
+    }
+    std::string const name = constructorNameForPath(*ctx.documentPath);
+    QuickFix fix;
+    // TRANSLATORS: %s is the constructor name the fix would write (e.g.
+    // SecondInit); it is a FreeBASIC identifier, never translated.
+    fix.title = trf("Wrap in constructor '%s'", name);
+    fix.code = d.code;
+    fix.diagRange = d.range;
+    std::string const le(lineEnding(ctx.content));
+    fix.edits.push_back({SourceRange{run.front().beg, run.front().beg},
+                         "Sub " + name + "() Constructor" + le});
+    fix.edits.push_back(
+        {SourceRange{run.back().end, run.back().end}, le + "End Sub"});
+    return {std::move(fix)};
+  }
+  return {};
+}
+
 } // namespace
 
 std::vector<QuickFixRegistration> const &quickFixProviders() {
@@ -404,6 +468,10 @@ std::vector<QuickFixRegistration> const &quickFixProviders() {
       // resolve.cpp: a module-level leading dot whose bare name resolves to
       // the same declaration — our own Hint, so the fix deletes just the dot.
       {"redundant-leading-dot", removeRedundantLeadingDot},
+      // resolve.cpp: a run of module-level executable statements outside the
+      // main module (M21 step 3) — the fix wraps the run in a module
+      // constructor, which states the load-time intent on purpose.
+      {"module-code-outside-main", wrapInModuleConstructor},
   };
   return table;
 }

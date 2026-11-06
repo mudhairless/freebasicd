@@ -1367,6 +1367,41 @@ to "the language is what the lexer does":
       prototype, and a module-level `Static Sub` (fbc's `error 258`), are the
       same silence — neither is modelled.
 
+30. **Module-level code outside the main module is diagnosed, but only when
+    the build facts are known.** Every module other than the main module runs
+    its module level as load-time initialization before `main` (§9), and fbc
+    accepts all of it silently — `module-code-outside-main` (a Warning with no
+    fbc number, fbc having no diagnostic for it) is the one report for it, one
+    per maximal run of module-level executable statements, anchored on the
+    run's first statement. The parser records the ranges
+    (`ParseResult::moduleLevelStatements`; a control block is one statement
+    spanning opener to closer; its body's statements are not separate); run
+    grouping happens where the diagnostic is built, a declaration
+    (`Dim`/`Const`/`Common`, `Declare`, `Type`/`Enum`/`Namespace` bodies —
+    the whole block, `Extern` declarations, procedure bodies, module
+    constructors and destructors included) interrupting a run while blank
+    lines and comments do not. Which module is main is a property of the link
+    command line (§9) — invisible in the sources — so the diagnostic is
+    judged from `[build]` alone: an exe with a configured `main` reports in
+    every indexed source file of the root *except* the named main module
+    (its module level is the entry point's home, so it stays silent); an exe
+    with no configured main is never judged, and a project with no
+    `freebasicd.toml` reports exactly what it reported before the lint
+    existed — without config the server stays silent rather than guess which
+    module is main (the M21 acceptance rule); a `dll`/`staticlib` has no
+    entry point, so every module is treated as non-main and any file with a
+    run fires. A file with no root, or a root whose settings were never
+    adopted, is not judged, and a `.bi` header never is: its statements
+    execute in the including module's context. The message says the code
+    runs before the entry point (exe, naming the configured main) or as
+    load-time initialization for a target with no entry point (library), in
+    an order fbc does not specify; no claim about the order itself is made
+    anywhere. The quick fix wraps the run in `Sub <name>() Constructor` …
+    `End Sub`, the name derived from the module file's name, the run's text
+    verbatim. Since the lint's firing and wording are payloads of the root's
+    build facts, `kind`/`main`/is-main fold into the diagnostics report
+    identity and a build flip re-publishes or refreshes like any other gate flip.
+
 ## 13. Where the diagnostics come from (compiler source)
 
 Every `error N` / `warning N` in this file is a real fbc message, and fbc's

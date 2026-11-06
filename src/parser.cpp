@@ -62,6 +62,10 @@ struct Block {
   // `Static` field, a `Const`, or a nested record/enum), so every conditional
   // field name in it is refused when the body closes (FreeBASIC.md §7).
   bool armed = false;
+  // Index into `out_.moduleLevelStatements` when this block is itself a
+  // module-level executable control block (M21 step 3): the entry's range
+  // starts at the opener and its end is set when the block closes.
+  std::size_t moduleStatement = static_cast<std::size_t>(-1);
 };
 
 struct Container {
@@ -598,6 +602,9 @@ private:
     if (b.armed && b.sym != nullptr) {
       dropArmedConditionalFields(*b.sym);
     }
+    if (b.moduleStatement != static_cast<std::size_t>(-1)) {
+      out_.moduleLevelStatements[b.moduleStatement].end = end;
+    }
     blocks_.pop_back();
     out_.blockRanges.push_back({b.begOpen, end});
     if (b.sym != nullptr) {
@@ -721,6 +728,99 @@ private:
       out.push_back(t);
     }
     return out;
+  }
+
+  // True when no *language* block is open: only preprocessor regions
+  // (`#if` / `#macro`, which are compile-time, not runtime) may surround a
+  // module-level statement (M21 step 3). An active `#if` arm's statements
+  // are real module statements; a `#macro` body's are never dispatched.
+  bool atModuleLevel() const {
+    for (Block const &b : blocks_) {
+      if (b.kind != BlockKind::PreprocIf && b.kind != BlockKind::PreprocMacro) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Begin a module-level executable statement entry at `beg` (M21 step
+  // 3); for a control block the returned index is stored on the `Block` so
+  // `closeBlock` can finish the range at the closer.
+  std::size_t beginModuleStatement(uint32_t beg) {
+    out_.moduleLevelStatements.push_back(SourceRange{beg, beg});
+    return out_.moduleLevelStatements.size() - 1;
+  }
+
+  // Record the statement at `cur_` (head word `w`) when it is a
+  // module-level executable simple statement (M21 step 3). Called from
+  // `handleStatement` after the access-section branch: declarations return
+  // without recording, control-block openers are recorded by
+  // `pushBlockFromOpener` / `handleIf` (which know the closer), and branch
+  // words, closers, and one-line `if`s are not statements of their own here.
+  void maybeRecordModuleStatement(const std::string &w) {
+    if (!atModuleLevel()) {
+      return;
+    }
+    if (w == "if") {
+      return; // `handleIf` records: it alone knows the block's end
+    }
+    if (isControlOpenerWord(w)) {
+      // A control block records itself at push time, except `Extern`,
+      // whose body is declarations, not code.
+      return;
+    }
+    if ((w == "virtual" || w == "const" || w == "private" || w == "public" ||
+         w == "export" || w == "static")) {
+      Token const nxt = lex_.peek(0);
+      if (nxt.kind == TokenKind::Keyword &&
+          (isDeclOpenerWord(toLowerChars(nxt.text())) ||
+           toLowerChars(nxt.text()) == "type")) {
+        return; // a declaration in front of a modifier is still a declaration
+      }
+      if (w == "static" && (nxt.kind == TokenKind::Identifier ||
+                            (nxt.kind == TokenKind::Keyword &&
+                             toLowerChars(nxt.text()) == "shared"))) {
+        return; // `Static x` / `Static Shared x` declare
+      }
+    }
+    if (isDeclOpenerWord(w)) {
+      if (w == "constructor" && lex_.peek(0).kind == TokenKind::Symbol &&
+          lex_.peek(0).text() == "(") {
+        recordSimpleModuleStatement(); // a call, not a nested declaration
+      }
+      return;
+    }
+    if (w == "type") {
+      if (lex_.peek(0).kind == TokenKind::Symbol &&
+          lex_.peek(0).text() == "<") {
+        recordSimpleModuleStatement(); // `type<T>(...)` is an expression
+      }
+      return;
+    }
+    if (w == "declare" || w == "dim" || w == "redim" || w == "var" ||
+        w == "local" || w == "common" || w == "const" || w == "extern") {
+      return; // declarations never run as module-level code
+    }
+    if (w == "else" || w == "elseif" || w == "case" || w == "exit" ||
+        w == "continue") {
+      return; // branch words: part of the block statement, not one of their own
+    }
+    if (isCloserStatement(statementTokens())) {
+      if (w == "end" && lex_.peek(0).kind != TokenKind::Keyword) {
+        recordSimpleModuleStatement(); // bare `End` terminates the program
+      }
+      return;
+    }
+    recordSimpleModuleStatement();
+  }
+
+  // Record the statement at `cur_` as one simple module-level executable
+  // statement from its first token to its last statement token (trailing
+  // comments and the line terminator stay outside the range).
+  void recordSimpleModuleStatement() {
+    std::vector<Token> const toks = statementTokens();
+    uint32_t const end = toks.empty() ? cur_.beg : toks.back().end;
+    out_.moduleLevelStatements.push_back(SourceRange{cur_.beg, end});
   }
 
   void skipStatement(bool suppressMemberCapture = false) {
@@ -1005,6 +1105,11 @@ private:
       }
     }
     if (cur_.kind != TokenKind::Keyword) {
+      if (atModuleLevel()) {
+        // An identifier-led or literal-led statement is executable code
+        // (an assignment or a call), never a declaration.
+        recordSimpleModuleStatement();
+      }
       resetDoc();
       skipStatement();
       return;
@@ -1037,6 +1142,10 @@ private:
       advance(); // the ':'
       return;
     }
+
+    // A module-level executable statement is recorded here when one is the
+    // dispatch's answer; declarations and block openers never reach this.
+    maybeRecordModuleStatement(w);
 
     // Procedure-definition modifiers: `virtual sub` / `const sub` / `const
     // function` ... A `virtual`/`const` in front of a declaration keyword
@@ -1250,6 +1359,12 @@ private:
     b.needsEnd = c.needsEnd;
     b.begOpen = cur_.beg;
     b.endOpen = cur_.end;
+    // A module-level control block is one executable statement (M21 step 3):
+    // the entry starts at the opener and `closeBlock` ends it at the closer.
+    // `Extern` is excluded — its body is declarations, not code.
+    if (atModuleLevel() && w != "extern") {
+      b.moduleStatement = beginModuleStatement(cur_.beg);
+    }
     attachScopeBlock(&b, w);
     blocks_.push_back(b);
   }
@@ -2282,6 +2397,9 @@ private:
     }
 
     if (singleLine) {
+      if (atModuleLevel()) {
+        recordSimpleModuleStatement();
+      }
       resetDoc();
       advance();
       skipStatement();
@@ -2294,6 +2412,9 @@ private:
     b.needsEnd = true;
     b.begOpen = ifTok.beg;
     b.endOpen = ifTok.end;
+    if (atModuleLevel()) {
+      b.moduleStatement = beginModuleStatement(ifTok.beg);
+    }
     attachScopeBlock(&b, "if");
     blocks_.push_back(b);
     // The then-branch is a branch like any other: its own scope, sibling to

@@ -534,6 +534,7 @@ add_executable(session_integration
     tests/session_navigation_checks.cpp
     tests/session_pull_diagnostics_checks.cpp
     tests/session_preproc_checks.cpp
+    tests/session_module_code_checks.cpp
     tests/session_rename_checks.cpp
     tests/session_semantic_tokens_checks.cpp
     tests/session_settings_checks.cpp
