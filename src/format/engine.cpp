@@ -87,13 +87,24 @@ std::vector<Line> splitLines(std::vector<Token> const &toks,
 
 // Words after which a symbolic `-`/`+` is a sign rather than a binary
 // operator. Kept explicit: "true"/"false" are reserved words but `True - 1`
-// is arithmetic, so "any reserved word" would be wrong.
+// is arithmetic, so "any reserved word" would be wrong. Two shapes belong
+// here: words that introduce an expression (`if`, `while`, `case`, …) and
+// statement words that introduce a value or value list (`print`, `return`,
+// …) — such a keyword is never a value itself, so a sign directly after it
+// cannot be binary. The value-list words were verified against fbc and the
+// wiki, not assumed: `data` (constant list, any slot signed), `sleep`
+// (amount, documented default -1), `randomize` (seed, documented default
+// -1.0). Not here on purpose: words whose value is unsigned or
+// position-only (`color`, `locate`, `screen`, …) compile with a negative
+// literal but document no negative shape, and `assert` has no paren-less
+// statement form at all.
 bool unaryContextWord(std::string_view lower) {
   return lower == "as" || lower == "then" || lower == "to" || lower == "step" ||
          lower == "case" || lower == "else" || lower == "elseif" ||
          lower == "if" || lower == "while" || lower == "until" ||
          lower == "return" || lower == "print" || lower == "lprint" ||
-         lower == "using";
+         lower == "using" || lower == "data" || lower == "sleep" ||
+         lower == "randomize";
 }
 
 bool binaryOpWord(std::string_view lower) {

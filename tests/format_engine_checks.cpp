@@ -174,6 +174,55 @@ static void TestSpacingBasics() {
   CHECK_EQ(fmt(in, c), want);
 }
 
+// A statement keyword that introduces a value or value list makes a directly
+// following -/+ a sign, because the keyword is not a value, so the sign can
+// never be binary there. `data` is the list shape and must keep the sign
+// attached in every slot — first item and after a comma, however the source
+// spaced it; `sleep` and `randomize` take one value whose documented default
+// is negative (`Sleep -1`, `Randomize -1.0`). The formatted list is a fixed
+// point. Statement indentation after a label is a separate open issue, so
+// this pins the value lists at the top level only.
+static void TestSignedLiteralAfterValueKeyword() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "ship_data:\n"
+                         "\n"
+                         "data 3\n"
+                         "data 0,-13\n"
+                         "data -5, 13\n"
+                         "data -5,13\n"
+                         "data - 5, 13\n"
+                         "data 0, 5\n"
+                         "sleep -1\n"
+                         "randomize -1\n"
+                         "print -5\n";
+  std::string const want = "ship_data:\n"
+                           "\n"
+                           "data 3\n"
+                           "data 0, -13\n"
+                           "data -5, 13\n"
+                           "data -5, 13\n"
+                           "data -5, 13\n"
+                           "data 0, 5\n"
+                           "sleep -1\n"
+                           "randomize -1\n"
+                           "print -5\n";
+  std::string const once = fmt(in, c);
+  CHECK_EQ(once, want);
+  CHECK_EQ(fmt(once, c), once);
+}
+
+// Binary minus between two operands keeps the configured operator spacing
+// whatever the author's gaps were, and the unary-context words above do not
+// leak into it: only a sign directly after the word is a sign.
+static void TestBinaryMinusUnchanged() {
+  FormatConfig c = spaceConfig();
+  CHECK_EQ(fmt("a-5\n", c), std::string("a - 5\n"));
+  CHECK_EQ(fmt("a -5\n", c), std::string("a - 5\n"));
+  CHECK_EQ(fmt("a- 5\n", c), std::string("a - 5\n"));
+  CHECK_EQ(fmt("print a-5\n", c), std::string("print a - 5\n"));
+  CHECK_EQ(fmt("x = 10- z\n", c), std::string("x = 10 - z\n"));
+}
+
 // The fbc-style paren overrides: inner spaces in conditionals and parameter
 // lists, a space after the control keyword, tight call parens. Both
 // polarities of the control-statement space flag are pinned, because the
@@ -720,6 +769,8 @@ int main() {
   TestFieldNamedCloser();
   TestMalformedBlocksAreTolerated();
   TestSpacingBasics();
+  TestSignedLiteralAfterValueKeyword();
+  TestBinaryMinusUnchanged();
   TestParenContexts();
   TestCanonicalKeywordCase();
   TestCaseStyles();
