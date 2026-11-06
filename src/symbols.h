@@ -152,6 +152,20 @@ struct Symbol {
   bool isModuleDestructor = false;
   int constructorPriority = 0;
 
+  // Whether the procedure line carried the `Private` qualifier (FreeBASIC.md
+  // §9): `Private Sub/Function` emits a file-local symbol so two definitions
+  // across modules do not clash. A bare `Sub`/`Function` is public — the
+  // qualifier is what makes it private. This is distinct from the
+  // TYPE-body `Access` below, which gates member visibility inside a type.
+  bool isPrivate = false;
+
+  // Whether the procedure carries the `Overload` attribute (`Sub name
+  // Overload(params)`): overloads mangle with their parameter types into
+  // distinct link symbols (probed: Integer vs String overloads do not
+  // collide), while a plain procedure links by uppercased name alone.
+  // Plain and overload procedures live in separate key spaces.
+  bool isOverload = false;
+
   // A member procedure declared with the `Static` storage prefix
   // (`Declare Static Sub Init()` inside a TYPE). FreeBASIC.md §9: only that
   // form may be a module constructor when it is defined (`Sub Widget.Init()

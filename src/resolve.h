@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -140,6 +141,22 @@ std::vector<std::vector<SourceRange>> moduleCodeRuns(ParseResult const &parse);
 void moduleCodeDiagnostics(ParseResult const &parse, BuildKind kind,
                            std::optional<std::string> const &mainModuleName,
                            bool isMainModule, std::vector<Diagnostic> *out);
+
+// Duplicate `Public` procedure collisions across one root's include
+// closure (M21 step 4): group module-level `Public` `Sub`/`Function`
+// definitions by their link key — uppercased name for plain procedures,
+// uppercased name plus canonical parameter signature for `Overload`
+// procedures (FreeBASIC.md §9, probed with fbc 1.10.3). `Private`
+// procedures are file-local and never counted; `Declare` prototypes,
+// member procedures with an owner, and the record-member
+// `Constructor`/`Destructor` blocks are not definitions and never counted.
+// Where two or more different files define the same key, each defining
+// file gets one Error (`duplicate-public-procedure`, no fbc identity:
+// each file compiles alone, so fbc has no message for this cross-file
+// fact), anchored on its own definition's name token and naming the
+// uppercased symbol and the other defining file(s).
+std::map<std::string, std::vector<Diagnostic>> publicProcedureCollisions(
+    std::vector<std::shared_ptr<IndexedFile const>> const &snapshot);
 
 // Parent of `node` in the parse symbol tree (the declaration block or module
 // root owning it), or nullptr for a file root. Enum members are Const

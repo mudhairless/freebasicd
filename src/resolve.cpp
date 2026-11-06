@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <set>
@@ -968,6 +969,174 @@ void moduleCodeDiagnostics(ParseResult const &parse, BuildKind kind,
     }
     out->push_back(std::move(d));
   }
+}
+
+namespace {
+
+std::string upperString(std::string_view s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    if (c >= 'a' && c <= 'z') {
+      c = static_cast<char>(c - 'a' + 'A');
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+
+std::vector<std::string> splitLowerTokens(std::string_view s) {
+  std::vector<std::string> toks;
+  std::string cur;
+  for (char c : s) {
+    if (c == ' ' || c == '\t') {
+      if (!cur.empty()) {
+        toks.push_back(cur);
+        cur.clear();
+      }
+      continue;
+    }
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+    cur.push_back(c);
+  }
+  if (!cur.empty()) {
+    toks.push_back(cur);
+  }
+  return toks;
+}
+
+std::string canonicalOverloadSignature(Symbol const &sym) {
+  std::string sig;
+  bool first = true;
+  for (Symbol const &child : sym.children) {
+    if (child.kind != SymbolKind::Parameter) {
+      continue;
+    }
+    std::vector<std::string> const toks = splitLowerTokens(child.signature);
+    std::string mode;
+    if (!toks.empty() && (toks[0] == "byref" || toks[0] == "byval")) {
+      mode = toks[0];
+    }
+    int asIdx = -1;
+    for (std::size_t i = 0; i < toks.size(); ++i) {
+      if (toks[i] == "as") {
+        asIdx = static_cast<int>(i);
+        break;
+      }
+    }
+    std::string type;
+    if (asIdx >= 0) {
+      std::string t;
+      for (std::size_t i = static_cast<std::size_t>(asIdx) + 1; i < toks.size();
+           ++i) {
+        if (toks[i] == "=") {
+          break;
+        }
+        if (!t.empty()) {
+          t += ' ';
+        }
+        t += toks[i];
+      }
+      type = t;
+    }
+    if (!first) {
+      sig += ';';
+    }
+    first = false;
+    if (!mode.empty()) {
+      sig += mode;
+      sig += ':';
+    }
+    sig += type;
+  }
+  return sig;
+}
+
+} // namespace
+
+std::map<std::string, std::vector<Diagnostic>> publicProcedureCollisions(
+    std::vector<std::shared_ptr<IndexedFile const>> const &snapshot) {
+  std::map<std::string, std::map<std::string, SourceRange>> byKey;
+  std::map<std::string, std::string> displayByKey;
+  for (auto const &file : snapshot) {
+    for (Symbol const &root : file->roots) {
+      if (root.kind != SymbolKind::Sub && root.kind != SymbolKind::Function) {
+        continue;
+      }
+      if (root.declOnly) {
+        continue;
+      }
+      if (root.isPrivate) {
+        continue;
+      }
+      if (!root.ownerKey.empty()) {
+        continue;
+      }
+      if (root.key.empty()) {
+        continue;
+      }
+      std::string const key =
+          root.isOverload
+              ? upperString(root.key) + "/" + canonicalOverloadSignature(root)
+              : upperString(root.key);
+      displayByKey[key] = upperString(root.key);
+      auto &fileMap = byKey[key];
+      if (fileMap.find(file->path) == fileMap.end()) {
+        fileMap[file->path] = root.selection;
+      }
+    }
+  }
+  std::map<std::string, std::vector<Diagnostic>> out;
+  for (auto const &kv : byKey) {
+    std::string const &key = kv.first;
+    std::map<std::string, SourceRange> const &fileMap = kv.second;
+    if (fileMap.size() < 2) {
+      continue;
+    }
+    std::vector<std::string> files;
+    files.reserve(fileMap.size());
+    for (auto const &p : fileMap) {
+      files.push_back(p.first);
+    }
+    std::sort(files.begin(), files.end());
+    std::string const &display = displayByKey[key];
+    for (std::string const &currentPath : files) {
+      std::vector<std::string> others;
+      others.reserve(files.size() - 1);
+      for (std::string const &p : files) {
+        if (p != currentPath) {
+          others.push_back(p);
+        }
+      }
+      std::vector<std::string> otherNames;
+      otherNames.reserve(others.size());
+      for (std::string const &p : others) {
+        std::string fname = std::filesystem::path(p).filename().string();
+        otherNames.push_back(fname.empty() ? p : fname);
+      }
+      std::string joined;
+      for (std::size_t i = 0; i < otherNames.size(); ++i) {
+        if (i != 0) {
+          joined += ", ";
+        }
+        joined += otherNames[i];
+      }
+      Diagnostic d;
+      d.range = fileMap.at(currentPath);
+      d.severity = Severity::Error;
+      d.fbcId = FbcDiagId::None;
+      d.code = "duplicate-public-procedure";
+      // TRANSLATORS: a duplicate-public-procedure error names the uppercased
+      // link symbol and the other file(s) that define it. Both arguments are
+      // identifiers / file names and are never translated.
+      d.message = trf("duplicate public procedure '%s' also defined in %s",
+                      display, joined);
+      out[currentPath].push_back(std::move(d));
+    }
+  }
+  return out;
 }
 
 AnalyzedDoc analyze(std::string_view source) {

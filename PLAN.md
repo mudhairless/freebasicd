@@ -482,6 +482,9 @@ diagnostics it implies fbc's numbers instead of ours. Gating milestone for M18.
    about constructor *order*: fbc does not specify it, it is not stable across
    link orders (probed — two link orders of the same three modules interleave
    differently), so neither is any claim we make.
+   **Landed (2026-11-06)** as `duplicate-public-procedure` (the probe widened
+   the scope from constructors to every `Public` plain procedure — see
+   `CHANGELOG.md` and `FreeBASIC.md` §9).
 5. **The catalog as data — landed (2026-10-09).**
    `tools/extract_fbc_catalog.py` reads `error.bas` at the pinned tag into the
    checked-in `tools/fbc_catalog.tsv`; `tools/gen_fbc_catalog.cpp` (the

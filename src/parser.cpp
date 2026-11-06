@@ -208,6 +208,11 @@ private:
   // directive. Reachable defines are published as `Define` symbols by
   // registerDefine; everything the preprocessor cannot decide is skipped.
   Preprocessor preproc_;
+  // The visibility qualifier of the next procedure definition being parsed
+  // (`Private Sub` / `Public Sub`). Set by handleStatement when a
+  // private/public modifier precedes a declaration opener, read by
+  // handleDeclBlock/handleDeclare to stamp Symbol::isPrivate.
+  bool pendingPrivate_ = false;
 
   void advance() {
     if (cur_.kind == TokenKind::String && !cur_.terminated &&
@@ -1165,8 +1170,21 @@ private:
       if (nxt.kind == TokenKind::Keyword &&
           (isDeclOpenerWord(toLowerChars(nxt.text())) ||
            toLowerChars(nxt.text()) == "type")) {
+        // `Private Sub` / `Public Sub`: record the visibility for the
+        // procedure definition that follows. Only private/public stamp it;
+        // export/static leave whatever an outer qualifier set (export
+        // implies public, so its absence means the default public).
+        bool const isPriv = (w == "private");
+        bool const isVis = (w == "private" || w == "public");
+        bool const saved = pendingPrivate_;
+        if (isVis) {
+          pendingPrivate_ = isPriv;
+        }
         advance();
         handleStatement();
+        if (isVis) {
+          pendingPrivate_ = saved;
+        }
         return;
       }
       // `Static x` and `Static Shared x` are both var declarations; the
@@ -1791,6 +1809,19 @@ private:
     }
     takeMemberImplementation(s);
     takeExtendsClause(s);
+    // `Sub name Overload(params)`: the overload attribute sits between the
+    // name and the parameter list and mangles the link symbol (FreeBASIC.md
+    // §9, probed with fbc 1.10.3). Captured so the cross-file duplicate
+    // check can key overloaded procedures by name plus signature.
+    if (cur_.kind == TokenKind::Keyword &&
+        toLowerChars(cur_.text()) == "overload") {
+      s.isOverload = true;
+      advance();
+    }
+    s.isPrivate = pendingPrivate_;
+    // pendingPrivate_ is consumed by this definition; the caller restores
+    // it so a chain of modifiers does not leak into the next statement.
+    pendingPrivate_ = false;
     s.signature = headerText(openTok);
     s.doc = takeDoc();
 
@@ -2117,6 +2148,7 @@ private:
       s.kind = SymbolKind::Property;
     }
     s.isStatic = isStatic;
+    s.declOnly = true;
     advance();
     if (cur_.kind == TokenKind::Identifier || cur_.kind == TokenKind::Keyword) {
       s.name = std::string(cur_.text());
@@ -2125,6 +2157,13 @@ private:
       s.selection.end = cur_.end;
       advance();
     }
+    if (cur_.kind == TokenKind::Keyword &&
+        toLowerChars(cur_.text()) == "overload") {
+      s.isOverload = true;
+      advance();
+    }
+    s.isPrivate = pendingPrivate_;
+    pendingPrivate_ = false;
     s.range.beg = openTok.beg;
     s.range.end = currentLineEnd();
     s.signature = headerText(openTok);

@@ -741,7 +741,26 @@ End Sub
 - **Name clashes are a link error across modules**: two `Public` constructors
   named `Init` in different files give `multiple definition of 'INIT'` — the
   emitted symbol is the uppercased name. `Private` constructors still run
-  (`privctor.bas` runs both).
+  (`privctor.bas` runs both). **Probed with fbc 1.10.3** (two-file program,
+  entry file linking both):
+  1. `Public Sub Helper()` in both files → `multiple definition of 'HELPER'`.
+  2. `Public Function F(x As Integer)` in both files → `multiple definition of 'F'`.
+  3. `Public Function F Overload(x As Integer)` and
+     `Public Function F Overload(x As String)` in different files → link
+     succeeds: overloads mangle with their parameter types into distinct
+     symbols. The same signature twice (`F Overload(x As Integer)` in both
+     files) still gives `multiple definition of 'F(long)'`. A plain
+     procedure links by uppercased name alone, while an `Overload`
+     procedure links by name plus parameter-type signature, so a plain
+     `FOO` and an `Overload` `FOO(long)` are distinct symbols and do not
+     collide; parameter names and return type are not part of the key.
+  4. `Public Sub Init() Constructor` in one file and `Public Sub Init()` in
+     the other → `multiple definition of 'INIT'`.
+  5. `Public Sub Cleanup() Destructor` in both files → `multiple definition of 'CLEANUP'`.
+  6. `Public Sub CommonName() Constructor` in one file and
+     `Public Sub CommonName() Destructor` in the other → `multiple definition of 'COMMONNAME'`.
+  `Private` procedures (plain, `Overload`, constructor and destructor) are
+  file-local (`t` in `nm`) and never collide with a `Public` twin.
 - **Destructors** (`Sub name() Destructor`) mirror this at exit, in no
   guaranteed order either (`ctor.bas`: `Destructor2()` then `Destructor1()`,
   after the module-level code and before the process ends).
