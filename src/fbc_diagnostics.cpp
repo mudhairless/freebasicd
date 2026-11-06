@@ -109,10 +109,12 @@ constexpr std::array<FbcNumberRange, 1> kNumberRanges{{
                   {FbcDiagId::IllegalOutsideSelect, 242},
                   {FbcDiagId::ExpectedSelect, 246},
                   {FbcDiagId::NoEnclosedSelect, 250},
-                  {FbcDiagId::InvalidCaseRange, 323}}),
+                  {FbcDiagId::InvalidCaseRange, 323},
+                  {FbcDiagId::ForNextVariableMismatch, 283}}),
      makeNumbers({{FbcDiagId::NoClosingQuote, 12},
                   {FbcDiagId::SuffixIgnored, 44},
-                  {FbcDiagId::ArgCntMismatch, 43}})},
+                  {FbcDiagId::ArgCntMismatch, 43},
+                  {FbcDiagId::NextVarMeaningless, 26}})},
 }};
 
 FbcNumberRange const &rangeFor(std::optional<FbcVersion> const &version) {

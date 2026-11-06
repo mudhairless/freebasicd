@@ -219,6 +219,26 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::InvalidCaseRange, FbcMessageKind::Error,
                           v1102) == 323);
 
+  // The loop families (M23 G2): the landed closer pair plus the new
+  // mismatch/warning identities, each pinned to the catalog number
+  // (tools/fbc_catalog.tsv).
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedNext, FbcMessageKind::Error,
+                          v1102) == 13);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedLoop, FbcMessageKind::Error,
+                          v1102) == 29);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedWend, FbcMessageKind::Error,
+                          v1102) == 30);
+  CHECK(fblang::fbcNumber(FbcDiagId::LoopWithoutDo, FbcMessageKind::Error,
+                          v1102) == 106);
+  CHECK(fblang::fbcNumber(FbcDiagId::NextWithoutFor, FbcMessageKind::Error,
+                          v1102) == 107);
+  CHECK(fblang::fbcNumber(FbcDiagId::WendWithoutWhile, FbcMessageKind::Error,
+                          v1102) == 108);
+  CHECK(fblang::fbcNumber(FbcDiagId::ForNextVariableMismatch,
+                          FbcMessageKind::Error, v1102) == 283);
+  CHECK(fblang::fbcNumber(FbcDiagId::NextVarMeaningless,
+                          FbcMessageKind::Warning, v1102) == 26);
+
   // No identity is no number, in either space.
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Error, v1102) == 0);
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Warning, v1102) ==

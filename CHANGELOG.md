@@ -26,6 +26,72 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-06 — M23 G2: the loop diagnostic family
+
+- **Two new messages, plus six pins.** `283 FORNEXTVARIABLEMISMATCH`
+  (`for-next-variable-mismatch`) and warning `26 NEXTVARMEANINGLESS`
+  (`next-var-meaningless`) are new `FbcDiagId` identities resolved through
+  the version-range table; the texts stay translatable `trf` strings with
+  the keywords and identifiers as arguments. `13 EXPECTEDNEXT`, `29
+  EXPECTEDLOOP`, `30 EXPECTEDWEND`, `106 LOOPWITHOUTDO`, `107
+  NEXTWITHOUTFOR`, and `108 WENDWITHOUTWHILE` already resolved through the
+  landed `unterminated-block`/`stray-closer` routing and needed no new work
+  beyond pinning tests each (`parser_checks` anchors and identities,
+  `fbc_diagnostics_checks` numbers). `po/freebasicd.pot` regenerated.
+- **The probe table (fbc 1.10.3, one line per shape class).** Nested
+  loops closed by `next j, i` (innermost name first, valid): silence for
+  errors. `next i, j` (outer name first): `283` twice, one per name, in
+  name order. More names than open loops (`next j, i, k` and `next j, i,
+  k, k2` over two loops): `107` once for the remainder, never per extra
+  name. `next <name>` undeclared (`next qq` after `for i`): `error 42`,
+  not `283`. `next <name>` declared but not a counter (`next k` after
+  `for i`): `283`. `next <outer counter>` skipping the inner loop
+  (single-name `next i` then `next j`): `283` on each line. `next` with
+  different casing (`next I` after `for i`): silence, as expected.
+  A single `For` closed by `next i, i` (the same name twice): the first
+  name matches, the second is `107`.
+- **Warning `26` fires for every declared variable following `Next`,
+  matching or not, one per name.** A typed counter (`for i as integer …
+  next i`) and a counter whose spelling carries an explicit type draw the
+  same warning as the untyped form; a bare `Next` draws none; an
+  undeclared name draws none; a stray or excess name draws none; a nested
+  `next j, i` draws two (innermost first) and `next i, i` draws one for
+  the matching name before its `107`. Without the `-w next` check the
+  table above is silence-or-error as written; with it every named shape
+  additionally carries the warning.
+- **The pop is the check.** A `For` block carries its counter as written
+  and by canonical key, read from the header's first token; a member
+  (`w.x`) or element (`a(0)`) spells `.`/`(` next and stays silent for
+  `283`. One `Next` closes one `For` per name it carries, innermost
+  first, each name judged against the loop it closes (`283` anchored on
+  its token, the message naming the expected counter and the found
+  name); a bare `Next` closes one and a trailing comma closes the next
+  loop bare. A member spelling in `Next` (`next w.x` after a plain
+  `for i`) is still a name to judge. Undeclared names stay silent (the
+  `42` is the resolve layer's), and the stray remainder is one
+  `107` through the existing shape.
+- **Tests.** `parser_checks` gains `TestLoopFamily`: the false-positive
+  fix (`next j, i` draws no `unterminated-block`), `283` on the probed
+  mismatch shapes with anchors and messages, silence for casing, the
+  suffixed name, separate `Next`s, a bare `Next`, and the typed counter,
+  one warning `26` per declared name (none for bare or undeclared), the
+  `107` remaining exactly once for excess and duplicate names, the
+  member/element counter staying silent for `283`, and the 13/29/30 and
+  106/107/108 pins with anchors. `fbc_diagnostics_checks` pins all eight
+  numbers. The corpus gains `blocks_for_multi` (`@fbc:pass`, the
+  multi-name form) and `err_for_next_mismatch` (`@fbc:fail`), each with
+  its `.diag` golden; the three pre-existing named-`Next` pass files
+  gain their one-line `next-var-meaningless` golden (73 files), and the
+  format corpus gate covers the new shapes too.
+- **Deliberate limits, recorded at `FreeBASIC.md` §12.32.** An
+  undeclared `Next` name is silent here (fbc `42`, M22/M24); a
+  non-identifier tail (`next (i)`, `next 1`) closes bare and leaves
+  `error 3` (G5) unjudged; a `Next` over an intervening non-`For`
+  block keeps the landed `closer-mismatch`/`unterminated-block` shape
+  rather than fbc's `Expected 'WEND'`/`Expected 'LOOP'`; and a
+  member/element counter stays silent for `283` (fbc `52` is outside
+  this family). None of these is a guess at a new check.
+
 ### 2026-11-06 — M23 G1: the `select` diagnostic family
 
 - **Six new messages, all carrying fbc's number and wiki link.** `62

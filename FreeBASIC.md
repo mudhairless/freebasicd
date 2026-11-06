@@ -1455,6 +1455,40 @@ to "the language is what the lexer does":
       in an As Const Select (fbc `11`/`24`, outside this family) stay
       silent for `323`.
 
+32. **The loop families (M23 G2) report the probed shapes, with four
+    recorded limits.** `13` fires for a `For` with no `Next`, `29` for
+    a `Do` with no `Loop`, `30` for a `While` with no `Wend`, `107`
+    for a `Next` with no `For`, `106` for a `Loop` with no `Do`, `108`
+    for a `Wend` with no `While`, `283` for a `Next` name that does
+    not name the `For` it closes (compared by canonical key, anchored
+    on the name token), and warning `26` once per declared variable
+    following `Next` (matching or not) whenever the `-w next` check is
+    on. One `Next` closes one `For` per name it carries, innermost
+    first; a bare `Next` closes one, and a trailing comma closes the
+    next loop bare (`fbc`, probed). The limits, each a miss rather than
+    a guess at a new check:
+    - An undeclared `Next` name stays silent here (fbc `42`): the
+      mismatch and the warning both need a name the file declares, so
+      `next qq` after `for i` draws neither where fbc reports `42`.
+      That is the resolve layer's number (M22/M24), not this family's.
+    - A `Next` name that runs out of `For`s reports the stray remainder
+      once (`107`), never once per extra name, and excess names draw
+      no warning (probed: `next j, i, k` over two loops is one
+      `107`).
+    - A counter that is not a plain identifier (a member `w.x` or an
+      element `a(0)`) stays silent for `283`: fbc answers `52` there
+      (outside this family) and then `283` against a counter it faked.
+      Reporting `283` without `52` would be a wrong number for a loop
+      the compiler itself rejects first, so the name check does not
+      run for that loop (the warning still does). A bare `Next` and a
+      trailing comma still close it.
+    - A non-identifier tail (`next (i)`, `next 1`) closes one loop
+      bare, as fbc does before its `error 3` (G5); that `3` is not
+      judged here. A `Next` met over an intervening non-`For` block
+      keeps the landed mismatch shape (`closer-mismatch` plus
+      `unterminated-block`) rather than fbc's `Expected 'WEND'` /
+      `Expected 'LOOP'` (pre-existing).
+
 ## 13. Where the diagnostics come from (compiler source)
 
 Every `error N` / `warning N` in this file is a real fbc message, and fbc's

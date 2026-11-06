@@ -81,6 +81,14 @@ struct Block {
   // Const` (the only form whose Case ranges fbc judges, error 323).
   bool seenCase = false;
   bool selectConst = false;
+  // `For` counter state (M23 G2): the counter as written in the header and
+  // its canonical key, for the 283 name check. `forCounterPlain` is false
+  // when the counter is not a plain identifier (member `w.x`, element
+  // `a(0)`, or no identifier at all), in which case the check stays
+  // silent for that loop.
+  std::string forCounterName;
+  std::string forCounterKey;
+  bool forCounterPlain = false;
 };
 
 struct Container {
@@ -1816,6 +1824,10 @@ private:
       }
       BlockCloser c;
       blockForCloser(w, &c);
+      if (c.kind == BlockKind::For) {
+        handleNext();
+        return;
+      }
       handlePlainCloser(c);
       return;
     }
@@ -2099,6 +2111,21 @@ private:
   void handleFor() {
     Token const openTok = cur_;
     pushBlockFromOpener("for");
+    // Record the counter for the 283 check: the header's first token must
+    // be a plain identifier. A member (`w.x`) or element (`a(0)`) spells
+    // `.`/`(` next, so the check stays silent for that loop; anything else
+    // without an identifier is silent too.
+    {
+      Token const nameTok = lex_.peek(0);
+      Token const afterTok = lex_.peek(1);
+      if (nameTok.kind == TokenKind::Identifier &&
+          !(afterTok.kind == TokenKind::Symbol &&
+            (afterTok.text() == "." || afterTok.text() == "("))) {
+        blocks_.back().forCounterName = std::string(nameTok.text());
+        blocks_.back().forCounterKey = keyFor(nameTok.text());
+        blocks_.back().forCounterPlain = true;
+      }
+    }
     // Peek the header while the lexer still sits on `for` (peek is relative
     // to the token after cur_): peek(0) is the counter, peek(1) the `as`.
     registerForCounter(openTok);
@@ -3227,6 +3254,152 @@ private:
       return;
     }
     closeBlock(closerTok.end);
+    advance();
+    resetDoc();
+    skipStatement();
+  }
+
+  // Whether a value name with canonical key `key` has been declared so far in
+  // this file (the tree reachable from roots). A `Next` name fbc cannot
+  // find there is its error 42, not 283, so the Next-name checks stay
+  // silent rather than invent a wrong number. Only value kinds count: a
+  // Type/Union/Enum with the same key is a different namespace and would
+  // still be 42 as a Next variable.
+  bool valueNamedDeclared(const std::string &key) {
+    std::vector<Symbol const *> stack;
+    for (auto const &r : out_.roots) {
+      stack.push_back(&r);
+    }
+    while (!stack.empty()) {
+      Symbol const *s = stack.back();
+      stack.pop_back();
+      if (s->key == key &&
+          (s->kind == SymbolKind::Dim || s->kind == SymbolKind::Variable ||
+           s->kind == SymbolKind::Parameter || s->kind == SymbolKind::Const)) {
+        return true;
+      }
+      for (auto const &c : s->children) {
+        stack.push_back(&c);
+      }
+    }
+    return false;
+  }
+
+  // `NEXT [name [, name ...]]` (M23 G2): one `Next` closes one `For` per
+  // name it carries, innermost first; a bare `Next` closes one. The pop
+  // logic and the mismatch check are the same walk: each name is checked
+  // against the `For` it closes (283, anchored on its token, the message
+  // naming the counter as written and the name found) and carries the
+  // warning-26 "meaningless variable" alongside it. Both run only when the
+  // name resolves to a declared value; an undeclared name is fbc error 42
+  // and stays silent here (probed). A `Next` whose names run out of `For`s
+  // reports the stray remainder once through the existing stray-closer
+  // shape, never once per extra name (probed: excess names draw no
+  // warning either). A counter that is not a plain identifier stays
+  // silent for 283 (the warning still runs); the non-identifier tail
+  // (fbc error 3) belongs to G5 and is not judged here beyond closing
+  // one `For` for it, bare, as fbc does.
+  void handleNext() {
+    Token const closerTok = cur_;
+    std::vector<Token> const toks = statementTokens();
+    struct NextSlot {
+      bool bare = true;
+      Token tok{};
+      bool hasTok = false;
+      bool emptySegment = false;
+    };
+    std::vector<NextSlot> slots;
+    if (toks.size() <= 1) {
+      NextSlot s;
+      s.bare = true;
+      s.emptySegment = true;
+      slots.push_back(s);
+    } else {
+      bool segHasFirst = false;
+      Token segFirst{};
+      bool segFirstIsIdent = false;
+      int paren = 0;
+      auto emit = [&] {
+        NextSlot s;
+        if (!segHasFirst) {
+          s.bare = true;
+          s.emptySegment = true;
+        } else if (segFirstIsIdent) {
+          s.bare = false;
+          s.tok = segFirst;
+          s.hasTok = true;
+        } else {
+          s.bare = true;
+          s.emptySegment = false;
+        }
+        slots.push_back(s);
+        segHasFirst = false;
+        segFirstIsIdent = false;
+      };
+      for (std::size_t i = 1; i < toks.size(); ++i) {
+        Token const &t = toks[i];
+        if (tokenIsSymbol(t, "(")) {
+          ++paren;
+        } else if (tokenIsSymbol(t, ")") && paren > 0) {
+          --paren;
+        }
+        if (paren == 0 && tokenIsSymbol(t, ",")) {
+          emit();
+          continue;
+        }
+        if (!segHasFirst) {
+          segHasFirst = true;
+          segFirst = t;
+          segFirstIsIdent = (t.kind == TokenKind::Identifier);
+        }
+      }
+      emit();
+    }
+    for (NextSlot const &slot : slots) {
+      if (blocks_.empty()) {
+        addDiagnostic(closerTok.beg, closerTok.end, Severity::Error,
+                      "stray-closer", trf("%s without %s", "NEXT", "FOR"),
+                      FbcDiagId::NextWithoutFor);
+        break;
+      }
+      if (blocks_.back().kind != BlockKind::For) {
+        Block const topCopy = blocks_.back();
+        closeBeforeMismatchedCloser(closerTok.beg, topCopy);
+        if (blocks_.empty() || blocks_.back().kind != BlockKind::For) {
+          break;
+        }
+      }
+      Block const forBlock = blocks_.back();
+      bool const hasName = !slot.bare && slot.hasTok;
+      std::string foundText;
+      std::string foundKey;
+      bool declared = false;
+      if (hasName) {
+        foundText = std::string(slot.tok.text());
+        foundKey = keyFor(slot.tok.text());
+        declared = valueNamedDeclared(foundKey);
+      }
+      if (hasName && forBlock.forCounterPlain && declared &&
+          foundKey != forBlock.forCounterKey) {
+        addDiagnostic(slot.tok.beg, slot.tok.end, Severity::Error,
+                      "for-next-variable-mismatch",
+                      trf("%s variable name mismatch: expected '%s', "
+                          "found '%s'",
+                          "FOR/NEXT", forBlock.forCounterName, foundText),
+                      FbcDiagId::ForNextVariableMismatch);
+      }
+      if (hasName && declared) {
+        addDiagnostic(slot.tok.beg, slot.tok.end, Severity::Warning,
+                      "next-var-meaningless",
+                      trf("variable following %s is meaningless: '%s'", "NEXT",
+                          foundText),
+                      FbcDiagId::NextVarMeaningless, FbcMessageKind::Warning);
+      }
+      closeBlock(closerTok.end);
+      if (slot.bare) {
+        break;
+      }
+    }
     advance();
     resetDoc();
     skipStatement();

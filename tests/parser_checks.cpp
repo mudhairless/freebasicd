@@ -1687,6 +1687,358 @@ static void TestSelectFamily() {
     CHECK(diagnosticCount(str, "invalid-case-range") == 0);
   }
 }
+// The loop families (M23 G2): 13 EXPECTEDNEXT, 29 EXPECTEDLOOP,
+// 30 EXPECTEDWEND, 106 LOOPWITHOUTDO, 107 NEXTWITHOUTFOR,
+// 108 WENDWITHOUTWHILE, 283 FORNEXTVARIABLEMISMATCH, and warning 26
+// NEXTVARMEANINGLESS. Every shape was probed against fbc 1.10.3; the
+// anchor is the opener for the Expected pair, the stray word for the
+// without pair, and the name token for 283/warning 26.
+static void TestLoopFamily() {
+  // The false-positive fix: one `Next` closes one `For` per name it
+  // carries, innermost first, so `next j, i` is silent. A bare `Next`
+  // closes one. (Probed: fbc compiles the multi-name form clean; before
+  // this wave it drew a bogus `unterminated-block` for the outer loop.)
+  {
+    std::string const src = "dim i as integer\n"
+                            "dim j as integer\n"
+                            "for i = 1 to 2\n"
+                            "  for j = 1 to 2\n"
+                            "    print i, j\n"
+                            "  next j, i\n"
+                            "print \"ok\"\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(diagnosticCount(r, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(r, "stray-closer") == 0);
+    CHECK(diagnosticCount(r, "next-var-meaningless") == 2);
+    CHECK(fbcErrorFor(r, "next-var-meaningless") ==
+          FbcDiagId::NextVarMeaningless);
+    CHECK(r.diagnostics.size() == 2);
+    if (r.diagnostics.size() == 2) {
+      CHECK(r.diagnostics[0].severity == Severity::Warning);
+      CHECK(r.diagnostics[0].fbcKind == FbcMessageKind::Warning);
+      CHECK(r.diagnostics[0].range.beg ==
+            static_cast<uint32_t>(src.find("next j, i") + 5));
+      CHECK(r.diagnostics[0].range.end ==
+            static_cast<uint32_t>(src.find("next j, i") + 6));
+      CHECK(r.diagnostics[0].message ==
+            "variable following NEXT is meaningless: 'j'");
+      CHECK(r.diagnostics[1].range.beg ==
+            static_cast<uint32_t>(src.find("next j, i") + 8));
+      CHECK(r.diagnostics[1].range.end ==
+            static_cast<uint32_t>(src.find("next j, i") + 9));
+    }
+    // Separate `Next`s (each closes its own loop) are silent too, and a
+    // trailing comma still closes the outer loop bare (probed).
+    ParseResult separate = parseDocument("dim i as integer\n"
+                                         "dim j as integer\n"
+                                         "for i = 1 to 2\n"
+                                         "  for j = 1 to 2\n"
+                                         "    print i, j\n"
+                                         "  next j\n"
+                                         "next i\n"
+                                         "print \"ok\"\n");
+    CHECK(diagnosticCount(separate, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(separate, "unterminated-block") == 0);
+    CHECK(diagnosticCount(separate, "next-var-meaningless") == 2);
+    ParseResult trailing = parseDocument("dim i as integer\n"
+                                         "dim j as integer\n"
+                                         "for i = 1 to 2\n"
+                                         "  for j = 1 to 2\n"
+                                         "    print i, j\n"
+                                         "  next j,\n"
+                                         "print \"ok\"\n");
+    CHECK(diagnosticCount(trailing, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(trailing, "stray-closer") == 0);
+    CHECK(diagnosticCount(trailing, "next-var-meaningless") == 1);
+  }
+
+  // 283 FORNEXTVARIABLEMISMATCH: each name is checked against the `For`
+  // it closes, anchored on its token, the message naming the counter
+  // (expected) and the name found. A `Next` still closes its loop on a
+  // mismatch, so no `unterminated-block` follows (probed).
+  {
+    std::string const src = "dim i as integer\n"
+                            "dim k as integer\n"
+                            "for i = 1 to 2\n"
+                            "  print i\n"
+                            "next k\n"
+                            "print \"ok\"\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "for-next-variable-mismatch") == 1);
+    CHECK(fbcErrorFor(r, "for-next-variable-mismatch") ==
+          FbcDiagId::ForNextVariableMismatch);
+    CHECK(diagnosticCount(r, "next-var-meaningless") == 1);
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(r.diagnostics.size() == 2);
+    if (!r.diagnostics.empty()) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].range.beg ==
+            static_cast<uint32_t>(src.find("next k") + 5));
+      CHECK(r.diagnostics[0].range.end ==
+            static_cast<uint32_t>(src.find("next k") + 6));
+      CHECK(r.diagnostics[0].message ==
+            "FOR/NEXT variable name mismatch: expected 'i', found 'k'");
+    }
+    // Outer name first (`next i, j`): both names mismatch their loops,
+    // one diagnostic per name (probed: two 283, in name order).
+    ParseResult outerFirst = parseDocument("dim i as integer\n"
+                                           "dim j as integer\n"
+                                           "for i = 1 to 2\n"
+                                           "  for j = 1 to 2\n"
+                                           "    print i, j\n"
+                                           "  next i, j\n"
+                                           "print \"ok\"\n");
+    CHECK(diagnosticCount(outerFirst, "for-next-variable-mismatch") == 2);
+    CHECK(diagnosticCount(outerFirst, "next-var-meaningless") == 2);
+    CHECK(diagnosticCount(outerFirst, "unterminated-block") == 0);
+    CHECK(diagnosticCount(outerFirst, "stray-closer") == 0);
+    // Skipping the inner loop with two single-name `Next`s: each closes
+    // the innermost loop and mismatches it (probed: 283 on each line).
+    ParseResult skip = parseDocument("dim i as integer\n"
+                                     "dim j as integer\n"
+                                     "for i = 1 to 2\n"
+                                     "  for j = 1 to 2\n"
+                                     "    print i, j\n"
+                                     "  next i\n"
+                                     "next j\n"
+                                     "print \"ok\"\n");
+    CHECK(diagnosticCount(skip, "for-next-variable-mismatch") == 2);
+    CHECK(diagnosticCount(skip, "unterminated-block") == 0);
+    // A member spelling in `Next` is still a name to judge (probed: 283).
+    ParseResult memberNext = parseDocument("type t\n"
+                                           "  x as integer\n"
+                                           "end type\n"
+                                           "dim w as t\n"
+                                           "dim i as integer\n"
+                                           "for i = 1 to 2\n"
+                                           "  print i\n"
+                                           "next w.x\n"
+                                           "print \"ok\"\n");
+    CHECK(diagnosticCount(memberNext, "for-next-variable-mismatch") == 1);
+  }
+
+  // Silence on the probed clean shapes: different casing, a suffix that
+  // canonicalizes away, and a bare `Next`. Names compare by canonical
+  // key, never raw (probed: `next I` and `next i$` compile).
+  {
+    ParseResult casing = parseDocument("dim i as integer\n"
+                                       "for i = 1 to 2\n"
+                                       "  print i\n"
+                                       "next I\n"
+                                       "print \"ok\"\n");
+    CHECK(diagnosticCount(casing, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(casing, "next-var-meaningless") == 1);
+    ParseResult suffix = parseDocument("dim i as integer\n"
+                                       "for i = 1 to 2\n"
+                                       "  print i\n"
+                                       "next i$\n"
+                                       "print \"ok\"\n");
+    CHECK(diagnosticCount(suffix, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(suffix, "next-var-meaningless") == 1);
+    ParseResult bare = parseDocument("dim i as integer\n"
+                                     "for i = 1 to 2\n"
+                                     "  print i\n"
+                                     "next\n"
+                                     "print \"ok\"\n");
+    CHECK(bare.diagnostics.empty());
+    ParseResult typed = parseDocument("for i as integer = 1 to 2\n"
+                                      "  print i\n"
+                                      "next i\n"
+                                      "print \"ok\"\n");
+    CHECK(diagnosticCount(typed, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(typed, "next-var-meaningless") == 1);
+  }
+
+  // Undeclared and non-plain-counter shapes stay silent for 283. An
+  // undeclared `Next` name is fbc error 42 (the resolve layer, not this
+  // family), and a member/element counter cannot be named (fbc error
+  // 52, outside this family); the warning still runs for the latter.
+  {
+    ParseResult undec = parseDocument("dim i as integer\n"
+                                      "for i = 1 to 2\n"
+                                      "  print i\n"
+                                      "next qq\n"
+                                      "print \"ok\"\n");
+    CHECK(undec.diagnostics.empty());
+    ParseResult memberCounter = parseDocument("type t\n"
+                                              "  x as integer\n"
+                                              "end type\n"
+                                              "dim w as t\n"
+                                              "for w.x = 1 to 2\n"
+                                              "  print w.x\n"
+                                              "next w.x\n"
+                                              "print \"ok\"\n");
+    CHECK(diagnosticCount(memberCounter, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(memberCounter, "next-var-meaningless") == 1);
+    ParseResult elementCounter = parseDocument("dim a(10) as integer\n"
+                                               "for a(0) = 1 to 2\n"
+                                               "  print a(0)\n"
+                                               "next a(0)\n"
+                                               "print \"ok\"\n");
+    CHECK(diagnosticCount(elementCounter, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(elementCounter, "next-var-meaningless") == 1);
+  }
+
+  // No cascades: names that run out of `For`s report the stray remainder
+  // once through `stray-closer`, never once per extra name (probed:
+  // excess names draw no warning either).
+  {
+    ParseResult excess = parseDocument("dim i as integer\n"
+                                       "dim j as integer\n"
+                                       "dim k as integer\n"
+                                       "for i = 1 to 2\n"
+                                       "  for j = 1 to 2\n"
+                                       "    print i, j\n"
+                                       "  next j, i, k\n"
+                                       "print \"ok\"\n");
+    CHECK(diagnosticCount(excess, "stray-closer") == 1);
+    CHECK(fbcErrorFor(excess, "stray-closer") == FbcDiagId::NextWithoutFor);
+    CHECK(diagnosticCount(excess, "next-var-meaningless") == 2);
+    CHECK(diagnosticCount(excess, "unterminated-block") == 0);
+    CHECK(diagnosticCount(excess, "for-next-variable-mismatch") == 0);
+    ParseResult twoExtra = parseDocument("dim i as integer\n"
+                                         "dim j as integer\n"
+                                         "dim k as integer\n"
+                                         "dim k2 as integer\n"
+                                         "for i = 1 to 2\n"
+                                         "  for j = 1 to 2\n"
+                                         "    print i, j\n"
+                                         "  next j, i, k, k2\n"
+                                         "print \"ok\"\n");
+    CHECK(diagnosticCount(twoExtra, "stray-closer") == 1);
+    CHECK(diagnosticCount(twoExtra, "next-var-meaningless") == 2);
+    ParseResult dup = parseDocument("dim i as integer\n"
+                                    "for i = 1 to 2\n"
+                                    "  print i\n"
+                                    "next i, i\n"
+                                    "print \"ok\"\n");
+    CHECK(diagnosticCount(dup, "stray-closer") == 1);
+    CHECK(diagnosticCount(dup, "next-var-meaningless") == 1);
+    CHECK(diagnosticCount(dup, "unterminated-block") == 0);
+  }
+
+  // 13 / 29 / 30 pinning: the unterminated loop carries its specific
+  // Expected identity, anchored on the opener (already routed; these
+  // pin the loop trio the family owns).
+  {
+    std::string const srcFor = "for i = 1 to 2\nprint i\n";
+    ParseResult rFor = parseDocument(srcFor);
+    CHECK(diagnosticCount(rFor, "unterminated-block") == 1);
+    CHECK(fbcErrorFor(rFor, "unterminated-block") == FbcDiagId::ExpectedNext);
+    CHECK(rFor.diagnostics.size() == 1);
+    if (rFor.diagnostics.size() == 1) {
+      CHECK(rFor.diagnostics[0].severity == Severity::Error);
+      CHECK(rFor.diagnostics[0].range.beg == 0);
+      CHECK(rFor.diagnostics[0].range.end == 3);
+    }
+    ParseResult rWhile = parseDocument("while 1\nprint 1\n");
+    CHECK(diagnosticCount(rWhile, "unterminated-block") == 1);
+    CHECK(fbcErrorFor(rWhile, "unterminated-block") == FbcDiagId::ExpectedWend);
+    CHECK(rWhile.diagnostics.size() == 1);
+    if (rWhile.diagnostics.size() == 1) {
+      CHECK(rWhile.diagnostics[0].range.beg == 0);
+      CHECK(rWhile.diagnostics[0].range.end == 5);
+    }
+    ParseResult rDo = parseDocument("do\nprint 1\n");
+    CHECK(diagnosticCount(rDo, "unterminated-block") == 1);
+    CHECK(fbcErrorFor(rDo, "unterminated-block") == FbcDiagId::ExpectedLoop);
+    CHECK(rDo.diagnostics.size() == 1);
+    if (rDo.diagnostics.size() == 1) {
+      CHECK(rDo.diagnostics[0].range.beg == 0);
+      CHECK(rDo.diagnostics[0].range.end == 2);
+    }
+  }
+
+  // 106 / 107 / 108 pinning: the stray closer carries its specific
+  // without identity, anchored on the stray word (already routed
+  // through `stray-closer`; these pin the loop trio).
+  {
+    std::string const srcNext = "next\n";
+    ParseResult rNext = parseDocument(srcNext);
+    CHECK(diagnosticCount(rNext, "stray-closer") == 1);
+    CHECK(fbcErrorFor(rNext, "stray-closer") == FbcDiagId::NextWithoutFor);
+    CHECK(rNext.diagnostics.size() == 1);
+    if (rNext.diagnostics.size() == 1) {
+      CHECK(rNext.diagnostics[0].severity == Severity::Error);
+      CHECK(rNext.diagnostics[0].range.beg == 0);
+      CHECK(rNext.diagnostics[0].range.end == 4);
+    }
+    ParseResult rNextNamed = parseDocument("next i, j\n");
+    CHECK(diagnosticCount(rNextNamed, "stray-closer") == 1);
+    CHECK(fbcErrorFor(rNextNamed, "stray-closer") == FbcDiagId::NextWithoutFor);
+    CHECK(diagnosticCount(rNextNamed, "next-var-meaningless") == 0);
+    ParseResult rLoop = parseDocument("loop\n");
+    CHECK(diagnosticCount(rLoop, "stray-closer") == 1);
+    CHECK(fbcErrorFor(rLoop, "stray-closer") == FbcDiagId::LoopWithoutDo);
+    CHECK(rLoop.diagnostics.size() == 1);
+    if (rLoop.diagnostics.size() == 1) {
+      CHECK(rLoop.diagnostics[0].range.beg == 0);
+      CHECK(rLoop.diagnostics[0].range.end == 4);
+    }
+    ParseResult rWend = parseDocument("wend\n");
+    CHECK(diagnosticCount(rWend, "stray-closer") == 1);
+    CHECK(fbcErrorFor(rWend, "stray-closer") == FbcDiagId::WendWithoutWhile);
+    CHECK(rWend.diagnostics.size() == 1);
+    if (rWend.diagnostics.size() == 1) {
+      CHECK(rWend.diagnostics[0].range.beg == 0);
+      CHECK(rWend.diagnostics[0].range.end == 4);
+    }
+  }
+
+  // Warning 26 NEXTVARMEANINGLESS: one per declared name after `Next`
+  // (matching or not, probed), none for a bare `Next` or an undeclared
+  // name. As a warning it rides the landed `-w` gate (catalog level 1)
+  // and the parser records it unconditionally.
+  {
+    ParseResult named = parseDocument("dim i as integer\n"
+                                      "for i = 1 to 2\n"
+                                      "  print i\n"
+                                      "next i\n"
+                                      "print \"ok\"\n");
+    CHECK(diagnosticCount(named, "next-var-meaningless") == 1);
+    CHECK(fbcErrorFor(named, "next-var-meaningless") ==
+          FbcDiagId::NextVarMeaningless);
+    CHECK(named.diagnostics.size() == 1);
+    if (named.diagnostics.size() == 1) {
+      CHECK(named.diagnostics[0].severity == Severity::Warning);
+      CHECK(named.diagnostics[0].fbcKind == FbcMessageKind::Warning);
+    }
+    ParseResult bare = parseDocument("dim i as integer\n"
+                                     "for i = 1 to 2\n"
+                                     "  print i\n"
+                                     "next\n"
+                                     "print \"ok\"\n");
+    CHECK(diagnosticCount(bare, "next-var-meaningless") == 0);
+    CHECK(bare.diagnostics.empty());
+    // A non-identifier tail still closes one loop bare (fbc error 3
+    // belongs to G5 and is not judged here).
+    ParseResult num = parseDocument("dim i as integer\n"
+                                    "for i = 1 to 2\n"
+                                    "  print i\n"
+                                    "next 1\n"
+                                    "print \"ok\"\n");
+    CHECK(diagnosticCount(num, "next-var-meaningless") == 0);
+    CHECK(diagnosticCount(num, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(num, "unterminated-block") == 0);
+    ParseResult paren = parseDocument("dim i as integer\n"
+                                      "for i = 1 to 2\n"
+                                      "  print i\n"
+                                      "next (i)\n"
+                                      "print \"ok\"\n");
+    CHECK(diagnosticCount(paren, "next-var-meaningless") == 0);
+    CHECK(diagnosticCount(paren, "for-next-variable-mismatch") == 0);
+    // `next i+1` carries its name (warning 26) while the `+1` tail stays
+    // for G5 (probed: warning 26 plus error 3).
+    ParseResult expr = parseDocument("dim i as integer\n"
+                                     "for i = 1 to 2\n"
+                                     "  print i\n"
+                                     "next i+1\n"
+                                     "print \"ok\"\n");
+    CHECK(diagnosticCount(expr, "next-var-meaningless") == 1);
+    CHECK(diagnosticCount(expr, "for-next-variable-mismatch") == 0);
+  }
+}
 
 int main() {
   // A realistic multi-construct program must parse with zero diagnostics.
@@ -1734,7 +2086,10 @@ int main() {
                             "\n"
                             "app.greet()\n";
     ParseResult r = parseDocument(src);
-    CHECK(r.diagnostics.empty());
+    CHECK(diagnosticCount(r, "next-var-meaningless") == 1);
+    CHECK(diagnosticCount(r, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(diagnosticCount(r, "stray-closer") == 0);
     CHECK(r.lang == "fb");
     CHECK(r.roots.size() == 7); // clamp, vec2, keys, p, i, app, for-scope
 
@@ -1800,7 +2155,10 @@ int main() {
                                   "    for i as single = 0.5 to 2.5\n"
                                   "    next i\n"
                                   "end sub\n");
-    CHECK(r.diagnostics.empty());
+    CHECK(diagnosticCount(r, "next-var-meaningless") == 2);
+    CHECK(diagnosticCount(r, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(diagnosticCount(r, "stray-closer") == 0);
     const Symbol *foo = find(r.roots, "foo", SymbolKind::Sub);
     CHECK(foo != nullptr);
     // Three FOR declaration scopes: `as`-typed counter, bare reuse, `as`-typed
@@ -1832,7 +2190,10 @@ int main() {
                                   "    for i as integer = 0 to 2\n"
                                   "    next i\n"
                                   "next i\n");
-    CHECK(r.diagnostics.empty());
+    CHECK(diagnosticCount(r, "next-var-meaningless") == 2);
+    CHECK(diagnosticCount(r, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(diagnosticCount(r, "stray-closer") == 0);
     const Symbol *outer = nullptr;
     for (const Symbol &root : r.roots) {
       if (root.kind == SymbolKind::Scope && root.name == "for") {
@@ -2246,7 +2607,10 @@ int main() {
                                   "        next i\n"
                                   "    end with\n"
                                   "end sub\n");
-    CHECK(r.diagnostics.empty());
+    CHECK(diagnosticCount(r, "next-var-meaningless") == 1);
+    CHECK(diagnosticCount(r, "for-next-variable-mismatch") == 0);
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(diagnosticCount(r, "stray-closer") == 0);
   }
 
   // TYPE members are captured as the declared *member* names, never the type
@@ -3365,6 +3729,7 @@ int main() {
   TestAsmBlockRawBody();
   TestModuleLevelStatementRanges();
   TestSelectFamily();
+  TestLoopFamily();
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

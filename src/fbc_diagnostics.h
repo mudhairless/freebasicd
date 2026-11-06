@@ -86,6 +86,8 @@ enum class FbcDiagId {
   ExpectedSelect,
   NoEnclosedSelect,
   InvalidCaseRange,
+  ForNextVariableMismatch,
+  NextVarMeaningless,
   Count
 };
 

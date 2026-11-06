@@ -568,11 +568,19 @@ landing as their own step.
   in the multi-target `Exit Select, <target>` form, and 323 only in
   `Select Case As Const`. Limits are recorded at `FreeBASIC.md` §12.31;
   the dated entry is in `CHANGELOG.md`.
-- **G2 — the loop families.** `For`: `EXPECTEDNEXT`, `107 NEXTWITHOUTFOR`,
-  `283 FORNEXTVARIABLEMISMATCH`; `Do` / `While`: the `WHILE`/`WEND` pair not
-  already covered by the landed closer family. Warning `26
-  NEXTVARMEANINGLESS` rides here rather than in G7: it is about the `Next`
-  variable.
+- **G2 — the loop families — landed (2026-11-06).** `13
+  EXPECTEDNEXT`, `29 EXPECTEDLOOP`, `30 EXPECTEDWEND`, `106
+  LOOPWITHOUTDO`, `107 NEXTWITHOUTFOR`, `108 WENDWITHOUTWHILE`, `283
+  FORNEXTVARIABLEMISMATCH`, and warning `26 NEXTVARMEANINGLESS`, all
+  token- and stack-keyed off the `For` handling that already exists (a
+  `For` block carries its counter as written and by canonical key; one
+  `Next` closes one `For` per name, innermost first, the pop and the
+  `283` check being the same walk). The probe shaped the excess rule
+  (one `107` for the remainder, never per extra name), the silence for
+  undeclared names (fbc `42`) and member/element counters (fbc `52`),
+  and warning `26` itself (every declared name after `Next`, matching
+  or not, one per name). Limits are recorded at `FreeBASIC.md` §12.32;
+  the dated entry is in `CHANGELOG.md`.
 - **G3 — `Exit` / `Continue` placement.** `251 INVALIDEXITSTMT` and `252
   INVALIDCONTINUESTMT`: the innermost block on the stack decides legality.
   Small; it may ride with G4.
