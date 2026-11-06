@@ -368,6 +368,139 @@ static void TestStep2bParsingFixes() {
   }
 }
 
+static void TestQualifiedTypeFirstVarDecls() {
+  // A type-first declaration whose type is a dot-qualified name: the whole
+  // path is the type, and the variable is the identifier after it. The
+  // skipper used to stop at the dot and register the type's leaf as the
+  // declared name, so the second declaration reported a false duplicate.
+  std::string const repro = "namespace gfx\n"
+                            "    type sprite\n"
+                            "        w as integer\n"
+                            "    end type\n"
+                            "end namespace\n"
+                            "\n"
+                            "dim as gfx.sprite ptr firstImage\n"
+                            "dim as gfx.sprite ptr secondImage\n";
+  ParseResult const r = parseDocument(repro);
+  CHECK(r.diagnostics.empty());
+  CHECK(diagnosticCount(r, "duplicate-definition") == 0);
+  Symbol const *first = find(r.roots, "firstimage", SymbolKind::Dim);
+  Symbol const *second = find(r.roots, "secondimage", SymbolKind::Dim);
+  CHECK(first != nullptr);
+  CHECK(second != nullptr);
+  CHECK(find(r.roots, "sprite", SymbolKind::Dim) == nullptr);
+  if (first != nullptr) {
+    CHECK(first->name == "firstImage");
+    CHECK(first->selection.beg == repro.find("firstImage"));
+    CHECK(first->selection.end == repro.find("firstImage") + 10);
+  }
+  if (second != nullptr) {
+    CHECK(second->name == "secondImage");
+    CHECK(second->selection.beg == repro.find("secondImage"));
+    CHECK(second->selection.end == repro.find("secondImage") + 11);
+  }
+
+  // The same leaf name from two namespaces: both declarations name their own
+  // variable, and neither type leaf becomes a variable.
+  {
+    ParseResult const two = parseDocument("namespace a\n"
+                                          "    type sprite\n"
+                                          "        x as integer\n"
+                                          "    end type\n"
+                                          "end namespace\n"
+                                          "namespace b\n"
+                                          "    type sprite\n"
+                                          "        y as integer\n"
+                                          "    end type\n"
+                                          "end namespace\n"
+                                          "dim as a.sprite ptr lhs\n"
+                                          "dim as b.sprite ptr rhs\n");
+    CHECK(two.diagnostics.empty());
+    CHECK(find(two.roots, "lhs", SymbolKind::Dim) != nullptr);
+    CHECK(find(two.roots, "rhs", SymbolKind::Dim) != nullptr);
+    CHECK(find(two.roots, "sprite", SymbolKind::Dim) == nullptr);
+  }
+
+  // `const` may sit before the qualified type in the type-first form.
+  {
+    ParseResult const q = parseDocument("namespace gfx\n"
+                                        "    type sprite\n"
+                                        "        w as integer\n"
+                                        "    end type\n"
+                                        "end namespace\n"
+                                        "dim as const gfx.sprite ptr image\n");
+    CHECK(q.diagnostics.empty());
+    CHECK(find(q.roots, "image", SymbolKind::Dim) != nullptr);
+    CHECK(find(q.roots, "sprite", SymbolKind::Dim) == nullptr);
+  }
+
+  // The same type-first form as a record field: the field is the name after
+  // the qualified type, not the type's leaf.
+  {
+    ParseResult const field = parseDocument("namespace gfx\n"
+                                            "    type sprite\n"
+                                            "        w as integer\n"
+                                            "    end type\n"
+                                            "end namespace\n"
+                                            "type holder\n"
+                                            "    as gfx.sprite ptr image\n"
+                                            "end type\n");
+    CHECK(field.diagnostics.empty());
+    Symbol const *holder = find(field.roots, "holder", SymbolKind::Type);
+    CHECK(holder != nullptr);
+    CHECK(holder != nullptr &&
+          find(holder->children, "image", SymbolKind::Variable) != nullptr);
+    CHECK(holder != nullptr &&
+          find(holder->children, "sprite", SymbolKind::Variable) == nullptr);
+  }
+
+  // And a field line whose qualified type follows `const`.
+  {
+    ParseResult const field =
+        parseDocument("namespace gfx\n"
+                      "    type sprite\n"
+                      "        w as integer\n"
+                      "    end type\n"
+                      "end namespace\n"
+                      "type holder\n"
+                      "    as const gfx.sprite ptr image\n"
+                      "end type\n");
+    CHECK(field.diagnostics.empty());
+    Symbol const *holder = find(field.roots, "holder", SymbolKind::Type);
+    CHECK(holder != nullptr);
+    CHECK(holder != nullptr &&
+          find(holder->children, "image", SymbolKind::Variable) != nullptr);
+    CHECK(holder != nullptr &&
+          find(holder->children, "sprite", SymbolKind::Variable) == nullptr &&
+          find(holder->children, "gfx", SymbolKind::Variable) == nullptr);
+  }
+
+  // The documented chain cases are untouched: a type-first chain still ends
+  // at `ptr`, `as const t p` still names `p`, and a dangling `const` still
+  // reports on the word.
+  {
+    ParseResult const chain = parseDocument("type t\n"
+                                            "  x as integer\n"
+                                            "end type\n"
+                                            "type holder\n"
+                                            "  as const t p\n"
+                                            "end type\n"
+                                            "dim as integer ptr a, b\n");
+    CHECK(chain.diagnostics.empty());
+    CHECK(declares(chain, "p"));
+    CHECK(find(chain.roots, "a", SymbolKind::Dim) != nullptr);
+    CHECK(find(chain.roots, "b", SymbolKind::Dim) != nullptr);
+    CHECK(!declares(chain, "ptr"));
+  }
+  {
+    ParseResult const dangling = parseDocument("type t\n"
+                                               "  as integer const\n"
+                                               "end type\n");
+    CHECK(diagnosticCount(dangling, "invalid-member-name") == 1);
+    CHECK(!declares(dangling, "const"));
+  }
+}
+
 static void TestAnonymousDeclarationsNameAndSelect() {
   // The ProPgTypeUnion nesting: a named type, an anonymous union, and the
   // anonymous type inside that union (fbc compiles exactly this spelling).
@@ -2518,6 +2651,7 @@ int main() {
   }
 
   TestStep2bParsingFixes();
+  TestQualifiedTypeFirstVarDecls();
   TestKeywordSuffixWarning();
   TestIdentifierSuffixIdentity();
   TestAnonymousDeclarationsNameAndSelect();

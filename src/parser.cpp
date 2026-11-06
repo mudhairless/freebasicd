@@ -780,6 +780,18 @@ private:
         // member's signature still covers the full
         // line so the declared type survives for hover/resolve.
         advance();
+        // A dot-qualified type (`gfx.sprite`) is one type, not a head and a
+        // separate member access: consume the whole path so the field after
+        // it is the one captured (FreeBASIC.md §7).
+        auto const consumeQualifiedTail = [&] {
+          while (cur_.kind == TokenKind::Symbol && cur_.text() == ".") {
+            advance(); // the '.'
+            if (cur_.kind == TokenKind::Identifier ||
+                cur_.kind == TokenKind::Keyword) {
+              advance(); // the path segment
+            }
+          }
+        };
         // The type is one name token; a keyword is consumed as part of the
         // type only while a member name still follows, so `as integer name`
         // keeps `name` as the member while `as name n` (`name` is a keyword
@@ -787,6 +799,7 @@ private:
         // (fbc-verified): `as string name`.
         if (cur_.kind == TokenKind::Identifier) {
           advance();
+          consumeQualifiedTail();
         } else if (cur_.kind == TokenKind::Keyword) {
           Token const nxt = lex_.peek(0);
           bool const memberFollows = nxt.kind == TokenKind::Identifier ||
@@ -794,6 +807,7 @@ private:
                                       toLowerChars(nxt.text()) != "as");
           if (isBuiltinType(toLowerChars(cur_.text())) || memberFollows) {
             advance();
+            consumeQualifiedTail();
           }
         }
         // The type half is a chain, not one word: `as integer ptr p`,
@@ -805,15 +819,32 @@ private:
         // word with no name behind it is left alone: `as integer ptr` is
         // `error 14: Expected identifier` in fbc, and the report on the
         // dangling word is the closest this parser gets to that error.
-        while (isTypeChainWord(cur_)) {
+        // A user type after `const` is an identifier, and a qualified path is
+        // a type even while its head has no name behind it yet.
+        auto const nameStillFollows = [&] {
+          Token const n = lex_.peek(0);
+          if (n.kind == TokenKind::Identifier) {
+            return true;
+          }
+          return n.kind == TokenKind::Keyword && toLowerChars(n.text()) != "as";
+        };
+        auto const qualifiedTypeFollows = [&] {
+          return cur_.kind == TokenKind::Identifier &&
+                 lex_.peek(0).kind == TokenKind::Symbol &&
+                 lex_.peek(0).text() == ".";
+        };
+        while (isTypeChainWord(cur_) ||
+               (cur_.kind == TokenKind::Identifier &&
+                (nameStillFollows() || qualifiedTypeFollows()))) {
           Token const nxt = lex_.peek(0);
           bool const memberFollows = nxt.kind == TokenKind::Identifier ||
                                      (nxt.kind == TokenKind::Keyword &&
                                       toLowerChars(nxt.text()) != "as");
-          if (!memberFollows) {
+          if (isTypeChainWord(cur_) && !memberFollows) {
             break;
           }
           advance();
+          consumeQualifiedTail();
         }
         continue;
       }
@@ -2074,14 +2105,28 @@ private:
           // every chain word goes, except a dangling `const`: fbc refuses
           // that (`error 273: Expected 'PTR' or 'POINTER'`) and the report
           // on the word is what says so.
+          // A dot-qualified type (`gfx.sprite`) is one type, not a head and a
+          // separate member access: consume the whole path so the declared
+          // name after it is the one registered (FreeBASIC.md §7).
+          auto const consumeQualifiedTail = [&] {
+            while (cur_.kind == TokenKind::Symbol && cur_.text() == ".") {
+              advance(); // the '.'
+              if (cur_.kind == TokenKind::Identifier ||
+                  cur_.kind == TokenKind::Keyword) {
+                advance(); // the path segment
+              }
+            }
+          };
           if (cur_.kind == TokenKind::Identifier) {
             advance();
+            consumeQualifiedTail();
           }
           // A user type in the chain is an *identifier* too: `as const t p`
           // is the user type `t` with declared name `p`
           // (const/make-typedef-const-2.bas), so identifiers are consumed
           // while a name still follows, and `as udt name` ends the chain at
-          // `name`.
+          // `name`. A qualified path is a type even though no name follows
+          // its head yet.
           auto const nameStillFollows = [&] {
             Token const n = lex_.peek(0);
             if (n.kind == TokenKind::Identifier) {
@@ -2090,15 +2135,23 @@ private:
             return n.kind == TokenKind::Keyword &&
                    toLowerChars(n.text()) != "as";
           };
+          auto const qualifiedTypeFollows = [&] {
+            return cur_.kind == TokenKind::Identifier &&
+                   lex_.peek(0).kind == TokenKind::Symbol &&
+                   lex_.peek(0).text() == ".";
+          };
           while (isTypeChainWord(cur_) ||
-                 (cur_.kind == TokenKind::Identifier && nameStillFollows())) {
-            bool const danglingConst = !atName &&
-                                       toLowerChars(cur_.text()) == "const" &&
-                                       !isTypeChainWord(lex_.peek(0));
+                 (cur_.kind == TokenKind::Identifier &&
+                  (nameStillFollows() || qualifiedTypeFollows()))) {
+            bool const danglingConst =
+                !atName && toLowerChars(cur_.text()) == "const" &&
+                !isTypeChainWord(lex_.peek(0)) &&
+                lex_.peek(0).kind != TokenKind::Identifier;
             if (danglingConst || (atName && endsStatement(lex_.peek(0)))) {
               break;
             }
             advance();
+            consumeQualifiedTail();
           }
           continue;
         } else if (tk == TokenKind::Keyword &&

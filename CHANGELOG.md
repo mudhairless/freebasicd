@@ -26,6 +26,11 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-06 — parser: qualified type-first declarations register the variable
+
+- **A dot-qualified type in a type-first declaration now ends where the type ends**: `dim as gfx.sprite ptr firstImage` registers `firstImage`, not the type leaf `sprite`. The `As` skipper consumes `.` + segment as part of the type wherever the type can start, including after `const`, and the record-body field path does the same. Previously each declaration registered a `Dim` named `sprite`, left the real variable without a symbol, and the second declaration warned `duplicate definition: 'sprite'` on code fbc compiles cleanly.
+- **Behavior change**: variables declared with a qualified type now get their symbols, and the false duplicate warning is gone. The documented chain cases (`dim as integer ptr a, b`, `as const t p`, and the dangling `const`) are unchanged.
+
 ### 2026-11-05 — diagnostics: fbc message identities and version-range number tables
 
 - **A diagnostic now names fbc's meaning, not its number**: `Diagnostic::fbcId` carries an `FbcDiagId`, and `fbcNumber` resolves it to the catalog number in the appropriate error or warning space for the compiler version probed at runtime. The 1.10.x numbers live in one table whose first version is `{1, 10, 0}`; a future renumbering adds a range entry, with no call-site edits. An unknown version resolves through the newest table; a probed version below every known range takes the oldest table, and one above takes the newest applicable, matching the delivery gates' "unknown version filters nothing" posture.
