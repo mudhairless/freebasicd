@@ -556,6 +556,24 @@ void addNotShared(ParseResult &parse, std::uint32_t beg, std::uint32_t end,
   parse.diagnostics.push_back(std::move(d));
 }
 
+// A module-level leading dot whose bare name resolves to the same declaration:
+// the dot is provably redundant, so this is our own Hint (no fbc identity),
+// anchored on the dot itself. Removing it cannot change resolution because the
+// proof compared the two real walks.
+void addRedundantLeadingDot(ParseResult &parse, Token const &dot,
+                            std::string_view name) {
+  Diagnostic d;
+  d.range = rangeOf(dot);
+  d.severity = Severity::Hint;
+  d.code = "redundant-leading-dot";
+  // TRANSLATORS: %s is an identifier; the leading dot is a FreeBASIC scope
+  // operator, never translated.
+  d.message = trf("the leading dot on '%s' is unnecessary because the name "
+                  "already resolves to the same module-level declaration",
+                  name);
+  parse.diagnostics.push_back(std::move(d));
+}
+
 // The `#` line's directive word, lowercased ("print", "include", ...), or
 // empty. `line` starts at the '#'.
 std::string_view leadingDirectiveWord(std::string_view line) {
@@ -752,8 +770,10 @@ void typeofDiagnostics(ParseResult &parse, std::string_view source,
 // reading it there, or naming it through a leading `.` / `typeof(.x)` /
 // `typeof(x)` directive argument, is one of fbc's errors 42/8/9. Every shape is
 // gated on the same in-file non-Shared `Dim` candidate the quick fix edits, so
-// a diagnostic is never reported without the fix that clears it. Appended to
-// the document's parse diagnostics — the one payload every delivery path (push,
+// a diagnostic is never reported without the fix that clears it. A leading-dot
+// token at module level is not gated; when its bare name resolves to the same
+// candidate it instead earns the `redundant-leading-dot` Hint. Appended to the
+// document's parse diagnostics — the one payload every delivery path (push,
 // document pull, workspace pull) reads.
 void sharedGateDiagnostics(ParseResult &parse, std::vector<Token> const &tokens,
                            std::string_view source) {
@@ -767,11 +787,16 @@ void sharedGateDiagnostics(ParseResult &parse, std::vector<Token> const &tokens,
       continue;
     }
     std::string const key = canonicalKey(t.text(), parse.lang);
-    if (moduleSharedCandidate(parse, source, key) == nullptr) {
+    Symbol const *const candidate = moduleSharedCandidate(parse, source, key);
+    if (candidate == nullptr) {
       continue;
     }
     // Leading `.name`: fbc wants a Shared module variable, whether or not a
-    // local of that name exists (probed: a local shadow does not help).
+    // local of that name exists (probed: a local shadow does not help). Only a
+    // procedure body is gated. This is a deliberate divergence: fbc 1.10.3
+    // also reports error 8 for a plain dotted module-level read (probed), but
+    // this server treats the module-level token path as a spelling choice and
+    // offers the hint below when the bare name means the same thing.
     if (i > 0 && tokens[i - 1].kind == TokenKind::Symbol &&
         tokens[i - 1].text() == ".") {
       if (insideWithScope(parse, t.beg) || !dotIsLeading(tokens, i - 1)) {
@@ -781,6 +806,18 @@ void sharedGateDiagnostics(ParseResult &parse, std::vector<Token> const &tokens,
       // is the shared module variable, so the dot is legal whatever a plain
       // `Dim` says.
       if (hasSharedModuleRoot(parse, key)) {
+        continue;
+      }
+      if (!insideProcedureBody(parse, innermostScope(parse, t.beg))) {
+        // At module level the gate is silent. The dot earns a hint only when
+        // removing it provably changes nothing: the bare name at the same site
+        // resolves to the very declaration the dot names. A block-local,
+        // scope-local, or namespace-local declaration of the key makes the dot
+        // load-bearing — it hops over that declaration to the parent scope — so
+        // neither the error nor the hint fires.
+        if (visibleDeclNamed(parse, t.beg, key) == candidate) {
+          addRedundantLeadingDot(parse, tokens[i - 1], t.text());
+        }
         continue;
       }
       // TRANSLATORS: the first %s is an identifier; the second is the

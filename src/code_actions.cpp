@@ -355,6 +355,30 @@ std::vector<QuickFix> addSharedModuleVar(Diagnostic const &d,
   return {std::move(fix)};
 }
 
+// `redundant-leading-dot` -> delete the dot.
+//
+// The diagnostic sits on the dot itself, one byte before the identifier. The
+// hint's proof is that the bare name at that site resolves to the same
+// module-level declaration, so deleting exactly this byte cannot change what
+// the name means. Anything other than a one-byte `.` range means the buffer
+// moved under a stale diagnostic: offer nothing.
+std::vector<QuickFix> removeRedundantLeadingDot(Diagnostic const &d,
+                                                QuickFixContext const &ctx) {
+  if (d.range.end != d.range.beg + 1 || d.range.end > ctx.content.size()) {
+    return {};
+  }
+  if (ctx.content[d.range.beg] != '.') {
+    return {};
+  }
+  QuickFix fix;
+  // TRANSLATORS: the fix deletes a redundant leading dot from an expression.
+  fix.title = trf("Remove the redundant leading dot");
+  fix.code = d.code;
+  fix.diagRange = d.range;
+  fix.edits.push_back({d.range, ""});
+  return {std::move(fix)};
+}
+
 } // namespace
 
 std::vector<QuickFixRegistration> const &quickFixProviders() {
@@ -377,6 +401,9 @@ std::vector<QuickFixRegistration> const &quickFixProviders() {
       // procedure (or through a leading `.` / `typeof(.x)` / `typeof(x)`) —
       // fbc errors 42/8/9; the fix adds the keyword to the declaration.
       {"module-var-not-shared", addSharedModuleVar},
+      // resolve.cpp: a module-level leading dot whose bare name resolves to
+      // the same declaration — our own Hint, so the fix deletes just the dot.
+      {"redundant-leading-dot", removeRedundantLeadingDot},
   };
   return table;
 }

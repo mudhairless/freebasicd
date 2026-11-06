@@ -2330,16 +2330,175 @@ static void TestModuleVarNotSharedDiagnostics() {
     CHECK_MSG(d.parse.diagnostics.empty(),
               "a local shadow makes the bare use legal");
   }
-  // fbc reports the leading-dot (8) and typeof (9) shapes at module level too:
-  // only the bare read (42) is a procedure-body rule.
+  // The server gates the leading-dot error on procedure context even though
+  // fbc 1.10.3 also rejects a plain dotted module-level read (probed); that is
+  // a deliberate divergence. When the bare name at the same site resolves to
+  // the same declaration, the dot is redundant and earns our own Hint on the
+  // dot itself.
   {
-    std::string const moduleDot = "dim var1 as integer\n"
-                                  "print .var1\n";
+    std::string const moduleDot = "type model_struct\n"
+                                  "    dummy as integer\n"
+                                  "end type\n"
+                                  "dim as model_struct model\n"
+                                  "dim limit as integer\n"
+                                  "do\n"
+                                  "    if limit > 0 then\n"
+                                  "        dim copy as integer = .model.dummy\n"
+                                  "    end if\n"
+                                  "loop\n";
     AnalyzedDoc const d = analyze(moduleDot);
-    CHECK(d.parse.diagnostics.size() == 1);
-    if (d.parse.diagnostics.size() == 1) {
-      CHECK(d.parse.diagnostics[0].fbcId == FbcDiagId::UndefinedSymbol);
+    int errors = 0;
+    int hints = 0;
+    for (Diagnostic const &diag : d.parse.diagnostics) {
+      if (diag.code == "module-var-not-shared") {
+        ++errors;
+      }
+      if (diag.code != "redundant-leading-dot") {
+        continue;
+      }
+      ++hints;
+      CHECK(diag.severity == Severity::Hint);
+      CHECK(diag.fbcId == FbcDiagId::None);
+      std::uint32_t const dot =
+          static_cast<std::uint32_t>(moduleDot.find(".model.dummy"));
+      CHECK(diag.range.beg == dot && diag.range.end == dot + 1);
+      CHECK(diag.message.find("model") != std::string::npos);
     }
+    CHECK_MSG(errors == 0, "the module-level leading dot is not gated");
+    CHECK_MSG(hints == 1,
+              "the module-level dot that changes nothing is a redundant hint");
+  }
+  // A block-local declaration of the same name sits between the site and
+  // module level, so the dot is load-bearing: it hops over that declaration to
+  // the parent scope. Neither the module-level error nor the hint fires.
+  {
+    std::string const blockShadow = "dim x as integer\n"
+                                    "scope\n"
+                                    "    dim x as string\n"
+                                    "    print .x\n"
+                                    "end scope\n";
+    AnalyzedDoc const d = analyze(blockShadow);
+    bool sawError = false;
+    bool sawHint = false;
+    for (Diagnostic const &diag : d.parse.diagnostics) {
+      sawError = sawError || diag.code == "module-var-not-shared";
+      sawHint = sawHint || diag.code == "redundant-leading-dot";
+    }
+    CHECK_MSG(!sawError && !sawHint,
+              "a block-local of the same name makes the dot load-bearing");
+  }
+  // The same leading-dot read inside a procedure still reports the error and
+  // never the hint: a plain module variable is invisible there.
+  {
+    std::string const procDot = "dim x as integer\n"
+                                "sub s()\n"
+                                "    print .x\n"
+                                "end sub\n";
+    AnalyzedDoc const d = analyze(procDot);
+    int errors = 0;
+    int hints = 0;
+    for (Diagnostic const &diag : d.parse.diagnostics) {
+      if (diag.code == "module-var-not-shared") {
+        ++errors;
+        CHECK(diag.fbcId == FbcDiagId::UndefinedSymbol);
+      }
+      if (diag.code == "redundant-leading-dot") {
+        ++hints;
+      }
+    }
+    CHECK_MSG(errors == 1, "a leading-dot read inside a procedure is an error");
+    CHECK_MSG(hints == 0, "the hint is module-level only");
+  }
+  // A `With` block's leading dot names the With target and is always
+  // meaningful, even when a module variable shares the member's name.
+  {
+    std::string const withDot = "type t\n"
+                                "    x as integer\n"
+                                "end type\n"
+                                "dim x as integer\n"
+                                "dim a as t\n"
+                                "with a\n"
+                                "    print .x\n"
+                                "end with\n";
+    AnalyzedDoc const d = analyze(withDot);
+    bool sawError = false;
+    bool sawHint = false;
+    for (Diagnostic const &diag : d.parse.diagnostics) {
+      sawError = sawError || diag.code == "module-var-not-shared";
+      sawHint = sawHint || diag.code == "redundant-leading-dot";
+    }
+    CHECK_MSG(!sawError && !sawHint,
+              "a with-target leading dot is legal and carries no hint");
+  }
+  // Ordinary-code `typeof(.x)` flows through the same identifier path, so the
+  // module-level gate and the hint's proof cover it too.
+  {
+    std::string const codeTypeof = "dim x as integer\n"
+                                   "dim copy as typeof(.x)\n";
+    AnalyzedDoc const d = analyze(codeTypeof);
+    int errors = 0;
+    int hints = 0;
+    for (Diagnostic const &diag : d.parse.diagnostics) {
+      if (diag.code == "module-var-not-shared") {
+        ++errors;
+      }
+      if (diag.code == "redundant-leading-dot") {
+        ++hints;
+        std::uint32_t const dot =
+            static_cast<std::uint32_t>(codeTypeof.find(".x"));
+        CHECK(diag.range.beg == dot && diag.range.end == dot + 1);
+      }
+    }
+    CHECK_MSG(errors == 0, "ordinary-code typeof(.x) is not gated at module "
+                           "level");
+    CHECK_MSG(hints == 1, "ordinary-code typeof(.x) gets the redundant hint");
+  }
+  // Directive shapes keep their own branch: `typeof(.x)` in `#print`/`#if` is
+  // probed at fbc 1.10.3 to be `error 9` at module level and inside a
+  // procedure, so it stays an error in both and never takes the hint.
+  {
+    std::string const moduleDirectives = "dim x as integer\n"
+                                         "#print typeof(.x)\n"
+                                         "#if typeof(.x) = integer\n"
+                                         "#endif\n";
+    AnalyzedDoc const d = analyze(moduleDirectives);
+    int nines = 0;
+    int hints = 0;
+    for (Diagnostic const &diag : d.parse.diagnostics) {
+      if (diag.code == "module-var-not-shared" &&
+          diag.fbcId == FbcDiagId::ExpectedExpression) {
+        ++nines;
+      }
+      if (diag.code == "redundant-leading-dot") {
+        ++hints;
+      }
+    }
+    CHECK_MSG(nines == 2,
+              "module-level #print/#if typeof(.x) are probed error 9");
+    CHECK_MSG(hints == 0, "directive shapes do not take the token-path hint");
+  }
+  {
+    std::string const procDirectives = "dim x as integer\n"
+                                       "sub s()\n"
+                                       "    #print typeof(.x)\n"
+                                       "    #if typeof(.x) = integer\n"
+                                       "    #endif\n"
+                                       "end sub\n";
+    AnalyzedDoc const d = analyze(procDirectives);
+    int nines = 0;
+    int hints = 0;
+    for (Diagnostic const &diag : d.parse.diagnostics) {
+      if (diag.code == "module-var-not-shared" &&
+          diag.fbcId == FbcDiagId::ExpectedExpression) {
+        ++nines;
+      }
+      if (diag.code == "redundant-leading-dot") {
+        ++hints;
+      }
+    }
+    CHECK_MSG(nines == 2,
+              "procedure-level #print/#if typeof(.x) are probed error 9");
+    CHECK_MSG(hints == 0, "directive shapes do not take the token-path hint");
   }
   // Each keyword `Shared` may follow makes a candidate; `const`/`extern`
   // reject it and so are not fixable.
@@ -2365,8 +2524,8 @@ static void TestModuleVarNotSharedDiagnostics() {
   }
   // A directive is one whole-line token, so a trailing `'` comment is part of
   // it; fbc strips that comment before evaluating (probed), so a `typeof(...)`
-  // quoted in the comment is not a second diagnostic. This is
-  // ~/var-scoping-shared.bas line 29, whose comment names its own expression.
+  // quoted in the comment is not a second diagnostic. The comment below names
+  // its own expression, and still adds no second diagnostic.
   {
     std::string const withComment =
         "dim var1 as integer\n"

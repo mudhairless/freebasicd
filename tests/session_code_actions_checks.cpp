@@ -396,8 +396,8 @@ void TestCodeActionAddsSharedToModuleVar() {
   // A module-level plain `Dim` read inside a procedure is fbc's `error 42`; the
   // leading-dot and `typeof(.x)` shapes are errors 8 and 9, and a `typeof(x)`
   // (no dot) in the procedure's scope is 42 again — one routing key, the fbc
-  // number varying. This is ~/var-scoping-shared.bas with its commented lines
-  // live.
+  // number varying. The trailing comments below repeat a shape without adding
+  // a second diagnostic.
   std::string const text = "dim var1 as integer\n"
                            "sub our_sub()\n"
                            "    print var1\n"
@@ -466,6 +466,59 @@ void TestCodeActionAddsSharedToModuleVar() {
   session.stop();
 }
 
+void TestCodeActionRemovesRedundantLeadingDot() {
+  CodeActionFixture fix;
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+
+  // The server leaves the module-level leading dot ungated (a deliberate
+  // divergence from fbc 1.10.3), and the bare name at the same site resolves
+  // to the same Dim, so the dot is a redundant Hint.
+  std::string const text = "dim x as integer\n"
+                           "print .x\n";
+  input->append(MakeLspFrame(OpenFrame(fix.mainUri, text).c_str()));
+  std::string const published = WaitForPublishedUri(output, 1);
+  Expect(published.find("\"code\":\"redundant-leading-dot\"") !=
+             std::string::npos,
+         "a redundant module-level dot must publish its hint");
+  Expect(published.find("\"severity\":4") != std::string::npos,
+         "the convention finding must publish at Hint severity");
+  Expect(published.find("\"start\":{\"line\":1,\"character\":6},\"end\":"
+                        "{\"line\":1,\"character\":7}") != std::string::npos,
+         "the hint must be anchored on the dot, not the identifier");
+
+  std::string const reply =
+      PollRequest(input, output, "cared", "Remove the redundant leading dot",
+                  [&](std::string const &id) {
+                    return CodeActionFrame(id, fix.mainUri, 1, {}, 20);
+                  });
+  Expect(reply.find("\"title\":\"Remove the redundant leading dot\"") !=
+             std::string::npos,
+         "the hint's quick fix must delete the dot");
+  Expect(reply.find("\"kind\":\"quickfix\"") != std::string::npos,
+         "the fix must carry the kind the client filters on");
+  Expect(reply.find("\"newText\":\"\"") != std::string::npos,
+         "the fix replaces the dot with nothing");
+  Expect(reply.find("\"start\":{\"line\":1,\"character\":6},\"end\":"
+                    "{\"line\":1,\"character\":7}") != std::string::npos,
+         "the edit must cover exactly the dot character");
+
+  // Applying the edit leaves `print x`, so the hint clears on re-parse.
+  input->append(
+      MakeLspFrame(ReplaceFrame(fix.mainUri, 1, 6, 1, 7, "").c_str()));
+  Expect(LastPublish(WaitForPublishedUri(output, 2))
+                 .find("redundant-leading-dot") == std::string::npos,
+         "deleting the dot must clear the hint on re-parse");
+
+  session.stop();
+}
+
 } // namespace
 
 namespace fbtest {
@@ -477,6 +530,7 @@ void RunCodeActionsTests() {
   RUN_TEST(TestCodeActionOffersNothingUnfixable);
   RUN_TEST(TestMissingIncludePublishesDiagnostic);
   RUN_TEST(TestCodeActionAddsSharedToModuleVar);
+  RUN_TEST(TestCodeActionRemovesRedundantLeadingDot);
 }
 
 } // namespace fbtest

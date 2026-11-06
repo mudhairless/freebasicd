@@ -1277,13 +1277,31 @@ to "the language is what the lexer does":
     there is now diagnosed (`module-var-not-shared`; the fbc number varies, the
     routing key does not):
     - reading it (`error 42`);
-    - through a leading `.name` (`error 8`), at module level too;
+    - through a leading `.name` inside a procedure (`error 8`). The server
+      deliberately leaves the module-level token path ungated even though fbc
+      1.10.3 also reports `error 8` there for a plain non-`Shared` `Dim`
+      (probed; a deliberate divergence). A module-level dot that provably
+      changes nothing earns the `redundant-leading-dot` Hint (our convention;
+      see below);
     - as a `typeof(.name)` argument in `#print`/`#if`/`#elseif` (`error 9`), at
-      module level too;
+      module level too (probed);
     - as a bare `typeof(name)` argument to the same directives (`error 42`) —
       the directive is evaluated in the procedure's scope, so it is the same
       error a bare read produces. At module level, or when a local, parameter,
       or `Shared` declaration of the name is visible, it compiles (probed).
+
+    A module-level token-path dot (ordinary code, including code `typeof(.x)`)
+    whose bare name resolves to the same module-level declaration is reported as
+    `redundant-leading-dot` (Hint, no fbc identity, anchored on the dot), and
+    its quick fix deletes the dot. The proof uses the real resolution walks: the
+    site is outside a `With`, the dotted name is the in-file non-`Shared` `Dim`
+    the error branch names, and `visibleDeclNamed` at the same site returns that
+    declaration. If a block-, scope-, or namespace-local declaration of the key
+    intervenes, the dot is load-bearing and neither finding fires. This is the
+    one shape in the family where fbc rejects the dotted spelling rather than
+    accepting it: the hint is the migration path to the bare name fbc accepts.
+    The directive shapes are excluded from the hint; they stay `error 9` as
+    probed.
 
     Each shape is reported only against an in-file top-level root, because the
     one fix that clears it edits that declaration's own line (`Dim Shared`).
@@ -1321,9 +1339,8 @@ to "the language is what the lexer does":
     declaration of the name, so a local or parameter that shadows the module
     name is legal and silent. A trailing `'` comment on a directive is stripped
     before the `typeof` scan, because fbc strips it too (probed):
-    `#print typeof(.x) ' ... typeof(.x)` is one `error 9`, not two, and the
-    comment on `~/var-scoping-shared.bas` line 29 names its own 42 without
-    adding one.
+    `#print typeof(.x) ' ... typeof(.x)` is one `error 9`, not two, and a
+    comment that names its own 42 adds no second diagnostic.
 
 28. **Module-constructor parsing reports fbc's numbers, but three shapes stay
     silent.** `Sub name() Constructor [priority]` / `Destructor` is now parsed

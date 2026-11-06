@@ -641,8 +641,8 @@ void TestPullDiagnosticsModuleVarNotShared() {
                  .find("\"diagnosticProvider\"") != std::string::npos,
          "initialize must advertise the pull provider");
 
-  // ~/var-scoping-shared.bas with its commented lines live: the family is one
-  // routing key over fbc's 42/8/9. The trailing comment on line 4 repeats
+  // A procedure holding every shape of the family: the family is one routing
+  // key over fbc's 42/8/9. The trailing comment on line 4 repeats
   // `typeof(.var1)`, and line 5 is the no-dot `typeof(var1)` shape (fbc error
   // 42 inside a procedure). fbc strips a directive's trailing comment before
   // evaluating (probed), so neither comment yields a second item; the

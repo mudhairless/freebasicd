@@ -744,13 +744,79 @@ void SharedFixRefusesAnUnfixableDeclaration() {
             .empty());
 }
 
+// `redundant-leading-dot` -> delete exactly the dot.
+//
+// The hint is anchored on the dot token, and the proof behind it says the bare
+// name resolves to the same declaration. The fix therefore edits only those
+// bytes, leaving the identifier and the rest of the line untouched.
+void RedundantDotFixRemovesOnlyTheDot() {
+  std::string const src = "type model_struct\n"
+                          "    dummy as integer\n"
+                          "end type\n"
+                          "dim as model_struct model\n"
+                          "dim limit as integer\n"
+                          "do\n"
+                          "    if limit > 0 then\n"
+                          "        dim copy as integer = .model.dummy\n"
+                          "    end if\n"
+                          "loop\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  Diagnostic const *hint = nullptr;
+  for (Diagnostic const &d : doc.parse.diagnostics) {
+    if (d.code == "redundant-leading-dot") {
+      CHECK(hint == nullptr);
+      hint = &d;
+    }
+  }
+  CHECK(hint != nullptr);
+  if (hint == nullptr) {
+    return;
+  }
+  std::uint32_t const dot =
+      static_cast<std::uint32_t>(src.find(".model.dummy"));
+  CHECK(hint->severity == Severity::Hint && hint->fbcId == FbcDiagId::None);
+  CHECK(hint->range.beg == dot && hint->range.end == dot + 1);
+
+  std::vector<QuickFix> const fixes =
+      fixesFor("redundant-leading-dot", *hint, ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() != 1) {
+    return;
+  }
+  CHECK(fixes[0].title == "Remove the redundant leading dot");
+  CHECK(fixes[0].code == "redundant-leading-dot");
+  CHECK(fixes[0].diagRange.beg == dot);
+  CHECK(editText(fixes[0]) ==
+        std::to_string(dot) + ":" + std::to_string(dot + 1) + ">");
+  TextEditBytes const &e = fixes[0].edits.front();
+  CHECK(e.newText.empty());
+  std::string const applied =
+      src.substr(0, e.range.beg) + e.newText + src.substr(e.range.end);
+  std::string const expected = src.substr(0, dot) + src.substr(dot + 1);
+  CHECK(applied == expected);
+  AnalyzedDoc const after = analyze(applied);
+  for (Diagnostic const &d : after.parse.diagnostics) {
+    CHECK(d.code != "redundant-leading-dot");
+  }
+
+  // A stale range that is not the dot is refused.
+  CHECK(fixesFor("redundant-leading-dot", diagAt("redundant-leading-dot", 0, 1),
+                 ctx)
+            .empty());
+  CHECK(fixesFor("redundant-leading-dot",
+                 diagAt("redundant-leading-dot", dot, dot + 2), ctx)
+            .empty());
+}
+
 void RegistryAnswersTheFixableCodes() {
-  CHECK(quickFixProviders().size() == 5);
+  CHECK(quickFixProviders().size() == 6);
   CHECK(quickFixProviderFor("unterminated-block") != nullptr);
   CHECK(quickFixProviderFor("invalid-member-name") != nullptr);
   CHECK(quickFixProviderFor("include-not-found") != nullptr);
   CHECK(quickFixProviderFor("keyword-suffix") != nullptr);
   CHECK(quickFixProviderFor("module-var-not-shared") != nullptr);
+  CHECK(quickFixProviderFor("redundant-leading-dot") != nullptr);
   // Every registered code is a real diagnostic code, and the registry is
   // stable across calls (the session serves it from the handler pool).
   CHECK(quickFixProviders().data() == quickFixProviders().data());
@@ -779,6 +845,7 @@ int main() {
   SuffixFixRefusesARangeThatIsNotASuffix();
   SharedFixInsertsTheKeywordOnTheDeclaration();
   SharedFixRefusesAnUnfixableDeclaration();
+  RedundantDotFixRemovesOnlyTheDot();
   RegistryAnswersTheFixableCodes();
 
   if (failures == 0) {

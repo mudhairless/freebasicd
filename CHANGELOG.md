@@ -26,6 +26,13 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-06 — resolve: module-level leading dots, and the redundant-dot hint
+
+- **The `module-var-not-shared` error is procedure-only for a leading dot**: the token-path leading-dot shapes (ordinary code, including code `typeof(.x)`) now require `insideProcedureBody`, the same gate the bare-read arm already used. This is a deliberate divergence from the pinned fbc 1.10.3, which reports `error 8` for a plain dotted module-level read of a non-`Shared` `Dim` (probed); the task premise is not what this compiler does. The `With`-scope exemption, the local-shadow rule inside procedures, and a Shared/Extern root serving the dot all stay. A leading-dot read inside a `Sub` still reports fbc error 8.
+- **A redundant dot now says so**: when the module-level gate is silent, `redundant-leading-dot` (Hint, no fbc identity, anchored on the dot) fires only if the real resolution walks prove the dot does nothing: the site is not in a `With`, the dotted name names the in-file module-level non-Shared `Dim` the error branch would fix, and `visibleDeclNamed` at the same site returns that same declaration. Any intervening block-, scope-, or namespace-local declaration of the key makes the dot load-bearing, so neither the error nor the hint fires.
+- **The hint carries a quick fix** that deletes exactly the dot character, following the keyword-suffix deletion pattern; the proof is what guarantees the edit cannot change resolution.
+- **Directive shapes were probed, not changed**: the pinned fbc reports `error 9` for `#print typeof(.x)` and `#if typeof(.x) = ...` at module level and inside a procedure, so `typeofDiagnostics` keeps its leading-dot error and its comment. Only the token-path sites get the new gate and hint.
+
 ### 2026-11-06 — parser: qualified type-first declarations register the variable
 
 - **A dot-qualified type in a type-first declaration now ends where the type ends**: `dim as gfx.sprite ptr firstImage` registers `firstImage`, not the type leaf `sprite`. The `As` skipper consumes `.` + segment as part of the type wherever the type can start, including after `const`, and the record-body field path does the same. Previously each declaration registered a `Dim` named `sprite`, left the real variable without a symbol, and the second declaration warned `duplicate definition: 'sprite'` on code fbc compiles cleanly.
