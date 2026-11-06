@@ -38,9 +38,9 @@
   |-----------|--------|
   | M17 — FreeBASIC formatter (wave 2 complete 2026-11-02; summary in CHANGELOG.md) | done |
   | M21 — module model, constructors, and fbc's codes (complete 2026-11-06; summary in CHANGELOG.md) | done |
-  | M18 — public release: editor setup docs, first tag | blocked on M23, M24, and the VS Code extension |
-  | M22 — fbc declaration-order parity: use-before-declaration (backlog) | backlog |
-  | M23 — fbc parser diagnostics: statements, placement, warnings (block structure + false-positive gate + code identity landed) | backlog |
+  | M18 — public release: editor setup docs, first tag | blocked on M22, M23, M24, and the VS Code extension |
+  | M22 — fbc declaration-order parity: use-before-declaration | next |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (early families landed; groups G1–G7 remain) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
   | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
@@ -454,13 +454,12 @@
   goes to [`CHANGELOG.md`](CHANGELOG.md) and its sketch is deleted here. Commits
   happen per milestone (AGENTS.md).
 
-### M22 — fbc declaration-order parity: use-before-declaration (backlog note)
+### M22 — fbc declaration-order parity: use-before-declaration
 
 fbc compiles strictly top-down; ours resolves order-insensitively (FreeBASIC.md
 §12: "no source-order gating at module level"), so a name we happily resolve can
-be invisible to fbc at the same point in the file. Not scheduled — a nice
-diagnostic for a future wave: detect it, diagnose it, fix it, and stop
-suggesting it.
+be invisible to fbc at the same point in the file. Gates M18 (added to the
+gate 2026-11-06): detect it, diagnose it, fix it, and stop suggesting it.
 
 **Probed at fbc 1.10.2** (the facts any implementation and its tests must match):
 
@@ -511,13 +510,16 @@ suggesting it.
   keeps the default; an early `Dim As T` offers reorder/include, never an alias.
 - `ctest` green, changed files clang-format clean.
 
-### M23 — fbc parser diagnostics: statements, placement, warnings (backlog)
+### M23 — fbc parser diagnostics: statements, placement, warnings
 
 The parser-reachable half of fbc's catalog, reported with fbc's own numbers and
 texts from M21's generated catalog (landed). The ranked candidate tiers behind
 this milestone and M24 are in
 [`research/fbc-diagnostics.md`](research/fbc-diagnostics.md). This milestone
-gates M18.
+gates M18. The work that remains is grouped below (grouping set 2026-11-06);
+each group is independently testable and lands separately, in the M21 style,
+and the corpus goldens ride with the group that needs them rather than
+landing as their own step.
 
 - **False-positive gate — cleared (2026-10-09).** The parser no longer rejects
   FreeBASIC fbc accepts: the fb-dialect *error* false positives across the
@@ -554,20 +556,45 @@ gates M18.
   §12.25), `include-not-found` → `23`, and `invalid-member-name` →
   `14`/`238`/`3` by trigger. `bad-continuation` was probed a false positive
   (fbc accepts a mid-line `_`) and stays unmapped (FreeBASIC.md §12.26).
-- **Statements.** The `select` family (`62/34/118/111/246/242/250/323`), the
-  `for`/`do` families (`EXPECTEDNEXT`, `NEXTWITHOUTFOR 107`, `FORNEXTVARIABLEMISMATCH
-  283`, `WHILE/WEND`), `EXIT`/`CONTINUE` outside a legal block (`251/252`), the
-  punctuator family routed through one `expected(token)` helper (`17`, `14`,
-  `9`, `6`, `7`, `3`, `10`, `16`, `66`, `309`), `11 EXPECTEDCONST` for a `const`
-  with no expression, and the statement-specific `REDIM`/`SEEK`/`CLOSE` checks.
-- **Placement.** `61 ILLEGALINSIDEASUB`, `96 ILLEGALINSIDEASCOPE`, `44
-  ILLEGALOUTSIDECOMP`, and `105 BRANCHCROSSINGDYNDATADEF` / warning `14` — each
-  needs the block stack the parser already keeps, plus the name of the enclosing
-  construct.
-- **Warnings.** The parser-reachable set: `12 NOCLOSINGQUOTE`, `44
-  SUFFIXIGNORED`, `26 NEXTVARMEANINGLESS`, `32 IFFOUNDAFTERELSE`, `33
-  SHIFTEXCEEDSBITSINDATATYPE`, `25 CONVOVERFLOW`, `46 CMDLINEIGNORED`, `15
-  NOEXPLICITPARAMMODE`.
+- **G1 — the `select` family.** `62 ILLEGALINSIDESELECT` first (a statement
+  between `Select Case` and the first `Case`; the research ties it to a whole
+  cluster of real files), then `34 EXPECTEDCASE`, `118 CASEWITHOUTSELECT`,
+  `111 ENDSELECTWITHOUTSELECT`, `246 EXPECTEDSELECT`, `242
+  ILLEGALOUTSIDESELSTMT`, `250 NOENCLOSEDSELSTMT`, and `323
+  INVALIDCASERANGE`. All token- and stack-keyed off the `Select` handling
+  that already exists.
+- **G2 — the loop families.** `For`: `EXPECTEDNEXT`, `107 NEXTWITHOUTFOR`,
+  `283 FORNEXTVARIABLEMISMATCH`; `Do` / `While`: the `WHILE`/`WEND` pair not
+  already covered by the landed closer family. Warning `26
+  NEXTVARMEANINGLESS` rides here rather than in G7: it is about the `Next`
+  variable.
+- **G3 — `Exit` / `Continue` placement.** `251 INVALIDEXITSTMT` and `252
+  INVALIDCONTINUESTMT`: the innermost block on the stack decides legality.
+  Small; it may ride with G4.
+- **G4 — placement (research Tier 2).** `61 ILLEGALINSIDEASUB`, `96
+  ILLEGALINSIDEASCOPE`, and `44 ILLEGALOUTSIDECOMP`, each report naming the
+  enclosing construct. `105 BRANCHCROSSINGDYNDATADEF` and warning `14
+  BRANCHCROSSINGLOCALVAR` are the group's heavy end: they need label and
+  declaration knowledge, though not full types.
+- **G5 — the punctuator family.** One `expected(token)` helper behind `17
+  SYNTAXERROR`, `14 EXPECTEDIDENTIFIER`, `9 EXPECTEDEXPRESSION`, `6
+  EXPECTEDLPRNT`, `7 EXPECTEDRPRNT`, `3 EXPECTEDEOL`, `10 EXPECTEDEQ`, `16
+  EXPECTEDCOMMA`, `66 EXPECTEDRBRACKET`, and `309 EXPECTEDGT`; plus `11
+  EXPECTEDCONST` for a `const` with no expression, and the declaration tails
+  the research adds: `68 EXPECTEDRESTYPE`, `67 TOOMANYEXPRESSIONS`, `289
+  EXPECTEDSUB`. The no-cascade rule below is this group's design constraint:
+  fbc prints one error per statement, and so do we.
+- **G6 — statement-specific checks (research Tier 5).** The `REDIM` / `SEEK`
+  / `CLOSE` shapes from the tier's 15 statement and intrinsic messages. The
+  group starts with an inventory naming which of the 15 the parser can
+  reach; only those are in scope.
+- **G7 — the remaining warnings.** (`12 NOCLOSINGQUOTE` and `44
+  SUFFIXIGNORED` already carry their numbers; see the code-identity bullet.)
+  Syntactic: `32 IFFOUNDAFTERELSE`, `15 NOEXPLICITPARAMMODE`, `46
+  CMDLINEIGNORED`. Constant-dependent: `25 CONVOVERFLOW` and `33
+  SHIFTEXCEEDSBITSINDATATYPE`, which need constant expressions evaluated (a
+  literal folder, not the M24 type model). Every one inherits the landed
+  `-w` gate.
 - **Warning `-w` level model — landed (2026-10-10).** `freebasicd.toml`'s
   `warningLevel` takes fbc's `-w` option names, English only, and an absent or
   unknown value is `-w none` — a deliberate divergence from fbc's leading
@@ -604,7 +631,7 @@ gates M18.
   narrow curated set instead of enumerating every code to drop. It needs the
   same `resultId` fold and re-publish semantics as `suppress`, and the comment
   form should grow a matching allow direction rather than the two features
-  diverging.
+  diverging. Neither future item is fbc parity, and neither gates M18.
 - **No cascades.** A single missing closer yields one diagnostic, not one per
   subsequent line; the existing `unterminated-block` handling is the model.
 - **Corpus.** Import the fbc-suite triggers into `tests/` as goldens rather than
@@ -809,9 +836,10 @@ M24), and the lint checks accrue after the tag.
 
 ### M18 — Public release: first tag
 
-**Gated on M23 and M24**: the initial release bar is parity with fbc
-diagnostics (decided 2026-11-02). M21 (complete 2026-11-06) delivered the
-module model and fbc's numbers for its covered set, M23 the parser-reachable
+**Gated on M22, M23, and M24**: the initial release bar is parity with fbc
+diagnostics (decided 2026-11-02; M22 added to the gate 2026-11-06). M21
+(complete 2026-11-06) delivered the module model and fbc's numbers for its
+covered set, M22 use-before-declaration parity, M23 the parser-reachable
 statement, placement,
 and warning families, and M24 the resolve-layer semantic set; together that
 is the parity the tag claims. Shipping earlier, with the module model
