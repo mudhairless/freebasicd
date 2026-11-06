@@ -510,7 +510,9 @@ struct LineShape {
   size_t lastCode = 0;   // index of the last non-comment significant token
   std::string w0;        // first word, lowercased (or empty)
   std::string w1;        // second word/operator, lowercased (or empty)
-  std::string wLast;     // last code word, lowercased (or empty)
+  TokenKind w1Kind = TokenKind::Unknown; // second token's kind; w1 is its
+                                         // text only when it is a word
+  std::string wLast; // last code word, lowercased (or empty)
   Lead lead = Lead::Plain;
   fblang::BlockCloser closerInfo{};
   bool labelLine = false;
@@ -544,6 +546,7 @@ LineShape classifyLine(Line const &line, std::vector<Token> const &toks) {
       last.kind == TokenKind::Identifier ? fblang::toLowerChars(last.text) : "";
   if (line.sig.size() > 1) {
     Token const &second = toks[line.sig[1]];
+    shape.w1Kind = second.kind;
     if (second.kind == TokenKind::Identifier) {
       shape.w1 = fblang::toLowerChars(second.text);
     } else if (second.kind == TokenKind::Operator) {
@@ -641,13 +644,15 @@ std::string indentFor(FormatConfig const &config, int depth) {
 }
 
 // The stack effect of one statement, read from its first, second, and last
-// words. A closer pops only when the top of the stack is the block it
-// closes; there is no unwinding, so a block the classifier fails to close
-// stays on the stack and blocks every enclosing closer behind it. A closer
-// word followed by `as` is a UDT field named after it, never a closer.
+// words, plus the kind of its second token where the word alone cannot say
+// it (the extern test). A closer pops only when the top of the stack is the
+// block it closes; there is no unwinding, so a block the classifier fails
+// to close stays on the stack and blocks every enclosing closer behind it.
+// A closer word followed by `as` is a UDT field named after it, never a
+// closer.
 void applyStatementToStack(std::vector<fblang::BlockKind> &stack,
                            std::string const &w0, std::string const &w1,
-                           std::string const &wLast) {
+                           TokenKind w1Kind, std::string const &wLast) {
   if (w1 != "as") {
     fblang::BlockCloser c{};
     if (w0 == "end" && !w1.empty() && fblang::blockForCloser(w1, &c)) {
@@ -678,6 +683,13 @@ void applyStatementToStack(std::vector<fblang::BlockKind> &stack,
       // `If cond Then` opens a block; `If cond Then stmt` is one line.
       blockForm = wLast == "then";
     }
+    if (w0 == "extern") {
+      // Only `Extern "<cc>"` opens a block (closed by `End Extern`);
+      // `Extern name [As type]` is a variable declaration and a bare
+      // `Extern` is fbc's error 14 — neither opens anything
+      // (FreeBASIC.md §7). The same string-literal test the parser makes.
+      blockForm = w1Kind == TokenKind::String;
+    }
     if (blockForm) {
       stack.push_back(opener.kind);
     }
@@ -699,7 +711,7 @@ void applyStatementToStack(std::vector<fblang::BlockKind> &stack,
 void applyLineToStack(std::vector<fblang::BlockKind> &stack,
                       LineShape const &shape, std::vector<Token> const &toks) {
   if (shape.w0 == "if" && shape.wLast != "then") {
-    applyStatementToStack(stack, shape.w0, shape.w1, shape.wLast);
+    applyStatementToStack(stack, shape.w0, shape.w1, shape.w1Kind, shape.wLast);
     return;
   }
   std::vector<Token> stmt;
@@ -710,10 +722,12 @@ void applyLineToStack(std::vector<fblang::BlockKind> &stack,
     std::string w0;
     std::string w1;
     std::string wLast;
+    TokenKind w1Kind = TokenKind::Unknown;
     if (stmt.front().kind == TokenKind::Identifier) {
       w0 = fblang::toLowerChars(stmt.front().text);
     }
     if (stmt.size() > 1) {
+      w1Kind = stmt[1].kind;
       if (stmt[1].kind == TokenKind::Identifier) {
         w1 = fblang::toLowerChars(stmt[1].text);
       } else if (stmt[1].kind == TokenKind::Operator) {
@@ -723,7 +737,7 @@ void applyLineToStack(std::vector<fblang::BlockKind> &stack,
     if (stmt.back().kind == TokenKind::Identifier) {
       wLast = fblang::toLowerChars(stmt.back().text);
     }
-    applyStatementToStack(stack, w0, w1, wLast);
+    applyStatementToStack(stack, w0, w1, w1Kind, wLast);
     stmt.clear();
   };
   for (size_t idx : shape.line->sig) {

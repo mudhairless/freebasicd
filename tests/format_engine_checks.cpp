@@ -150,6 +150,78 @@ static void TestMalformedBlocksAreTolerated() {
   CHECK_EQ(fmt(in, c), want);
 }
 
+// `Extern name As type` declares a variable shared across modules and opens
+// nothing (FreeBASIC.md §7); only `Extern "<cc>"` opens the block that
+// `End Extern` closes. The declaration form used to push an Extern for any
+// statement starting with the word, so every line after it indented one
+// level, the real block's body sat two deep, and no later line dedented.
+static void TestExternDeclarationDoesNotOpenBlock() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "extern sharedCount as integer\n"
+                         "\n"
+                         "dim y as integer\n"
+                         "y = 1\n"
+                         "\n"
+                         "extern \"C\"\n"
+                         "declare function foo() as integer\n"
+                         "end extern\n"
+                         "\n"
+                         "dim z as integer\n"
+                         "z = 2\n";
+  std::string const want = "extern sharedCount as integer\n"
+                           "\n"
+                           "dim y as integer\n"
+                           "y = 1\n"
+                           "\n"
+                           "extern \"C\"\n"
+                           "  declare function foo() as integer\n"
+                           "end extern\n"
+                           "\n"
+                           "dim z as integer\n"
+                           "z = 2\n";
+  std::string const once = fmt(in, c);
+  CHECK_EQ(once, want);
+  CHECK_EQ(fmt(once, c), once);
+}
+
+// The block form alone: `Extern "C"` still opens, its body indents one
+// level, `End Extern` dedents, and the line after is back at the base.
+static void TestExternBlockFormStillIndents() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "extern \"C\"\n"
+                         "declare sub init()\n"
+                         "end extern\n"
+                         "x = 1\n";
+  std::string const want = "extern \"C\"\n"
+                           "  declare sub init()\n"
+                           "end extern\n"
+                           "x = 1\n";
+  CHECK_EQ(fmt(in, c), want);
+}
+
+// The declaration form as one statement of a colon-compound line: the
+// walker applies each statement in order, and neither the rest of the line
+// nor the next line may inherit an Extern from it.
+static void TestCompoundExternDeclarationLineDoesNotLeak() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "extern sharedCount as integer : y = 1\n"
+                         "z = 2\n";
+  std::string const want = "extern sharedCount as integer: y = 1\n"
+                           "z = 2\n";
+  CHECK_EQ(fmt(in, c), want);
+}
+
+// A bare `Extern` with nothing after it is fbc's error 14, never a block:
+// the string-literal test covers it, so the next line keeps its indent.
+static void TestBareExternIsNotABlock() {
+  FormatConfig c = spaceConfig();
+  std::string const in = "extern\n"
+                         "x = 1\n";
+  std::string const want = "extern\n"
+                           "x = 1\n";
+  CHECK_EQ(fmt(in, c), want);
+}
+
 // The core spacing rules: assignment and binary operators spaced, commas
 // after-only, Print semicolons tight, the operand of a sign attached, word
 // operators spaced, and the combined assign (`and=`) kept one token wide.
@@ -768,6 +840,10 @@ int main() {
   TestSelectCaseAndEndIf();
   TestFieldNamedCloser();
   TestMalformedBlocksAreTolerated();
+  TestExternDeclarationDoesNotOpenBlock();
+  TestExternBlockFormStillIndents();
+  TestCompoundExternDeclarationLineDoesNotLeak();
+  TestBareExternIsNotABlock();
   TestSpacingBasics();
   TestSignedLiteralAfterValueKeyword();
   TestBinaryMinusUnchanged();
