@@ -1488,6 +1488,47 @@ to "the language is what the lexer does":
       keeps the landed mismatch shape (`closer-mismatch` plus
       `unterminated-block`) rather than fbc's `Expected 'WEND'` /
       `Expected 'LOOP'` (pre-existing).
+33. **The `Exit`/`Continue` target family (M23 G3) reports the probed
+    shapes, with five recorded limits.** `251` fires when the word after
+    `Exit` is not one of fbc's nine accepted targets (`Constructor`,
+    `Destructor`, `Do`, `For`, `Function`, `Operator`, `Property`,
+    `Select`, `Sub`, `While`), and `252` when the word after `Continue`
+    is not `Do`, `For` or `While` — the bare form included. The probe
+    corrected the plan's block-stack guess: no block-stack question is
+    asked at all, and every context draws the same number — inside every
+    block kind, at module level, and inside `Extern`/`Namespace`/`Scope`/
+    `With` bodies. A word tail anchors the diagnostic on the word (the
+    spelling as written) and names it in the message; a tail that is not
+    a word — end of statement, a separator, a literal — is the bare
+    form, anchored on the `Exit`/`Continue` keyword. One diagnostic per
+    statement, no cascade: a bad statement draws no closer/unterminated
+    shape for the block it sits in, and the comma tail after a bad word
+    is never judged. In a `Select`'s pre-Case region an `Exit` statement
+    is `62` alone (251 stands down there), while a `Continue` never
+    draws `62` and reports `252` as anywhere else. The limits, each a
+    miss rather than a guess at a new check:
+    - A loop target with no enclosing loop of its kind stays silent:
+      fbc answers `239`/`240`/`241` (the loop-placement families,
+      outside this group) — at module level, inside a procedure, and
+      inside a different loop alike, for `Exit` and `Continue` both.
+    - A procedure target outside its own procedure stays silent: fbc
+      answers `253`/`254` for the `Sub`/`Function` mismatches (and
+      `144`/`165`/`166`/`193` for the other procedure kinds) — the
+      procedure-placement family.
+    - The multi-target tails stay silent: `Exit For, For` over nested
+      loops of the same kind compiles, `Exit Do, For` / `Exit For, Do`
+      draw `244`/`243`, a trailing comma draws `243`, and a procedure
+      target has no list form at all (`Exit Sub, Sub` is fbc `error 3`,
+      G5's).
+    - The two regions fbc rejects before its `Exit` dispatch keep the
+      landed shapes: inside a `Type`/`Union`/`Enum` body the boundary
+      close re-judges the statement in the enclosing scope (drawing 251
+      there plus the boundary pair) where fbc answers `error 17`, and a
+      one-line `If` body is skipped as one statement, so its
+      `Exit`/`Continue` is not judged at all where fbc answers 251/252.
+    - An `Exit` inside a nested block in the pre-Case region follows the
+      §12.31 nested-block limit: judged here (the opener's `62` plus a
+      `251` inside) where fbc skipped the whole compound after its `62`.
 
 ## 13. Where the diagnostics come from (compiler source)
 

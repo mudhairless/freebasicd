@@ -88,6 +88,8 @@ enum class FbcDiagId {
   InvalidCaseRange,
   ForNextVariableMismatch,
   NextVarMeaningless,
+  InvalidExitStmt,
+  InvalidContinueStmt,
   Count
 };
 

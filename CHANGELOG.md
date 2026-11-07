@@ -26,6 +26,108 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-07 — M23 G3: the `Exit`/`Continue` target family
+
+- **Two new messages, both carrying fbc's number and wiki link.** `251
+  INVALIDEXITSTMT` (`invalid-exit`) and `252 INVALIDCONTINUESTMT`
+  (`invalid-continue`) are new `FbcDiagId` identities resolved through
+  the version-range table; the texts stay translatable `trf` strings —
+  `expected <list> after EXIT` / `after CONTINUE`, with `, found
+  '<word>'` when there is a word — the keyword lists, the statement
+  keyword, and the found word all verbatim arguments, following G2's
+  283 shape. `po/freebasicd.pot` regenerated.
+- **The probe corrected the plan's guess.** PLAN.md sketched "the
+  innermost block on the stack decides legality"; fbc's source
+  (`cExitStatement`/`cContinueStatement` in `parser-compound.bas`) and
+  the probe agree it is purely lexical instead: fbc dispatches on the
+  token after the keyword, and 251/252 are that dispatch's `case else`.
+  No block-stack consultation happens for these two numbers at all, so
+  the landed check reads one token and asks nothing of the stack.
+- **The probe table (fbc 1.10.3, one line per shape class).**
+  - Bare `Exit` in a `For`, a `Do`, a `While`, a `Select` after its
+    first Case, a `Sub`, and at module level: `251`, every context.
+  - Bare `Continue`, the same six contexts: `252`, every context.
+  - `Exit <word>` with a word outside the nine — an identifier (`foo`,
+    `FOO`), `If`, `Scope`, `Type`, `End`: `251`, anchored on the word.
+  - `Continue` with a word outside the three — `Sub`, `Select`, `foo`:
+    `252`, anchored on the word.
+  - `Exit ,` and `Continue ,`: 251/252 (fbc's text names the comma);
+    `Exit 123`: `251` with no found-word clause in fbc's own text. A
+    non-word tail is the bare form here — anchored on the keyword, no
+    found word — matching fbc's literal case and keeping the anchor a
+    word token.
+  - `Exit For` inside a `Do` only — and every loop target with no
+    enclosing loop of its kind, `Exit` or `Continue`, at module level,
+    inside a procedure, or inside a different loop, nested or not:
+    `239`/`240`/`241`, never 251/252. Not implemented; those numbers are
+    outside this group's scope.
+  - `Exit For` inside a `Do` inside a `For`: silence — the target is
+    found up the stack past a non-matching inner block, because fbc
+    keeps a per-kind innermost pointer, not an innermost-block rule.
+    Same for `Exit Do` in a `For` in a `Do` and `Continue For` in a
+    `Do` in a `For`.
+  - Loop targets through transparent blocks — `Exit For`/`Continue For`
+    inside an `If`, a `Scope`, or a `With` inside the loop: silence.
+  - `Exit Sub` inside a `For` inside a `Sub`, `Exit Function` inside a
+    `For` inside a `Function`, each procedure kind inside its own body
+    (`Constructor`, `Destructor`, `Property`, `Operator`), and
+    `Exit Sub` through an `If`/`Scope`/`With`/`Select` inside the
+    procedure: silence.
+  - `Exit Function` inside a `Sub`: `254`; `Exit Sub` inside a
+    `Function` and at module level: `253` — the procedure-placement
+    family, not 251, and not implemented.
+  - Multi-target: `Exit For, For` over two nested `For`s (and
+    `Continue For, For`): silence, both exited; `Exit Do, For`:
+    `244`; `Exit For, Do`: `243`; `Exit For, Select`: `243`;
+    `Exit Select, For`: `246` (G1's, unchanged); `Continue Do, For`:
+    `244`; `Exit For,` trailing comma: `243`; `Exit Sub, Sub`:
+    `error 3` — a procedure target has no list form. None of these is
+    251/252, and none is implemented.
+  - Two bad `Exit` statements on separate lines: two `251`s. A bad
+    `Exit` before a valid statement: one `251`, no cascade. A bad
+    `Exit` (bare or bad word) inside a `For`: one `251`, the loop still
+    closes, no closer/unterminated shape.
+  - `Exit`/`Continue` inside a `Type` body: `error 17` (the record
+    grammar rejects the line before fbc's Exit dispatch); inside a
+    one-line `If` body: `251`/`252` (fbc dispatches it); inside
+    `Extern`/`Namespace`/`Scope`/`With` bodies: `251`.
+  - In a `Select`'s pre-Case region: a bare or bad-word `Exit` is `62`
+    alone (fbc errors on the region and skips the statement); a bare or
+    bad-word `Continue` is `252` — fbc's `Continue` handler never asks
+    the region question — and `continue for` there is `239`.
+- **The check is one token read, once per statement.** It lives beside
+  `checkExitSelect()` in the `exit`/`continue` dispatch: a keyword
+  target in fbc's list returns — G1 owns every `Exit` whose first
+  target is `Select`, and the loop/procedure placement families own
+  their targets' stack questions — anything else reports. A
+  reserved-word target's suffix was already shed by the lexer (warning
+  44 is the landed report), so `exit sub$` compares as `sub`. In the
+  pre-Case region the exit half stands down (62 owns the statement,
+  probed) while the continue half does not (probed).
+- **Tests.** `parser_checks` gains `TestExitContinueFamily`: 251/252 on
+  every probed bad shape with anchors, severities, identities, and
+  messages (the found word as written); silence for the matching loop
+  targets, the enclosing-but-not-innermost target, the transparent
+  blocks, every procedure kind, `Exit Select` inside a Select (G1's
+  behaviour unchanged), the upper-case spelling, and the suffixed
+  keyword target; the probed split pinned as silence (`239`/`240`/`241`,
+  `253`/`254`, the multi-target tails, `Exit Sub, Sub`); the no-cascade
+  shapes; and the pre-Case region pair (an `Exit` is 62 alone, a
+  `Continue` is 252). The corpus gains `blocks_exit_continue`
+  (`@fbc:pass`, a legal exit/continue in every probed legal shape) and
+  `err_exit_invalid` / `err_continue_invalid` (`@fbc:fail`), each with
+  its `.diag` golden (76 files), all rejected by fbc as expected and
+  covered by the format corpus gate. `fbc_diagnostics_checks` pins both
+  numbers.
+- **Deliberate limits, recorded at `FreeBASIC.md` §12.33.** The
+  `239`/`240`/`241` loop-placement family, the `253`/`254`/`144`/`165`/
+  `166`/`193` procedure-placement family, and the
+  `243`–`245`/`247`–`249` multi-target tails are left unimplemented —
+  each probed, each outside G3's two numbers. A record body and a
+  one-line `If` body keep the landed region shapes (fbc's `error 17`
+  and its own 251/252 are other groups'), and the nested-block-in-region
+  limit is §12.31's, shared.
+
 ### 2026-11-06 — M23 G2: the loop diagnostic family
 
 - **Two new messages, plus six pins.** `283 FORNEXTVARIABLEMISMATCH`

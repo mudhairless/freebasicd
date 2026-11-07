@@ -2040,6 +2040,474 @@ static void TestLoopFamily() {
   }
 }
 
+// M23 G3: the `Exit` / `Continue` target-word family. 251
+// INVALIDEXITSTMT and 252 INVALIDCONTINUESTMT are purely lexical (probed at
+// fbc 1.10.3): the word after the keyword alone decides, in every context,
+// and every placement question about an accepted target belongs to another
+// family (239/240/241 for a loop target with no enclosing loop, G1's
+// 242/246/250 for `Exit Select`, 253/254/... for a procedure target outside
+// its own procedure) and stays silent here.
+static void TestExitContinueFamily() {
+  // 251 InvalidExitStmt: the bare form, anchored on the `exit` keyword
+  // itself. One diagnostic, no cascade — the enclosing loop still closes
+  // (probed: fbc reports 251 and skips the statement).
+  {
+    std::string const src = "dim i as integer\n"
+                            "for i = 1 to 2\n"
+                            "  exit\n"
+                            "next\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "invalid-exit") == 1);
+    CHECK(fbcErrorFor(r, "invalid-exit") == FbcDiagId::InvalidExitStmt);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].fbcKind == FbcMessageKind::Error);
+      std::size_t const at = src.find("exit\n");
+      CHECK(r.diagnostics[0].range.beg == static_cast<uint32_t>(at));
+      CHECK(r.diagnostics[0].range.end == static_cast<uint32_t>(at + 4));
+      CHECK(r.diagnostics[0].message ==
+            "expected 'CONSTRUCTOR', 'DESTRUCTOR', 'DO', 'FOR', 'FUNCTION', "
+            "'OPERATOR', 'PROPERTY', 'SELECT', 'SUB' or 'WHILE' after EXIT");
+    }
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(diagnosticCount(r, "stray-closer") == 0);
+    // Every context draws the same one diagnostic (probed: Do, While,
+    // Select after a Case, Sub, module level).
+    ParseResult inDo = parseDocument("do\n  exit\nloop\n");
+    CHECK(diagnosticCount(inDo, "invalid-exit") == 1);
+    CHECK(inDo.diagnostics.size() == 1);
+    ParseResult inWhile = parseDocument("while 1\n  exit\nwend\n");
+    CHECK(diagnosticCount(inWhile, "invalid-exit") == 1);
+    ParseResult inSelect = parseDocument("dim q as integer = 1\n"
+                                         "select case q\n"
+                                         "case 1\n"
+                                         "  exit\n"
+                                         "end select\n");
+    CHECK(diagnosticCount(inSelect, "invalid-exit") == 1);
+    CHECK(diagnosticCount(inSelect, "illegal-inside-select") == 0);
+    ParseResult inSub = parseDocument("sub s()\n  exit\nend sub\n");
+    CHECK(diagnosticCount(inSub, "invalid-exit") == 1);
+    CHECK(inSub.diagnostics.size() == 1);
+    ParseResult atModule = parseDocument("exit\n");
+    CHECK(diagnosticCount(atModule, "invalid-exit") == 1);
+    CHECK(atModule.diagnostics.size() == 1);
+  }
+
+  // 251: a word fbc does not accept, anchored on the word token and naming
+  // it in the message. An identifier, an uppercase identifier (as written),
+  // and keywords outside the nine (probed: `if`, `scope`, `type`, `end`).
+  {
+    std::string const src = "sub s()\n  exit foo\nend sub\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "invalid-exit") == 1);
+    CHECK(fbcErrorFor(r, "invalid-exit") == FbcDiagId::InvalidExitStmt);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      std::size_t const at = src.find("foo");
+      CHECK(r.diagnostics[0].range.beg == static_cast<uint32_t>(at));
+      CHECK(r.diagnostics[0].range.end == static_cast<uint32_t>(at + 3));
+      CHECK(r.diagnostics[0].message ==
+            "expected 'CONSTRUCTOR', 'DESTRUCTOR', 'DO', 'FOR', 'FUNCTION', "
+            "'OPERATOR', 'PROPERTY', 'SELECT', 'SUB' or 'WHILE' after EXIT, "
+            "found 'foo'");
+    }
+    ParseResult upper = parseDocument("sub s()\n  exit FOO\nend sub\n");
+    CHECK(diagnosticCount(upper, "invalid-exit") == 1);
+    if (upper.diagnostics.size() == 1) {
+      // The found word is the spelling as written, not folded.
+      std::size_t const at =
+          std::string("sub s()\n  exit FOO\nend sub\n").find("FOO");
+      CHECK(upper.diagnostics[0].range.beg == static_cast<uint32_t>(at));
+      CHECK(upper.diagnostics[0].message.find("found 'FOO'") !=
+            std::string::npos);
+    }
+    ParseResult inIf = parseDocument("if 1 then\n  exit if\nend if\n");
+    CHECK(diagnosticCount(inIf, "invalid-exit") == 1);
+    ParseResult inScope = parseDocument("scope\n  exit scope\nend scope\n");
+    CHECK(diagnosticCount(inScope, "invalid-exit") == 1);
+    ParseResult typeWord = parseDocument("sub s()\n  exit type\nend sub\n");
+    CHECK(diagnosticCount(typeWord, "invalid-exit") == 1);
+    ParseResult endWord = parseDocument("sub s()\n  exit end\nend sub\n");
+    CHECK(diagnosticCount(endWord, "invalid-exit") == 1);
+    CHECK(endWord.diagnostics.size() == 1);
+  }
+
+  // 251: a tail that is not a word — a separator or a literal — is the
+  // bare form (fbc drops its found clause for a literal too, probed):
+  // anchored on the `exit` keyword, no found word in the message.
+  {
+    ParseResult comma = parseDocument("sub s()\n  exit ,\nend sub\n");
+    CHECK(diagnosticCount(comma, "invalid-exit") == 1);
+    CHECK(comma.diagnostics.size() == 1);
+    if (comma.diagnostics.size() == 1) {
+      std::string const src = "sub s()\n  exit ,\nend sub\n";
+      CHECK(comma.diagnostics[0].range.beg ==
+            static_cast<uint32_t>(src.find("exit")));
+      CHECK(comma.diagnostics[0].range.end ==
+            static_cast<uint32_t>(src.find("exit") + 4));
+      CHECK(comma.diagnostics[0].message.find("found") == std::string::npos);
+    }
+    ParseResult num = parseDocument("sub s()\n  exit 123\nend sub\n");
+    CHECK(diagnosticCount(num, "invalid-exit") == 1);
+    CHECK(num.diagnostics.size() == 1);
+  }
+
+  // 251: one per statement, and fbc's recovery skips the rest of the
+  // statement — a comma tail after a bad word is never judged (probed:
+  // `exit foo, bar` is one 251), two bad exits draw two, a bad exit does
+  // not cascade into the closer shapes of the block it sits in.
+  {
+    ParseResult multi = parseDocument("sub s()\n  exit foo, bar\nend sub\n");
+    CHECK(diagnosticCount(multi, "invalid-exit") == 1);
+    CHECK(multi.diagnostics.size() == 1);
+    ParseResult two = parseDocument("sub s()\n  exit foo\n  exit bar\n"
+                                    "end sub\n");
+    CHECK(diagnosticCount(two, "invalid-exit") == 2);
+    CHECK(two.diagnostics.size() == 2);
+    ParseResult thenValid =
+        parseDocument("sub s()\n  exit foo\n  print \"x\"\nend sub\n");
+    CHECK(diagnosticCount(thenValid, "invalid-exit") == 1);
+    CHECK(thenValid.diagnostics.size() == 1);
+    ParseResult inFor = parseDocument("dim i as integer\n"
+                                      "for i = 1 to 2\n"
+                                      "  exit foo\n"
+                                      "next\n"
+                                      "print \"ok\"\n");
+    CHECK(diagnosticCount(inFor, "invalid-exit") == 1);
+    CHECK(diagnosticCount(inFor, "unterminated-block") == 0);
+    CHECK(diagnosticCount(inFor, "stray-closer") == 0);
+    CHECK(diagnosticCount(inFor, "next-var-meaningless") == 0);
+  }
+
+  // 252 InvalidContinueStmt: the bare form anchored on the `continue`
+  // keyword, in every context (probed: For, Do, While, Select after a
+  // Case, Sub, module level).
+  {
+    std::string const src = "dim i as integer\n"
+                            "for i = 1 to 2\n"
+                            "  continue\n"
+                            "next\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "invalid-continue") == 1);
+    CHECK(fbcErrorFor(r, "invalid-continue") == FbcDiagId::InvalidContinueStmt);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      std::size_t const at = src.find("continue\n");
+      CHECK(r.diagnostics[0].range.beg == static_cast<uint32_t>(at));
+      CHECK(r.diagnostics[0].range.end == static_cast<uint32_t>(at + 8));
+      CHECK(r.diagnostics[0].message ==
+            "expected 'DO', 'FOR' or 'WHILE' after CONTINUE");
+    }
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    ParseResult inSub = parseDocument("sub s()\n  continue\nend sub\n");
+    CHECK(diagnosticCount(inSub, "invalid-continue") == 1);
+    ParseResult atModule = parseDocument("continue\n");
+    CHECK(diagnosticCount(atModule, "invalid-continue") == 1);
+    CHECK(atModule.diagnostics.size() == 1);
+  }
+
+  // 252: words outside the three (probed: `sub`, `select`, an identifier),
+  // anchored on the word and named in the message.
+  {
+    std::string const src =
+        "dim i as integer\nfor i = 1 to 2\n  continue sub\nnext\n";
+    ParseResult r = parseDocument(src);
+    CHECK(diagnosticCount(r, "invalid-continue") == 1);
+    CHECK(fbcErrorFor(r, "invalid-continue") == FbcDiagId::InvalidContinueStmt);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      std::size_t const at = src.find("sub");
+      CHECK(r.diagnostics[0].range.beg == static_cast<uint32_t>(at));
+      CHECK(r.diagnostics[0].range.end == static_cast<uint32_t>(at + 3));
+      CHECK(r.diagnostics[0].message ==
+            "expected 'DO', 'FOR' or 'WHILE' after CONTINUE, found 'sub'");
+    }
+    ParseResult selectWord = parseDocument("dim q as integer = 1\n"
+                                           "select case q\n"
+                                           "case 1\n"
+                                           "  continue select\n"
+                                           "end select\n");
+    CHECK(diagnosticCount(selectWord, "invalid-continue") == 1);
+    CHECK(diagnosticCount(selectWord, "illegal-inside-select") == 0);
+    ParseResult ident =
+        parseDocument("dim i as integer\nfor i = 1 to 2\n  continue foo\n"
+                      "next\n");
+    CHECK(diagnosticCount(ident, "invalid-continue") == 1);
+    CHECK(ident.diagnostics.size() == 1);
+  }
+
+  // Silence: an accepted target never draws 251/252, wherever it sits.
+  // The matching loop targets (probed), including through transparent
+  // blocks (If, Scope, With) and past a non-matching inner block (the
+  // target is found up the stack, not on the innermost block).
+  {
+    ParseResult matching = parseDocument("dim i as integer\n"
+                                         "for i = 1 to 2\n"
+                                         "  exit for\n"
+                                         "next\n");
+    CHECK(diagnosticCount(matching, "invalid-exit") == 0);
+    CHECK(matching.diagnostics.empty());
+    ParseResult inDo = parseDocument("do\n  exit do\nloop\n");
+    CHECK(inDo.diagnostics.empty());
+    ParseResult inWhile = parseDocument("while 1\n  exit while\nwend\n");
+    CHECK(inWhile.diagnostics.empty());
+    ParseResult contFor = parseDocument("dim i as integer\n"
+                                        "for i = 1 to 2\n"
+                                        "  continue for\n"
+                                        "next\n");
+    CHECK(contFor.diagnostics.empty());
+    // Upper-case spelling: keywords fold, as fbc does.
+    ParseResult upper = parseDocument("dim i as integer\n"
+                                      "for i = 1 to 2\n"
+                                      "  EXIT FOR\n"
+                                      "next\n");
+    CHECK(upper.diagnostics.empty());
+    // A suffix that rode on the target keyword is shed (warning 44 is the
+    // landed report for it), so `exit sub$` is `exit sub`.
+    ParseResult suffixed = parseDocument("sub s()\n  exit sub$\nend sub\n");
+    CHECK(diagnosticCount(suffixed, "invalid-exit") == 0);
+    CHECK(diagnosticCount(suffixed, "keyword-suffix") == 1);
+    // Not the innermost block, but enclosing (probed: `exit for` inside a
+    // Do inside a For compiles).
+    ParseResult forInDoInFor = parseDocument("dim i as integer\n"
+                                             "for i = 1 to 2\n"
+                                             "  do\n"
+                                             "    exit for\n"
+                                             "  loop\n"
+                                             "next\n");
+    CHECK(forInDoInFor.diagnostics.empty());
+    ParseResult contInDoInFor = parseDocument("dim i as integer\n"
+                                              "for i = 1 to 2\n"
+                                              "  do\n"
+                                              "    continue for\n"
+                                              "  loop\n"
+                                              "next\n");
+    CHECK(contInDoInFor.diagnostics.empty());
+    ParseResult doInForInDo = parseDocument("do\n"
+                                            "  dim i as integer\n"
+                                            "  for i = 1 to 2\n"
+                                            "    exit do\n"
+                                            "  next\n"
+                                            "loop\n");
+    CHECK(doInForInDo.diagnostics.empty());
+    // Transparent blocks: If, Scope, With inside the loop.
+    ParseResult inIf = parseDocument("dim i as integer\n"
+                                     "for i = 1 to 2\n"
+                                     "  if i then\n"
+                                     "    exit for\n"
+                                     "  end if\n"
+                                     "next\n");
+    CHECK(inIf.diagnostics.empty());
+    ParseResult inScope = parseDocument("dim i as integer\n"
+                                        "for i = 1 to 2\n"
+                                        "  scope\n"
+                                        "    exit for\n"
+                                        "    continue for\n"
+                                        "  end scope\n"
+                                        "next\n");
+    CHECK(inScope.diagnostics.empty());
+    ParseResult inWith = parseDocument("dim i as integer\n"
+                                       "type T\n"
+                                       "  a as integer\n"
+                                       "end type\n"
+                                       "dim w as T\n"
+                                       "for i = 1 to 2\n"
+                                       "  with w\n"
+                                       "    exit for\n"
+                                       "  end with\n"
+                                       "next\n");
+    CHECK(inWith.diagnostics.empty());
+  }
+
+  // Silence: procedure targets inside their own procedure, from inside a
+  // loop and through transparent blocks (probed: `exit sub` in a For in a
+  // Sub, `exit function` in a For in a Function, through If/Scope/With/
+  // Select, and each procedure kind in its own body).
+  {
+    ParseResult subFromLoop = parseDocument("sub s()\n"
+                                            "  dim i as integer\n"
+                                            "  for i = 1 to 2\n"
+                                            "    exit sub\n"
+                                            "  next\n"
+                                            "end sub\n");
+    CHECK(subFromLoop.diagnostics.empty());
+    ParseResult fnFromLoop = parseDocument("function f() as integer\n"
+                                           "  dim i as integer\n"
+                                           "  for i = 1 to 2\n"
+                                           "    exit function\n"
+                                           "  next\n"
+                                           "  return 0\n"
+                                           "end function\n");
+    CHECK(fnFromLoop.diagnostics.empty());
+    ParseResult throughBlocks = parseDocument("sub s()\n"
+                                              "  if 1 then\n"
+                                              "    exit sub\n"
+                                              "  end if\n"
+                                              "  scope\n"
+                                              "    exit sub\n"
+                                              "  end scope\n"
+                                              "  dim q as integer = 1\n"
+                                              "  select case q\n"
+                                              "  case 1\n"
+                                              "    exit sub\n"
+                                              "  end select\n"
+                                              "end sub\n");
+    CHECK(throughBlocks.diagnostics.empty());
+    ParseResult kinds = parseDocument("type T\n"
+                                      "  x as integer\n"
+                                      "  declare constructor()\n"
+                                      "  declare destructor()\n"
+                                      "  declare property p() as integer\n"
+                                      "  declare operator cast() as integer\n"
+                                      "end type\n"
+                                      "constructor T()\n"
+                                      "  exit constructor\n"
+                                      "end constructor\n"
+                                      "destructor T()\n"
+                                      "  exit destructor\n"
+                                      "end destructor\n"
+                                      "property T.p() as integer\n"
+                                      "  exit property\n"
+                                      "  return x\n"
+                                      "end property\n"
+                                      "operator T.cast() as integer\n"
+                                      "  exit operator\n"
+                                      "  return x\n"
+                                      "end operator\n");
+    CHECK(diagnosticCount(kinds, "invalid-exit") == 0);
+    CHECK(kinds.diagnostics.empty());
+    // `Exit Select` inside a Select stays exactly the G1 behaviour: no
+    // 251 from this family on an accepted `select` target.
+    ParseResult exitSelect = parseDocument("dim q as integer = 1\n"
+                                           "select case q\n"
+                                           "case 1\n"
+                                           "  exit select\n"
+                                           "end select\n");
+    CHECK(diagnosticCount(exitSelect, "invalid-exit") == 0);
+    CHECK(diagnosticCount(exitSelect, "illegal-outside-select") == 0);
+    CHECK(exitSelect.diagnostics.empty());
+  }
+
+  // The probed split — accepted targets whose *placement* fbc rejects draw
+  // other families' numbers, all outside G3, and stay silent here: a loop
+  // target with no enclosing loop of its kind is 239/240/241, a procedure
+  // target outside its own procedure is 253/254, and the loop multi-target
+  // forms are 243/244/245/247/248/249 (none implemented in this family).
+  {
+    ParseResult exitForInSub = parseDocument("sub s()\n  exit for\n"
+                                             "end sub\n");
+    CHECK(diagnosticCount(exitForInSub, "invalid-exit") == 0);
+    CHECK(exitForInSub.diagnostics.empty());
+    ParseResult exitForInDo = parseDocument("do\n  exit for\nloop\n");
+    CHECK(diagnosticCount(exitForInDo, "invalid-exit") == 0);
+    CHECK(exitForInDo.diagnostics.empty());
+    ParseResult contForInDo = parseDocument("do\n  continue for\nloop\n");
+    CHECK(diagnosticCount(contForInDo, "invalid-continue") == 0);
+    CHECK(contForInDo.diagnostics.empty());
+    ParseResult exitForModule = parseDocument("exit for\n");
+    CHECK(diagnosticCount(exitForModule, "invalid-exit") == 0);
+    CHECK(exitForModule.diagnostics.empty());
+    ParseResult contForModule = parseDocument("continue for\n");
+    CHECK(diagnosticCount(contForModule, "invalid-continue") == 0);
+    CHECK(contForModule.diagnostics.empty());
+    ParseResult fnInSub = parseDocument("sub s()\n  exit function\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(fnInSub, "invalid-exit") == 0);
+    CHECK(fnInSub.diagnostics.empty());
+    ParseResult subInFn = parseDocument("function f() as integer\n"
+                                        "  exit sub\n"
+                                        "  return 0\n"
+                                        "end function\n");
+    CHECK(diagnosticCount(subInFn, "invalid-exit") == 0);
+    CHECK(subInFn.diagnostics.empty());
+    ParseResult subAtModule = parseDocument("exit sub\n");
+    CHECK(diagnosticCount(subAtModule, "invalid-exit") == 0);
+    CHECK(subAtModule.diagnostics.empty());
+    // Multi-target loop forms (probed: `exit do, for` is 244, `exit for,
+    // do` is 243, `exit for, for` over two Fors compiles, a trailing comma
+    // is 243) — the first target is accepted, so none of them is 251.
+    ParseResult doFor = parseDocument("dim i as integer\n"
+                                      "for i = 1 to 2\n"
+                                      "  do\n"
+                                      "    exit do, for\n"
+                                      "  loop\n"
+                                      "next\n");
+    CHECK(diagnosticCount(doFor, "invalid-exit") == 0);
+    CHECK(doFor.diagnostics.empty());
+    ParseResult forDo = parseDocument("dim i as integer\n"
+                                      "for i = 1 to 2\n"
+                                      "  do\n"
+                                      "    exit for, do\n"
+                                      "  loop\n"
+                                      "next\n");
+    CHECK(diagnosticCount(forDo, "invalid-exit") == 0);
+    CHECK(forDo.diagnostics.empty());
+    ParseResult forFor = parseDocument("dim i as integer\n"
+                                       "dim j as integer\n"
+                                       "for i = 1 to 2\n"
+                                       "  for j = 1 to 2\n"
+                                       "    exit for, for\n"
+                                       "  next\n"
+                                       "next\n");
+    CHECK(forFor.diagnostics.empty());
+    ParseResult trailing =
+        parseDocument("dim i as integer\nfor i = 1 to 2\n  exit for,\n"
+                      "next\n");
+    CHECK(diagnosticCount(trailing, "invalid-exit") == 0);
+    // A procedure target has no multi-target form at all (probed: `exit
+    // sub, sub` is fbc error 3, G5's); the first target is accepted, so
+    // no 251 here either.
+    ParseResult subSub = parseDocument("sub s()\n  exit sub, sub\nend sub\n");
+    CHECK(diagnosticCount(subSub, "invalid-exit") == 0);
+    CHECK(subSub.diagnostics.empty());
+  }
+
+  // The pre-Case region: an `Exit` statement there is 62 alone (fbc errors
+  // and skips it before the Exit questions, probed), so 251 stands down;
+  // a `Continue` never draws 62 (its handler does not ask the region
+  // question), so 252 fires there as anywhere else (probed).
+  {
+    ParseResult bareExit = parseDocument("dim q as integer = 1\n"
+                                         "select case q\n"
+                                         "  exit\n"
+                                         "case 1\n"
+                                         "  print \"x\"\n"
+                                         "end select\n");
+    CHECK(diagnosticCount(bareExit, "illegal-inside-select") == 1);
+    CHECK(diagnosticCount(bareExit, "invalid-exit") == 0);
+    ParseResult badExit = parseDocument("dim q as integer = 1\n"
+                                        "select case q\n"
+                                        "  exit foo\n"
+                                        "case 1\n"
+                                        "  print \"x\"\n"
+                                        "end select\n");
+    CHECK(diagnosticCount(badExit, "illegal-inside-select") == 1);
+    CHECK(diagnosticCount(badExit, "invalid-exit") == 0);
+    CHECK(badExit.diagnostics.size() == 1);
+    ParseResult bareCont = parseDocument("dim q as integer = 1\n"
+                                         "select case q\n"
+                                         "  continue\n"
+                                         "case 1\n"
+                                         "  print \"x\"\n"
+                                         "end select\n");
+    CHECK(diagnosticCount(bareCont, "illegal-inside-select") == 0);
+    CHECK(diagnosticCount(bareCont, "invalid-continue") == 1);
+    CHECK(bareCont.diagnostics.size() == 1);
+    ParseResult badCont = parseDocument("dim q as integer = 1\n"
+                                        "select case q\n"
+                                        "  continue foo\n"
+                                        "case 1\n"
+                                        "  print \"x\"\n"
+                                        "end select\n");
+    CHECK(diagnosticCount(badCont, "illegal-inside-select") == 0);
+    CHECK(diagnosticCount(badCont, "invalid-continue") == 1);
+    CHECK(badCont.diagnostics.size() == 1);
+  }
+}
+
 int main() {
   // A realistic multi-construct program must parse with zero diagnostics.
   {
@@ -3730,6 +4198,7 @@ int main() {
   TestModuleLevelStatementRanges();
   TestSelectFamily();
   TestLoopFamily();
+  TestExitContinueFamily();
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

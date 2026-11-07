@@ -1217,6 +1217,91 @@ private:
     }
   }
 
+  // fbc's accepted target words (error 251's and 252's lists), as the
+  // lowercase words the parser compares. The quoted display lists the
+  // messages carry are the same words, in fbc's own order.
+  static bool isExitTargetWord(const std::string &w) {
+    return w == "constructor" || w == "destructor" || w == "do" || w == "for" ||
+           w == "function" || w == "operator" || w == "property" ||
+           w == "select" || w == "sub" || w == "while";
+  }
+
+  static bool isContinueTargetWord(const std::string &w) {
+    return w == "do" || w == "for" || w == "while";
+  }
+
+  // 251 INVALIDEXITSTMT / 252 INVALIDCONTINUESTMT, probed at fbc 1.10.3:
+  // the word after the keyword alone decides, in every context, and no
+  // block-stack question is asked at all. A target fbc accepts — the nine
+  // `Exit` words, the three `Continue` words — never draws these numbers
+  // wherever it sits, because every placement question about an accepted
+  // target belongs to another family: a loop target with no enclosing loop
+  // of its kind is 239/240/241 (outside this group), `Exit Select` is the
+  // G1 242/246/250 family in checkExitSelect above, a procedure target
+  // outside its own procedure is 253/254/144/165/166/193, and the loop
+  // multi-target tails are 243/244/245/247/248/249. A word fbc does not
+  // accept draws 251/252 in every context — inside every block kind, at
+  // module level, inside an `Extern`/`Namespace` body — the bare form
+  // included. The diagnostic is anchored on the target word's token when
+  // there is one (keyword or identifier, the spelling as written) and on
+  // the `Exit`/`Continue` keyword otherwise (end of line, a separator, a
+  // literal — fbc drops its found clause for those too). One per
+  // statement: fbc's error recovery skips the rest of the line, so a
+  // comma tail after a bad word is never judged, and the statement draws
+  // no closer/unterminated shape for the block it sits in. In the
+  // pre-Case region an `Exit` statement is 62 alone (fbc errors and skips
+  // it before the Exit questions), so the exit half stands down there; a
+  // `Continue` never draws 62 (fbc's handler does not ask the region
+  // question), so the continue half fires there as anywhere else.
+  void checkExitTarget() {
+    if (inSelectBeforeCase()) {
+      return;
+    }
+    std::vector<Token> const toks = statementTokens();
+    if (toks.size() >= 2 && toks[1].kind == TokenKind::Keyword &&
+        isExitTargetWord(toLowerChars(toks[1].text()))) {
+      return;
+    }
+    reportInvalidTarget(toks, /*isExit=*/true);
+  }
+
+  void checkContinueTarget() {
+    std::vector<Token> const toks = statementTokens();
+    if (toks.size() >= 2 && toks[1].kind == TokenKind::Keyword &&
+        isContinueTargetWord(toLowerChars(toks[1].text()))) {
+      return;
+    }
+    reportInvalidTarget(toks, /*isExit=*/false);
+  }
+
+  void reportInvalidTarget(std::vector<Token> const &toks, bool isExit) {
+    // `toks[0]` is the `Exit`/`Continue` keyword; a present target word is
+    // `toks[1]`. The suffix a reserved-word target carried was already
+    // shed by the lexer (its own warning 44), so `exit sub$` compares as
+    // `sub` here.
+    bool const hasWord =
+        toks.size() >= 2 && (toks[1].kind == TokenKind::Keyword ||
+                             toks[1].kind == TokenKind::Identifier);
+    Token const &anchor = hasWord ? toks[1] : toks[0];
+    char const *const list = isExit ? "'CONSTRUCTOR', 'DESTRUCTOR', 'DO', "
+                                      "'FOR', 'FUNCTION', 'OPERATOR', "
+                                      "'PROPERTY', 'SELECT', 'SUB' or 'WHILE'"
+                                    : "'DO', 'FOR' or 'WHILE'";
+    char const *const stmt = isExit ? "EXIT" : "CONTINUE";
+    FbcDiagId const id =
+        isExit ? FbcDiagId::InvalidExitStmt : FbcDiagId::InvalidContinueStmt;
+    char const *const code = isExit ? "invalid-exit" : "invalid-continue";
+    if (hasWord) {
+      addDiagnostic(
+          anchor.beg, anchor.end, Severity::Error, code,
+          trf("expected %s after %s, found '%s'", list, stmt, toks[1].text()),
+          id);
+    } else {
+      addDiagnostic(anchor.beg, anchor.end, Severity::Error, code,
+                    trf("expected %s after %s", list, stmt), id);
+    }
+  }
+
   // A constant value for a Case bound in an As Const Select (323). The
   // evaluator folds numeric literals, parentheses, unary operators, and
   // the arithmetic/bitwise operators fbc folds, plus constant names it
@@ -1949,6 +2034,9 @@ private:
     if (w == "exit" || w == "continue") {
       if (w == "exit") {
         checkExitSelect();
+        checkExitTarget();
+      } else {
+        checkContinueTarget();
       }
       resetDoc();
       skipStatement();

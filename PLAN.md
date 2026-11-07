@@ -13,7 +13,7 @@
 
   The project is `freebasicd` (renamed from `freebasiclsp` 2026-09-25), version
   0.7.0 under semantic versioning — the number is bumped only when a release
-  ships, never in an ordinary feature or fix commit. `ctest` is 19/19 green.
+  ships, never in an ordinary feature or fix commit. `ctest` is 23/23 green.
 
   LspCpp is vendored from our fork `mudhairless/LspCpp` at `e4b177e` (upstream
   `19150d12` plus eleven local commits) and supplies framing / JSON-RPC / typed
@@ -40,7 +40,7 @@
   | M21 — module model, constructors, and fbc's codes (complete 2026-11-06; summary in CHANGELOG.md) | done |
   | M18 — public release: editor setup docs, first tag | blocked on M22, M23, M24, and the VS Code extension |
   | M22 — fbc declaration-order parity: use-before-declaration | next |
-  | M23 — fbc parser diagnostics: statements, placement, warnings (early families landed; groups G2–G7 remain) | backlog |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (early families landed; groups G4–G7 remain) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
   | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
@@ -582,9 +582,16 @@ landing as their own step.
   and warning `26` itself (every declared name after `Next`, matching
   or not, one per name). Limits are recorded at `FreeBASIC.md` §12.32;
   the dated entry is in `CHANGELOG.md`.
-- **G3 — `Exit` / `Continue` placement.** `251 INVALIDEXITSTMT` and `252
-  INVALIDCONTINUESTMT`: the innermost block on the stack decides legality.
-  Small; it may ride with G4.
+- **G3 — the `Exit`/`Continue` target family — landed (2026-11-07).**
+  `251 INVALIDEXITSTMT` and `252 INVALIDCONTINUESTMT`, one token read in
+  the `exit`/`continue` dispatch beside `checkExitSelect()`: the word
+  after the keyword alone decides (the probe corrected this sketch's
+  block-stack guess — the stack questions belong to the `239`/`240`/`241`
+  loop-placement, `253`/`254`/… procedure-placement, and
+  `243`–`245`/`247`–`249` multi-target families, all outside G3 and all
+  still open). Landed alone, as decided; G4 is untouched. Limits are
+  recorded at `FreeBASIC.md` §12.33; the dated entry is in
+  [`CHANGELOG.md`](CHANGELOG.md).
 - **G4 — placement (research Tier 2).** `61 ILLEGALINSIDEASUB`, `96
   ILLEGALINSIDEASCOPE`, and `44 ILLEGALOUTSIDECOMP`, each report naming the
   enclosing construct. `105 BRANCHCROSSINGDYNDATADEF` and warning `14

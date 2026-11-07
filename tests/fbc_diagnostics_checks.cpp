@@ -239,6 +239,14 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::NextVarMeaningless,
                           FbcMessageKind::Warning, v1102) == 26);
 
+  // The `exit`/`continue` target family (M23 G3), each pinned to the
+  // catalog number the probe read back from fbc 1.10.3
+  // (tools/fbc_catalog.tsv).
+  CHECK(fblang::fbcNumber(FbcDiagId::InvalidExitStmt, FbcMessageKind::Error,
+                          v1102) == 251);
+  CHECK(fblang::fbcNumber(FbcDiagId::InvalidContinueStmt, FbcMessageKind::Error,
+                          v1102) == 252);
+
   // No identity is no number, in either space.
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Error, v1102) == 0);
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Warning, v1102) ==

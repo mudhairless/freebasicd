@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-11-06 16:43-0600\n"
-"PO-Revision-Date: 2026-11-06 16:43-0600\n"
+"POT-Creation-Date: 2026-11-07 13:47-0600\n"
+"PO-Revision-Date: 2026-11-07 13:47-0600\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -126,8 +126,8 @@ msgid ""
 msgstr ""
 
 #: src/parser.cpp:202 src/parser.cpp:661 src/parser.cpp:1198
-#: src/parser.cpp:1205 src/parser.cpp:2002 src/parser.cpp:3132
-#: src/parser.cpp:3169 src/parser.cpp:3186 src/parser.cpp:3207
+#: src/parser.cpp:1205 src/parser.cpp:2091 src/parser.cpp:3221
+#: src/parser.cpp:3258 src/parser.cpp:3275 src/parser.cpp:3296
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
@@ -146,7 +146,7 @@ msgstr ""
 msgid "dialect '%s' is not supported yet; parsing in '%s' mode"
 msgstr ""
 
-#: src/parser.cpp:561 src/parser.cpp:2940
+#: src/parser.cpp:561 src/parser.cpp:3029
 #, c-format
 msgid "duplicate definition: '%s'"
 msgstr ""
@@ -167,7 +167,7 @@ msgstr ""
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:1022 src/parser.cpp:3029
+#: src/parser.cpp:1022 src/parser.cpp:3118
 #, c-format
 msgid "'%s' is a reserved word and cannot be a field name"
 msgstr ""
@@ -187,53 +187,63 @@ msgstr ""
 msgid "no outer %s compound statement found"
 msgstr ""
 
-#: src/parser.cpp:1649
+#: src/parser.cpp:1297
+#, c-format
+msgid "expected %s after %s, found '%s'"
+msgstr ""
+
+#: src/parser.cpp:1302
+#, c-format
+msgid "expected %s after %s"
+msgstr ""
+
+#: src/parser.cpp:1735
 #, c-format
 msgid "invalid %s range, start value is greater than the end value"
 msgstr ""
 
-#: src/parser.cpp:1923 src/parser.cpp:1936 src/parser.cpp:3155
-#: src/parser.cpp:3236 src/parser.cpp:3361 src/parser.cpp:3524
-#: src/parser.cpp:3533 src/parser.cpp:3552
+#: src/parser.cpp:2009 src/parser.cpp:2022 src/parser.cpp:3244
+#: src/parser.cpp:3325 src/parser.cpp:3450 src/parser.cpp:3613
+#: src/parser.cpp:3622 src/parser.cpp:3641
 #, c-format
 msgid "%s without %s"
 msgstr ""
 
-#: src/parser.cpp:2348
+#: src/parser.cpp:2437
 #, c-format
 msgid "a module %s cannot take parameters"
 msgstr ""
 
-#: src/parser.cpp:2357
+#: src/parser.cpp:2446
 msgid "invalid priority attribute; expected 101 to 65535"
 msgstr ""
 
-#: src/parser.cpp:2375
+#: src/parser.cpp:2464
 #, c-format
 msgid "a module %s cannot be exported"
 msgstr ""
 
-#: src/parser.cpp:2381
+#: src/parser.cpp:2470
 #, c-format
 msgid "Expected end of line after a module %s"
 msgstr ""
 
-#: src/parser.cpp:2391
+#: src/parser.cpp:2480
 #, c-format
 msgid "a non-static member procedure cannot be a module %s"
 msgstr ""
 
-#: src/parser.cpp:2826
+#: src/parser.cpp:2915
 #, c-format
 msgid "'%s' is not allowed on a declaration line"
 msgstr ""
 
-#: src/parser.cpp:3386
+#: src/parser.cpp:3475
 #, c-format
 msgid "%s variable name mismatch: expected '%s', found '%s'"
 msgstr ""
 
-#: src/parser.cpp:3394
+#: src/parser.cpp:3483
 #, c-format
 msgid "variable following %s is meaningless: '%s'"
 msgstr ""
