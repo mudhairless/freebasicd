@@ -26,6 +26,97 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-07 — M23 G6: statement-specific checks (research Tier 5)
+
+- **Fifteen new fbc identities.** `54 EXPECTEDDYNAMICARRAY`, `75
+  CANTINITDYNAMICARRAYS`, `87 CANTINITDYNAMICSTRINGS`, `76
+  DYNAMICARRAYWITHELLIPSIS`, `77 ARRAYFIELDWITHELLIPSIS`, `136
+  DYNAMICEXTERNCANTHAVEBOUNDS`, `162 DYNAMICARRAYINUNION`, `171
+  REDIMCTORMUSTBECDEL`, `172 REDIMDTORMUSTBECDEL`, `173
+  REDIMCTORMUSTHAVEONEPARAM`, `174 ERASECTORMUSTBECDEL`, `175
+  ERASEDTORMUSTBECDEL`, `176 ERASECTORMUSTHAVEONEPARAM`, `216
+  PRIVORPUBTTRIBNOTALLOWED`, and `327 EXPECTEDFILENUMBEREXPRESSION`,
+  resolved through the version-range table with translatable `trf` texts.
+  `po/freebasicd.pot` regenerated. Reporting goes through one generic
+  helper, `emitStatementError(anchor, code, id, msg)`: `addDiagnostic`
+  stays the unconditional low-level entry, and the new helper adds the
+  one-per-statement guard (`statementFamilyFailed_`, cleared at each
+  statement head) on top of it. The G5 `emitExpectedConst` and
+  `emitTooManyExpressions` helpers were folded onto it; no milestone-named
+  emitter remains.
+- **Inventory (18 candidates from the catalog candidates plus the ERASE
+  twins and the file-number message; 15 live Tier 5 messages remain).**
+  Reachable and implemented: `54`, `75`, `87`, `76`, `77`, `136`
+  (COMMON half), `162`, `171`–`176`, `216`, `327`. Not reachable: `72
+  ARRAYNOTALLOCATED` (its trigger is a scalar used with parens in an
+  expression, and expressions are not walked — a dynamic array accessed
+  before `Redim` is legal, so dimension state is not the trigger).
+  Dead in the pinned fbc: `56 ARRAYALREADYDIMENSIONED` (no call site;
+  `redim` twice compiles) and `102 CANTINITDYNAMICFIELDS` (no call site;
+  the probe draws `63` instead). `72`, the dead pair, and the limits below
+  pass by name to G7/M24.
+- **Probe table (fbc 1.10.3, `/usr/bin/fbc -c`).**
+  - `54`: `dim a(1)` + `redim a(2)` (also `redim preserve`, in a `Sub`, a
+    `shared` module array from a `Sub`, a fixed field `redim t.a(2)`,
+    `extern a(1)` + `dim a()`) draws `54`; `dim a()` + `redim a(2)` and a
+    dynamic field compile. A fixed array with a variable bound
+    (`dim a(0 to n)`, `n` a variable) is dynamic in fbc and can be
+    Redim'd — only a provably constant bound (literals, known `Const`/
+    enum names) counts as fixed, anything else stays silent. A scalar or
+    undeclared typeless `redim` draws `147`, and a plain module `dim` seen
+    from a `Sub` draws `147` (invisible) — both silent here.
+  - `75`: `dim a() as integer = { 1, 2 }` draws `75`; fixed and scalar
+    initializers compile.
+  - `87`: `dim shared s as string = "hi"` and `static s as string = "hi"`
+    draw `87`; a local string and a fixed-length `string * 10` compile.
+  - `76`: `redim a(0 to ...)` on a dynamic array draws `76`; on a fixed
+    array it draws `54` alone. A `dim a(0 to ...)` draws `281`
+    (must-have-initializer), silent here.
+  - `77`: a `...` field in a `TYPE` draws `77`; a fixed field compiles.
+  - `136`: `common a(1) as integer` draws `136`; `common a()` and a `dim`
+    with bounds compile. A dynamic `extern` with bounds needs
+    `OPTION DYNAMIC` (`146` in `fb`), silent here.
+  - `162`: `a(any)` in a `UNION` draws `162`; in a `TYPE` it compiles
+    (`a()` there is `9`, not `162`).
+  - `171`/`174`: `stdcall` ctor + `redim`/`erase` draws `171`/`174`;
+    default CDECL compiles. `172`/`175`: `stdcall` dtor likewise.
+    `173`/`176`: an optional-parameter ctor (`= 0`) draws `173`/`176`.
+    Both members bad on one `redim` draw one diagnostic (ctor first).
+  - `216`: `private redim` / `private common` / `public extern` at module
+    level draw `216`; `private dim` compiles. Inside a `Sub` the landed
+    `61` (inside a scope block, `96`) keeps the line.
+  - `327`: `seek #`, `print #`, `input #`, `get #`, `open "x" for input as
+    #`, and `close #1,` draw `327`; `close #` alone is close-all and
+    compiles.
+  - Overlap pins: a fixed `redim` with `...` draws `54`, never `76` too;
+    `private common a(1)` draws `216`, never `136` too; `erase` of a
+    scalar is `63` and of an undeclared name is `42`, both silent here.
+- **State.** Declaration-form facts are recorded per container where the
+  parser already tracks declarations (scalar/fixed/dynamic, var-len-string,
+  in-file UDT type, shared/global storage), and bare `TYPE`/`UNION` fields
+  are judged and recorded at member capture (`skipStatement`). A `Redim`
+  never overwrites an existing fact, so a fixed array stays fixed across
+  the `54` report. In-file ctor/dtor form comes from `Declare
+  Constructor/Destructor` (authoritative — a definition's defaults do not
+  override the prototype, probed) with a fallback to a bare definition.
+- **No-cascade evidence.** `TestStatementSpecific` pins one diagnostic per
+  statement (`redim` with two bad UDT members, `private common` with
+  bounds, a fixed `redim` with `...`), that a plain module array seen from
+  a `Sub` draws nothing, and that the `72` scalar-paren shape stays silent.
+- **Tests.** Unit coverage per shape plus state-separation negatives,
+  overlap pins, and the dead/`72` pins in `parser_checks`;
+  `fbc_diagnostics_checks` pins all fifteen numbers; the corpus gains
+  `err_statement_specific` (`@fbc:fail`) and `blocks_statement_ok`
+  (`@fbc:pass`).
+- **Deliberate limits, recorded at `FreeBASIC.md` §12.36.** `72` is not
+  implemented (expressions are not walked). `136` covers only the COMMON
+  half. `171`–`176` judge only `Redim`/`Erase` statements for a UDT
+  declared in the parsed file: the `Dim`-lowered sites (a fixed/dynamic
+  `Dim` of a `stdcall`-dtor UDT draws `175` at the `Dim`), scope-exit
+  erasure, access `204`/`206`, and no-default-ctor `183` stay silent and
+  belong to M24 with the resolve model. Cross-file types are silent, not
+  guessed.
+
 ### 2026-11-07 — M23 G5: the punctuator family (one error per statement)
 
 - **Ten new fbc identities, and one helper.** `6 EXPECTEDLPRNT`,

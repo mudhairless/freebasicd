@@ -104,6 +104,21 @@ enum class FbcDiagId {
   ExpectedRestype,
   TooManyExpressions,
   ExpectedSub,
+  ExpectedDynamicArray,
+  CantInitDynamicArrays,
+  CantInitDynamicStrings,
+  DynamicArrayWithEllipsis,
+  ArrayFieldWithEllipsis,
+  DynamicExternCantHaveBounds,
+  DynamicArrayInUnion,
+  RedimCtorMustBeCdecl,
+  RedimDtorMustBeCdecl,
+  RedimCtorMustHaveOneParam,
+  EraseCtorMustBeCdecl,
+  EraseDtorMustBeCdecl,
+  EraseCtorMustHaveOneParam,
+  PrivOrPubAttribNotAllowed,
+  ExpectedFileNumberExpression,
   Count
 };
 

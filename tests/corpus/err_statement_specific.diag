@@ -1,0 +1,6 @@
+expected-dynamic-array
+cant-init-dynamic-arrays
+cant-init-dynamic-strings
+dynamic-extern-cant-have-bounds
+priv-or-pub-attrib-not-allowed
+expected-file-number-expression

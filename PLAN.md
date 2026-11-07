@@ -40,7 +40,7 @@
   | M21 — module model, constructors, and fbc's codes (complete 2026-11-06; summary in CHANGELOG.md) | done |
   | M18 — public release: editor setup docs, first tag | blocked on M22, M23, M24, and the VS Code extension |
   | M22 — fbc declaration-order parity: use-before-declaration | next |
-  | M23 — fbc parser diagnostics: statements, placement, warnings (groups G1–G5 landed; groups G6–G7 remain) | backlog |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (groups G1–G6 landed; group G7 remains) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
   | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
@@ -614,10 +614,21 @@ landing as their own step.
   statement, and a failed statement never invents phantom structure errors.
   Limits are recorded at `FreeBASIC.md` §12.35; the dated entry is in
   [`CHANGELOG.md`](CHANGELOG.md).
-- **G6 — statement-specific checks (research Tier 5).** The `REDIM` / `SEEK`
-  / `CLOSE` shapes from the tier's 15 statement and intrinsic messages. The
-  group starts with an inventory naming which of the 15 the parser can
-  reach; only those are in scope.
+- **G6 — statement-specific checks (research Tier 5) — landed (2026-11-07).**
+  `54 EXPECTEDDYNAMICARRAY`, `75 CANTINITDYNAMICARRAYS`, `87
+  CANTINITDYNAMICSTRINGS`, `76 DYNAMICARRAYWITHELLIPSIS`, `77
+  ARRAYFIELDWITHELLIPSIS`, `136 DYNAMICEXTERNCANTHAVEBOUNDS`, `162
+  DYNAMICARRAYINUNION`, `171`–`176` the `REDIM`/`ERASE` constructor/
+  destructor convention checks, `216 PRIVORPUBTTRIBNOTALLOWED`, and `327
+  EXPECTEDFILENUMBEREXPRESSION`, all judged from declaration-form facts
+  the parser already walks plus per-container array state. Inventory:
+  `56 ARRAYALREADYDIMENSIONED` and `102 CANTINITDYNAMICFIELDS` are dead in
+  the pinned fbc (no call site; probes compile); `72 ARRAYNOTALLOCATED`
+  is not reachable (expression-level, see §12.36). Limits are recorded at
+  `FreeBASIC.md` §12.36; the dated entry with the inventory and probe
+  tables is in [`CHANGELOG.md`](CHANGELOG.md). What passes to G7/M24:
+  `72`, the `DIM`-lowered `174`–`176`/`183`/`204`/`206` sites, cross-file
+  UDT knowledge, and the dialect `147` typeless-`REDIM` shapes.
 - **G7 — the remaining warnings.** (`12 NOCLOSINGQUOTE` and `44
   SUFFIXIGNORED` already carry their numbers; see the code-identity bullet.)
   Syntactic: `32 IFFOUNDAFTERELSE`, `15 NOEXPLICITPARAMMODE`, `46

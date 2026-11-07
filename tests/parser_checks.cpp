@@ -179,6 +179,306 @@ static int errorDiagnosticCount(const ParseResult &r) {
   return n;
 }
 
+static void TestStatementSpecific() {
+  // 54 ExpectedDynamicArray: Redim of a fixed array (probed: module,
+  // in a Sub, a shared module array from a Sub, a fixed field). A dynamic
+  // Redim, a scalar/undeclared Redim (fbc 147/42), and a plain module Dim
+  // seen from a Sub (invisible, fbc 147) stay silent here.
+  {
+    ParseResult const r = parseDocument("dim a(1) as integer\n"
+                                        "redim a(2)\n");
+    CHECK(fbcErrorFor(r, "expected-dynamic-array") ==
+          FbcDiagId::ExpectedDynamicArray);
+    CHECK(diagnosticCount(r, "expected-dynamic-array") == 1);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const ok = parseDocument("dim a() as integer\n"
+                                         "redim a(2)\n"
+                                         "redim a(3)\n");
+    CHECK(ok.diagnostics.empty());
+    ParseResult const inSub = parseDocument("sub f()\n"
+                                            "  dim a(1) as integer\n"
+                                            "  redim a(2)\n"
+                                            "end sub\n");
+    CHECK(fbcErrorFor(inSub, "expected-dynamic-array") ==
+          FbcDiagId::ExpectedDynamicArray);
+    ParseResult const shared = parseDocument("dim shared a(1) as integer\n"
+                                             "sub f()\n"
+                                             "  redim a(2)\n"
+                                             "end sub\n");
+    CHECK(fbcErrorFor(shared, "expected-dynamic-array") ==
+          FbcDiagId::ExpectedDynamicArray);
+    ParseResult const plain = parseDocument("dim a(1) as integer\n"
+                                            "sub f()\n"
+                                            "  redim a(2)\n"
+                                            "end sub\n");
+    CHECK(diagnosticCount(plain, "expected-dynamic-array") == 0);
+    ParseResult const field = parseDocument("type T\n"
+                                            "  a(1) as integer\n"
+                                            "end type\n"
+                                            "dim t as T\n"
+                                            "redim t.a(2)\n");
+    CHECK(fbcErrorFor(field, "expected-dynamic-array") ==
+          FbcDiagId::ExpectedDynamicArray);
+    ParseResult const fieldOk = parseDocument("type T\n"
+                                              "  a(any) as integer\n"
+                                              "end type\n"
+                                              "dim t as T\n"
+                                              "redim t.a(2)\n");
+    CHECK(diagnosticCount(fieldOk, "expected-dynamic-array") == 0);
+    ParseResult const externDim = parseDocument("extern a(1) as integer\n"
+                                                "dim a() as integer\n");
+    CHECK(fbcErrorFor(externDim, "expected-dynamic-array") ==
+          FbcDiagId::ExpectedDynamicArray);
+    // A fixed array with a variable bound is dynamic in fbc and can be
+    // Redim'd (probed); a const-bound one cannot. An unknown function
+    // bound is unprovable, so it stays silent rather than guessing.
+    ParseResult const varBound = parseDocument("dim n as integer = 10\n"
+                                               "dim a(0 to n) as integer\n"
+                                               "redim a(0 to 5)\n");
+    CHECK(varBound.diagnostics.empty());
+    ParseResult const constBound = parseDocument("const N = 10\n"
+                                                 "dim a(0 to N) as integer\n"
+                                                 "redim a(0 to 5)\n");
+    CHECK(fbcErrorFor(constBound, "expected-dynamic-array") ==
+          FbcDiagId::ExpectedDynamicArray);
+    ParseResult const varBoundUdt = parseDocument("type T\n"
+                                                  "  as integer i\n"
+                                                  "end type\n"
+                                                  "dim n as integer = 10\n"
+                                                  "dim a(0 to n) as T\n"
+                                                  "redim a(0 to 5)\n");
+    CHECK(varBoundUdt.diagnostics.empty());
+    // 56 pin: two Redims of a dynamic array compile in fbc (dead number).
+    ParseResult const twice = parseDocument("dim a() as integer\n"
+                                            "redim a(1)\n"
+                                            "redim a(2)\n");
+    CHECK(twice.diagnostics.empty());
+  }
+  // 75 CantInitDynamicArrays: dynamic with an initializer. Fixed and scalar
+  // initializers are the probed negatives.
+  {
+    ParseResult const r = parseDocument("dim a() as integer = { 1, 2 }\n");
+    CHECK(fbcErrorFor(r, "cant-init-dynamic-arrays") ==
+          FbcDiagId::CantInitDynamicArrays);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const ok = parseDocument("dim a(1) as integer = { 1, 2 }\n"
+                                         "dim b as integer = 5\n"
+                                         "dim c() as integer\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 87 CantInitDynamicStrings: Shared/Static var-len string with an
+  // initializer. Local and fixed-length strings are the negatives.
+  {
+    ParseResult const r = parseDocument("dim shared s as string = \"hi\"\n");
+    CHECK(fbcErrorFor(r, "cant-init-dynamic-strings") ==
+          FbcDiagId::CantInitDynamicStrings);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const statik = parseDocument("static s as string = \"hi\"\n");
+    CHECK(fbcErrorFor(statik, "cant-init-dynamic-strings") ==
+          FbcDiagId::CantInitDynamicStrings);
+    ParseResult const ok =
+        parseDocument("dim s as string = \"hi\"\n"
+                      "dim shared t as string * 10 = \"hi\"\n"
+                      "dim shared x as integer = 5\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 76 DynamicArrayWithEllipsis: Redim of a dynamic array with `...`.
+  // A fixed Redim with `...` draws 54 alone (one per statement); a Dim
+  // with `...` is fbc 281, silent here.
+  {
+    ParseResult const r = parseDocument("dim a() as integer\n"
+                                        "redim a(0 to ...)\n");
+    CHECK(fbcErrorFor(r, "dynamic-array-with-ellipsis") ==
+          FbcDiagId::DynamicArrayWithEllipsis);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const fixed = parseDocument("dim a(1) as integer\n"
+                                            "redim a(0 to ...)\n");
+    CHECK(diagnosticCount(fixed, "expected-dynamic-array") == 1);
+    CHECK(diagnosticCount(fixed, "dynamic-array-with-ellipsis") == 0);
+    CHECK(fixed.diagnostics.size() == 1);
+  }
+  // 77 ArrayFieldWithEllipsis: an ellipsis field in a TYPE body.
+  {
+    ParseResult const r = parseDocument("type T\n"
+                                        "  a(0 to ...) as integer\n"
+                                        "end type\n");
+    CHECK(fbcErrorFor(r, "array-field-with-ellipsis") ==
+          FbcDiagId::ArrayFieldWithEllipsis);
+    ParseResult const ok = parseDocument("type T\n"
+                                         "  a(0 to 5) as integer\n"
+                                         "end type\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 136 DynamicExternCantHaveBounds: Common with bounds. A dynamic
+  // Common and a Dim with bounds are the negatives; the Extern-dynamic
+  // half needs OPTION DYNAMIC (fbc 146 in fb) and is silent here.
+  {
+    ParseResult const r = parseDocument("common a(1) as integer\n");
+    CHECK(fbcErrorFor(r, "dynamic-extern-cant-have-bounds") ==
+          FbcDiagId::DynamicExternCantHaveBounds);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const ok = parseDocument("common a() as integer\n"
+                                         "dim b(1) as integer\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 162 DynamicArrayInUnion: a(any) in a UNION. Fixed union fields and
+  // dynamic TYPE fields are the negatives.
+  {
+    ParseResult const r = parseDocument("union U\n"
+                                        "  a(any) as integer\n"
+                                        "end union\n");
+    CHECK(fbcErrorFor(r, "dynamic-array-in-union") ==
+          FbcDiagId::DynamicArrayInUnion);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const ok = parseDocument("union U\n"
+                                         "  a(1) as integer\n"
+                                         "end union\n"
+                                         "type T\n"
+                                         "  a(any) as integer\n"
+                                         "end type\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 171-176 REDIM/ERASE convention checks, in-file UDT only. A normal
+  // (default CDECL) ctor/dtor is the negative; a private ctor/dtor draws
+  // 204/206 in fbc and stays silent here (separate family); two bad
+  // members on one statement draw one diagnostic.
+  {
+    char const *const kStdcallCtor = "type T\n"
+                                     "  as integer i\n"
+                                     "  declare constructor stdcall()\n"
+                                     "end type\n"
+                                     "constructor T stdcall()\n"
+                                     "end constructor\n";
+    ParseResult const r171 =
+        parseDocument(std::string(kStdcallCtor) + "dim a() as T\nredim a(1)\n");
+    CHECK(fbcErrorFor(r171, "redim-ctor-must-be-cdecl") ==
+          FbcDiagId::RedimCtorMustBeCdecl);
+    CHECK(r171.diagnostics.size() == 1);
+    ParseResult const e174 =
+        parseDocument(std::string(kStdcallCtor) + "dim a(1) as T\nerase a\n");
+    CHECK(fbcErrorFor(e174, "erase-ctor-must-be-cdecl") ==
+          FbcDiagId::EraseCtorMustBeCdecl);
+    char const *const kStdcallDtor = "type T\n"
+                                     "  as integer i\n"
+                                     "  declare destructor stdcall()\n"
+                                     "end type\n"
+                                     "destructor T stdcall()\n"
+                                     "end destructor\n";
+    ParseResult const r172 =
+        parseDocument(std::string(kStdcallDtor) + "dim a() as T\nredim a(1)\n");
+    CHECK(fbcErrorFor(r172, "redim-dtor-must-be-cdecl") ==
+          FbcDiagId::RedimDtorMustBeCdecl);
+    ParseResult const e175 =
+        parseDocument(std::string(kStdcallDtor) + "dim a(1) as T\nerase a\n");
+    CHECK(fbcErrorFor(e175, "erase-dtor-must-be-cdecl") ==
+          FbcDiagId::EraseDtorMustBeCdecl);
+    char const *const kOptionalCtor =
+        "type T\n"
+        "  as integer i\n"
+        "  declare constructor(byval x as integer = 0)\n"
+        "end type\n"
+        "constructor T(byval x as integer)\n"
+        "end constructor\n";
+    ParseResult const r173 = parseDocument(std::string(kOptionalCtor) +
+                                           "dim a() as T\nredim a(1)\n");
+    CHECK(fbcErrorFor(r173, "redim-ctor-must-have-one-param") ==
+          FbcDiagId::RedimCtorMustHaveOneParam);
+    ParseResult const e176 =
+        parseDocument(std::string(kOptionalCtor) + "dim a(1) as T\nerase a\n");
+    CHECK(fbcErrorFor(e176, "erase-ctor-must-have-one-param") ==
+          FbcDiagId::EraseCtorMustHaveOneParam);
+    // Both bad on one Redim: one diagnostic, ctor first (fbc order).
+    ParseResult const both = parseDocument("type T\n"
+                                           "  as integer i\n"
+                                           "  declare constructor stdcall()\n"
+                                           "  declare destructor stdcall()\n"
+                                           "end type\n"
+                                           "constructor T stdcall()\n"
+                                           "end constructor\n"
+                                           "destructor T stdcall()\n"
+                                           "end destructor\n"
+                                           "dim a() as T\n"
+                                           "redim a(1)\n");
+    CHECK(both.diagnostics.size() == 1);
+    CHECK(fbcErrorFor(both, "redim-ctor-must-be-cdecl") ==
+          FbcDiagId::RedimCtorMustBeCdecl);
+    ParseResult const ok = parseDocument("type T\n"
+                                         "  as integer i\n"
+                                         "  declare constructor()\n"
+                                         "  declare destructor()\n"
+                                         "end type\n"
+                                         "constructor T()\n"
+                                         "end constructor\n"
+                                         "destructor T()\n"
+                                         "end destructor\n"
+                                         "dim a() as T\n"
+                                         "redim a(1)\n"
+                                         "erase a\n");
+    CHECK(ok.diagnostics.empty());
+    ParseResult const priv = parseDocument("type T\n"
+                                           "  as integer i\n"
+                                           "  private:\n"
+                                           "  declare constructor stdcall()\n"
+                                           "end type\n"
+                                           "constructor T stdcall()\n"
+                                           "end constructor\n"
+                                           "dim a() as T\n"
+                                           "redim a(1)\n");
+    CHECK(diagnosticCount(priv, "redim-ctor-must-be-cdecl") == 0);
+  }
+  // 216 PrivOrPubAttribNotAllowed: Private/Public with Redim/Common/
+  // Extern at module level. Private Dim is the negative. Inside a Sub
+  // the landed 61 keeps the line (pin).
+  {
+    ParseResult const r = parseDocument("dim a() as integer\n"
+                                        "private redim a(1)\n");
+    CHECK(fbcErrorFor(r, "priv-or-pub-attrib-not-allowed") ==
+          FbcDiagId::PrivOrPubAttribNotAllowed);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const common = parseDocument("private common a() as integer\n");
+    CHECK(fbcErrorFor(common, "priv-or-pub-attrib-not-allowed") ==
+          FbcDiagId::PrivOrPubAttribNotAllowed);
+    CHECK(diagnosticCount(common, "dynamic-extern-cant-have-bounds") == 0);
+    ParseResult const externR = parseDocument("public extern a as integer\n");
+    CHECK(fbcErrorFor(externR, "priv-or-pub-attrib-not-allowed") ==
+          FbcDiagId::PrivOrPubAttribNotAllowed);
+    ParseResult const ok = parseDocument("private dim a as integer\n");
+    CHECK(ok.diagnostics.empty());
+    ParseResult const inSub = parseDocument("sub f()\n"
+                                            "  private redim a(1)\n"
+                                            "end sub\n");
+    CHECK(diagnosticCount(inSub, "priv-or-pub-attrib-not-allowed") == 0);
+    CHECK(diagnosticCount(inSub, "illegal-inside-sub") == 1);
+  }
+  // 327 ExpectedFileNumberExpression: `#` without an expression.
+  // `close #` alone is close-all (silent); `close #1,` draws 327.
+  {
+    ParseResult const seek = parseDocument("seek #\n");
+    CHECK(fbcErrorFor(seek, "expected-file-number-expression") ==
+          FbcDiagId::ExpectedFileNumberExpression);
+    CHECK(seek.diagnostics.size() == 1);
+    ParseResult const print = parseDocument("print #\n");
+    CHECK(fbcErrorFor(print, "expected-file-number-expression") ==
+          FbcDiagId::ExpectedFileNumberExpression);
+    ParseResult const closeComma = parseDocument("close #1,\n");
+    CHECK(fbcErrorFor(closeComma, "expected-file-number-expression") ==
+          FbcDiagId::ExpectedFileNumberExpression);
+    ParseResult const ok = parseDocument("seek #1, 2\n"
+                                         "close #\n"
+                                         "close #1\n"
+                                         "print #1, \"hi\"\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 72 pin: a scalar used with parens is fbc 72, but expressions are not
+  // walked, so it stays silent here (recorded as a limit, not a number).
+  {
+    ParseResult const r = parseDocument("dim a as integer\n"
+                                        "print a(0)\n");
+    CHECK(diagnosticCount(r, "expected-dynamic-array") == 0);
+    CHECK(r.diagnostics.empty());
+  }
+}
+
 // Step 2b false-positive clearing, verified against fbc 1.10.2. Every shape
 // here previously produced an error-level diagnostic on code fbc accepts;
 // v8 is the control proving the dedupe still catches a real duplicate.
@@ -5032,6 +5332,7 @@ int main() {
     CHECK(diagnosticCount(sameBranch, "duplicate-definition") == 1);
   }
 
+  TestStatementSpecific();
   TestStep2bParsingFixes();
   TestQualifiedTypeFirstVarDecls();
   TestKeywordSuffixWarning();

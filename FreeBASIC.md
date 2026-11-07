@@ -1621,6 +1621,65 @@ family, the probe wins and the shape stays silent here.
   `289` only answers for a `Function` declared in the parsed file (an
   unknown name is the resolve layer's `42`).
 
+### 12.36 M23 G6: statement-specific checks (research Tier 5)
+
+Probed against `/usr/bin/fbc` 1.10.3. Fifteen statement-lowering messages
+are implemented from declaration-form facts the parser already walks, plus
+per-container array state (scalar / fixed / dynamic, var-len-string,
+in-file UDT type, shared/global storage) recorded where declarations are
+registered. `Redim` never overwrites an existing fact. Reporting goes
+through `emitStatementError`, the one-per-statement helper on top of
+`addDiagnostic`; a statement that already drew a diagnostic draws no
+second one.
+
+- **Implemented.** `54` for a `Redim` of a fixed array whose bounds are
+  constant (plain, shared from
+  a `Sub`, or a fixed field); a fixed array with a variable bound is
+  dynamic in fbc and can be Redim'd, so only a provably constant bound
+  (literals and known `Const`/enum names) counts as fixed, and for a
+  defining `Dim` whose array form
+  disagrees with an `Extern` of the same name in the container; `75` for
+  a dynamic array with an initializer; `87` for a var-len string with an
+  initializer in `Shared`/`Static`/`Common` storage at module level; `76`
+  for a `Redim` of a dynamic array with a `...` upper bound; `77` for a
+  `...` field in a `TYPE`/`UNION` body (bare fields are judged at member
+  capture); `136` for a `Common` array with bounds; `162` for an
+  `a(any)` field in a `UNION` (in a `TYPE` it compiles); `171`/`172`/`173`
+  and the `ERASE` twins `174`/`175`/`176` for a `Redim`/`Erase` of a UDT
+  array whose in-file ctor/dtor is non-CDECL (`stdcall`) or not
+  parameterless, ctor first, one per statement; `216` for `Private`/
+  `Public` with `Redim`/`Common`/`Extern` at module level; `327` for a
+  file statement (`SEEK`/`PRINT`/`GET`/`PUT`/`WRITE`/`INPUT`/`LINE
+  INPUT`/`OPEN`) whose `#` is not followed by an expression, and for
+  `CLOSE` with a trailing comma after a file number.
+- **Precedence and overlaps.** A fixed `Redim` with `...` draws `54`,
+  never `76` too. `Private Common` with bounds draws `216`, never `136`
+  too. Inside a procedure (or a scope block) the landed `61` (or `96`)
+  keeps a `Private Redim`/`Common` line. `Erase` of a scalar (`63`) and
+  of an undeclared name (`42`) are other families and stay silent here.
+  `Close #` alone is close-all and compiles.
+- **Inventory struck from the tier.** `56 ARRAYALREADYDIMENSIONED` and
+  `102 CANTINITDYNAMICFIELDS` have no call site in the pinned compiler
+  (dead numbers; `redim` twice compiles, and the var-len-string-field
+  initializer probe draws `63`). `72 ARRAYNOTALLOCATED` is not
+  implemented: its trigger is a scalar used with parens in an expression
+  (`print a(0)` on a scalar), and expressions are not walked; a dynamic
+  array accessed before `Redim` is legal, so dimension state is not the
+  trigger. It passes to M24 with expression walking.
+- **Limits not implemented.** `136` covers only the COMMON half (a dynamic
+  `EXTERN` with bounds needs `OPTION DYNAMIC`, which is `146` in `fb`).
+  `76` covers only `Redim`; a `Dim` with `...` is `281`. `171`–`176`
+  judge only `Redim`/`Erase` statements for a UDT declared in the parsed
+  file, from the `Declare` prototype when present (authoritative — a
+  definition's parameter defaults do not override it) and otherwise from
+  the definition. The `Dim`-lowered sites (`dim a(1) as T` with a
+  `stdcall` dtor draws `175` at the `Dim`), scope-exit erasure, ctor/dtor
+  access (`204`/`206`, which take precedence in fbc — a private ctor/dtor
+  stays silent here), and no-default-ctor (`183`) stay silent and belong
+  to M24. A plain module array seen from a `Sub` is invisible (fbc draws
+  dialect `147`), so no `54` is reported there; a cross-file UDT is
+  silent, not guessed.
+
 ## 13. Where the diagnostics come from (compiler source)
 
 Every `error N` / `warning N` in this file is a real fbc message, and fbc's

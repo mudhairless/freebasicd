@@ -114,6 +114,21 @@ struct Container {
   // sections, and everything else — module scope, procedures, enums — stays
   // Public).
   Access access = Access::Public;
+  // M23 G6: per-name declaration-form facts for the statement-specific
+  // checks (54/75/76/87/136/162/171-176). Recorded by handleVarDecls from
+  // the parser's own walk; only the innermost container's facts and shared
+  // outer facts are consulted, so a plain module Dim stays invisible inside
+  // a procedure (FreeBASIC.md §8, probed: a typeless REDIM of it there is
+  // fbc 147, not 54).
+  struct VarFact {
+    enum Kind { Scalar, Fixed, Dynamic } kind = Scalar;
+    bool shared = false;
+    bool fromDeclOnly = false; // Extern / Redim / Common form
+    bool varLenString = false;
+    bool globalInit = false; // Shared/Static/Common storage at module level
+    std::string typeKey;     // UDT type when `as <type>` named one in file
+  };
+  std::unordered_map<std::string, VarFact> varFacts;
   explicit Container(Symbol *s) : sym(s) {}
 };
 
@@ -286,6 +301,28 @@ private:
   // Type keys that carry a constructor (declared or defined). Used to promote
   // a branch-crossing UDT instance from warning 14 to error 105.
   std::unordered_set<std::string> typesWithConstructors_;
+  // M23 G6: in-file constructor/destructor form per UDT key, for the
+  // REDIM/ERASE convention checks (171-176). Recorded from `Declare
+  // Constructor/Destructor` lines (authoritative, probed: the definition's
+  // parameter defaults do not override the prototype) and from bare
+  // `Constructor T(...)` definitions when no prototype was seen. Default
+  // calling convention is CDECL when no `stdcall` word is written.
+  struct CtorInfo {
+    bool hasCtor = false;
+    bool ctorCdecl = true;
+    bool ctorParamless = false; // no user parameters at all
+    bool hasDtor = false;
+    bool dtorCdecl = true;
+    bool ctorPrivate = false;
+    bool dtorPrivate = false;
+    bool fromDeclare = false;
+  };
+  std::unordered_map<std::string, CtorInfo> ctorInfo_;
+  // Field facts by owner type key, retained after the TYPE container pops
+  // so a later `redim t.a(...)` can judge the field's array form.
+  std::unordered_map<std::string,
+                     std::unordered_map<std::string, Container::VarFact>>
+      fieldFacts_;
 
   void advance() {
     if (cur_.kind == TokenKind::String && !cur_.terminated &&
@@ -711,30 +748,22 @@ private:
   // The 11 EXPECTEDCONST shape (probed: `Expected constant, C`): fbc appends
   // the declared name after the text. One per statement.
   void emitExpectedConst(Token const &anchor, std::string const &name) {
-    if (statementFamilyFailed_) {
-      return;
-    }
-    statementFamilyFailed_ = true;
     std::string msg;
     if (name.empty()) {
       msg = tr("Expected constant");
     } else {
       msg = trf("Expected constant, %s", name);
     }
-    addDiagnostic(anchor.beg, anchor.end, Severity::Error, "expected-const",
-                  std::move(msg), FbcDiagId::ExpectedConst);
+    emitStatementError(anchor, "expected-const", FbcDiagId::ExpectedConst,
+                       std::move(msg));
   }
 
   // The 67 TOOMANYEXPRESSIONS shape: the whole text is the message (no
   // "Expected" prefix). One per statement.
   void emitTooManyExpressions(Token const &anchor) {
-    if (statementFamilyFailed_) {
-      return;
-    }
-    statementFamilyFailed_ = true;
-    addDiagnostic(anchor.beg, anchor.end, Severity::Error,
-                  "too-many-expressions", tr("Too many expressions"),
-                  FbcDiagId::TooManyExpressions);
+    emitStatementError(anchor, "too-many-expressions",
+                       FbcDiagId::TooManyExpressions,
+                       tr("Too many expressions"));
   }
 
   // M23 G5 Dim/Const statement pre-pass: the declaration-line punctuators
@@ -1045,6 +1074,645 @@ private:
     }
   }
 
+  // The one-per-statement diagnostic: the standard way a statement-level
+  // check reports. `addDiagnostic` alone is unconditional, so a pre-pass
+  // that judges several shapes on one line would spray one diagnostic per
+  // shape; fbc prints one error per statement, and so do we. This sets and
+  // consumes `statementFamilyFailed_` (cleared at each statement head), so
+  // a statement that already drew a diagnostic draws no second one here,
+  // and a hit here suppresses any later family step for the same line.
+  // `emitFamily`/`syntaxError` build their own messages and keep their
+  // own guard; everything with a ready message goes through here.
+  bool emitStatementError(Token const &anchor, const char *code, FbcDiagId id,
+                          std::string msg) {
+    if (statementFamilyFailed_) {
+      return false;
+    }
+    statementFamilyFailed_ = true;
+    addDiagnostic(anchor.beg, anchor.end, Severity::Error, code, std::move(msg),
+                  id);
+    return true;
+  }
+
+  struct DeclInfo {
+    Token nameTok;
+    std::string key;
+    enum Kind { Scalar, Fixed, Dynamic } kind = Scalar;
+    bool hasBounds = false;
+    bool hasEllipsis = false;
+    bool hasAny = false;
+    bool hasInit = false;
+    Token eqTok;
+    Token closeTok;
+    bool hasEq = false;
+    bool varLenString = false;
+    std::string typeKey;
+  };
+
+  static std::vector<std::vector<Token>>
+  splitDeclSegments(std::vector<Token> const &toks) {
+    std::vector<std::vector<Token>> segments;
+    std::vector<Token> curSeg;
+    int depth = 0;
+    // A declaration head (`dim`, `redim`, `erase`, ...) is not a declarator;
+    // a bare field line (`a(any) as integer`) starts with its name.
+    bool const skipHead = !toks.empty() && toks[0].kind == TokenKind::Keyword &&
+                          (toLowerChars(toks[0].text()) == "dim" ||
+                           toLowerChars(toks[0].text()) == "redim" ||
+                           toLowerChars(toks[0].text()) == "var" ||
+                           toLowerChars(toks[0].text()) == "local" ||
+                           toLowerChars(toks[0].text()) == "common" ||
+                           toLowerChars(toks[0].text()) == "extern" ||
+                           toLowerChars(toks[0].text()) == "static" ||
+                           toLowerChars(toks[0].text()) == "const" ||
+                           toLowerChars(toks[0].text()) == "erase" ||
+                           toLowerChars(toks[0].text()) == "private" ||
+                           toLowerChars(toks[0].text()) == "public");
+    for (std::size_t i = 0; i < toks.size(); ++i) {
+      Token const &t = toks[i];
+      if (t.kind == TokenKind::Symbol && t.text() == "(") {
+        ++depth;
+      } else if (t.kind == TokenKind::Symbol && t.text() == ")") {
+        --depth;
+      }
+      if (depth == 0 && t.kind == TokenKind::Symbol && t.text() == "," &&
+          i != 0) {
+        segments.push_back(curSeg);
+        curSeg.clear();
+        continue;
+      }
+      if (i == 0 && skipHead) {
+        continue;
+      }
+      curSeg.push_back(t);
+    }
+    segments.push_back(curSeg);
+    return segments;
+  }
+
+  DeclInfo parseDeclSegment(std::vector<Token> const &seg) const {
+    DeclInfo info;
+    if (seg.empty()) {
+      return info;
+    }
+    std::size_t nameIdx = seg.size();
+    std::size_t afterName = seg.size();
+    bool typeFirst = seg[0].kind == TokenKind::Keyword &&
+                     toLowerChars(seg[0].text()) == "as";
+    if (typeFirst) {
+      // `as <type> name`: type word at 1, name after the type chain.
+      std::size_t j = 1;
+      if (j < seg.size()) {
+        std::string const tw = toLowerChars(seg[j].text());
+        if (tw == "string") {
+          bool fixed = j + 1 < seg.size() &&
+                       seg[j + 1].kind == TokenKind::Symbol &&
+                       seg[j + 1].text() == "*";
+          info.varLenString = !fixed && seg[j].kind == TokenKind::Keyword;
+        } else if (seg[j].kind == TokenKind::Identifier ||
+                   (seg[j].kind == TokenKind::Keyword && !isBuiltinType(tw))) {
+          info.typeKey = keyFor(seg[j].text());
+        }
+        ++j;
+      }
+      while (j < seg.size() && seg[j].kind == TokenKind::Keyword) {
+        std::string const w = toLowerChars(seg[j].text());
+        if (isBuiltinType(w) || w == "ptr" || w == "pointer" || w == "const") {
+          ++j;
+          continue;
+        }
+        break;
+      }
+      if (j < seg.size() && (seg[j].kind == TokenKind::Identifier ||
+                             seg[j].kind == TokenKind::Keyword)) {
+        nameIdx = j;
+      }
+    } else {
+      for (std::size_t i = 0; i < seg.size(); ++i) {
+        if (seg[i].kind == TokenKind::Identifier) {
+          nameIdx = i;
+          break;
+        }
+      }
+    }
+    if (nameIdx >= seg.size()) {
+      return info;
+    }
+    info.nameTok = seg[nameIdx];
+    info.key = keyFor(seg[nameIdx].text());
+    afterName = nameIdx + 1;
+    // Array form: '(' immediately after the name.
+    if (afterName < seg.size() && seg[afterName].kind == TokenKind::Symbol &&
+        seg[afterName].text() == "(") {
+      int depth = 0;
+      std::size_t close = seg.size();
+      for (std::size_t j = afterName; j < seg.size(); ++j) {
+        if (seg[j].kind == TokenKind::Symbol && seg[j].text() == "(") {
+          ++depth;
+        } else if (seg[j].kind == TokenKind::Symbol && seg[j].text() == ")") {
+          --depth;
+          if (depth == 0) {
+            close = j;
+            break;
+          }
+        }
+        if (seg[j].kind == TokenKind::Symbol && seg[j].text() == "...") {
+          info.hasEllipsis = true;
+        }
+      }
+      info.closeTok = close < seg.size() ? seg[close] : seg.back();
+      if (close == afterName + 1) {
+        info.kind = DeclInfo::Dynamic;
+      } else if (afterName + 1 < seg.size() &&
+                 seg[afterName + 1].kind == TokenKind::Keyword &&
+                 toLowerChars(seg[afterName + 1].text()) == "any") {
+        info.kind = DeclInfo::Dynamic;
+        info.hasAny = true;
+      } else {
+        info.kind = DeclInfo::Fixed;
+        info.hasBounds = true;
+        // A fixed array whose bound mentions a variable is dynamic in
+        // fbc: `dim a(0 to n)` (n a variable) can be Redim'd, while
+        // `dim a(0 to 10)` cannot (54). Constant means literals and
+        // known Const/enum names only; any other identifier (a variable,
+        // a member, a call, an unknown name) makes the bound unprovable,
+        // so the array is treated as dynamic and stays silent (probed:
+        // a user-function or member bound is dynamic; a const-foldable
+        // `len("hi")` bound is missed rather than guessed).
+        for (std::size_t j = afterName + 1; j < close && j < seg.size(); ++j) {
+          if (seg[j].kind == TokenKind::Identifier) {
+            bool const isCall = j + 1 < seg.size() &&
+                                seg[j + 1].kind == TokenKind::Symbol &&
+                                seg[j + 1].text() == "(";
+            bool const isMember =
+                (j > 0 && seg[j - 1].kind == TokenKind::Symbol &&
+                 seg[j - 1].text() == ".") ||
+                (j + 1 < seg.size() && seg[j + 1].kind == TokenKind::Symbol &&
+                 seg[j + 1].text() == ".");
+            std::string const boundKey = keyFor(seg[j].text());
+            if (isCall || isMember || constKeysSeen_.count(boundKey) == 0) {
+              info.kind = DeclInfo::Dynamic;
+              break;
+            }
+          }
+        }
+      }
+    }
+    // Type and initializer at depth 0 after the name.
+    int depth = 0;
+    for (std::size_t i = afterName; i < seg.size(); ++i) {
+      Token const &t = seg[i];
+      if (t.kind == TokenKind::Symbol && t.text() == "(") {
+        ++depth;
+        continue;
+      }
+      if (t.kind == TokenKind::Symbol && t.text() == ")") {
+        --depth;
+        continue;
+      }
+      if (depth == 0 && t.kind == TokenKind::Symbol && t.text() == "=") {
+        info.hasInit = true;
+        info.hasEq = true;
+        info.eqTok = t;
+        break;
+      }
+      if (depth == 0 && t.kind == TokenKind::Keyword &&
+          toLowerChars(t.text()) == "as" && i + 1 < seg.size()) {
+        std::string const tw = toLowerChars(seg[i + 1].text());
+        bool fixedStr = i + 2 < seg.size() &&
+                        seg[i + 2].kind == TokenKind::Symbol &&
+                        seg[i + 2].text() == "*";
+        if (tw == "string" && !fixedStr) {
+          info.varLenString = true;
+        } else if (tw != "string" &&
+                   (seg[i + 1].kind == TokenKind::Identifier ||
+                    (seg[i + 1].kind == TokenKind::Keyword &&
+                     !isBuiltinType(tw)))) {
+          // A UDT name; a builtin or a fixed-length `string *` is not one.
+          if (!(tw == "string")) {
+            info.typeKey = keyFor(seg[i + 1].text());
+          }
+        }
+      }
+    }
+    return info;
+  }
+
+  Container::VarFact const *lookupVarFact(std::string const &key) const {
+    bool crossedProc = false;
+    for (std::size_t i = containers_.size(); i-- > 0;) {
+      auto const it = containers_[i].varFacts.find(key);
+      if (it != containers_[i].varFacts.end()) {
+        if (!crossedProc || it->second.shared) {
+          return &it->second;
+        }
+        return nullptr;
+      }
+      Container const &c = containers_[i];
+      if (c.sym != nullptr && (c.sym->kind == SymbolKind::Sub ||
+                               c.sym->kind == SymbolKind::Function ||
+                               c.sym->kind == SymbolKind::Property ||
+                               c.sym->kind == SymbolKind::Operator ||
+                               c.sym->kind == SymbolKind::Constructor ||
+                               c.sym->kind == SymbolKind::Destructor)) {
+        crossedProc = true;
+      }
+    }
+    return nullptr;
+  }
+
+  Symbol const *findTypeSymbol(std::string const &key) const {
+    for (Symbol const &root : out_.roots) {
+      if ((root.kind == SymbolKind::Type || root.kind == SymbolKind::Union) &&
+          root.key == key) {
+        return &root;
+      }
+    }
+    return nullptr;
+  }
+
+  // The REDIM/ERASE convention verdict for an in-file UDT: cdecl first,
+  // then parameter count, in fbc's hCheckDefCtor/hCheckDtor order. Access
+  // (204/206) and no-default-ctor (183) take precedence in fbc and are
+  // separate families: a private or required-only ctor/dtor stays silent
+  // here rather than drawing the wrong number (recorded as a limit).
+  bool checkRedimEraseUdt(std::string const &typeKey, bool isRedim,
+                          Token const &anchor) {
+    if (typeKey.empty()) {
+      return false;
+    }
+    auto const it = ctorInfo_.find(typeKey);
+    if (it == ctorInfo_.end()) {
+      return false;
+    }
+    CtorInfo const &ci = it->second;
+    if ((isRedim ? ci.ctorPrivate : ci.ctorPrivate) && ci.hasCtor) {
+      return false; // 204/206 own this shape; stay silent here
+    }
+    if (ci.hasDtor && (isRedim ? ci.dtorPrivate : ci.dtorPrivate)) {
+      return false;
+    }
+    if (isRedim) {
+      if (ci.hasCtor && !ci.ctorCdecl) {
+        emitStatementError(
+            anchor, "redim-ctor-must-be-cdecl", FbcDiagId::RedimCtorMustBeCdecl,
+            trf("%s on UDT with non-%s constructor", "REDIM", "CDECL"));
+        return true;
+      }
+      if (ci.hasDtor && !ci.dtorCdecl) {
+        emitStatementError(
+            anchor, "redim-dtor-must-be-cdecl", FbcDiagId::RedimDtorMustBeCdecl,
+            trf("%s on UDT with non-%s destructor", "REDIM", "CDECL"));
+        return true;
+      }
+      if (ci.hasCtor && !ci.ctorParamless) {
+        emitStatementError(
+            anchor, "redim-ctor-must-have-one-param",
+            FbcDiagId::RedimCtorMustHaveOneParam,
+            trf("%s on UDT with non-parameterless default constructor",
+                "REDIM"));
+        return true;
+      }
+    } else {
+      if (ci.hasCtor && !ci.ctorCdecl) {
+        emitStatementError(
+            anchor, "erase-ctor-must-be-cdecl", FbcDiagId::EraseCtorMustBeCdecl,
+            trf("%s on UDT with non-%s constructor", "ERASE", "CDECL"));
+        return true;
+      }
+      if (ci.hasDtor && !ci.dtorCdecl) {
+        emitStatementError(
+            anchor, "erase-dtor-must-be-cdecl", FbcDiagId::EraseDtorMustBeCdecl,
+            trf("%s on UDT with non-%s destructor", "ERASE", "CDECL"));
+        return true;
+      }
+      if (ci.hasCtor && !ci.ctorParamless) {
+        emitStatementError(
+            anchor, "erase-ctor-must-have-one-param",
+            FbcDiagId::EraseCtorMustHaveOneParam,
+            trf("%s on UDT with non-parameterless default constructor",
+                "ERASE"));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void checkStatementSpecific(Token const &openTok) {
+    if (statementFamilyFailed_) {
+      return;
+    }
+    std::vector<Token> const toks = statementTokens();
+    if (toks.empty()) {
+      return;
+    }
+    std::string const head = toLowerChars(openTok.text());
+    bool const isDim =
+        head == "dim" || head == "var" || head == "local" || head == "static";
+    bool const isRedim = head == "redim";
+    bool const isCommon = head == "common";
+    bool const isExtern = head == "extern";
+    if (!isDim && !isRedim && !isCommon && !isExtern) {
+      return;
+    }
+    bool const inRecord =
+        !blocks_.empty() && (blocks_.back().kind == BlockKind::Type ||
+                             blocks_.back().kind == BlockKind::Union);
+    bool const inUnion =
+        !blocks_.empty() && blocks_.back().kind == BlockKind::Union;
+    bool const moduleLevel = blocks_.empty();
+    std::vector<std::vector<Token>> const segments = splitDeclSegments(toks);
+    for (auto const &seg : segments) {
+      if (seg.empty()) {
+        continue;
+      }
+      DeclInfo const info = parseDeclSegment(seg);
+      if (info.key.empty()) {
+        continue;
+      }
+      // 77 / 162: record-field forms, judged where the field is written.
+      if (inRecord) {
+        if (info.hasEllipsis) {
+          emitStatementError(
+              info.closeTok, "array-field-with-ellipsis",
+              FbcDiagId::ArrayFieldWithEllipsis,
+              tr("'...' ellipsis upper bound given for array field "
+                 "(this is not supported)"));
+          return;
+        }
+        if (inUnion && info.kind == DeclInfo::Dynamic) {
+          emitStatementError(
+              info.nameTok, "dynamic-array-in-union",
+              FbcDiagId::DynamicArrayInUnion,
+              trf("variable-length arrays cannot be part of %s or nested %s",
+                  "UNION", "TYPE"));
+          return;
+        }
+        continue;
+      }
+      if (isCommon && info.hasBounds) {
+        emitStatementError(
+            info.closeTok, "dynamic-extern-cant-have-bounds",
+            FbcDiagId::DynamicExternCantHaveBounds,
+            trf("%s or %s dynamic arrays cannot have initial bounds", "EXTERN",
+                "COMMON"));
+        return;
+      }
+      if (isDim || isExtern) {
+        // 54: a defining Dim whose array form disagrees with an Extern
+        // declaration of the same name in this container (probed:
+        // `extern a(1)` then `dim a()` is 54 at the Dim).
+        if (isDim && info.kind != DeclInfo::Scalar) {
+          Container::VarFact const *old = containers_.empty() ? nullptr : [&] {
+            auto const it = containers_.back().varFacts.find(info.key);
+            return it == containers_.back().varFacts.end() ? nullptr
+                                                           : &it->second;
+          }();
+          if (old != nullptr && old->fromDeclOnly &&
+              ((old->kind == Container::VarFact::Dynamic) !=
+               (info.kind == DeclInfo::Dynamic))) {
+            emitStatementError(info.nameTok, "expected-dynamic-array",
+                               FbcDiagId::ExpectedDynamicArray,
+                               trf("Expected var-len array, %s",
+                                   std::string(info.nameTok.text())));
+            return;
+          }
+        }
+        // 75: a dynamic array with an initializer. Fixed arrays and scalars
+        // with initializers are the probed negatives.
+        if (info.kind == DeclInfo::Dynamic && info.hasInit) {
+          emitStatementError(
+              info.hasEq ? info.eqTok : info.nameTok,
+              "cant-init-dynamic-arrays", FbcDiagId::CantInitDynamicArrays,
+              tr("variable-length arrays cannot be initialized"));
+          return;
+        }
+        // 87: a var-len string with an initializer in global storage
+        // (Shared / Static / Common at module level). A local string with
+        // an initializer and a fixed-length string are the negatives.
+        if (info.varLenString && info.hasInit && moduleLevel &&
+            (head == "static" || isCommon || isExtern || [&] {
+              for (Token const &t : seg) {
+                if (t.kind == TokenKind::Keyword &&
+                    toLowerChars(t.text()) == "shared") {
+                  return true;
+                }
+              }
+              return false;
+            }())) {
+          emitStatementError(
+              info.hasEq ? info.eqTok : info.nameTok,
+              "cant-init-dynamic-strings", FbcDiagId::CantInitDynamicStrings,
+              tr("variable-length strings cannot be initialized"));
+          return;
+        }
+      }
+      if (isRedim) {
+        // `redim preserve` / `redim as T ...`: the name is still the first
+        // identifier of the segment; parseDeclSegment skips `preserve`
+        // because it is a keyword, not an identifier.
+        Container::VarFact const *old = lookupVarFact(info.key);
+        std::string typeKey;
+        bool isField = false;
+        std::string fieldKey;
+        // Field form `redim t.a(...)`: resolve through the variable's
+        // in-file type. A dot in the segment names the field.
+        for (std::size_t i = 0; i + 2 < seg.size(); ++i) {
+          if (seg[i].kind == TokenKind::Identifier &&
+              seg[i + 1].kind == TokenKind::Symbol &&
+              seg[i + 1].text() == "." &&
+              (seg[i + 2].kind == TokenKind::Identifier ||
+               seg[i + 2].kind == TokenKind::Keyword)) {
+            std::string const varKey = keyFor(seg[i].text());
+            Container::VarFact const *vf = lookupVarFact(varKey);
+            if (vf != nullptr && !vf->typeKey.empty()) {
+              typeKey = vf->typeKey;
+              Symbol const *ts = findTypeSymbol(typeKey);
+              if (ts != nullptr) {
+                for (Symbol const &child : ts->children) {
+                  if (child.key == keyFor(seg[i + 2].text())) {
+                    fieldKey = child.key;
+                    isField = true;
+                    break;
+                  }
+                }
+              }
+              // Field array form comes from the type's own facts (below);
+              // fall back to the field symbol's signature scan.
+              if (isField) {
+                auto const fit = fieldFacts_.find(typeKey);
+                if (fit != fieldFacts_.end()) {
+                  auto const fIt = fit->second.find(fieldKey);
+                  if (fIt != fit->second.end()) {
+                    if (fIt->second.kind == Container::VarFact::Fixed) {
+                      emitStatementError(seg[i + 2], "expected-dynamic-array",
+                                         FbcDiagId::ExpectedDynamicArray,
+                                         trf("Expected var-len array, %s",
+                                             std::string(seg[i + 2].text())));
+                      return;
+                    }
+                    if (info.hasEllipsis) {
+                      emitStatementError(
+                          info.closeTok, "dynamic-array-with-ellipsis",
+                          FbcDiagId::DynamicArrayWithEllipsis,
+                          tr("'...' ellipsis upper bound given for "
+                             "dynamic array (this is not supported)"));
+                      return;
+                    }
+                    checkRedimEraseUdt(typeKey, true, seg[i + 2]);
+                    return;
+                  }
+                }
+              }
+            }
+            break;
+          }
+        }
+        if (!isField) {
+          if (old != nullptr && old->kind == Container::VarFact::Fixed) {
+            emitStatementError(info.nameTok, "expected-dynamic-array",
+                               FbcDiagId::ExpectedDynamicArray,
+                               trf("Expected var-len array, %s",
+                                   std::string(info.nameTok.text())));
+            return;
+          }
+          if (old != nullptr && old->kind == Container::VarFact::Dynamic &&
+              info.hasEllipsis) {
+            emitStatementError(
+                info.closeTok, "dynamic-array-with-ellipsis",
+                FbcDiagId::DynamicArrayWithEllipsis,
+                tr("'...' ellipsis upper bound given for dynamic array "
+                   "(this is not supported)"));
+            return;
+          }
+          // REDIM with an explicit `as T` names the element type directly.
+          std::string redimType = info.typeKey;
+          if (redimType.empty() && old != nullptr) {
+            redimType = old->typeKey;
+          }
+          if (old != nullptr && old->kind == Container::VarFact::Dynamic) {
+            if (checkRedimEraseUdt(redimType, true, info.nameTok)) {
+              return;
+            }
+          } else if (!redimType.empty() && info.kind == DeclInfo::Dynamic) {
+            // `redim a(1) as T` defining form: no prior fact, type written.
+            if (checkRedimEraseUdt(redimType, true, info.nameTok)) {
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  void checkEraseStatement() {
+    if (statementFamilyFailed_) {
+      return;
+    }
+    std::vector<Token> const toks = statementTokens();
+    if (toks.empty()) {
+      return;
+    }
+    // One target per check: `erase a, b` draws one diagnostic for the
+    // statement (probed: the first bad target), never one per name.
+    auto const segments = splitDeclSegments(toks);
+    for (auto const &seg : segments) {
+      if (seg.empty()) {
+        continue;
+      }
+      DeclInfo const info = parseDeclSegment(seg);
+      if (info.key.empty()) {
+        continue;
+      }
+      // Element form `erase a(0)` and field form `erase t.a`: only the
+      // plain-name form is judged; the others need expression state.
+      bool hasParen = false;
+      for (Token const &t : seg) {
+        if (t.kind == TokenKind::Symbol && t.text() == "(") {
+          hasParen = true;
+          break;
+        }
+        if (t.kind == TokenKind::Symbol && t.text() == ".") {
+          hasParen = true;
+          break;
+        }
+      }
+      if (hasParen) {
+        continue;
+      }
+      Container::VarFact const *old = lookupVarFact(info.key);
+      if (old == nullptr || old->typeKey.empty()) {
+        continue;
+      }
+      if (old->kind == Container::VarFact::Scalar) {
+        continue; // `erase` of a scalar is 63, another family
+      }
+      if (checkRedimEraseUdt(old->typeKey, false, info.nameTok)) {
+        return;
+      }
+    }
+  }
+
+  // 327: a file statement whose `#` is not followed by a file-number
+  // expression. `close #` alone is fbc's close-all and stays silent; every
+  // other head, and `close` after a comma, draws 327 (probed).
+  void checkFileNumberStatement(Token const &openTok) {
+    if (statementFamilyFailed_) {
+      return;
+    }
+    std::string const head = toLowerChars(openTok.text());
+    bool const isFile = head == "seek" || head == "close" || head == "open" ||
+                        head == "print" || head == "get" || head == "put" ||
+                        head == "write" || head == "input" || head == "line";
+    if (!isFile) {
+      return;
+    }
+    std::vector<Token> const toks = statementTokens();
+    for (std::size_t i = 0; i < toks.size(); ++i) {
+      if (toks[i].kind != TokenKind::Symbol || toks[i].text() != "#") {
+        continue;
+      }
+      bool const isClose = head == "close";
+      // After `#`: EOL, a comma, or `:` means no expression. For `close`,
+      // a bare trailing `#` is close-all unless a comma already appeared
+      // earlier in the statement (`close #1,` is 327, probed).
+      bool afterComma = false;
+      for (std::size_t j = 0; j < i; ++j) {
+        if (toks[j].kind == TokenKind::Symbol && toks[j].text() == ",") {
+          afterComma = true;
+        }
+      }
+      bool missing = false;
+      if (i + 1 >= toks.size()) {
+        missing = !isClose || afterComma;
+      } else if (toks[i + 1].kind == TokenKind::Symbol &&
+                 (toks[i + 1].text() == "," || toks[i + 1].text() == ":")) {
+        missing = true;
+      }
+      if (missing) {
+        emitStatementError(toks[i], "expected-file-number-expression",
+                           FbcDiagId::ExpectedFileNumberExpression,
+                           tr("Expected file number expression"));
+        return;
+      }
+    }
+    // `close #1,` (probed): a trailing comma promises another file number.
+    if (head == "close" && toks.size() >= 2 &&
+        toks.back().kind == TokenKind::Symbol && toks.back().text() == ",") {
+      bool hasHash = false;
+      for (Token const &t : toks) {
+        if (t.kind == TokenKind::Symbol && t.text() == "#") {
+          hasHash = true;
+        }
+      }
+      if (hasHash) {
+        emitStatementError(toks.back(), "expected-file-number-expression",
+                           FbcDiagId::ExpectedFileNumberExpression,
+                           tr("Expected file number expression"));
+      }
+    }
+  }
+
   void collectDoc() {
     std::string_view const t = cur_.text();
     size_t skip = 0;
@@ -1072,7 +1740,16 @@ private:
     return d;
   }
 
+  // Keys of `Const` (and enum member) declarations seen so far in this
+  // file, for the constant-bound test below. File-wide, not per-container:
+  // a bound that mentions an unprovable identifier stays silent (dynamic),
+  // which can only miss a 54, never invent one.
+  std::unordered_set<std::string> constKeysSeen_;
+
   Symbol *addSymbol(Symbol &&s) {
+    if (s.kind == SymbolKind::Const && !s.key.empty()) {
+      constKeysSeen_.insert(s.key);
+    }
     // Type-member visibility: capture the current access section of the
     // enclosing container. Module scope and non-type containers keep the
     // default Public, so this is a no-op outside a TYPE body.
@@ -1737,6 +2414,43 @@ private:
       } else if (bk == BlockKind::Enum) {
         captureMember = true;
         mk = SymbolKind::Const;
+      }
+    }
+    // Bare fields (`a(any) as integer`) never reach handleVarDecls: judged
+    // and recorded here, where the member capture below registers them.
+    if (inRecord && !suppressMemberCapture) {
+      bool const inUnion = blocks_.back().kind == BlockKind::Union;
+      auto const segs = splitDeclSegments(statementTokens());
+      for (auto const &seg : segs) {
+        DeclInfo const info = parseDeclSegment(seg);
+        if (info.key.empty()) {
+          continue;
+        }
+        if (info.hasEllipsis) {
+          emitStatementError(
+              info.closeTok, "array-field-with-ellipsis",
+              FbcDiagId::ArrayFieldWithEllipsis,
+              tr("'...' ellipsis upper bound given for array field "
+                 "(this is not supported)"));
+        } else if (inUnion && info.kind == DeclInfo::Dynamic) {
+          emitStatementError(
+              info.nameTok, "dynamic-array-in-union",
+              FbcDiagId::DynamicArrayInUnion,
+              trf("variable-length arrays cannot be part of %s or nested %s",
+                  "UNION", "TYPE"));
+        }
+        if (!containers_.empty() && containers_.back().sym != nullptr) {
+          Container::VarFact fact;
+          fact.kind =
+              info.kind == DeclInfo::Dynamic
+                  ? Container::VarFact::Dynamic
+                  : (info.kind == DeclInfo::Fixed ? Container::VarFact::Fixed
+                                                  : Container::VarFact::Scalar);
+          fact.varLenString = info.varLenString;
+          fact.typeKey = info.typeKey;
+          containers_.back().varFacts[info.key] = fact;
+          fieldFacts_[containers_.back().sym->key][info.key] = fact;
+        }
       }
     }
     Token const stmtStart = cur_;
@@ -2910,6 +3624,24 @@ private:
         }
         return;
       }
+      // 216: `Private`/`Public` with `Redim`/`Common`/`Extern` (probed).
+      // Inside a procedure or a scope block fbc answers 61/96 instead, and
+      // that placement diagnostic already landed, so it keeps the line.
+      if ((w == "private" || w == "public") && nxt.kind == TokenKind::Keyword &&
+          (toLowerChars(nxt.text()) == "redim" ||
+           toLowerChars(nxt.text()) == "common" ||
+           toLowerChars(nxt.text()) == "extern")) {
+        if (!inProcedure() && !inScopeBlock()) {
+          emitStatementError(nxt, "priv-or-pub-attrib-not-allowed",
+                             FbcDiagId::PrivOrPubAttribNotAllowed,
+                             trf("The %s attributes are not allowed with %s",
+                                 "PRIVATE and PUBLIC",
+                                 "REDIM, COMMON or EXTERN"));
+        }
+        resetDoc();
+        skipStatement();
+        return;
+      }
       // `Static x` and `Static Shared x` are both var declarations; the
       // two-token form needs the shared keyword routed here (the old
       // code required an identifier and let `static shared` fall into
@@ -3145,6 +3877,13 @@ private:
       skipStatement();
       return;
     }
+    if (w == "erase") {
+      checkEraseStatement();
+      resetDoc();
+      skipStatement();
+      return;
+    }
+    checkFileNumberStatement(cur_);
     if (isControlOpenerWord(w)) {
       pushBlockFromOpener(w);
       resetDoc();
@@ -3760,6 +4499,42 @@ private:
     Symbol *psym = addSymbol(std::move(s));
     if (k == SymbolKind::Constructor && psym != nullptr && !psym->key.empty()) {
       typesWithConstructors_.insert(psym->key);
+      CtorInfo &ci = ctorInfo_[psym->key];
+      if (!ci.fromDeclare) {
+        auto const toks = statementTokens();
+        bool isStdcall = false;
+        bool paramless = false;
+        for (std::size_t i = 0; i < toks.size(); ++i) {
+          if (toLowerChars(toks[i].text()) == "stdcall") {
+            isStdcall = true;
+          }
+          if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+            paramless = i + 1 < toks.size() &&
+                        toks[i + 1].kind == TokenKind::Symbol &&
+                        toks[i + 1].text() == ")";
+            break;
+          }
+        }
+        ci.hasCtor = true;
+        ci.ctorCdecl = !isStdcall;
+        ci.ctorParamless = paramless;
+        ci.ctorPrivate = false;
+      }
+    }
+    if (k == SymbolKind::Destructor && psym != nullptr && !psym->key.empty()) {
+      CtorInfo &ci = ctorInfo_[psym->key];
+      if (!ci.fromDeclare) {
+        auto const toks = statementTokens();
+        bool isStdcall = false;
+        for (Token const &t : toks) {
+          if (toLowerChars(t.text()) == "stdcall") {
+            isStdcall = true;
+          }
+        }
+        ci.hasDtor = true;
+        ci.dtorCdecl = !isStdcall;
+        ci.dtorPrivate = false;
+      }
     }
 
     Block b;
@@ -4081,6 +4856,54 @@ private:
       return;
     }
     if (w != "sub" && w != "function" && w != "property") {
+      if (w == "constructor" || w == "destructor") {
+        // Record the in-file form for the REDIM/ERASE checks (171-176).
+        // The prototype is authoritative (probed: a definition's defaults
+        // do not override it), so a Declare always wins over a definition.
+        std::string typeKey;
+        Access acc = Access::Public;
+        for (auto it = containers_.rbegin(); it != containers_.rend(); ++it) {
+          if (it->sym != nullptr && (it->sym->kind == SymbolKind::Type ||
+                                     it->sym->kind == SymbolKind::Union)) {
+            typeKey = it->sym->key;
+            acc = containers_.back().access;
+            break;
+          }
+        }
+        if (!typeKey.empty()) {
+          auto const toks = statementTokens();
+          bool isStdcall = false;
+          bool paramless = false;
+          for (std::size_t i = 0; i < toks.size(); ++i) {
+            std::string const tw = toLowerChars(toks[i].text());
+            if (tw == "stdcall") {
+              isStdcall = true;
+            }
+            if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+              std::size_t j = i + 1;
+              paramless = j < toks.size() &&
+                          toks[j].kind == TokenKind::Symbol &&
+                          toks[j].text() == ")";
+              break;
+            }
+          }
+          CtorInfo &ci = ctorInfo_[typeKey];
+          if (w == "constructor") {
+            ci.hasCtor = true;
+            ci.ctorCdecl = !isStdcall;
+            // A required-only ctor is not a default ctor (183, silent
+            // here): parameterless means no user parameters at all, and an
+            // optional-parameter ctor is not parameterless (173/176).
+            ci.ctorParamless = paramless;
+            ci.ctorPrivate = acc == Access::Private;
+          } else {
+            ci.hasDtor = true;
+            ci.dtorCdecl = !isStdcall;
+            ci.dtorPrivate = acc == Access::Private;
+          }
+          ci.fromDeclare = true;
+        }
+      }
       if (w == "constructor") {
         // A declared constructor makes its enclosing UDT an "object" for the
         // branch-crossing diagnostic (105), even though the parser does not
@@ -4162,7 +4985,9 @@ private:
                       bool impliedShared = false) {
     Token const openTok = cur_;
     std::string const doc = takeDoc();
+    auto const stmtToks = statementTokens();
     checkVarDeclStatement(openTok, k);
+    checkStatementSpecific(openTok);
     advance();
     bool atName = true;
     bool first = true;
@@ -4374,6 +5199,59 @@ private:
         }
       } else {
         advance();
+      }
+    }
+    // Record declaration-form facts for later statements (G6). A Redim
+    // never overwrites an existing fact (a fixed array stays fixed so the
+    // next Redim still draws 54); a Redim that names a new array defines it
+    // as dynamic.
+    if (!containers_.empty() && k == SymbolKind::Dim) {
+      std::string const head = toLowerChars(openTok.text());
+      bool const isRedimHead = head == "redim";
+      bool const isCommonHead = head == "common";
+      auto const segs = splitDeclSegments(stmtToks);
+      for (auto const &seg : segs) {
+        DeclInfo const info = parseDeclSegment(seg);
+        if (info.key.empty()) {
+          continue;
+        }
+        Container::VarFact fact;
+        fact.kind =
+            info.kind == DeclInfo::Dynamic
+                ? Container::VarFact::Dynamic
+                : (info.kind == DeclInfo::Fixed ? Container::VarFact::Fixed
+                                                : Container::VarFact::Scalar);
+        if (isCommonHead) {
+          fact.kind = Container::VarFact::Dynamic;
+        }
+        if (isRedimHead && fact.kind == Container::VarFact::Scalar) {
+          fact.kind = Container::VarFact::Dynamic;
+        }
+        bool segShared = false;
+        for (Token const &t : seg) {
+          if (t.kind == TokenKind::Keyword &&
+              toLowerChars(t.text()) == "shared") {
+            segShared = true;
+          }
+        }
+        fact.shared = blocks_.empty() && (segShared || impliedShared);
+        fact.fromDeclOnly = declOnly && !isCommonHead;
+        fact.varLenString = info.varLenString;
+        fact.typeKey = info.typeKey;
+        fact.globalInit =
+            blocks_.empty() &&
+            (head == "static" || isCommonHead || segShared || impliedShared);
+        Container &cont = containers_.back();
+        auto const existing = cont.varFacts.find(info.key);
+        if (isRedimHead && existing != cont.varFacts.end()) {
+          continue; // keep the original dimension state
+        }
+        cont.varFacts[info.key] = fact;
+        if (inRecordBody() && cont.sym != nullptr &&
+            (cont.sym->kind == SymbolKind::Type ||
+             cont.sym->kind == SymbolKind::Union)) {
+          fieldFacts_[cont.sym->key][info.key] = fact;
+        }
       }
     }
   }

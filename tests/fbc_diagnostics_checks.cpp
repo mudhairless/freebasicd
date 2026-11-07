@@ -293,6 +293,41 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::ExpectedGt, FbcMessageKind::Warning,
                           v1102) == 0);
 
+  // The statement-specific family (M23 G6), each pinned to the catalog
+  // number the probe read back from fbc 1.10.3 (tools/fbc_catalog.tsv).
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedDynamicArray,
+                          FbcMessageKind::Error, v1102) == 54);
+  CHECK(fblang::fbcNumber(FbcDiagId::CantInitDynamicArrays,
+                          FbcMessageKind::Error, v1102) == 75);
+  CHECK(fblang::fbcNumber(FbcDiagId::CantInitDynamicStrings,
+                          FbcMessageKind::Error, v1102) == 87);
+  CHECK(fblang::fbcNumber(FbcDiagId::DynamicArrayWithEllipsis,
+                          FbcMessageKind::Error, v1102) == 76);
+  CHECK(fblang::fbcNumber(FbcDiagId::ArrayFieldWithEllipsis,
+                          FbcMessageKind::Error, v1102) == 77);
+  CHECK(fblang::fbcNumber(FbcDiagId::DynamicExternCantHaveBounds,
+                          FbcMessageKind::Error, v1102) == 136);
+  CHECK(fblang::fbcNumber(FbcDiagId::DynamicArrayInUnion, FbcMessageKind::Error,
+                          v1102) == 162);
+  CHECK(fblang::fbcNumber(FbcDiagId::RedimCtorMustBeCdecl,
+                          FbcMessageKind::Error, v1102) == 171);
+  CHECK(fblang::fbcNumber(FbcDiagId::RedimDtorMustBeCdecl,
+                          FbcMessageKind::Error, v1102) == 172);
+  CHECK(fblang::fbcNumber(FbcDiagId::RedimCtorMustHaveOneParam,
+                          FbcMessageKind::Error, v1102) == 173);
+  CHECK(fblang::fbcNumber(FbcDiagId::EraseCtorMustBeCdecl,
+                          FbcMessageKind::Error, v1102) == 174);
+  CHECK(fblang::fbcNumber(FbcDiagId::EraseDtorMustBeCdecl,
+                          FbcMessageKind::Error, v1102) == 175);
+  CHECK(fblang::fbcNumber(FbcDiagId::EraseCtorMustHaveOneParam,
+                          FbcMessageKind::Error, v1102) == 176);
+  CHECK(fblang::fbcNumber(FbcDiagId::PrivOrPubAttribNotAllowed,
+                          FbcMessageKind::Error, v1102) == 216);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedFileNumberExpression,
+                          FbcMessageKind::Error, v1102) == 327);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedDynamicArray,
+                          FbcMessageKind::Warning, v1102) == 0);
+
   // No identity is no number, in either space.
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Error, v1102) == 0);
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Warning, v1102) ==
