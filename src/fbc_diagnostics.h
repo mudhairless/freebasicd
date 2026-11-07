@@ -90,6 +90,10 @@ enum class FbcDiagId {
   NextVarMeaningless,
   InvalidExitStmt,
   InvalidContinueStmt,
+  IllegalInsideSub,
+  IllegalInsideScope,
+  BranchCrossingDynDataDef,
+  BranchCrossingLocalVar,
   Count
 };
 

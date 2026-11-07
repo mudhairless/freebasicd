@@ -2508,6 +2508,533 @@ static void TestExitContinueFamily() {
   }
 }
 
+// M23 G4: placement diagnostics (61 / 96) and branch-crossing diagnostics
+// (105 / warning 14).
+static void TestPlacementAndBranchCrossing() {
+  // 61 ILLEGALINSIDEASUB: declarations that cannot appear inside a procedure.
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  declare sub g()\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+    CHECK(fbcErrorFor(r, "illegal-inside-sub") == FbcDiagId::IllegalInsideSub);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  namespace N\n"
+                                        "  end namespace\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  extern x as integer\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  extern \"C\"\n"
+                                        "  end extern\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  common x as integer\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  public:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  private:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  sub g()\n"
+                                        "  end sub\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  function g() as integer\n"
+                                        "  end function\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  property P() as integer\n"
+                                        "  end property\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  operator +(a as integer, b as "
+                                        "integer) as integer\n"
+                                        "  end operator\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  destructor D()\n"
+                                        "  end destructor\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+  }
+  // `constructor` inside a Sub is error 165, outside G4; leave it silent here.
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  constructor C()\n"
+                                        "  end constructor\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 0);
+  }
+
+  // 96 ILLEGALINSIDEASCOPE: the same declarations inside a scope/control block
+  // at module level.
+  {
+    ParseResult const r = parseDocument("scope\n"
+                                        "  declare sub g()\n"
+                                        "end scope\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 1);
+    CHECK(fbcErrorFor(r, "illegal-inside-scope") ==
+          FbcDiagId::IllegalInsideScope);
+  }
+  {
+    ParseResult const r = parseDocument("if 1 then\n"
+                                        "  namespace N\n"
+                                        "  end namespace\n"
+                                        "end if\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("scope\n"
+                                        "  common x as integer\n"
+                                        "end scope\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("scope\n"
+                                        "  public:\n"
+                                        "end scope\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("scope\n"
+                                        "  sub g()\n"
+                                        "  end sub\n"
+                                        "end scope\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("scope\n"
+                                        "  constructor C()\n"
+                                        "  end constructor\n"
+                                        "end scope\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 1);
+  }
+  // But `type` and `dim` are allowed inside scope blocks.
+  {
+    ParseResult const r = parseDocument("scope\n"
+                                        "  type T\n"
+                                        "    x as integer\n"
+                                        "  end type\n"
+                                        "  dim x as integer\n"
+                                        "end scope\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+  }
+
+  // 96 inside an `Extern "C"` block at module level: executable/control/redim.
+  {
+    ParseResult const r = parseDocument("extern \"C\"\n"
+                                        "  redim x(1) as integer\n"
+                                        "end extern\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("extern \"C\"\n"
+                                        "  if 1 then\n"
+                                        "  end if\n"
+                                        "end extern\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("extern \"C\"\n"
+                                        "  goto L\n"
+                                        "  L:\n"
+                                        "end extern\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 2);
+  }
+  // Declarations inside Extern are allowed.
+  {
+    ParseResult const r = parseDocument("extern \"C\"\n"
+                                        "  declare sub c_func()\n"
+                                        "  dim x as integer\n"
+                                        "end extern\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+  }
+
+  // Branch crossing: error 105 for local arrays.
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  dim a(10) as integer\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 1);
+    CHECK(fbcErrorFor(r, "branch-crossing-dyn-data-def") ==
+          FbcDiagId::BranchCrossingDynDataDef);
+  }
+  {
+    ParseResult const r = parseDocument("sub f(n as integer)\n"
+                                        "  goto L\n"
+                                        "  dim a(1 to n) as integer\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  redim a(1) as integer\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 1);
+  }
+
+  // Branch crossing: error 105 for var-len strings.
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  dim s as string\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  redim s(10) as string\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 1);
+  }
+  // Fixed-length strings are not dynamic data.
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  dim s as string * 10\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 1);
+  }
+
+  // Branch crossing: error 105 for UDT instances whose type has a constructor.
+  {
+    ParseResult const r = parseDocument("type T\n"
+                                        "  x as integer\n"
+                                        "  declare constructor()\n"
+                                        "end type\n"
+                                        "sub f()\n"
+                                        "  goto L\n"
+                                        "  dim u as T\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 1);
+  }
+  // UDT without a constructor is only warning 14.
+  {
+    ParseResult const r = parseDocument("type T\n"
+                                        "  x as integer\n"
+                                        "end type\n"
+                                        "sub f()\n"
+                                        "  goto L\n"
+                                        "  dim u as T\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 1);
+    CHECK(fbcErrorFor(r, "branch-crossing-local-var") ==
+          FbcDiagId::BranchCrossingLocalVar);
+  }
+
+  // Branch crossing: warning 14 for plain locals and `Var`.
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  dim x as integer\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  var x = 1\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 1);
+  }
+
+  // Branch crossing: silent cases.
+  {
+    // Backward jump.
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  L:\n"
+                                        "  dim x as integer\n"
+                                        "  goto L\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+  {
+    // Static local, Shared, Common, Const, and loop counter are excluded.
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  static x as integer\n"
+                                        "  dim shared y as integer\n"
+                                        "  common z as integer\n"
+                                        "  const c = 1\n"
+                                        "  for i as integer = 1 to 2\n"
+                                        "  next\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+  {
+    // Jump that crosses no definition.
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+
+  // Module-level implicit main also participates in branch crossing.
+  {
+    ParseResult const r = parseDocument("goto L\n"
+                                        "dim x as integer\n"
+                                        "L:\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("goto L\n"
+                                        "dim shared x as integer\n"
+                                        "L:\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 0);
+  }
+
+  // Multiple crossed definitions: one diagnostic per definition.
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  dim a(10) as integer\n"
+                                        "  dim b as string\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 2);
+  }
+
+  // 61 takes precedence over 96: a declaration inside a Scope inside a
+  // procedure draws 61 alone, never both (probed).
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  scope\n"
+                                        "  declare sub g()\n"
+                                        "  end scope\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  if 1 then\n"
+                                        "  common x as integer\n"
+                                        "  end if\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+  }
+
+  // Overlap pins: shapes owned by landed families keep their numbers and
+  // draw no placement diagnostic (probed with fbc 1.10.3).
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  next\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 0);
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  case 1\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 0);
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  exit foo\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 0);
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+    CHECK(diagnosticCount(r, "invalid-exit") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("scope\n"
+                                        "  exit foo\n"
+                                        "end scope\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 0);
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+    CHECK(diagnosticCount(r, "invalid-exit") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("scope\n"
+                                        "  continue foo\n"
+                                        "end scope\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 0);
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+    CHECK(diagnosticCount(r, "invalid-continue") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  exit select\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 0);
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+    CHECK(diagnosticCount(r, "illegal-outside-select") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("extern \"C\"\n"
+                                        "  exit foo\n"
+                                        "end extern\n");
+    CHECK(diagnosticCount(r, "illegal-inside-sub") == 0);
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+    CHECK(diagnosticCount(r, "invalid-exit") == 1);
+  }
+  {
+    ParseResult const r = parseDocument("extern \"C\"\n"
+                                        "  else\n"
+                                        "end extern\n");
+    CHECK(diagnosticCount(r, "illegal-inside-scope") == 0);
+    CHECK(diagnosticCount(r, "stray-closer") == 1);
+  }
+
+  // Legal jumps (probed): jumping out of or over a block, between sibling
+  // scopes, and across `if`/`case` arms is silent; landing inside the
+  // definition's block past it counts.
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  scope\n"
+                                        "  goto L\n"
+                                        "  dim x as integer\n"
+                                        "  end scope\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  scope\n"
+                                        "  dim x as integer\n"
+                                        "  end scope\n"
+                                        "  L:\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  scope\n"
+                                        "  dim x as integer\n"
+                                        "  L:\n"
+                                        "  end scope\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 1);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  scope\n"
+                                        "  dim x as integer\n"
+                                        "  end scope\n"
+                                        "  scope\n"
+                                        "  L:\n"
+                                        "  end scope\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  if 1 then\n"
+                                        "  dim x as integer\n"
+                                        "  else\n"
+                                        "  L:\n"
+                                        "  end if\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  select case 1\n"
+                                        "  case 1\n"
+                                        "  goto L\n"
+                                        "  dim x as integer\n"
+                                        "  L:\n"
+                                        "  case 2\n"
+                                        "  end select\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 1);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+  {
+    ParseResult const r = parseDocument("sub f()\n"
+                                        "  goto L\n"
+                                        "  select case 1\n"
+                                        "  case 1\n"
+                                        "  dim x as integer\n"
+                                        "  case 2\n"
+                                        "  L:\n"
+                                        "  end select\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+  {
+    // Record fields are members, not locals: a type body between the branch
+    // and the label draws nothing (probed).
+    ParseResult const r = parseDocument("goto L\n"
+                                        "type T\n"
+                                        "x as integer\n"
+                                        "end type\n"
+                                        "L:\n");
+    CHECK(diagnosticCount(r, "branch-crossing-local-var") == 0);
+    CHECK(diagnosticCount(r, "branch-crossing-dyn-data-def") == 0);
+  }
+}
+
 int main() {
   // A realistic multi-construct program must parse with zero diagnostics.
   {
@@ -4199,6 +4726,7 @@ int main() {
   TestSelectFamily();
   TestLoopFamily();
   TestExitContinueFamily();
+  TestPlacementAndBranchCrossing();
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

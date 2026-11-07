@@ -13,6 +13,7 @@
 #include "symbols.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -122,6 +123,7 @@ public:
 
   ParseResult run() {
     containers_.push_back(Container(nullptr));
+    pushBranchScope(nullptr); // module-level implicit main
     advance();
 
     for (;;) {
@@ -210,6 +212,11 @@ public:
     while (!blocks_.empty()) {
       closeBlock(cur_.end);
     }
+    // Run the module-level branch-crossing check now that every label is known.
+    if (!branchScopeStack_.empty()) {
+      checkBranchCrossing(branchScopes_[branchScopeStack_.back()]);
+      branchScopeStack_.pop_back();
+    }
     return std::move(out_);
   }
 
@@ -236,6 +243,49 @@ private:
   // private/public modifier precedes a declaration opener, read by
   // handleDeclBlock/handleDeclare to stamp Symbol::isPrivate.
   bool pendingPrivate_ = false;
+
+  // M23 G4: branch-crossing diagnostics (105 / warning 14). Each procedure
+  // body and the module-level implicit main collect their labels, forward
+  // `Goto` branches, and local definitions; the check runs when the body
+  // closes so every label definition has been seen.
+  struct LocalDef {
+    uint32_t beg = 0;
+    uint32_t end = 0;
+    std::string name;
+    enum Kind { Array, VarLenString, UdtInstance, Other } kind = Other;
+    // For UDT instances: the type name/key used to decide constructor presence
+    // at check time (a type declared later in the file may not be known yet).
+    std::string typeName;
+    std::string typeKey;
+    // Container stack at the definition (outermost first). Symbol identity,
+    // not offsets: an `if` block and its `then` branch share an opener offset
+    // but are distinct containers.
+    std::vector<Symbol *> stack;
+  };
+  struct LabelInfo {
+    uint32_t beg = 0;
+    uint32_t end = 0;
+    std::string key;
+    std::string name;
+    std::vector<Symbol *> stack;
+  };
+  struct BranchInfo {
+    uint32_t beg = 0;
+    uint32_t end = 0;
+    std::string targetKey;
+    std::string targetName;
+  };
+  struct BranchScope {
+    Symbol *sym = nullptr; // procedure symbol, or nullptr for module level
+    std::vector<LabelInfo> labels;
+    std::vector<BranchInfo> branches;
+    std::vector<LocalDef> defs;
+  };
+  std::vector<BranchScope> branchScopes_;
+  std::vector<std::size_t> branchScopeStack_;
+  // Type keys that carry a constructor (declared or defined). Used to promote
+  // a branch-crossing UDT instance from warning 14 to error 105.
+  std::unordered_set<std::string> typesWithConstructors_;
 
   void advance() {
     if (cur_.kind == TokenKind::String && !cur_.terminated &&
@@ -395,6 +445,69 @@ private:
       }
     }
     return false;
+  }
+
+  // M23 G4 placement helpers. A preprocessor block is compile-time, not a
+  // runtime block, so the walk skips it: a `#if` inside a `Sub` does not make
+  // its active arm "outside" the procedure. Each asks whether the statement
+  // is enclosed *anywhere* by the construct (`Scope` inside a `Sub` is still
+  // inside a procedure, so 61 wins over 96).
+  bool inProcedure() const {
+    for (Block const &b : blocks_) {
+      if (isProcedureBlockKind(b.kind)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool inScopeBlock() const {
+    for (Block const &b : blocks_) {
+      if (isScopeBlock(b.kind)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool inExternBlock() const {
+    for (Block const &b : blocks_) {
+      if (b.kind == BlockKind::Extern) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // The innermost open language block is a record/enum body: statements there
+  // are members, not placements, and `declare`/`dim` there are ordinary
+  // member declarations (FreeBASIC.md §7).
+  bool inMemberBody() const {
+    for (auto it = blocks_.rbegin(); it != blocks_.rend(); ++it) {
+      if (it->kind == BlockKind::PreprocIf ||
+          it->kind == BlockKind::PreprocMacro) {
+        continue;
+      }
+      return isMemberBodyKind(it->kind);
+    }
+    return false;
+  }
+
+  static bool isIllegalInsideSubDecl(const std::string &w) {
+    return w == "declare" || w == "namespace" || w == "extern" ||
+           w == "common" || w == "public" || w == "private" || w == "sub" ||
+           w == "function" || w == "property" || w == "operator" ||
+           w == "destructor";
+  }
+
+  static bool isIllegalInsideScopeDecl(const std::string &w) {
+    return isIllegalInsideSubDecl(w) || w == "constructor";
+  }
+
+  static bool isExecutableOrControlKeyword(const std::string &w) {
+    return w == "print" || w == "goto" || w == "gosub" || w == "return" ||
+           w == "end" || w == "if" || w == "for" || w == "while" || w == "do" ||
+           w == "select" || w == "with" || w == "scope";
   }
 
   static SymbolKind declKindFor(const std::string &w) {
@@ -625,6 +738,311 @@ private:
     }
   }
 
+  // M23 G4 local-definition classification for branch-crossing diagnostics.
+  // The declaration's signature (the whole logical line) is re-lexed so the
+  // type can be read without disturbing the live parser position.
+  LocalDef::Kind classifyLocalDefKind(std::string const &signature,
+                                      std::string const &name,
+                                      std::string *typeName,
+                                      std::string *typeKey) const {
+    *typeName = "";
+    *typeKey = "";
+    // Array: the declared name is immediately followed by '(' in the source.
+    {
+      std::string const lowerSig = toLowerChars(signature);
+      std::string const keyName = keyFor(name);
+      // Find the name token as a whole word, then check for '('.
+      std::size_t pos = 0;
+      while ((pos = lowerSig.find(keyName, pos)) != std::string::npos) {
+        std::size_t const end = pos + keyName.size();
+        bool const wordStart =
+            pos == 0 ||
+            std::isspace(static_cast<unsigned char>(signature[pos - 1])) != 0;
+        bool const wordEnd =
+            end >= signature.size() ||
+            std::isspace(static_cast<unsigned char>(signature[end])) != 0 ||
+            signature[end] == '(' || signature[end] == ',';
+        if (wordStart && wordEnd) {
+          if (end < signature.size() && signature[end] == '(') {
+            return LocalDef::Array;
+          }
+          break;
+        }
+        ++pos;
+      }
+    }
+    std::vector<Token> const toks = lexAll(signature);
+    // Find the name token.
+    std::size_t nameIdx = static_cast<std::size_t>(-1);
+    for (std::size_t i = 0; i < toks.size(); ++i) {
+      if (toks[i].kind == TokenKind::Identifier &&
+          keyFor(toks[i].text()) == keyFor(name)) {
+        nameIdx = i;
+        break;
+      }
+    }
+    if (nameIdx == static_cast<std::size_t>(-1)) {
+      return LocalDef::Other;
+    }
+    // Look for `as` either before or after the name (type-first form).
+    std::size_t asIdx = static_cast<std::size_t>(-1);
+    for (std::size_t i = 0; i + 1 < toks.size(); ++i) {
+      if (toks[i].kind == TokenKind::Keyword &&
+          toLowerChars(toks[i].text()) == "as") {
+        // Must be on the same side of the name as the type.
+        if ((i < nameIdx && i + 1 < nameIdx) || (i > nameIdx)) {
+          asIdx = i;
+          break;
+        }
+      }
+    }
+    if (asIdx == static_cast<std::size_t>(-1)) {
+      return LocalDef::Other;
+    }
+    std::size_t j = asIdx + 1;
+    while (j < toks.size() && toLowerChars(toks[j].text()) == "const") {
+      ++j;
+    }
+    if (j >= toks.size() || j == nameIdx) {
+      return LocalDef::Other;
+    }
+    Token const &typeTok = toks[j];
+    std::string const typeWord = toLowerChars(typeTok.text());
+    if (typeWord == "string") {
+      if (j + 1 < toks.size() && toks[j + 1].kind == TokenKind::Symbol &&
+          toks[j + 1].text() == "*") {
+        return LocalDef::Other; // fixed-length string
+      }
+      return LocalDef::VarLenString;
+    }
+    if (j + 1 < toks.size()) {
+      std::string const nextWord = toLowerChars(toks[j + 1].text());
+      if (nextWord == "ptr" || nextWord == "pointer") {
+        return LocalDef::Other;
+      }
+    }
+    if (typeTok.kind == TokenKind::Identifier ||
+        (typeTok.kind == TokenKind::Keyword && !isBuiltinType(typeWord))) {
+      *typeName = std::string(typeTok.text());
+      *typeKey = keyFor(*typeName);
+      return LocalDef::UdtInstance;
+    }
+    return LocalDef::Other;
+  }
+
+  // Container stack at the statement under `cur_`: the symbol of every
+  // enclosing container (null for the module root). Block-scope and branch-arm
+  // containers are distinct symbols, so a jump over or out of a block — or
+  // across sibling arms — is visible as a label stack that no longer contains
+  // every container the crossed definition's stack does.
+  std::vector<Symbol *> containerStackSnapshot() const {
+    std::vector<Symbol *> out;
+    out.reserve(containers_.size());
+    for (Container const &c : containers_) {
+      out.push_back(c.sym);
+    }
+    return out;
+  }
+
+  void recordLocalDef(Symbol const &s, LocalDef::Kind kind,
+                      std::string const &typeName, std::string const &typeKey) {
+    if (!hasBranchScope()) {
+      return;
+    }
+    LocalDef def;
+    def.beg = s.selection.beg;
+    def.end = s.selection.end;
+    def.name = s.name;
+    def.kind = kind;
+    def.typeName = typeName;
+    def.typeKey = typeKey;
+    def.stack = containerStackSnapshot();
+    activeBranchScope().defs.push_back(std::move(def));
+  }
+
+  // M23 G4 placement diagnostics (61 / 96). Called once the statement head is
+  // known but before it is parsed, so structure is still built normally after
+  // the report. `w` is the lowercase head keyword when there is one.
+  void checkIllegalInsideSub(const std::string &w) {
+    if (!inProcedure()) {
+      return;
+    }
+    if (!isIllegalInsideSubDecl(w)) {
+      return;
+    }
+    addDiagnostic(cur_.beg, cur_.end, Severity::Error, "illegal-inside-sub",
+                  trf("illegal inside functions in '%s'", headerText(cur_)),
+                  FbcDiagId::IllegalInsideSub);
+  }
+
+  void checkIllegalInsideScope(const std::string &w) {
+    if (inProcedure()) {
+      return; // 61 takes precedence inside procedures
+    }
+    if (inExternBlock()) {
+      // Inside an `Extern "C"` block at module level: executable/control/redim
+      // statements are illegal; declarations are allowed.
+      if (w == "redim" || isExecutableOrControlKeyword(w)) {
+        addDiagnostic(cur_.beg, cur_.end, Severity::Error,
+                      "illegal-inside-scope",
+                      trf("illegal inside a compound statement or scoped block "
+                          "in '%s'",
+                          headerText(cur_)),
+                      FbcDiagId::IllegalInsideScope);
+      }
+      return;
+    }
+    if (!inScopeBlock()) {
+      return;
+    }
+    if (!isIllegalInsideScopeDecl(w)) {
+      return;
+    }
+    addDiagnostic(cur_.beg, cur_.end, Severity::Error, "illegal-inside-scope",
+                  trf("illegal inside a compound statement or scoped block in "
+                      "'%s'",
+                      headerText(cur_)),
+                  FbcDiagId::IllegalInsideScope);
+  }
+
+  void checkPlacement(const std::string &w) {
+    if (inMemberBody()) {
+      return;
+    }
+    if (isCloserStatement(statementTokens())) {
+      return;
+    }
+    // A visibility/storage modifier in front of a declaration belongs to the
+    // declaration, not to a standalone statement. Report the placement error
+    // on the declaration keyword itself to avoid double-reporting.
+    if (w == "private" || w == "public" || w == "export" || w == "static") {
+      Token const nxt = lex_.peek(0);
+      if (nxt.kind == TokenKind::Keyword &&
+          (isDeclOpenerWord(toLowerChars(nxt.text())) ||
+           toLowerChars(nxt.text()) == "type")) {
+        return;
+      }
+    }
+    checkIllegalInsideSub(w);
+    checkIllegalInsideScope(w);
+  }
+
+  void recordGoto() {
+    if (!hasBranchScope()) {
+      return;
+    }
+    std::vector<Token> const toks = statementTokens();
+    if (toks.size() < 2) {
+      return;
+    }
+    Token const &target = toks[1];
+    if (target.kind != TokenKind::Identifier &&
+        target.kind != TokenKind::Keyword && target.kind != TokenKind::Number) {
+      return;
+    }
+    BranchInfo branch;
+    branch.beg = toks[0].beg;
+    branch.end = toks[0].end;
+    branch.targetName = std::string(target.text());
+    branch.targetKey = keyFor(branch.targetName);
+    activeBranchScope().branches.push_back(std::move(branch));
+  }
+
+  // M23 G4 branch-scope helpers.
+  std::size_t currentBranchScope() const {
+    return branchScopeStack_.empty() ? static_cast<std::size_t>(-1)
+                                     : branchScopeStack_.back();
+  }
+
+  bool hasBranchScope() const {
+    return currentBranchScope() != static_cast<std::size_t>(-1);
+  }
+
+  BranchScope &activeBranchScope() {
+    return branchScopes_[currentBranchScope()];
+  }
+
+  void pushBranchScope(Symbol *sym) {
+    BranchScope scope;
+    scope.sym = sym;
+    branchScopes_.push_back(std::move(scope));
+    branchScopeStack_.push_back(branchScopes_.size() - 1);
+  }
+
+  void popBranchScope() {
+    if (branchScopeStack_.empty()) {
+      return;
+    }
+    std::size_t const idx = branchScopeStack_.back();
+    checkBranchCrossing(branchScopes_[idx]);
+    branchScopeStack_.pop_back();
+  }
+
+  bool typeHasConstructor(std::string const &key) const {
+    return typesWithConstructors_.count(key) != 0;
+  }
+
+  void checkBranchCrossing(BranchScope &scope) {
+    std::unordered_map<std::string, LabelInfo> labelMap;
+    labelMap.reserve(scope.labels.size());
+    for (auto const &label : scope.labels) {
+      labelMap[label.key] = label;
+    }
+    for (auto const &branch : scope.branches) {
+      auto const it = labelMap.find(branch.targetKey);
+      if (it == labelMap.end()) {
+        continue;
+      }
+      LabelInfo const &label = it->second;
+      if (branch.beg >= label.beg) {
+        continue; // backward or same-position jump
+      }
+      for (auto const &def : scope.defs) {
+        if (def.beg <= branch.beg || def.beg >= label.beg) {
+          continue;
+        }
+        // Jumping out of, over, or across the definition's blocks is legal
+        // (probed): it only counts when the label is still inside every
+        // container the definition sits in.
+        bool stillInScope = true;
+        for (Symbol *const scope : def.stack) {
+          if (std::find(label.stack.begin(), label.stack.end(), scope) ==
+              label.stack.end()) {
+            stillInScope = false;
+            break;
+          }
+        }
+        if (!stillInScope) {
+          continue;
+        }
+        if (def.kind == LocalDef::Array || def.kind == LocalDef::VarLenString) {
+          addDiagnostic(branch.beg, branch.end, Severity::Error,
+                        "branch-crossing-dyn-data-def",
+                        trf("branch crossing local array, var-len string or "
+                            "object definition, to label: %s",
+                            branch.targetName),
+                        FbcDiagId::BranchCrossingDynDataDef);
+        } else if (def.kind == LocalDef::UdtInstance &&
+                   typeHasConstructor(def.typeKey)) {
+          addDiagnostic(branch.beg, branch.end, Severity::Error,
+                        "branch-crossing-dyn-data-def",
+                        trf("branch crossing local array, var-len string or "
+                            "object definition, to label: %s",
+                            branch.targetName),
+                        FbcDiagId::BranchCrossingDynDataDef);
+        } else {
+          addDiagnostic(branch.beg, branch.end, Severity::Warning,
+                        "branch-crossing-local-var",
+                        trf("branch crossing local variable definition, to "
+                            "label: %s, variable: %s",
+                            branch.targetName, def.name),
+                        FbcDiagId::BranchCrossingLocalVar,
+                        FbcMessageKind::Warning);
+        }
+      }
+    }
+  }
+
   void closeBlock(uint32_t end) {
     Block const b = blocks_.back();
     if (b.armed && b.sym != nullptr) {
@@ -640,6 +1058,10 @@ private:
       unwindBranchScopes(b.sym, end);
       if (!containers_.empty() && containers_.back().sym == b.sym) {
         containers_.pop_back();
+      }
+      // A procedure body closing ends its branch-scope collection.
+      if (isProcedureBlockKind(b.kind)) {
+        popBranchScope();
       }
     }
   }
@@ -1789,13 +2211,40 @@ private:
         s.selection.beg = s.range.beg = cur_.beg;
         s.selection.end = s.range.end = cur_.end;
         s.doc = takeDoc();
+        if (hasBranchScope()) {
+          LabelInfo label;
+          label.beg = cur_.beg;
+          label.end = cur_.end;
+          label.key = s.key;
+          label.name = s.name;
+          label.stack = containerStackSnapshot();
+          activeBranchScope().labels.push_back(std::move(label));
+        }
         addSymbol(std::move(s));
+        if (inExternBlock() && !inProcedure()) {
+          addDiagnostic(cur_.beg, cur_.end, Severity::Error,
+                        "illegal-inside-scope",
+                        trf("illegal inside a compound statement or scoped "
+                            "block in '%s'",
+                            headerText(cur_)),
+                        FbcDiagId::IllegalInsideScope);
+        }
         advance();
         advance();
         return;
       }
     }
     if (cur_.kind != TokenKind::Keyword) {
+      // Non-keyword statements (assignments, calls) are executable, so they are
+      // illegal inside an `Extern "C"` block at module level.
+      if (inExternBlock() && !inProcedure()) {
+        addDiagnostic(cur_.beg, cur_.end, Severity::Error,
+                      "illegal-inside-scope",
+                      trf("illegal inside a compound statement or scoped block "
+                          "in '%s'",
+                          headerText(cur_)),
+                      FbcDiagId::IllegalInsideScope);
+      }
       if (atModuleLevel()) {
         // An identifier-led or literal-led statement is executable code
         // (an assignment or a call), never a declaration.
@@ -1814,9 +2263,8 @@ private:
     // section-colon syntax only, and only inside a Type — a Union rejects it
     // with a syntax error — and only in `-lang fb`). The section declares
     // nothing; stamps are applied by addSymbol from the container gate.
-    // Elsewhere (module level, a Union body) the colon still makes the line an
-    // empty statement, so consume the pair regardless of the enclosing block —
-    // the keyword must never be captured as a phantom member.
+    // Elsewhere it is a placement error (61 inside a procedure, 96 inside a
+    // scope block at module level).
     if ((w == "private" || w == "public" || w == "protected") &&
         lex_.peek(0).kind == TokenKind::Symbol && lex_.peek(0).text() == ":") {
       if (!blocks_.empty() && blocks_.back().kind == BlockKind::Type) {
@@ -1827,11 +2275,25 @@ private:
           access = Access::Protected;
         }
         containers_.back().access = access;
+      } else {
+        checkPlacement(w);
       }
       resetDoc();
       advance(); // the section keyword
       advance(); // the ':'
       return;
+    }
+
+    // M23 G4 placement diagnostics: declarations inside procedures (61) or
+    // inside scope/control blocks at module level (96), and executable/control
+    // statements inside an `Extern "C"` block (96).
+    // Result assignment (`function = expr`, ...) is a statement of its own, not
+    // a nested declaration, so it must not draw a placement error here.
+    bool const isResultAssignment =
+        (w == "function" || w == "operator" || w == "property") &&
+        lex_.peek(0).kind == TokenKind::Symbol && lex_.peek(0).text() == "=";
+    if (!isResultAssignment) {
+      checkPlacement(w);
     }
 
     // A module-level executable statement is recorded here when one is the
@@ -2038,6 +2500,12 @@ private:
       } else {
         checkContinueTarget();
       }
+      resetDoc();
+      skipStatement();
+      return;
+    }
+    if (w == "goto") {
+      recordGoto();
       resetDoc();
       skipStatement();
       return;
@@ -2569,6 +3037,9 @@ private:
     }
 
     Symbol *psym = addSymbol(std::move(s));
+    if (k == SymbolKind::Constructor && psym != nullptr && !psym->key.empty()) {
+      typesWithConstructors_.insert(psym->key);
+    }
 
     Block b;
     b.kind = closer.kind;
@@ -2580,6 +3051,9 @@ private:
     blocks_.push_back(b);
     if (psym != nullptr) {
       containers_.push_back(containerFor(psym));
+    }
+    if (isProcedureBlockKind(b.kind)) {
+      pushBranchScope(psym);
     }
     skipStatement();
   }
@@ -2866,6 +3340,18 @@ private:
     }
     std::string const w = toLowerChars(cur_.text());
     if (w != "sub" && w != "function" && w != "property") {
+      if (w == "constructor") {
+        // A declared constructor makes its enclosing UDT an "object" for the
+        // branch-crossing diagnostic (105), even though the parser does not
+        // model the prototype as a symbol.
+        for (auto it = containers_.rbegin(); it != containers_.rend(); ++it) {
+          if (it->sym != nullptr && (it->sym->kind == SymbolKind::Type ||
+                                     it->sym->kind == SymbolKind::Union)) {
+            typesWithConstructors_.insert(it->sym->key);
+            break;
+          }
+        }
+      }
       resetDoc();
       skipStatement(/*suppressMemberCapture=*/true);
       return;
@@ -3034,7 +3520,22 @@ private:
             s.doc = doc;
             first = false;
           }
-          addSymbol(std::move(s));
+          bool const recordAsLocal =
+              !inRecordBody() &&
+              (k == SymbolKind::Dim || k == SymbolKind::Variable) &&
+              !seenShared && !impliedShared && openTok.text() != "static" &&
+              openTok.text() != "common";
+          std::string typeName;
+          std::string typeKey;
+          LocalDef::Kind kind = LocalDef::Other;
+          if (recordAsLocal) {
+            kind =
+                classifyLocalDefKind(s.signature, s.name, &typeName, &typeKey);
+          }
+          Symbol *psym = addSymbol(std::move(s));
+          if (psym != nullptr && recordAsLocal) {
+            recordLocalDef(*psym, kind, typeName, typeKey);
+          }
           atName = false;
         } else if (tk == TokenKind::Keyword &&
                    toLowerChars(cur_.text()) == "as") {
@@ -3625,6 +4126,12 @@ private:
       LangMode m;
       if (langFromDirective(cur_.text(), &m)) {
         applyLangDirective(m, cur_.beg, cur_.end);
+        if (inProcedure()) {
+          addDiagnostic(cur_.beg, cur_.end, Severity::Error,
+                        "illegal-inside-sub",
+                        trf("illegal inside functions in '%s'", cur_.text()),
+                        FbcDiagId::IllegalInsideSub);
+        }
       }
     } else if (w == "undef") {
       // The table update is feed's; the symbol window close is ours. Both

@@ -40,7 +40,7 @@
   | M21 — module model, constructors, and fbc's codes (complete 2026-11-06; summary in CHANGELOG.md) | done |
   | M18 — public release: editor setup docs, first tag | blocked on M22, M23, M24, and the VS Code extension |
   | M22 — fbc declaration-order parity: use-before-declaration | next |
-  | M23 — fbc parser diagnostics: statements, placement, warnings (early families landed; groups G4–G7 remain) | backlog |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (groups G1–G4 landed; groups G5–G7 remain) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
   | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
@@ -592,11 +592,14 @@ landing as their own step.
   still open). Landed alone, as decided; G4 is untouched. Limits are
   recorded at `FreeBASIC.md` §12.33; the dated entry is in
   [`CHANGELOG.md`](CHANGELOG.md).
-- **G4 — placement (research Tier 2).** `61 ILLEGALINSIDEASUB`, `96
-  ILLEGALINSIDEASCOPE`, and `44 ILLEGALOUTSIDECOMP`, each report naming the
-  enclosing construct. `105 BRANCHCROSSINGDYNDATADEF` and warning `14
-  BRANCHCROSSINGLOCALVAR` are the group's heavy end: they need label and
-  declaration knowledge, though not full types.
+- **G4 — placement (research Tier 2) — landed (2026-11-07).** `61
+  ILLEGALINSIDEASUB`, `96 ILLEGALINSIDEASCOPE`, `105
+  BRANCHCROSSINGDYNDATADEF`, and warning `14 BRANCHCROSSINGLOCALVAR`, all
+  token- and block-stack-keyed off the statement dispatch plus a
+  per-procedure label/branch/local-definition pass judged at the closer.
+  (`44 ILLEGALOUTSIDECOMP` was already landed before G4 and keeps its
+  identity.) Limits are recorded at `FreeBASIC.md` §12.34; the dated entry
+  is in [`CHANGELOG.md`](CHANGELOG.md).
 - **G5 — the punctuator family.** One `expected(token)` helper behind `17
   SYNTAXERROR`, `14 EXPECTEDIDENTIFIER`, `9 EXPECTEDEXPRESSION`, `6
   EXPECTEDLPRNT`, `7 EXPECTEDRPRNT`, `3 EXPECTEDEOL`, `10 EXPECTEDEQ`, `16

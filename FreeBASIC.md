@@ -1530,6 +1530,56 @@ to "the language is what the lexer does":
       §12.31 nested-block limit: judged here (the opener's `62` plus a
       `251` inside) where fbc skipped the whole compound after its `62`.
 
+### 12.34 M23 G4: placement (61 / 96) and branch crossing (105 / warning 14)
+
+Probed against `/usr/bin/fbc` 1.10.3. The parser reports these at parse time;
+resolution is not involved.
+
+- **Placement precedence.** `61 ILLEGALINSIDEASUB` is checked first. If a
+  statement is inside a procedure body, every shape that is illegal inside a
+  procedure gets `61`, even when the statement is also inside a `Scope`/`If`/
+  `For`/`Do`/`While`/`With`/`Select`. `96 ILLEGALINSIDEASCOPE` is reported only
+  when the enclosing block is a scope/control block and the statement is *not*
+  also inside a procedure. Inside an `Extern "C"` block at module level, `96`
+  fires for executable/control/`Redim` statements; declarations are allowed.
+- **Shapes that draw 61 inside a procedure.** `#lang`, `Declare`, `Namespace`,
+  `Extern` (variable form and `"C"` block), `Common`, `Public:`, `Private:`,
+  and nested definitions of `Sub`/`Function`/`Property`/`Operator`/
+  `Destructor`. Nested `Constructor` inside a procedure is fbc's `165`, not
+  `61`, and is intentionally left silent here.
+- **Shapes that draw 96 inside a scope/control block at module level.** The
+  same list as 61 plus nested `Constructor` definitions. `Type`, `Enum`,
+  `Union`, `Dim`, `Static`, `Const`, and `Var` are allowed.
+- **Shapes that draw 96 inside an `Extern "C"` block at module level.**
+  `Redim`, `Goto`, `Return`, bare `End`, `Print`, and every control opener
+  (`If`, `For`, `While`, `Do`, `Select`, `With`, `Scope`). `Dim`, `Declare`,
+  `Sub`, `Const`, `Static`, and `Var` are allowed; a label inside the block
+  also draws `96`.
+- **Branch crossing: what counts as a local definition.** `Dim`, `Redim`,
+  `Var`, and `Local` declarations inside the same procedure (or the module-
+  level implicit main) count; record fields do not. `Static`, `Shared`,
+  `Common`, `Extern`, `Const`, and `For` loop counters do not. A forward
+  `Goto` (the branch keyword before the target label) crossing one of these
+  definitions reports on the `Goto` — but only when the label is still inside
+  every container the definition sits in. Jumping out of, over, or across
+  sibling `Scope`/`If`/`Select` blocks and their `then`/`else`/`case` arms is
+  silent (probed); jumping into a block past a definition inside it counts.
+- **Branch crossing: severity.** Local arrays, var-len `String` declarations,
+  and UDT instances whose type has a constructor draw `105`. All other counted
+  locals draw warning `14`. Backward jumps and jumps that cross no definition
+  are silent.
+- **Constructor visibility for 105.** A type is considered to have a
+  constructor when the parsed file contains either a `constructor T()` block
+  definition or a `declare constructor()` inside the type body. Cross-file
+  types are treated as having no constructor, which is a known gap: a UDT
+  defined in another module that has a constructor will be under-reported as
+  warning `14` instead of `105`.
+- **Limits not implemented.** `On ... Goto`, `Gosub`, and numeric labels are
+  not checked for branch crossing. UDT pointers (`Dim p As T Ptr`) and
+  fixed-length strings (`Dim s As String * N`) are treated as ordinary locals
+  (warning `14` or silence), matching the probed fact that they are not
+  dynamic data definitions.
+
 ## 13. Where the diagnostics come from (compiler source)
 
 Every `error N` / `warning N` in this file is a real fbc message, and fbc's

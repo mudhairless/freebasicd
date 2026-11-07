@@ -247,6 +247,25 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::InvalidContinueStmt, FbcMessageKind::Error,
                           v1102) == 252);
 
+  // The placement / branch-crossing families (M23 G4), each pinned to the
+  // catalog number the probe read back from fbc 1.10.3
+  // (tools/fbc_catalog.tsv). The two `44` identities share the number in
+  // different spaces and must stay distinct.
+  CHECK(fblang::fbcNumber(FbcDiagId::IllegalInsideSub, FbcMessageKind::Error,
+                          v1102) == 61);
+  CHECK(fblang::fbcNumber(FbcDiagId::IllegalInsideScope, FbcMessageKind::Error,
+                          v1102) == 96);
+  CHECK(fblang::fbcNumber(FbcDiagId::BranchCrossingDynDataDef,
+                          FbcMessageKind::Error, v1102) == 105);
+  CHECK(fblang::fbcNumber(FbcDiagId::BranchCrossingLocalVar,
+                          FbcMessageKind::Warning, v1102) == 14);
+  CHECK(fblang::fbcNumber(FbcDiagId::IllegalInsideSub, FbcMessageKind::Warning,
+                          v1102) == 0);
+  CHECK(fblang::fbcNumber(FbcDiagId::BranchCrossingDynDataDef,
+                          FbcMessageKind::Warning, v1102) == 0);
+  CHECK(fblang::fbcNumber(FbcDiagId::BranchCrossingLocalVar,
+                          FbcMessageKind::Error, v1102) == 0);
+
   // No identity is no number, in either space.
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Error, v1102) == 0);
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Warning, v1102) ==

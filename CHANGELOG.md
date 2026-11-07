@@ -26,6 +26,68 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-07 — M23 G4: placement and branch-crossing diagnostics
+
+- **Three new fbc identities.** `61 ILLEGALINSIDEASUB`
+  (`illegal-inside-sub`), `96 ILLEGALINSIDEASCOPE`
+  (`illegal-inside-scope`), and `105 BRANCHCROSSINGDYNDATADEF`
+  (`branch-crossing-dyn-data-def`) are new `FbcDiagId` errors; warning
+  `14 BRANCHCROSSINGLOCALVAR` (`branch-crossing-local-var`) is a new
+  `FbcDiagId` warning (catalog level 2, gated by `warningLevel`). All are
+  resolved through the version-range table and keep translatable `trf`
+  messages. `po/freebasicd.pot` regenerated.
+- **Placement diagnostics (61 / 96).** Inside a procedure body, `61`
+  fires for `#lang`, `Declare`, `Namespace`, the variable and `"C"` forms
+  of `Extern`, `Common`, access-section markers `Public:`/`Private:`, and
+  nested `Sub`/`Function`/`Property`/`Operator`/`Destructor` definitions.
+  `96` fires for the same declarations inside a `Scope`/`If`/`For`/
+  `Do`/`While`/`With`/`Select` block at module level (61 takes precedence
+  when the block is inside a procedure), and for executable/control/
+  `Redim` statements inside an `Extern "C"` block at module level.
+  `Constructor` inside a procedure is left for error 165, outside this
+  group.
+- **Branch-crossing diagnostics (105 / warning 14).** A forward
+  unconditional `Goto` that crosses a local definition drawn after it in
+  the same procedure (or the module-level implicit main) reports `105` for
+  local arrays, var-len `String` declarations, and UDT instances whose
+  type has a constructor visible in the parsed file; any other local
+  definition reports warning `14`. Backward jumps, jumps that cross no
+  definition, and `Static`/`Shared`/`Common`/`Extern`/`Const`/loop-counter
+  definitions are silent. `On ... Goto` and numeric labels are not
+  implemented for crossing.
+- **The probe table (fbc 1.10.3, one line per shape class).**
+  - Inside a `Sub`: `declare`, `namespace`, `extern` (var and `"C"`),
+    `common`, `public:`, `private:`, nested `sub`/`function`/`property`/
+    `operator`/`destructor`: `61`. Nested `constructor`: `165`, not G4.
+  - Inside a `Scope`/`If`/`For`/`Do`/`While`/`With`/`Select` at module
+    level: the same list plus nested `constructor`: `96`. `type`, `enum`,
+    `union`, `dim`, `static`, `const`, and `var` are allowed.
+  - Inside an `Extern "C"` block at module level: `redim`, `goto`,
+    `return`, bare `end`, `print`, and every control opener (`if`, `for`,
+    `while`, `do`, `select`, `with`, `scope`): `96`. `dim`, `declare`,
+    `sub`, `const`, `static`, and `var` are allowed.
+  - Forward `Goto` over a local array (`dim`/`redim`, constant or
+    variable bounds): `105`. Over a var-len `String`: `105`. Over a UDT
+    instance whose type declares a constructor: `105`. Over a UDT without
+    a constructor, a plain scalar, or a `Var`: warning `14`. Over
+    `Static`, `Shared`, `Common`, `Extern`, `Const`, or a `For` counter:
+    silence. Backward jumps: silence.
+- **Tests.** `parser_checks` gains `TestPlacementAndBranchCrossing`
+  covering every probed placement and crossing shape plus silence cases
+  (static/shared/common/const/loop counters, backward jumps, empty
+  jumps). The corpus gains `err_placement_sub`, `err_placement_scope`,
+  `err_placement_extern`, `err_branch_crossing_array`,
+  `err_branch_crossing_string`, `err_branch_crossing_udt_ctor`,
+  `err_branch_crossing_local`, and `err_branch_crossing_silent`, each
+  with its `.diag` golden. `fbc_diagnostics_checks` pins all four new
+  numbers.
+- **Deliberate limits, recorded at `FreeBASIC.md` §12.34.** Branch
+  crossing is decided from type declarations visible in the parsed file;
+  cross-file UDT constructors are a known gap. `On ... Goto`, `Gosub`,
+  and numeric labels are not covered. UDT pointer declarations and
+  fixed-length strings are treated as ordinary locals (warning `14` or
+  silence).
+
 ### 2026-11-07 — M23 G3: the `Exit`/`Continue` target family
 
 - **Two new messages, both carrying fbc's number and wiki link.** `251

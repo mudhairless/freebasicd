@@ -112,11 +112,15 @@ constexpr std::array<FbcNumberRange, 1> kNumberRanges{{
                   {FbcDiagId::InvalidCaseRange, 323},
                   {FbcDiagId::ForNextVariableMismatch, 283},
                   {FbcDiagId::InvalidExitStmt, 251},
-                  {FbcDiagId::InvalidContinueStmt, 252}}),
+                  {FbcDiagId::InvalidContinueStmt, 252},
+                  {FbcDiagId::IllegalInsideSub, 61},
+                  {FbcDiagId::IllegalInsideScope, 96},
+                  {FbcDiagId::BranchCrossingDynDataDef, 105}}),
      makeNumbers({{FbcDiagId::NoClosingQuote, 12},
                   {FbcDiagId::SuffixIgnored, 44},
                   {FbcDiagId::ArgCntMismatch, 43},
-                  {FbcDiagId::NextVarMeaningless, 26}})},
+                  {FbcDiagId::NextVarMeaningless, 26},
+                  {FbcDiagId::BranchCrossingLocalVar, 14}})},
 }};
 
 FbcNumberRange const &rangeFor(std::optional<FbcVersion> const &version) {
