@@ -266,6 +266,33 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::BranchCrossingLocalVar,
                           FbcMessageKind::Error, v1102) == 0);
 
+  // The punctuator family (M23 G5), each pinned to the catalog number the
+  // probe read back from fbc 1.10.3 (tools/fbc_catalog.tsv).
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedLprnt, FbcMessageKind::Error,
+                          v1102) == 6);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedRprnt, FbcMessageKind::Error,
+                          v1102) == 7);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedEq, FbcMessageKind::Error,
+                          v1102) == 10);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedComma, FbcMessageKind::Error,
+                          v1102) == 16);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedRBracket, FbcMessageKind::Error,
+                          v1102) == 66);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedGt, FbcMessageKind::Error,
+                          v1102) == 309);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedConst, FbcMessageKind::Error,
+                          v1102) == 11);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedRestype, FbcMessageKind::Error,
+                          v1102) == 68);
+  CHECK(fblang::fbcNumber(FbcDiagId::TooManyExpressions, FbcMessageKind::Error,
+                          v1102) == 67);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedSub, FbcMessageKind::Error,
+                          v1102) == 289);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedRprnt, FbcMessageKind::Warning,
+                          v1102) == 0);
+  CHECK(fblang::fbcNumber(FbcDiagId::ExpectedGt, FbcMessageKind::Warning,
+                          v1102) == 0);
+
   // No identity is no number, in either space.
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Error, v1102) == 0);
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Warning, v1102) ==

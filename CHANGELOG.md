@@ -26,6 +26,112 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-07 — M23 G5: the punctuator family (one error per statement)
+
+- **Ten new fbc identities, and one helper.** `6 EXPECTEDLPRNT`,
+  `7 EXPECTEDRPRNT`, `10 EXPECTEDEQ`, `16 EXPECTEDCOMMA`,
+  `66 EXPECTEDRBRACKET`, `309 EXPECTEDGT`, `11 EXPECTEDCONST`,
+  `68 EXPECTEDRESTYPE`, `67 TOOMANYEXPRESSIONS`, and `289 EXPECTEDSUB`
+  are new `FbcDiagId` identities resolved through the version-range table;
+  the texts stay translatable `trf` strings with the expected token and any
+  found word as arguments. `14 EXPECTEDIDENTIFIER`, `9 EXPECTEDEXPRESSION`,
+  `3 EXPECTEDEOL`, and `17 SYNTAXERROR` already resolved and keep their
+  numbers. Error `14` and warning `14` stay distinct spaces (the new routing
+  never touches the warning). `po/freebasicd.pot` regenerated.
+- **The helper is one function.** `Parser::expected()` tests the current
+  token against an expected kind or word and, on mismatch, emits the family
+  diagnostic in fbc's probed shape (message, found clause, anchor) and
+  reports failure so the caller abandons the statement through the existing
+  skip machinery. `statementFamilyFailed_` is cleared at each statement head
+  and suppresses a second family diagnostic for the same statement: fbc
+  prints one error per statement, and so do we. A failed expectation never
+  invents block state, so a broken line never cascades into phantom
+  unterminated-block or stray-closer errors after it.
+- **The probe table (fbc 1.10.3, one line per shape class).**
+  - `6 EXPECTEDLPRNT`: `Len "ab"`, `VarPtr x`, `SizeOf Integer` —
+    implemented only as far as the parser walks; unclosed-parameter `7` is
+    the landed paren shape (below). `16 EXPECTEDCOMMA` in call arguments
+    (`Mid(y 1)`) and in file statements (`Input #1 2`, `Get #1, 2`): not
+    implemented — those statements are not walked today (see limits).
+  - `7 EXPECTEDRPRNT`: `Sub foo(a As Integer` / `End Sub`, `Redim a(5`,
+    `Dim a(5`: implemented for declaration parameter lists and `Dim`/`Redim`
+    bounds. An extra closer (`Sub foo(a As Integer))`) is `3`, not `7`.
+    Parenthesized-expression and call-site breaks (`x = (1 + 2`, `x = a(5`)
+    are not evaluated, because expressions are not walked.
+  - `10 EXPECTEDEQ`: `Const C` and `Const C 5` (no `=`), `For i 1 To 10`
+    (no `=`): implemented. `Dim x As Integer 5`, `Enum a 5`, and `Print 1 2`
+    are `3`, not `10` — probe wins over the sketch.
+  - `66 EXPECTEDRBRACKET`: `p = New Integer[4` and `p = New Integer[4 x`
+    (with found `x`): implemented for the `New` vector form. Pointer
+    indexing (`x = p[0`) is the `17` fallback, not `66`, and stays silent
+    here.
+  - `309 EXPECTEDGT`: `Dim x As Integer<16`, `Dim x As UInteger<8`,
+    `x = CInt<16(5)` (with found `(`): implemented for the `Dim` type.
+    fbc's `before` clause (`Integer<16, y As Integer`) is normalized to
+    `found` — the number is the same.
+  - `11 EXPECTEDCONST`: `Const C =` (text carries the name: `Expected
+    constant, C`), `Enum a =`: implemented. A bare `Case` in a `Select Case`
+    is `9`, not `11`, in both plain and `As Const` forms.
+  - `68 EXPECTEDRESTYPE`: `Operator +(a As Integer)` (no `As`) and
+    `Dim f As Function ()` / `Dim f As Function (a As Integer)`: implemented
+    for the operator head and the `Dim` function pointer.
+    `Function foo As` (EOL after `As`) is `14`, not `68`.
+  - `67 TOOMANYEXPRESSIONS`: `Dim q As T = (1, 2)` with a one-field `T`
+    (and `(1, 2, 3)` with two fields): implemented for the in-file UDT
+    paren-initializer. Argument-count (`1`), wrong-dimensions (`36`), and
+    too-many-dimensions (`49`) overflow shapes are other families and stay
+    silent here.
+  - `289 EXPECTEDSUB`: `ThreadCall foo()` with `foo` a `Function` (defined
+    or declared) is `289`; with `foo` a `Sub` compiles or is silent. A
+    `Declare` not followed by a procedure kind is the `17` fallback, not
+    `289` — probe wins over the sketch.
+  - `14 EXPECTEDIDENTIFIER`: bare `Dim`, `Dim As Integer`, `Sub ()`,
+    `Function () As Integer`, `Declare Sub` (EOL), bare `Goto`:
+    implemented. `Dim As <type> name` (type-first) and member
+    implementations (`Sub T.Init()`) stay silent.
+  - `9 EXPECTEDEXPRESSION`: `Dim x As Integer =`, `x =`, `Case` (bare):
+    implemented for the walked shapes. A dangling binary operator
+    (`x = 1 +`) is also `9` and implemented on the same path.
+  - `17 SYNTAXERROR` fallback: bare `Declare`, `Declare Integer`,
+    `Declare Bar`, `Declare String foo()`: implemented as the fallback only.
+    `#include <foo.bi>`, pointer-index breaks, and other unwalked syntax
+    stay silent (see limits).
+- **Inventory before implementation.** Four identities already fired at
+  scattered sites and were pinned first: the two `invalid-member-name` `14`
+  sites (record member capture and `Dim` record field), the module-constructor
+  `17` (`module-ctor-export`/`module-ctor-nonstatic`) and `3`
+  (`module-ctor-tail`) sites, the `Declare` decorator `3` site
+  (`decl-decorator`), the `#endmacro` stray `17` site, and the enum-body
+  reserved-word `3` boundary site. All stay exactly as they were — the helper
+  cannot express their shapes (field-name reports keep their custom messages
+  and anchors, the constructor/Declare tails keep theirs) — so they keep their
+  code with a comment-free pin, and none moved. The `resolve.cpp`
+  `ExpectedExpression` reuse is the M21 typeof-dot gate, not a punctuator
+  site, and is untouched. New routing is only the sites in the table above.
+- **No-cascade evidence.** `TestPunctuatorFamily` pins one family diagnostic
+  per broken shape (`Const C` + `Const D` draw two `expected-eq` for two
+  statements, never two on one line), that a failed statement still lets its
+  closer match (`Sub foo(a As Integer` then `End Sub` draws `7` with no
+  unterminated-block or stray-closer), that a failed `Dim x =` inside a
+  procedure draws exactly one diagnostic, and that a `:` second statement
+  is still parsed.
+- **Tests.** `parser_checks` gains pinning tests for every pre-existing site
+  plus unit coverage per newly covered shape and cascade tests (below).
+  The corpus gains `err_punctuator` (`@fbc:fail`) and `blocks_punctuator_ok`
+  (`@fbc:pass`), 87 files — every line of `err_punctuator` draws the probed
+  fbc number (`10`/`11`/`9`/`7`/`309`), and the clean file draws none.
+  `fbc_diagnostics_checks` pins all ten new numbers and their warning-space
+  silence.
+- **Deliberate limits, recorded at `FreeBASIC.md` §12.35.** `16` has no
+  implemented site (its real shapes live in call arguments — `Mid(y 1)` is
+  `7`/`99`, bare `Input`/`Get` statements are not walked — and in
+  `DefChar`-style statements this parser does not parse). `a 5` in an enum
+  keeps the pre-existing boundary pair instead of fbc's `3`. Parenthesized
+  expressions, call argument lists, and pointer indexing are not walked, so
+  their paren/bracket shapes are misses. Rate of `6` is the `7` complement
+  and is not separately implemented (a missing `(` before arguments is
+  `42`/`3` in the walked forms, probe-checked).
+
 ### 2026-11-07 — M23 G4: placement and branch-crossing diagnostics
 
 - **Three new fbc identities.** `61 ILLEGALINSIDEASUB`

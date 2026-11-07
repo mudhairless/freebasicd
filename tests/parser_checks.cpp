@@ -3035,6 +3035,324 @@ static void TestPlacementAndBranchCrossing() {
   }
 }
 
+// M23 G5: the punctuator family (17/14/9/6/7/3/10/16/66/309/11/68/67/289).
+static void TestPunctuatorFamily() {
+  // Pin: pre-existing 14 site — a reserved word that is never a field name
+  // (skipStatement member capture). Behavior unchanged by the helper.
+  {
+    ParseResult const r = parseDocument("type T\n"
+                                        "  as integer and\n"
+                                        "end type\n");
+    CHECK(diagnosticCount(r, "invalid-member-name") == 1);
+    CHECK(fbcErrorFor(r, "invalid-member-name") ==
+          FbcDiagId::ExpectedIdentifier);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].severity == Severity::Error);
+      CHECK(r.diagnostics[0].fbcKind == FbcMessageKind::Error);
+      CHECK(r.diagnostics[0].message ==
+            "'and' is a reserved word and cannot be a field name");
+    }
+  }
+  // Pin: pre-existing 14 site in handleVarDecls (Dim record field).
+  {
+    ParseResult const r = parseDocument("type T\n"
+                                        "  dim and as integer\n"
+                                        "end type\n");
+    CHECK(diagnosticCount(r, "invalid-member-name") == 1);
+    CHECK(fbcErrorFor(r, "invalid-member-name") ==
+          FbcDiagId::ExpectedIdentifier);
+  }
+  // Pin: pre-existing 17 site — Export on a module-constructor body.
+  {
+    ParseResult const r = parseDocument("sub f() constructor export\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "module-ctor-export") == 1);
+    CHECK(fbcErrorFor(r, "module-ctor-export") == FbcDiagId::SyntaxError);
+    CHECK(r.diagnostics.size() == 1);
+  }
+  // Pin: pre-existing 3 site — tail after a module-constructor body.
+  {
+    ParseResult const r = parseDocument("sub f() constructor foo\n"
+                                        "end sub\n");
+    CHECK(diagnosticCount(r, "module-ctor-tail") == 1);
+    CHECK(fbcErrorFor(r, "module-ctor-tail") == FbcDiagId::ExpectedEol);
+    CHECK(r.diagnostics.size() == 1);
+  }
+  // Pin: pre-existing 3 site — Constructor/Export on a Declare line.
+  {
+    ParseResult const r = parseDocument("declare sub f() constructor\n");
+    CHECK(diagnosticCount(r, "decl-decorator") == 1);
+    CHECK(fbcErrorFor(r, "decl-decorator") == FbcDiagId::ExpectedEol);
+  }
+  // Pin: pre-existing 17 site — stray #endmacro.
+  {
+    ParseResult const r = parseDocument("#endmacro\n");
+    CHECK(diagnosticCount(r, "stray-closer") == 1);
+    CHECK(fbcErrorFor(r, "stray-closer") == FbcDiagId::SyntaxError);
+    CHECK(r.diagnostics.size() == 1);
+  }
+  // Pin: pre-existing 3 site — reserved word as enum member (boundary).
+  {
+    ParseResult const r = parseDocument("enum E\n"
+                                        "  dim\n"
+                                        "end enum\n");
+    CHECK(diagnosticCount(r, "invalid-member-name") == 1);
+    CHECK(fbcErrorFor(r, "invalid-member-name") == FbcDiagId::ExpectedEol);
+  }
+  // 7 ExpectedRprnt: unclosed parameter lists and bounds (probed).
+  {
+    ParseResult const r = parseDocument("sub f(a as integer\n"
+                                        "end sub\n"
+                                        "print \"ok\"\n");
+    CHECK(fbcErrorFor(r, "expected-rprnt") == FbcDiagId::ExpectedRprnt);
+    CHECK(diagnosticCount(r, "expected-rprnt") == 1);
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(diagnosticCount(r, "stray-closer") == 0);
+    ParseResult const redim = parseDocument("dim a(10) as integer\n"
+                                            "redim a(5\n"
+                                            "print \"ok\"\n");
+    CHECK(fbcErrorFor(redim, "expected-rprnt") == FbcDiagId::ExpectedRprnt);
+    CHECK(diagnosticCount(redim, "expected-rprnt") == 1);
+  }
+  // 10 ExpectedEq: Const with no `=`; For counter with no `=` (probed).
+  {
+    ParseResult const r = parseDocument("const C\n"
+                                        "print \"ok\"\n");
+    CHECK(fbcErrorFor(r, "expected-eq") == FbcDiagId::ExpectedEq);
+    CHECK(diagnosticCount(r, "expected-eq") == 1);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const c5 = parseDocument("const C 5\n");
+    CHECK(fbcErrorFor(c5, "expected-eq") == FbcDiagId::ExpectedEq);
+    CHECK(c5.diagnostics.size() == 1);
+    ParseResult const f = parseDocument("dim i as integer\n"
+                                        "for i 1 to 10\n"
+                                        "next\n");
+    CHECK(fbcErrorFor(f, "expected-eq") == FbcDiagId::ExpectedEq);
+    CHECK(diagnosticCount(f, "unterminated-block") == 0);
+    // Silence: valid forms.
+    ParseResult const ok = parseDocument("const C = 5\n"
+                                         "dim i as integer\n"
+                                         "for i = 1 to 10 step 2\n"
+                                         "next\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 11 ExpectedConst: `=` with no constant on a Const line (probed, the
+  // name rides in the text) and on an enum member (no name in the text).
+  {
+    ParseResult const r = parseDocument("const C =\n"
+                                        "print \"ok\"\n");
+    CHECK(fbcErrorFor(r, "expected-const") == FbcDiagId::ExpectedConst);
+    CHECK(diagnosticCount(r, "expected-const") == 1);
+    CHECK(r.diagnostics.size() == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].message == "Expected constant, C");
+    }
+    ParseResult const multi = parseDocument("const C = 1, D =\n"
+                                            "print \"ok\"\n");
+    CHECK(diagnosticCount(multi, "expected-const") == 1);
+    if (multi.diagnostics.size() == 1) {
+      CHECK(multi.diagnostics[0].message == "Expected constant, D");
+    }
+    ParseResult const e = parseDocument("enum E\n"
+                                        "  a = 1, b =\n"
+                                        "end enum\n");
+    CHECK(diagnosticCount(e, "expected-const") == 1);
+    CHECK(fbcErrorFor(e, "expected-const") == FbcDiagId::ExpectedConst);
+  }
+  // 9 ExpectedExpression: `Dim x =` with nothing after, `x =` bare, and a
+  // bare Case (probed).
+  {
+    ParseResult const r = parseDocument("dim x as integer =\n");
+    CHECK(fbcErrorFor(r, "expected-expression") ==
+          FbcDiagId::ExpectedExpression);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const assign = parseDocument("dim x as integer\n"
+                                             "x =\n"
+                                             "print \"ok\"\n");
+    CHECK(fbcErrorFor(assign, "expected-expression") ==
+          FbcDiagId::ExpectedExpression);
+    CHECK(diagnosticCount(assign, "unterminated-block") == 0);
+    ParseResult const caseR = parseDocument("select case 1\n"
+                                            "case\n"
+                                            "end select\n");
+    CHECK(fbcErrorFor(caseR, "expected-expression") ==
+          FbcDiagId::ExpectedExpression);
+    CHECK(diagnosticCount(caseR, "expected-expression") == 1);
+  }
+  // 14 ExpectedIdentifier: bare Dim / Dim As Integer / nameless procedures /
+  // Declare Sub with no name / bare Goto (probed).
+  {
+    ParseResult const dim = parseDocument("dim\n"
+                                          "print \"ok\"\n");
+    CHECK(fbcErrorFor(dim, "expected-identifier") ==
+          FbcDiagId::ExpectedIdentifier);
+    CHECK(diagnosticCount(dim, "unterminated-block") == 0);
+    ParseResult const asDim = parseDocument("dim as integer\n");
+    CHECK(fbcErrorFor(asDim, "expected-identifier") ==
+          FbcDiagId::ExpectedIdentifier);
+    ParseResult const sub = parseDocument("sub()\n"
+                                          "end sub\n");
+    CHECK(fbcErrorFor(sub, "expected-identifier") ==
+          FbcDiagId::ExpectedIdentifier);
+    CHECK(diagnosticCount(sub, "unterminated-block") == 0);
+    CHECK(diagnosticCount(sub, "stray-closer") == 0);
+    ParseResult const decl = parseDocument("declare sub\n");
+    CHECK(fbcErrorFor(decl, "expected-identifier") ==
+          FbcDiagId::ExpectedIdentifier);
+    ParseResult const gotoR = parseDocument("goto\n");
+    CHECK(fbcErrorFor(gotoR, "expected-identifier") ==
+          FbcDiagId::ExpectedIdentifier);
+    // Silence: type-first and multi-name forms, member implementations.
+    ParseResult const ok = parseDocument("namespace gfx\n"
+                                         "  type sprite\n"
+                                         "    w as integer\n"
+                                         "  end type\n"
+                                         "end namespace\n"
+                                         "dim as gfx.sprite ptr firstImage\n"
+                                         "dim as integer pp, qq\n"
+                                         "dim rr, ss\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 17 SyntaxError fallback: a bare Declare and a Declare whose next word is
+  // not a procedure kind (probed: Integer/Bar/String all draw 17, not 289).
+  {
+    ParseResult const bare = parseDocument("declare\n"
+                                           "print \"ok\"\n");
+    CHECK(fbcErrorFor(bare, "syntax-error") == FbcDiagId::SyntaxError);
+    CHECK(diagnosticCount(bare, "syntax-error") == 1);
+    ParseResult const bad = parseDocument("declare integer\n");
+    CHECK(fbcErrorFor(bad, "syntax-error") == FbcDiagId::SyntaxError);
+    CHECK(bad.diagnostics.size() == 1);
+    if (bad.diagnostics.size() == 1) {
+      CHECK(bad.diagnostics[0].message == "Syntax error, found 'integer'");
+    }
+    ParseResult const bar = parseDocument("declare bar\n");
+    CHECK(fbcErrorFor(bar, "syntax-error") == FbcDiagId::SyntaxError);
+  }
+  // 309 ExpectedGt: `Integer<...>` with no `>` (probed); undeclared-type
+  // bounds stay silent.
+  {
+    ParseResult const r = parseDocument("dim x as integer<16\n"
+                                        "print \"ok\"\n");
+    CHECK(fbcErrorFor(r, "expected-gt") == FbcDiagId::ExpectedGt);
+    CHECK(diagnosticCount(r, "expected-gt") == 1);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const ok = parseDocument("dim x as integer<16> = 5\n"
+                                         "dim y as uinteger<8>\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 66 ExpectedRBracket: a New vector without `]` (probed); pointer
+  // indexing without `new` is 17's, not this family's, and stays silent
+  // here.
+  {
+    ParseResult const r = parseDocument("dim p as integer ptr\n"
+                                        "p = new integer[4\n"
+                                        "print \"ok\"\n");
+    CHECK(fbcErrorFor(r, "expected-rbracket") == FbcDiagId::ExpectedRBracket);
+    CHECK(diagnosticCount(r, "expected-rbracket") == 1);
+    ParseResult const ok = parseDocument("dim p as integer ptr\n"
+                                         "p = new integer[4]\n"
+                                         "delete p\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 68 ExpectedRestype: Operator with no `As`; function pointer with no `As`
+  // (probed).
+  {
+    ParseResult const op = parseDocument("operator +(a as integer)\n"
+                                         "end operator\n");
+    CHECK(fbcErrorFor(op, "expected-res-type") == FbcDiagId::ExpectedRestype);
+    CHECK(diagnosticCount(op, "unterminated-block") == 0);
+    ParseResult const ptr = parseDocument("dim f as function()\n");
+    CHECK(fbcErrorFor(ptr, "expected-res-type") == FbcDiagId::ExpectedRestype);
+    ParseResult const ok = parseDocument("dim f as function() as integer\n"
+                                         "operator +(a as integer) as integer\n"
+                                         "end operator\n");
+    (void)ok;
+    ParseResult const ok2 = parseDocument("dim f as function() as integer\n");
+    CHECK(ok2.diagnostics.empty());
+  }
+  // 67 TooManyExpressions: UDT paren-initializer with more elements than
+  // fields (probed); an undeclared type stays silent.
+  {
+    ParseResult const r = parseDocument("type T\n"
+                                        "  x as integer\n"
+                                        "end type\n"
+                                        "dim q as T = (1, 2)\n"
+                                        "print \"ok\"\n");
+    CHECK(fbcErrorFor(r, "too-many-expressions") ==
+          FbcDiagId::TooManyExpressions);
+    CHECK(diagnosticCount(r, "too-many-expressions") == 1);
+    CHECK(r.diagnostics.size() == 1);
+    ParseResult const ok = parseDocument("type T\n"
+                                         "  x as integer\n"
+                                         "  y as integer\n"
+                                         "end type\n"
+                                         "dim q as T = (1, 2)\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // 289 ExpectedSub: ThreadCall naming an in-file Function (probed);
+  // a Sub is silent, an unknown name is the resolve layer's.
+  {
+    ParseResult const r = parseDocument("function foo() as integer\n"
+                                        "  foo = 1\n"
+                                        "end function\n"
+                                        "sub bar()\n"
+                                        "  threadcall foo()\n"
+                                        "end sub\n");
+    CHECK(fbcErrorFor(r, "expected-sub") == FbcDiagId::ExpectedSub);
+    CHECK(diagnosticCount(r, "expected-sub") == 1);
+    if (r.diagnostics.size() == 1) {
+      CHECK(r.diagnostics[0].message == "Expected sub, found 'foo'");
+    }
+    ParseResult const sub = parseDocument("sub foo()\n"
+                                          "end sub\n"
+                                          "sub bar()\n"
+                                          "  threadcall foo()\n"
+                                          "end sub\n");
+    CHECK(sub.diagnostics.empty());
+    ParseResult const unknown = parseDocument("sub bar()\n"
+                                              "  threadcall nosuch()\n"
+                                              "end sub\n");
+    CHECK(diagnosticCount(unknown, "expected-sub") == 0);
+  }
+  // Enum members: `a =` is 11 (above) and a bare member stays silent. An
+  // `a 5` line keeps the pre-existing boundary pair (the body closes on it),
+  // where fbc answers 3 — recorded as a limit in FreeBASIC.md §12, not fixed
+  // here.
+  {
+    ParseResult const ok = parseDocument("enum E\n"
+                                         "  a\n"
+                                         "  b = 5\n"
+                                         "end enum\n");
+    CHECK(ok.diagnostics.empty());
+  }
+  // No-cascade: one broken statement draws exactly one family diagnostic,
+  // and the lines after it parse clean (no phantom structure errors).
+  {
+    ParseResult const r = parseDocument("const C\n"
+                                        "const D\n"
+                                        "dim x as integer = 1\n"
+                                        "print \"ok\"\n");
+    CHECK(diagnosticCount(r, "expected-eq") == 2);
+    CHECK(diagnosticCount(r, "unterminated-block") == 0);
+    CHECK(diagnosticCount(r, "stray-closer") == 0);
+    // A failed expectation inside a procedure does not leak block state:
+    // the closer still matches.
+    ParseResult const inProc = parseDocument("sub f()\n"
+                                             "  dim x as integer =\n"
+                                             "end sub\n"
+                                             "print \"ok\"\n");
+    CHECK(diagnosticCount(inProc, "expected-expression") == 1);
+    CHECK(inProc.diagnostics.size() == 1);
+    CHECK(diagnosticCount(inProc, "unterminated-block") == 0);
+    // A colon-separated second statement is still parsed.
+    ParseResult const colon = parseDocument("const C: dim x as integer\n");
+    CHECK(diagnosticCount(colon, "expected-eq") == 1);
+    CHECK(find(colon.roots, "x", SymbolKind::Dim) != nullptr);
+  }
+}
+
 int main() {
   // A realistic multi-construct program must parse with zero diagnostics.
   {
@@ -4727,6 +5045,7 @@ int main() {
   TestLoopFamily();
   TestExitContinueFamily();
   TestPlacementAndBranchCrossing();
+  TestPunctuatorFamily();
 
   if (failures == 0) {
     std::printf("parser_checks: all passed\n");

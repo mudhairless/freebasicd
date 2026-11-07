@@ -593,6 +593,458 @@ private:
     out_.diagnostics.push_back(std::move(d));
   }
 
+  // M23 G5: the punctuator family. One helper behind 17/14/9/6/7/3/10/16/66/
+  // 309/11/68/67/289. `match` is whether the current token is the expected
+  // one; on mismatch this emits the family's diagnostic in fbc's probed shape
+  // (message, found clause, anchor) and returns false so the caller abandons
+  // the statement through the existing skip machinery. One per statement:
+  // `statementFamilyFailed_` suppresses a second family diagnostic for the
+  // same statement (fbc prints one error per statement, and so do we), and
+  // handleStatement clears it at each statement head. Anchoring: the current
+  // token when it carries a found word, else the point where the expectation
+  // failed (end-of-line shapes anchor zero-width there). The found clause is
+  // dropped for end-of-line, a literal, and a punctuation the probe showed
+  // fbc naming without one. This helper never advances: the caller skips.
+  bool statementFamilyFailed_ = false;
+
+  // The family diagnostic for one statement, in fbc's probed shape, at an
+  // anchor token that may be ahead of `cur_` (a statement-token pre-pass) or
+  // `cur_` itself. One per statement: sets/consumes `statementFamilyFailed_`.
+  // A pre-pass passes its own anchor; the inline expected() forwards `cur_`.
+  bool emitFamily(Token const &anchor, const char *code, FbcDiagId id,
+                  std::string const &phrase) {
+    if (statementFamilyFailed_) {
+      return false;
+    }
+    statementFamilyFailed_ = true;
+    bool const atEnd = anchor.kind == TokenKind::Newline ||
+                       anchor.kind == TokenKind::Eof ||
+                       anchor.kind == TokenKind::Comment ||
+                       anchor.kind == TokenKind::DocComment;
+    bool const wordLike = anchor.kind == TokenKind::Identifier ||
+                          anchor.kind == TokenKind::Keyword;
+    bool const punctLike =
+        anchor.kind == TokenKind::Symbol || anchor.kind == TokenKind::String;
+    uint32_t beg = anchor.beg;
+    uint32_t end = anchor.end;
+    if (atEnd) {
+      beg = anchor.beg;
+      end = anchor.beg;
+    }
+    std::string msg = trf("Expected %s", phrase);
+    if (!atEnd && (wordLike || punctLike)) {
+      std::string found(anchor.text());
+      if (anchor.kind == TokenKind::String && found.size() >= 2 &&
+          found.front() == '"' && found.back() == '"') {
+        found = found.substr(1, found.size() - 2);
+      }
+      msg = trf("Expected %s, found '%s'", phrase, std::string_view(found));
+    }
+    addDiagnostic(beg, end, Severity::Error, code, std::move(msg), id);
+    return false;
+  }
+
+  bool expected(bool match, const char *code, FbcDiagId id,
+                std::string const &phrase) {
+    if (match) {
+      return true;
+    }
+    return emitFamily(cur_, code, id, phrase);
+  }
+
+  bool expectedSymbol(const char *text, const char *code, FbcDiagId id) {
+    bool const match = cur_.kind == TokenKind::Symbol && cur_.text() == text;
+    return expected(match, code, id, std::string("'") + text + "'");
+  }
+
+  // The 17 SYNTAXERROR fallback in fbc's probed shape: "Syntax error" with
+  // ", found '<word>'" when the current token is a word, without when it is
+  // not. Only fbc's own fallback sites use it (a bare `Declare`, a `Declare`
+  // whose next word is not a procedure kind, ...). One per statement.
+  void syntaxError(const char *code = "syntax-error") {
+    if (statementFamilyFailed_) {
+      return;
+    }
+    statementFamilyFailed_ = true;
+    bool const wordLike =
+        cur_.kind == TokenKind::Identifier || cur_.kind == TokenKind::Keyword;
+    bool const punctLike = cur_.kind == TokenKind::Symbol;
+    uint32_t beg = cur_.beg;
+    uint32_t end = cur_.end;
+    if (cur_.kind == TokenKind::Newline || cur_.kind == TokenKind::Eof ||
+        cur_.kind == TokenKind::Comment || cur_.kind == TokenKind::DocComment) {
+      beg = cur_.beg;
+      end = cur_.beg;
+    }
+    std::string msg = tr("Syntax error");
+    if (wordLike || punctLike) {
+      msg = trf("Syntax error, found '%s'", std::string_view(cur_.text()));
+    }
+    addDiagnostic(beg, end, Severity::Error, code, std::move(msg),
+                  FbcDiagId::SyntaxError);
+  }
+
+  bool expectedIdentifier(const char *code, FbcDiagId id) {
+    bool const match =
+        cur_.kind == TokenKind::Identifier || cur_.kind == TokenKind::Keyword;
+    return expected(match, code, id, std::string("identifier"));
+  }
+
+  bool expectedEol(const char *code, FbcDiagId id) {
+    return expected(endsStatement(cur_), code, id, std::string("End-of-Line"));
+  }
+
+  // An expectation failed at end-of-line: no found clause, zero-width anchor
+  // at the line end (the only anchor available — the parser has no token
+  // there). One per statement.
+  void emitFamilyEol(const char *code, FbcDiagId id,
+                     std::string const &phrase) {
+    if (statementFamilyFailed_) {
+      return;
+    }
+    statementFamilyFailed_ = true;
+    uint32_t const eol = currentLineEnd();
+    addDiagnostic(eol, eol, Severity::Error, code, trf("Expected %s", phrase),
+                  id);
+  }
+
+  // The 11 EXPECTEDCONST shape (probed: `Expected constant, C`): fbc appends
+  // the declared name after the text. One per statement.
+  void emitExpectedConst(Token const &anchor, std::string const &name) {
+    if (statementFamilyFailed_) {
+      return;
+    }
+    statementFamilyFailed_ = true;
+    std::string msg;
+    if (name.empty()) {
+      msg = tr("Expected constant");
+    } else {
+      msg = trf("Expected constant, %s", name);
+    }
+    addDiagnostic(anchor.beg, anchor.end, Severity::Error, "expected-const",
+                  std::move(msg), FbcDiagId::ExpectedConst);
+  }
+
+  // The 67 TOOMANYEXPRESSIONS shape: the whole text is the message (no
+  // "Expected" prefix). One per statement.
+  void emitTooManyExpressions(Token const &anchor) {
+    if (statementFamilyFailed_) {
+      return;
+    }
+    statementFamilyFailed_ = true;
+    addDiagnostic(anchor.beg, anchor.end, Severity::Error,
+                  "too-many-expressions", tr("Too many expressions"),
+                  FbcDiagId::TooManyExpressions);
+  }
+
+  // M23 G5 Dim/Const statement pre-pass: the declaration-line punctuators
+  // (7 unclosed bounds, 309 `Integer<..>` without `>`, 68 function-pointer
+  // without `As`, 10/11/9 on the `=` segments, 67 UDT paren-initializer
+  // overflow), all probed. Runs once per Dim/Const/Redim/Var/Local/Common/
+  // Extern statement over the statement's own tokens; the normal walk then
+  // registers names as before. Any hit sets the family flag, so the walk
+  // and any later pre-pass step emit no second family diagnostic.
+  void checkVarDeclStatement(Token const &openTok, SymbolKind k) {
+    if (statementFamilyFailed_) {
+      return;
+    }
+    std::vector<Token> const toks = statementTokens();
+    if (toks.empty()) {
+      return;
+    }
+    std::string const head = toLowerChars(openTok.text());
+    bool const dimLike = head == "dim" || head == "redim" || head == "var" ||
+                         head == "local" || head == "common" ||
+                         head == "const" || head == "static" ||
+                         head == "extern";
+    if (!dimLike) {
+      return;
+    }
+    // 7: unclosed paren in the bounds/initializer (probed: `Redim a(5`,
+    // `Dim a(5`, ...). Extra closers are not 7 (fbc 3); only depth > 0.
+    {
+      int depth = 0;
+      for (Token const &t : toks) {
+        if (t.kind == TokenKind::Symbol && t.text() == "(") {
+          ++depth;
+        } else if (t.kind == TokenKind::Symbol && t.text() == ")") {
+          --depth;
+        }
+      }
+      if (depth > 0) {
+        emitFamily(toks.back(), "expected-rprnt", FbcDiagId::ExpectedRprnt,
+                   std::string("')'"));
+        return;
+      }
+    }
+    // 309: `Integer<...>` / `UInteger<...>` with no `>` (probed). The
+    // fbc text names the token that took `>`'s place ("before ','");
+    // emitFamily normalizes to "found" — the number is the same.
+    for (std::size_t i = 1; i < toks.size(); ++i) {
+      if (toks[i].kind != TokenKind::Symbol || toks[i].text() != "<") {
+        continue;
+      }
+      std::string const prev = toLowerChars(toks[i - 1].text());
+      if (prev != "integer" && prev != "uinteger") {
+        continue;
+      }
+      bool foundGt = false;
+      for (std::size_t j = i + 1; j < toks.size(); ++j) {
+        if (toks[j].kind == TokenKind::Symbol && toks[j].text() == ">") {
+          foundGt = true;
+          break;
+        }
+      }
+      if (!foundGt) {
+        emitFamily(toks.back(), "expected-gt", FbcDiagId::ExpectedGt,
+                   std::string("'>'"));
+        return;
+      }
+    }
+    // 68: a function pointer with no result type (probed: `Dim f As
+    // Function ()` and `Dim f As Function (a As Integer)` are both 68).
+    for (std::size_t i = 1; i + 1 < toks.size(); ++i) {
+      if (toks[i].kind != TokenKind::Keyword ||
+          toLowerChars(toks[i].text()) != "function") {
+        continue;
+      }
+      if (toks[i + 1].kind != TokenKind::Symbol || toks[i + 1].text() != "(") {
+        continue;
+      }
+      int depth = 0;
+      std::size_t close = toks.size();
+      for (std::size_t j = i + 1; j < toks.size(); ++j) {
+        if (toks[j].kind == TokenKind::Symbol && toks[j].text() == "(") {
+          ++depth;
+        } else if (toks[j].kind == TokenKind::Symbol && toks[j].text() == ")") {
+          --depth;
+          if (depth == 0) {
+            close = j;
+            break;
+          }
+        }
+      }
+      if (close == toks.size()) {
+        continue;
+      }
+      bool const hasAs = close + 1 < toks.size() &&
+                         toks[close + 1].kind == TokenKind::Keyword &&
+                         toLowerChars(toks[close + 1].text()) == "as";
+      if (!hasAs) {
+        emitFamily(toks[close], "expected-res-type", FbcDiagId::ExpectedRestype,
+                   std::string("explicit result type"));
+        return;
+      }
+    }
+    // 67: UDT paren-initializer with more elements than the type has fields
+    // (probed: `Dim q As T = (1, 2)` with one field is 67; `{...}` and
+    // array spills are other families, and undeclared types stay silent).
+    for (std::size_t i = 1; i < toks.size(); ++i) {
+      if (toks[i].kind != TokenKind::Symbol || toks[i].text() != "=") {
+        continue;
+      }
+      if (i + 1 >= toks.size() || toks[i + 1].kind != TokenKind::Symbol ||
+          toks[i + 1].text() != "(") {
+        continue;
+      }
+      // Type name: first identifier after `as` at paren depth 0.
+      std::string typeName;
+      {
+        int depth = 0;
+        for (std::size_t j = 1; j < toks.size(); ++j) {
+          if (toks[j].kind == TokenKind::Symbol && toks[j].text() == "(") {
+            if (j == i + 1) {
+              break;
+            }
+            ++depth;
+          } else if (toks[j].kind == TokenKind::Symbol &&
+                     toks[j].text() == ")") {
+            --depth;
+          } else if (depth == 0 && toks[j].kind == TokenKind::Keyword &&
+                     toLowerChars(toks[j].text()) == "as") {
+            if (j + 1 < toks.size() &&
+                toks[j + 1].kind == TokenKind::Identifier) {
+              typeName = std::string(toks[j + 1].text());
+            }
+            break;
+          }
+        }
+      }
+      if (typeName.empty()) {
+        continue;
+      }
+      std::string const typeKey = keyFor(typeName);
+      int fields = -1;
+      for (Symbol const &root : out_.roots) {
+        if ((root.kind != SymbolKind::Type && root.kind != SymbolKind::Union) ||
+            root.key != typeKey) {
+          continue;
+        }
+        fields = 0;
+        for (Symbol const &child : root.children) {
+          if (child.kind == SymbolKind::Variable ||
+              child.kind == SymbolKind::Dim) {
+            ++fields;
+          }
+        }
+        break;
+      }
+      if (fields < 0) {
+        continue;
+      }
+      int depth = 0;
+      int elements = 1;
+      bool any = false;
+      for (std::size_t j = i + 1; j < toks.size(); ++j) {
+        if (j == i + 1) {
+          depth = 1;
+          continue;
+        }
+        if (toks[j].kind == TokenKind::Symbol && toks[j].text() == "(") {
+          ++depth;
+        } else if (toks[j].kind == TokenKind::Symbol && toks[j].text() == ")") {
+          --depth;
+          if (depth == 0) {
+            break;
+          }
+        } else if (depth == 1 && toks[j].kind == TokenKind::Symbol &&
+                   toks[j].text() == ",") {
+          ++elements;
+        }
+        if (j > i + 1) {
+          any = true;
+        }
+      }
+      if (!any) {
+        elements = 0;
+      }
+      if (elements > fields) {
+        emitTooManyExpressions(toks[i + 1]);
+        return;
+      }
+    }
+    // Missing declared identifier (probed: bare `Dim`, `Dim As Integer`,
+    // `Dim a As Integer,` are 14). `Dim As <type> name` is type-first and
+    // carries a name after the type — it is not this shape.
+    bool const isConst = k == SymbolKind::Const;
+    if (toks.size() == 1) {
+      emitFamilyEol("expected-identifier", FbcDiagId::ExpectedIdentifier,
+                    std::string("identifier"));
+      return;
+    }
+    if (toks[1].kind == TokenKind::Keyword &&
+        toLowerChars(toks[1].text()) == "as") {
+      // `Dim As <type>` with no name behind the type chain is 14 (probed:
+      // `Dim As Integer`); `Dim As <type> name` is type-first and legal.
+      bool hasName = false;
+      std::size_t j = 2;
+      if (j < toks.size()) {
+        ++j; // the type word itself
+      }
+      // A dot-qualified type (`gfx.sprite`) is one type word.
+      while (j + 1 < toks.size() && toks[j].kind == TokenKind::Symbol &&
+             toks[j].text() == "." &&
+             (toks[j + 1].kind == TokenKind::Identifier ||
+              toks[j + 1].kind == TokenKind::Keyword)) {
+        j += 2;
+      }
+      while (j < toks.size() && toks[j].kind == TokenKind::Keyword) {
+        std::string const w = toLowerChars(toks[j].text());
+        if (isBuiltinType(w) || w == "ptr" || w == "pointer" || w == "const") {
+          ++j;
+          continue;
+        }
+        break;
+      }
+      if (j < toks.size() && (toks[j].kind == TokenKind::Identifier ||
+                              toks[j].kind == TokenKind::Keyword)) {
+        // A name token follows the chain — except `dim as integer` where
+        // `integer` *is* the type word (j points past it at EOL).
+        hasName = true;
+      }
+      if (!hasName) {
+        emitFamilyEol("expected-identifier", FbcDiagId::ExpectedIdentifier,
+                      std::string("identifier"));
+        return;
+      }
+    }
+    if (toks.back().kind == TokenKind::Symbol && toks.back().text() == ",") {
+      emitFamilyEol("expected-identifier", FbcDiagId::ExpectedIdentifier,
+                    std::string("identifier"));
+      return;
+    }
+    // Per-segment `=` (10/11/9): split at top-level commas.
+    std::vector<std::vector<Token>> segments;
+    std::vector<Token> curSeg;
+    {
+      int depth = 0;
+      for (std::size_t i = 0; i < toks.size(); ++i) {
+        Token const &t = toks[i];
+        if (t.kind == TokenKind::Symbol && t.text() == "(") {
+          ++depth;
+        } else if (t.kind == TokenKind::Symbol && t.text() == ")") {
+          --depth;
+        }
+        if (depth == 0 && t.kind == TokenKind::Symbol && t.text() == "," &&
+            i != 0) {
+          segments.push_back(curSeg);
+          curSeg.clear();
+          continue;
+        }
+        if (i == 0) {
+          continue;
+        }
+        curSeg.push_back(t);
+      }
+      segments.push_back(curSeg);
+    }
+    for (auto const &seg : segments) {
+      if (seg.empty()) {
+        continue;
+      }
+      int depth = 0;
+      std::size_t eqAt = seg.size();
+      for (std::size_t i = 0; i < seg.size(); ++i) {
+        if (seg[i].kind == TokenKind::Symbol && seg[i].text() == "(") {
+          ++depth;
+        } else if (seg[i].kind == TokenKind::Symbol && seg[i].text() == ")") {
+          --depth;
+        } else if (depth == 0 && seg[i].kind == TokenKind::Symbol &&
+                   seg[i].text() == "=") {
+          eqAt = i;
+          break;
+        }
+      }
+      std::string name;
+      for (Token const &t : seg) {
+        if (t.kind == TokenKind::Identifier) {
+          name = std::string(t.text());
+          break;
+        }
+      }
+      if (eqAt == seg.size()) {
+        if (isConst) {
+          // `Const C` and `Const C 5` are 10 (probed): no `=` at all.
+          emitFamily(seg.back(), "expected-eq", FbcDiagId::ExpectedEq,
+                     std::string("'='"));
+          return;
+        }
+        continue;
+      }
+      if (eqAt + 1 >= seg.size()) {
+        if (isConst) {
+          // `Const C =` is 11 (probed, with the name in the text).
+          emitExpectedConst(seg.back(), name);
+          return;
+        }
+        // `Dim x As Integer =` is 9 (probed).
+        emitFamily(seg.back(), "expected-expression",
+                   FbcDiagId::ExpectedExpression, std::string("expression"));
+        return;
+      }
+    }
+  }
+
   void collectDoc() {
     std::string_view const t = cur_.text();
     size_t skip = 0;
@@ -2178,6 +2630,7 @@ private:
   }
 
   void handleStatement() {
+    statementFamilyFailed_ = false;
     // An Asm body is raw assembly: no statement dispatch, no declaration
     // handling, no symbol capture, no diagnostics from its contents. The
     // block's own closer is the one statement still recognized.
@@ -2196,6 +2649,67 @@ private:
     }
 
     checkIllegalInsideSelect();
+
+    // M23 G5 enum-member tail: inside an Enum body a member line whose `=`
+    // carries nothing (`a =`) is 11, and a second token that is neither `=`
+    // nor the list separator (`a 5`) is 3 (both probed). The member still
+    // captures normally; the family flag stops a second family diagnostic.
+    if (!blocks_.empty() && blocks_.back().kind == BlockKind::Enum &&
+        !isCloserStatement(statementTokens())) {
+      std::vector<Token> const toks = statementTokens();
+      std::vector<std::vector<Token>> segments;
+      std::vector<Token> curSeg;
+      int depthE = 0;
+      for (Token const &t : toks) {
+        if (t.kind == TokenKind::Symbol && t.text() == "(") {
+          ++depthE;
+        } else if (t.kind == TokenKind::Symbol && t.text() == ")") {
+          --depthE;
+        }
+        if (depthE == 0 && t.kind == TokenKind::Symbol && t.text() == ",") {
+          segments.push_back(curSeg);
+          curSeg.clear();
+          continue;
+        }
+        curSeg.push_back(t);
+      }
+      segments.push_back(curSeg);
+      for (auto const &seg : segments) {
+        if (seg.size() < 1) {
+          continue;
+        }
+        int d = 0;
+        std::size_t eqAt = seg.size();
+        for (std::size_t i = 0; i < seg.size(); ++i) {
+          if (seg[i].kind == TokenKind::Symbol && seg[i].text() == "(") {
+            ++d;
+          } else if (seg[i].kind == TokenKind::Symbol && seg[i].text() == ")") {
+            --d;
+          } else if (d == 0 && seg[i].kind == TokenKind::Symbol &&
+                     seg[i].text() == "=") {
+            eqAt = i;
+            break;
+          }
+        }
+        if (eqAt < seg.size()) {
+          if (eqAt + 1 >= seg.size()) {
+            if (!statementFamilyFailed_) {
+              statementFamilyFailed_ = true;
+              addDiagnostic(seg.back().beg, seg.back().end, Severity::Error,
+                            "expected-const", tr("Expected constant"),
+                            FbcDiagId::ExpectedConst);
+            }
+            break;
+          }
+          continue;
+        }
+        if (seg.size() >= 2) {
+          emitFamily(seg[1], "expected-eol", FbcDiagId::ExpectedEol,
+                     std::string("End-of-Line"));
+          break;
+        }
+      }
+    }
 
     // Line label: Identifier directly followed by ':'. A record body has no
     // statement list, so `Identifier :` there is a bitfield field
@@ -2235,6 +2749,67 @@ private:
       }
     }
     if (cur_.kind != TokenKind::Keyword) {
+      // M23 G5: `x =` (and `x = 1 +`) is fbc's 9; `New T[..` without `]` is
+      // 66 (probed). Both are statement-token scans over the simple-
+      // statement forms this parser already walks.
+      {
+        std::vector<Token> const toks = statementTokens();
+        // 9: top-level `=` with nothing after it.
+        {
+          int depth = 0;
+          std::size_t eqAt = toks.size();
+          for (std::size_t i = 0; i < toks.size(); ++i) {
+            if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+              ++depth;
+            } else if (toks[i].kind == TokenKind::Symbol &&
+                       toks[i].text() == ")") {
+              --depth;
+            } else if (depth == 0 && toks[i].kind == TokenKind::Symbol &&
+                       toks[i].text() == "=") {
+              eqAt = i;
+              break;
+            }
+          }
+          bool const bareAssign = eqAt < toks.size() && eqAt + 1 >= toks.size();
+          bool const danglingOp =
+              !toks.empty() && toks.back().kind == TokenKind::Symbol &&
+              (toks.back().text() == "+" || toks.back().text() == "-" ||
+               toks.back().text() == "*" || toks.back().text() == "/" ||
+               toks.back().text() == "^") &&
+              eqAt < toks.size();
+          if (bareAssign || danglingOp) {
+            emitFamily(toks.back(), "expected-expression",
+                       FbcDiagId::ExpectedExpression,
+                       std::string("expression"));
+          }
+        }
+        // 66: `New <type>[ ...` with no `]` (probed). Pointer indexing
+        // (`p[0`, no `new`) is fbc's 17 fallback, not this family.
+        if (!statementFamilyFailed_) {
+          for (std::size_t i = 0; i + 2 < toks.size(); ++i) {
+            if (toks[i].kind != TokenKind::Keyword ||
+                toLowerChars(toks[i].text()) != "new") {
+              continue;
+            }
+            if (toks[i + 2].kind != TokenKind::Symbol ||
+                toks[i + 2].text() != "[") {
+              continue;
+            }
+            bool foundBracket = false;
+            for (std::size_t j = i + 3; j < toks.size(); ++j) {
+              if (toks[j].kind == TokenKind::Symbol && toks[j].text() == "]") {
+                foundBracket = true;
+                break;
+              }
+            }
+            if (!foundBracket) {
+              emitFamily(toks.back(), "expected-rbracket",
+                         FbcDiagId::ExpectedRBracket, std::string("']'"));
+            }
+            break;
+          }
+        }
+      }
       // Non-keyword statements (assignments, calls) are executable, so they are
       // illegal inside an `Extern "C"` block at module level.
       if (inExternBlock() && !inProcedure()) {
@@ -2487,6 +3062,12 @@ private:
         if (blocks_.back().selectConst) {
           checkInvalidCaseRange(cur_);
         }
+        // A `Case` with no expression is fbc's 9 in both the plain and the
+        // `As Const` forms (probed: `Select Case 1 / Case` is error 9).
+        if (statementTokens().size() == 1) {
+          emitFamilyEol("expected-expression", FbcDiagId::ExpectedExpression,
+                        std::string("expression"));
+        }
         openBranchScope("case");
       }
       resetDoc();
@@ -2505,6 +3086,11 @@ private:
       return;
     }
     if (w == "goto") {
+      // A bare `Goto` is fbc's 14 (probed: `Goto` alone is error 14).
+      if (statementTokens().size() == 1) {
+        emitFamilyEol("expected-identifier", FbcDiagId::ExpectedIdentifier,
+                      std::string("identifier"));
+      }
       recordGoto();
       resetDoc();
       skipStatement();
@@ -2523,6 +3109,40 @@ private:
       // visible inside procedures like a `Dim Shared` (FreeBASIC.md §8).
       handleVarDecls(SymbolKind::Dim, /*declOnly=*/true,
                      /*impliedShared=*/true);
+      return;
+    }
+    if (w == "threadcall") {
+      // 289 EXPECTEDSUB (probed: `ThreadCall` naming a Function — defined or
+      // declared — is 289; naming a Sub compiles; an unknown name is the
+      // resolve layer's 42, silent here). The in-file search keeps the
+      // negative cases honest: only a known Function draws it.
+      std::vector<Token> const toks = statementTokens();
+      if (toks.size() >= 2 && (toks[1].kind == TokenKind::Identifier ||
+                               toks[1].kind == TokenKind::Keyword)) {
+        std::string const targetKey = keyFor(toks[1].text());
+        bool isFunction = false;
+        std::vector<Symbol const *> stack;
+        for (Symbol const &root : out_.roots) {
+          stack.push_back(&root);
+        }
+        while (!stack.empty()) {
+          Symbol const *const sym = stack.back();
+          stack.pop_back();
+          if (sym->kind == SymbolKind::Function && sym->key == targetKey) {
+            isFunction = true;
+            break;
+          }
+          for (Symbol const &child : sym->children) {
+            stack.push_back(&child);
+          }
+        }
+        if (isFunction) {
+          emitFamily(toks[1], "expected-sub", FbcDiagId::ExpectedSub,
+                     std::string("sub"));
+        }
+      }
+      resetDoc();
+      skipStatement();
       return;
     }
     if (isControlOpenerWord(w)) {
@@ -2664,8 +3284,83 @@ private:
   // `next`); a header without `as` reuses an already-declared variable
   // (undeclared is error 42, fbc does not auto-declare it), so nothing is
   // registered and resolution finds the outer declaration naturally.
+  // M23 G5: a header whose counter is followed by something other than `=`
+  // is fbc's 10 (probed: `For i 1 To 10` is error 10; the `Step` tail takes
+  // no `=`).
+  void checkForStatement() {
+    if (statementFamilyFailed_) {
+      return;
+    }
+    std::vector<Token> const toks = statementTokens();
+    if (toks.size() < 2 || toks[1].kind != TokenKind::Identifier) {
+      return;
+    }
+    std::size_t i = 2;
+    // Skip a member/element counter chain (`w.x`, `a(0)`) — those still
+    // take `=` (probed counter shapes the 52 family owns, but the `=` is
+    // the same).
+    while (i < toks.size()) {
+      if (toks[i].kind == TokenKind::Symbol && toks[i].text() == ".") {
+        i += 2;
+        continue;
+      }
+      if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+        int depth = 0;
+        while (i < toks.size()) {
+          if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+            ++depth;
+          } else if (toks[i].kind == TokenKind::Symbol &&
+                     toks[i].text() == ")") {
+            --depth;
+            ++i;
+            if (depth == 0) {
+              break;
+            }
+            continue;
+          }
+          ++i;
+        }
+        continue;
+      }
+      break;
+    }
+    if (i < toks.size() && toks[i].kind == TokenKind::Keyword &&
+        toLowerChars(toks[i].text()) == "as") {
+      ++i;
+      // Skip the type chain (builtin/identifier plus ptr/pointer/const).
+      while (i < toks.size()) {
+        std::string const w = toLowerChars(toks[i].text());
+        if (toks[i].kind == TokenKind::Keyword &&
+            (isBuiltinType(w) || w == "ptr" || w == "pointer" ||
+             w == "const")) {
+          ++i;
+          continue;
+        }
+        if (toks[i].kind == TokenKind::Identifier) {
+          ++i;
+          continue;
+        }
+        break;
+      }
+    }
+    bool const hasEq = i < toks.size() && toks[i].kind == TokenKind::Symbol &&
+                       toks[i].text() == "=";
+    if (hasEq) {
+      return;
+    }
+    if (i < toks.size()) {
+      emitFamily(toks[i], "expected-eq", FbcDiagId::ExpectedEq,
+                 std::string("'='"));
+    } else {
+      emitFamilyEol("expected-eq", FbcDiagId::ExpectedEq, std::string("'='"));
+    }
+  }
+
+  // A member/element counter without a plain identifier has no 283 check
+  // and no 10 check here; the `=` question above still runs.
   void handleFor() {
     Token const openTok = cur_;
+    checkForStatement();
     pushBlockFromOpener("for");
     // Record the counter for the 283 check: the header's first token must
     // be a plain identifier. A member (`w.x`) or element (`a(0)`) spells
@@ -2977,6 +3672,18 @@ private:
       advance();
     } else {
       s.name = anonymousDeclName(openWord);
+      // A procedure kind with no name is fbc's 14 (probed: `Sub ()` and
+      // `Function () As Integer` are both error 14). The block still opens
+      // and closes normally — fbc reports 14 alone and `End Sub`/`End
+      // Function` still matches — so no phantom unterminated-block follows.
+      bool const procKind =
+          k == SymbolKind::Sub || k == SymbolKind::Function ||
+          k == SymbolKind::Property || k == SymbolKind::Operator ||
+          k == SymbolKind::Constructor || k == SymbolKind::Destructor;
+      if (procKind) {
+        expectedIdentifier("expected-identifier",
+                           FbcDiagId::ExpectedIdentifier);
+      }
     }
     // `Namespace a.b.c`: open only the *leaf* of a dotted path — the head
     // namespaces exist by their own declarations, and registering the head
@@ -3035,6 +3742,20 @@ private:
     } else {
       takeModuleConstructorSuffix(s, false);
     }
+    // An `Operator` with no `As` result type is fbc's 68 (probed: `Operator
+    // +(a As Integer)` is error 68, `Dim f As Function ()` is 68). Only the
+    // operator-definition head is checked here; the function-pointer tail
+    // is the Dim pre-pass below. A member qualifier (`Operator T.cast()`)
+    // is not the plain head — it is left to its own handling, so only an
+    // end-of-line tail draws 68.
+    if (k == SymbolKind::Operator) {
+      bool const hasAs =
+          cur_.kind == TokenKind::Keyword && toLowerChars(cur_.text()) == "as";
+      if (!hasAs && endsStatement(cur_)) {
+        expected(false, "expected-res-type", FbcDiagId::ExpectedRestype,
+                 std::string("explicit result type"));
+      }
+    }
 
     Symbol *psym = addSymbol(std::move(s));
     if (k == SymbolKind::Constructor && psym != nullptr && !psym->key.empty()) {
@@ -3065,6 +3786,11 @@ private:
     for (;;) {
       TokenKind const k = cur_.kind;
       if (k == TokenKind::Eof || k == TokenKind::Newline) {
+        // Unclosed parameter list: fbc's 7 (probed: `Sub foo(a As Integer`
+        // and `End Sub` is "Expected ')'"). One family diagnostic; the
+        // caller still opens the block so the closer matches normally and no
+        // phantom unterminated-block follows.
+        expectedSymbol(")", "expected-rprnt", FbcDiagId::ExpectedRprnt);
         break;
       }
       if (k == TokenKind::Symbol) {
@@ -3330,6 +4056,9 @@ private:
       break;
     }
     if (cur_.kind != TokenKind::Keyword) {
+      // A bare `Declare` (or one followed by a non-word) is fbc's 17
+      // fallback (probed: `Declare` alone is `error 17: Syntax error`).
+      syntaxError();
       resetDoc();
       // A prototype line (`declare constructor(...)`, `declare operator...`)
       // inside a TYPE body declares no fields; its parameter identifiers must
@@ -3339,6 +4068,18 @@ private:
       return;
     }
     std::string const w = toLowerChars(cur_.text());
+    bool const knownKind = w == "sub" || w == "function" || w == "property" ||
+                           w == "operator" || w == "constructor" ||
+                           w == "destructor";
+    if (!knownKind) {
+      // A `Declare` whose next word is not a procedure kind is fbc's 17
+      // (probed: `Declare Integer`, `Declare Bar`, `Declare String foo()`
+      // all fall back to 17, not 289).
+      syntaxError();
+      resetDoc();
+      skipStatement(/*suppressMemberCapture=*/true);
+      return;
+    }
     if (w != "sub" && w != "function" && w != "property") {
       if (w == "constructor") {
         // A declared constructor makes its enclosing UDT an "object" for the
@@ -3373,6 +4114,14 @@ private:
       s.selection.beg = cur_.beg;
       s.selection.end = cur_.end;
       advance();
+    } else {
+      // `Declare Sub` / `Declare Function` with nothing after is fbc's 14
+      // (probed: `Declare Sub` alone is error 14). Nothing is declared; the
+      // statement is abandoned so no second family diagnostic follows.
+      expectedIdentifier("expected-identifier", FbcDiagId::ExpectedIdentifier);
+      resetDoc();
+      skipStatement(/*suppressMemberCapture=*/true);
+      return;
     }
     if (cur_.kind == TokenKind::Keyword &&
         toLowerChars(cur_.text()) == "overload") {
@@ -3413,6 +4162,7 @@ private:
                       bool impliedShared = false) {
     Token const openTok = cur_;
     std::string const doc = takeDoc();
+    checkVarDeclStatement(openTok, k);
     advance();
     bool atName = true;
     bool first = true;

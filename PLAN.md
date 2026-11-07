@@ -40,7 +40,7 @@
   | M21 — module model, constructors, and fbc's codes (complete 2026-11-06; summary in CHANGELOG.md) | done |
   | M18 — public release: editor setup docs, first tag | blocked on M22, M23, M24, and the VS Code extension |
   | M22 — fbc declaration-order parity: use-before-declaration | next |
-  | M23 — fbc parser diagnostics: statements, placement, warnings (groups G1–G4 landed; groups G5–G7 remain) | backlog |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (groups G1–G5 landed; groups G6–G7 remain) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
   | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
@@ -600,14 +600,20 @@ landing as their own step.
   (`44 ILLEGALOUTSIDECOMP` was already landed before G4 and keeps its
   identity.) Limits are recorded at `FreeBASIC.md` §12.34; the dated entry
   is in [`CHANGELOG.md`](CHANGELOG.md).
-- **G5 — the punctuator family.** One `expected(token)` helper behind `17
-  SYNTAXERROR`, `14 EXPECTEDIDENTIFIER`, `9 EXPECTEDEXPRESSION`, `6
-  EXPECTEDLPRNT`, `7 EXPECTEDRPRNT`, `3 EXPECTEDEOL`, `10 EXPECTEDEQ`, `16
-  EXPECTEDCOMMA`, `66 EXPECTEDRBRACKET`, and `309 EXPECTEDGT`; plus `11
-  EXPECTEDCONST` for a `const` with no expression, and the declaration tails
-  the research adds: `68 EXPECTEDRESTYPE`, `67 TOOMANYEXPRESSIONS`, `289
-  EXPECTEDSUB`. The no-cascade rule below is this group's design constraint:
-  fbc prints one error per statement, and so do we.
+- **G5 — the punctuator family — landed (2026-11-07).** One `expected()`
+  helper behind `17 SYNTAXERROR`, `14 EXPECTEDIDENTIFIER`,
+  `9 EXPECTEDEXPRESSION`, `6 EXPECTEDLPRNT`, `7 EXPECTEDRPRNT`,
+  `3 EXPECTEDEOL`, `10 EXPECTEDEQ`, `16 EXPECTEDCOMMA`,
+  `66 EXPECTEDRBRACKET`, and `309 EXPECTEDGT`; plus `11 EXPECTEDCONST`
+  (a `Const` with no expression), `68 EXPECTEDRESTYPE`, `67
+  TOOMANYEXPRESSIONS`, and `289 EXPECTEDSUB` for the probed declaration
+  tails. The probe corrected the sketch's guesses: a `Declare` followed by
+  a non-procedure word is `17` (not `289`), `Dim x As Integer 5` is `3`
+  (not `10`), and argument-list breaks are `7`/`99` (not `16`). The
+  no-cascade rule held as the design constraint: one family diagnostic per
+  statement, and a failed statement never invents phantom structure errors.
+  Limits are recorded at `FreeBASIC.md` §12.35; the dated entry is in
+  [`CHANGELOG.md`](CHANGELOG.md).
 - **G6 — statement-specific checks (research Tier 5).** The `REDIM` / `SEEK`
   / `CLOSE` shapes from the tier's 15 statement and intrinsic messages. The
   group starts with an inventory naming which of the 15 the parser can

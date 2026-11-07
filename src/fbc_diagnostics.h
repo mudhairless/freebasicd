@@ -94,6 +94,16 @@ enum class FbcDiagId {
   IllegalInsideScope,
   BranchCrossingDynDataDef,
   BranchCrossingLocalVar,
+  ExpectedLprnt,
+  ExpectedRprnt,
+  ExpectedEq,
+  ExpectedComma,
+  ExpectedRBracket,
+  ExpectedGt,
+  ExpectedConst,
+  ExpectedRestype,
+  TooManyExpressions,
+  ExpectedSub,
   Count
 };
 

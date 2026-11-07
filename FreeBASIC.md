@@ -1580,6 +1580,47 @@ resolution is not involved.
   (warning `14` or silence), matching the probed fact that they are not
   dynamic data definitions.
 
+### 12.35 M23 G5: the punctuator family (one error per statement)
+
+Probed against `/usr/bin/fbc` 1.10.3. fbc prints one error per statement;
+the parser does too — a failed expectation sets a per-statement flag, so a
+single typo never sprays three expectations down one line and never leaves
+the block stack in a state that invents secondary errors on the lines
+after it. Where the probe showed fbc answering with a number outside this
+family, the probe wins and the shape stays silent here.
+
+- **Implemented.** `7` for an unclosed declaration parameter list or an
+  unclosed `Dim`/`Redim` bound; `10` for a `Const` with no `=` and a `For`
+  counter with no `=`; `11` for a `Const`/`Enum` `=` with no constant
+  (the `Const` text carries the name); `9` for a `Dim`/`x =` with no
+  expression, a dangling binary operator, and a bare `Case`; `14` for a
+  bare `Dim`, `Dim As Integer`, a nameless procedure, `Declare Sub` at EOL,
+  and a bare `Goto`; `309` for `Dim x As Integer<...` with no `>`; `66` for
+  a `New` vector with no `]`; `68` for an `Operator` head with no `As` and
+  a `Dim` function pointer with no `As`; `67` for a UDT paren-initializer
+  with more elements than the in-file type has fields; `289` for a
+  `ThreadCall` naming an in-file `Function`; the `17` fallback for a bare
+  `Declare` and a `Declare` whose next word is not a procedure kind.
+- **The found clause.** fbc appends `, found '<word>'` when the offending
+  token is a word or punctuator and drops it at end-of-line and for number
+  literals (probed: `Expected '=', found ','` vs `Expected '='` alone).
+  `309`'s `before` form (`Integer<16, y As Integer`) is normalized to
+  `found`; the number is the same.
+- **Skipped or shadowed.** `6` is the `7` complement (a missing `(` before
+  arguments): in the walked forms fbc answers `42` (undeclared) or `3`, so
+  `6` is not separately implemented. Argument-count (`1`),
+  wrong-dimensions (`36`), too-many-dimensions (`49`), `63`, `52`, `73`,
+  and `28` own their trigger shapes and stay silent here.
+- **Limits not implemented.** `16 EXPECTEDCOMMA` has no implemented site:
+  its real shapes are call arguments (`Mid(y 1)` is `7`/`99`) and
+  `Input`/`Get` statements, which the parser does not walk. `a 5` inside an
+  enum keeps the pre-existing boundary pair (unterminated-block +
+  stray-closer) where fbc answers `3`. Parenthesized expressions, call
+  argument lists, and pointer indexing are not walked. `67` counts only a
+  type declared in the parsed file, with `Variable`/`Dim` fields counted.
+  `289` only answers for a `Function` declared in the parsed file (an
+  unknown name is the resolve layer's `42`).
+
 ## 13. Where the diagnostics come from (compiler source)
 
 Every `error N` / `warning N` in this file is a real fbc message, and fbc's
