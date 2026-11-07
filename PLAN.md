@@ -45,6 +45,7 @@
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
   | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
   | M27 — lint diagnostics: the checks fbc does not have (backlog) | backlog |
+  | M28 — inline assembly: parse the block (backlog) | backlog |
 
 ## 2. What exists (condensed)
 
@@ -846,6 +847,51 @@ earlier. Each check lands with its trigger conditions stated against
 comment form), and corpus goldens, in the M23/M24 pattern. This milestone
 does **not** gate M18: the initial release bar is fbc parity (M21, M23,
 M24), and the lint checks accrue after the tag.
+
+### M28 — Inline assembly: parse the block (backlog)
+
+`Asm` block bodies are opaque today: the parser skips their contents
+wholesale, a stance landed with the fix for assembly being parsed as
+FreeBASIC (an x86 `sub` instruction opened a phantom `Sub`). Nothing inside
+a block exists for the server — no references, no highlighting, no
+diagnostics — so a variable used only from assembly looks unused, and
+rename or go-to-definition stop at the block's edge.
+
+The goal is a real parser for the block's contents, in FreeBASIC's own
+variant of Intel-syntax assembly: instructions and operands, registers,
+labels, FreeBASIC comments, and references to the enclosing scope's
+variables, parameters, and labels, resolved like any other reference.
+That is the value: the block joins the program's name view instead of
+sitting outside it.
+
+**First pass, complete when** (scope set 2026-11-06): x86 only, in the
+forms the GAS backend accepts (fbc assembles through GAS). Parsing,
+reference resolution, and semantic highlighting for the block's contents;
+diagnostics only where a probed acceptance boundary is crisp, in the
+M23 pattern. arm64 is out of the first pass entirely.
+
+**Probe first** — the wiki documents x86 only
+([KeyPgAsm](https://www.freebasic.net/wiki/KeyPgAsm)) and leaves the rest
+open, so each of these is established with the pinned fbc before it is
+designed against, and the outcomes land in `FreeBASIC.md` as probed facts:
+
+- Whether arm64 assembly is accepted at all, and if so in what syntax.
+  (Out of the first pass either way; the answer decides whether a second
+  pass exists.)
+- The instruction-class boundaries inside x86: SSE instructions and
+  privileged instructions outside DOS are known to fail in at least some
+  forms, and no canonical source enumerates what works. Probe by class,
+  not by instruction.
+- Whether inline assembly survives the C-emitting backend (`-gen gcc`)
+  at all — error, dropped, or passed through — since GAS is where the
+  syntax normally lives. What the server should say about an asm block
+  depends on which backend the code will meet, which it cannot see; the
+  divergence, whatever it is, goes to `FreeBASIC.md` §12.
+- The operand forms that reference FreeBASIC names (bare names, bracketed
+  memory operands, size specifiers), since those are the forms the
+  reference resolution has to cover.
+
+This milestone does **not** gate M18.
 
 ### M18 — Public release: first tag
 
