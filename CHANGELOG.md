@@ -26,6 +26,43 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-08 — M23 complete: fbc parser diagnostics
+
+- **The parser-reachable half of fbc's catalog now reports fbc's own
+  numbers and texts.** Seven groups landed 2026-11-06 and 2026-11-07:
+  the select family (G1), the loop families with warning 26 (G2), exit
+  and continue placement (G3), the placement family with branch
+  crossing (G4), the punctuator family behind one `expected(token)`
+  helper (G5), the statement-specific checks (G6), and the remaining
+  warnings (G7). Corpus goldens rode with each group. The statement,
+  placement, and warning families join the block-closer family in
+  carrying the compiler's numbers; what remains of the parity bar for
+  the first tag is M22's declaration-order diagnostic and M24's
+  resolve layer.
+- **Deviations from the sketch, all probe-driven.** Warning 45 sat
+  between this milestone and M24 because it is constant-dependent;
+  the probe showed fbc judges it on facts the parser already knows
+  (declared counter type, constant limit, constant step sign), so G7
+  took it. Errors 16 and 6 have catalog identities but no parser
+  sites: their real shapes live in expressions the parser does not
+  walk (FreeBASIC.md §12.35). Error 72 is not reachable at the parser
+  level at all (§12.36).
+- **Handed to M24 by name.** Error 72; the Dim-lowered sites of
+  errors 171 to 176 and the access and no-default-constructor checks
+  204, 206, and 183 (§12.36); the call-argument and member-assignment
+  parts of warning 25, parts of warning 33, and a 64-bit signed-limit
+  edge (§12.37); and one reconciliation: a `Next` naming an
+  undeclared variable reports 283 today, and when the resolve layer
+  adds the error 42 family that shape must not double-report.
+- **The defect that closed the milestone.** The constant folder G1
+  built and G7 generalized carried values as `long double`, exact
+  for 64-bit integers only where that type is 80 bits wide. Warning
+  45 was silently missing on macOS and Windows from the day G7
+  landed until the fix in the entry below; a green Linux run had
+  certified it the whole time. The folder now carries an exact
+  integer beside the floating value for in-range integral
+  expressions.
+
 ### 2026-11-08 — exact 64-bit constant folding
 
 - **Fix a platform miss in `45 for-end-too-big` and its neighbours.**

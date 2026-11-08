@@ -38,9 +38,9 @@
   |-----------|--------|
   | M17 — FreeBASIC formatter (wave 2 complete 2026-11-02; summary in CHANGELOG.md) | done |
   | M21 — module model, constructors, and fbc's codes (complete 2026-11-06; summary in CHANGELOG.md) | done |
-  | M18 — public release: editor setup docs, first tag | blocked on M22, M23, M24, and the VS Code extension |
+  | M18 — public release: editor setup docs, first tag | blocked on M22, M24, and the VS Code extension |
   | M22 — fbc declaration-order parity: use-before-declaration | next |
-  | M23 — fbc parser diagnostics: statements, placement, warnings (groups G1–G7 landed) | backlog |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (complete 2026-11-08; summary in CHANGELOG.md) | done |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
   | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
@@ -413,12 +413,13 @@
      (fbc `error 42`): a constructor is a procedure for §8 visibility, so
      the shared gate should fire there. It belongs to the resolve layer
      (M24).
-  6. **Most diagnostic codes are still our own, not fbc's.** The catalog is
-     data (M21 step 5: `tools/fbc_catalog.tsv` → `src/fbc_diagnostics.inc`,
-     byte-checked by `fbc_diagnostics_checks`) and the block-closer family
-     already reports fbc's number and links its wiki page. The statement,
-     placement, and warning families and the whole resolve layer still report
-     our codes — M23 and M24.
+  6. **The resolve layer's diagnostic codes are still our own, not fbc's.**
+     The catalog is data (M21 step 5: `tools/fbc_catalog.tsv` →
+     `src/fbc_diagnostics.inc`, byte-checked by `fbc_diagnostics_checks`) and
+     the block-closer family already reports fbc's number and links its wiki
+     page. The statement, placement, and warning families report fbc's
+     numbers since M23 (complete 2026-11-08); the whole resolve layer still
+     reports our codes — M24.
   7. **The name view and the single-file diagnostic gates see one file.** A
      document's name layer — `declAt`, `visibleSymbols`, plain-name completion —
      answers from the file's own parse, so a declaration that enters a program
@@ -510,182 +511,6 @@ gate 2026-11-06): detect it, diagnose it, fix it, and stop suggesting it.
   still diagnoses the earlier use; the generated `Declare` for a defaulted param
   keeps the default; an early `Dim As T` offers reorder/include, never an alias.
 - `ctest` green, changed files clang-format clean.
-
-### M23 — fbc parser diagnostics: statements, placement, warnings
-
-The parser-reachable half of fbc's catalog, reported with fbc's own numbers and
-texts from M21's generated catalog (landed). The ranked candidate tiers behind
-this milestone and M24 are in
-[`research/fbc-diagnostics.md`](research/fbc-diagnostics.md). This milestone
-gates M18. The work that remains is grouped below (grouping set 2026-11-06);
-each group is independently testable and lands separately, in the M21 style,
-and the corpus goldens ride with the group that needs them rather than
-landing as their own step.
-
-- **False-positive gate — cleared (2026-10-09).** The parser no longer rejects
-  FreeBASIC fbc accepts: the fb-dialect *error* false positives across the
-  pinned suite are **0** (was 100 files), and the 33 files that still report
-  error-severity diagnostics all fail fbc too. The sweep that bought it — a
-  `function = expr` result assignment, a bare `extern` declaration, a
-  self-typed `Declare` parameter and `virtual`/`const` prefixes, `dim T.x`, a
-  static field's leading `static as`, bitfields (`a : 7 as ulong`),
-  statement-position `type<T>(…)`, a suffixed `constructor()` *call* in a body,
-  `/'…'/` block comments, `_` + trailing comment, one-line `if…end if`, bare
-  `endif` — is recorded in the changelog. The dedupe set is built from
-  storage-class knowledge rather than "the first word is the definition", so
-  `extern` + `dim`, alias + alias, `const` + `const`, a reopened `namespace`,
-  `dim` under only one active `#if` branch, and `type<T>` / `constructor(` in
-  expression position stop being duplicates while the real duplicate (`dim a`
-  twice) still warns.
-- **Block structure — landed (2026-10-09).** Expected closer
-  (`13/19/29/30/32/35/45/60/74/95/121/124/125–130`), closer without opener
-  (`106`–`118`), `33 ILLEGALEND`, and the mismatched-closer family now carry
-  fbc's number and the `CompilerErrMsg` wiki link, keyed on the specific
-  closer by `fbcExpectedCloserError`/`fbcCloserWithoutOpenerError` in
-  `src/language.cpp`. The coarse routing code stays internal so one quick fix
-  covers the whole family — see [`CHANGELOG.md`](CHANGELOG.md).
-- **Code identity — landed (2026-10-10).** Every diagnostic the wire reports
-  leads with our routing code; a diagnostic the parser also mapped onto an fbc
-  message appends the number — `<key>, fbc error: N` (`include-not-found, fbc
-  error: 23`) or `fbc warning: N` for the warning half (`keyword-suffix, fbc
-  warning: 44`) — with a `fbcKind` field so the two number independently. An
-  unmapped diagnostic (`bad-continuation`, the preprocessor shapes) carries the
-  key alone, so our identifier is always addressable: a suppression/whitelist
-  config keys on the routing code, which the number-only form hid. Mapped
-  today: `keyword-suffix` → `44`, `unterminated-string` →
-  `12`, `duplicate-definition` → `4` (severity stays Warning, FreeBASIC.md
-  §12.25), `include-not-found` → `23`, and `invalid-member-name` →
-  `14`/`238`/`3` by trigger. `bad-continuation` was probed a false positive
-  (fbc accepts a mid-line `_`) and stays unmapped (FreeBASIC.md §12.26).
-- **G1 — the `select` family — landed (2026-11-06).** `62
-  ILLEGALINSIDESELECT` (a statement between `Select Case` and the first
-  `Case`), `34 EXPECTEDCASE`, `118 CASEWITHOUTSELECT`,
-  `111 ENDSELECTWITHOUTSELECT`, `246 EXPECTEDSELECT`, `242
-  ILLEGALOUTSIDESELSTMT`, `250 NOENCLOSEDSELSTMT`, and `323
-  INVALIDCASERANGE`, all token- and stack-keyed off the `Select` handling
-  that already exists (a `Select` block carries `seenCase`/`selectConst`;
-  118/111 were already routed and are pinned). The probe shaped two of
-  them: 34 also fires at an `End Select` with no Case seen, 246/250 only
-  in the multi-target `Exit Select, <target>` form, and 323 only in
-  `Select Case As Const`. Limits are recorded at `FreeBASIC.md` §12.31;
-  the dated entry is in `CHANGELOG.md`.
-- **G2 — the loop families — landed (2026-11-06).** `13
-  EXPECTEDNEXT`, `29 EXPECTEDLOOP`, `30 EXPECTEDWEND`, `106
-  LOOPWITHOUTDO`, `107 NEXTWITHOUTFOR`, `108 WENDWITHOUTWHILE`, `283
-  FORNEXTVARIABLEMISMATCH`, and warning `26 NEXTVARMEANINGLESS`, all
-  token- and stack-keyed off the `For` handling that already exists (a
-  `For` block carries its counter as written and by canonical key; one
-  `Next` closes one `For` per name, innermost first, the pop and the
-  `283` check being the same walk). The probe shaped the excess rule
-  (one `107` for the remainder, never per extra name), the silence for
-  undeclared names (fbc `42`) and member/element counters (fbc `52`),
-  and warning `26` itself (every declared name after `Next`, matching
-  or not, one per name). Limits are recorded at `FreeBASIC.md` §12.32;
-  the dated entry is in `CHANGELOG.md`.
-- **G3 — the `Exit`/`Continue` target family — landed (2026-11-07).**
-  `251 INVALIDEXITSTMT` and `252 INVALIDCONTINUESTMT`, one token read in
-  the `exit`/`continue` dispatch beside `checkExitSelect()`: the word
-  after the keyword alone decides (the probe corrected this sketch's
-  block-stack guess — the stack questions belong to the `239`/`240`/`241`
-  loop-placement, `253`/`254`/… procedure-placement, and
-  `243`–`245`/`247`–`249` multi-target families, all outside G3 and all
-  still open). Landed alone, as decided; G4 is untouched. Limits are
-  recorded at `FreeBASIC.md` §12.33; the dated entry is in
-  [`CHANGELOG.md`](CHANGELOG.md).
-- **G4 — placement (research Tier 2) — landed (2026-11-07).** `61
-  ILLEGALINSIDEASUB`, `96 ILLEGALINSIDEASCOPE`, `105
-  BRANCHCROSSINGDYNDATADEF`, and warning `14 BRANCHCROSSINGLOCALVAR`, all
-  token- and block-stack-keyed off the statement dispatch plus a
-  per-procedure label/branch/local-definition pass judged at the closer.
-  (`44 ILLEGALOUTSIDECOMP` was already landed before G4 and keeps its
-  identity.) Limits are recorded at `FreeBASIC.md` §12.34; the dated entry
-  is in [`CHANGELOG.md`](CHANGELOG.md).
-- **G5 — the punctuator family — landed (2026-11-07).** One `expected()`
-  helper behind `17 SYNTAXERROR`, `14 EXPECTEDIDENTIFIER`,
-  `9 EXPECTEDEXPRESSION`, `6 EXPECTEDLPRNT`, `7 EXPECTEDRPRNT`,
-  `3 EXPECTEDEOL`, `10 EXPECTEDEQ`, `16 EXPECTEDCOMMA`,
-  `66 EXPECTEDRBRACKET`, and `309 EXPECTEDGT`; plus `11 EXPECTEDCONST`
-  (a `Const` with no expression), `68 EXPECTEDRESTYPE`, `67
-  TOOMANYEXPRESSIONS`, and `289 EXPECTEDSUB` for the probed declaration
-  tails. The probe corrected the sketch's guesses: a `Declare` followed by
-  a non-procedure word is `17` (not `289`), `Dim x As Integer 5` is `3`
-  (not `10`), and argument-list breaks are `7`/`99` (not `16`). The
-  no-cascade rule held as the design constraint: one family diagnostic per
-  statement, and a failed statement never invents phantom structure errors.
-  Limits are recorded at `FreeBASIC.md` §12.35; the dated entry is in
-  [`CHANGELOG.md`](CHANGELOG.md).
-- **G6 — statement-specific checks (research Tier 5) — landed (2026-11-07).**
-  `54 EXPECTEDDYNAMICARRAY`, `75 CANTINITDYNAMICARRAYS`, `87
-  CANTINITDYNAMICSTRINGS`, `76 DYNAMICARRAYWITHELLIPSIS`, `77
-  ARRAYFIELDWITHELLIPSIS`, `136 DYNAMICEXTERNCANTHAVEBOUNDS`, `162
-  DYNAMICARRAYINUNION`, `171`–`176` the `REDIM`/`ERASE` constructor/
-  destructor convention checks, `216 PRIVORPUBTTRIBNOTALLOWED`, and `327
-  EXPECTEDFILENUMBEREXPRESSION`, all judged from declaration-form facts
-  the parser already walks plus per-container array state. Inventory:
-  `56 ARRAYALREADYDIMENSIONED` and `102 CANTINITDYNAMICFIELDS` are dead in
-  the pinned fbc (no call site; probes compile); `72 ARRAYNOTALLOCATED`
-  is not reachable (expression-level, see §12.36). Limits are recorded at
-  `FreeBASIC.md` §12.36; the dated entry with the inventory and probe
-  tables is in [`CHANGELOG.md`](CHANGELOG.md). What passes to G7/M24:
-  `72`, the `DIM`-lowered `174`–`176`/`183`/`204`/`206` sites, cross-file
-  UDT knowledge, and the dialect `147` typeless-`REDIM` shapes.
-- **G7 — the remaining warnings — landed (2026-11-08).** `32
-  IFFOUNDAFTERELSE`, `15 NOEXPLICITPARAMMODE`, `46 CMDLINEIGNORED`,
-  `25 CONVOVERFLOW`, `33 SHIFTEXCEEDSBITSINDATATYPE`, and `45
-  FORENDTOOBIG` (deferred from G2; its counter and limit are
-  parser-knowable, so it lands here beside 25/33 with the same
-  literal folder, not the M24 type model). Limits are recorded at
-  `FreeBASIC.md` §12.37; the dated entry is in
-  [`CHANGELOG.md`](CHANGELOG.md).
-- **Warning `-w` level model — landed (2026-10-10).** `freebasicd.toml`'s
-  `warningLevel` takes fbc's `-w` option names, English only, and an absent or
-  unknown value is `-w none` — a deliberate divergence from fbc's leading
-  default of level 1 (FreeBASIC.md §12.27): the server reports no warnings
-  until a root opts in. A named level keeps fbc's exact threshold
-  (`all`/`constness`/`funcptr` → 0, `pedantic`/`param`/`escape`/`next`/
-  `suffix`/`upcast` → 1), read against the catalog's `level` column at delivery
-  so the parser still records every language fact. `-w error` is dropped: a
-  mapped warning stays `Warning`. The gate joins `diagnosticsOn` in the M14
-  `resultId` fold, and a level flip re-publishes (push) / refreshes (pull).
-  `44` and `12` already carry their numbers (code-identity bullet above); the
-  remaining work is the rest of the set — `26`, `32`, `33`, `25`, `46`, `15`
-  — which now inherit the gate for free.
-- **Suppression — landed (2026-10-10).** `freebasicd.toml`'s `suppress` is a
-  list of routing keys (`Diagnostic::code`, the same identifier quick fixes
-  register on — `bad-continuation`, `unterminated-block`, `include-not-found`;
-  the wire appends fbc's number to it, but the list names our key). A named
-  diagnostic is dropped at delivery, next to
-  the `-w` gate and sharing its M14 `resultId` fold and re-publish/refresh
-  behavior; the parser still records it. Entries are lowercased and the list
-  sorted/deduped at parse time, so case and order are not part of the value. An
-  entry copied from the wire code in full (`key, fbc error: N`) is reduced to
-  the key at load time — a key never contains a comma — and logs a warning
-  asking the user to remove the tail; the file itself is never rewritten.
-  **Future: a per-line source comment** — clang-tidy's `' ignore: <key>` and
-  `' ignore-next-line: <key>` (FreeBASIC comment forms are `'` and `REM`) —
-  suppresses a line or the next line from the source side. That lands as the
-  same delivery-gate shape with a line/range predicate, computed against the
-  parse the payload is built from (a comment is a language fact like any
-  other), and must fold the comment-derived suppressions into `resultId` too.
-  **Also future, with it: a whitelist counterpart in the config** — an
-  allow-list option (e.g. `allow = [...]`) that is the inverse gate: when
-  non-empty, only the named routing keys may surface, so a root can run with a
-  narrow curated set instead of enumerating every code to drop. It needs the
-  same `resultId` fold and re-publish semantics as `suppress`, and the comment
-  form should grow a matching allow direction rather than the two features
-  diverging. Neither future item is fbc parity, and neither gates M18.
-- **No cascades.** A single missing closer yields one diagnostic, not one per
-  subsequent line; the existing `unterminated-block` handling is the model.
-- **Corpus.** Import the fbc-suite triggers into `tests/` as goldens rather than
-  compiling against the external compiler at test time.
-
-Dialect gates (`146/147/150`, `*ONLYVALIDINLANG`) stay out until a non-`fb`
-dialect is modeled: only `fb` is parsed today.
-
-Acceptance: each new message carries fbc's number and the catalog's wiki link
-(the human-readable text stays a translatable `trf` string, not fbc's verbatim
-English); the no-cascade rule has a test; a warning-level change moves the
-`resultId`; `ctest` green, changed files clang-format clean.
 
 ### M24 — Resolve-layer type model + fbc semantic diagnostics (backlog)
 
@@ -923,13 +748,13 @@ This milestone does **not** gate M18.
 
 ### M18 — Public release: first tag
 
-**Gated on M22, M23, and M24**: the initial release bar is parity with fbc
+**Gated on M22 and M24**: the initial release bar is parity with fbc
 diagnostics (decided 2026-11-02; M22 added to the gate 2026-11-06). M21
 (complete 2026-11-06) delivered the module model and fbc's numbers for its
-covered set, M22 use-before-declaration parity, M23 the parser-reachable
-statement, placement,
-and warning families, and M24 the resolve-layer semantic set; together that
-is the parity the tag claims. Shipping earlier, with the module model
+covered set, and M23 (complete 2026-11-08) the parser-reachable statement,
+placement, and warning families; M22 use-before-declaration parity and M24
+the resolve-layer semantic set are what remain of the parity the tag
+claims. Shipping earlier, with the module model
 documented but undetected and diagnostic numbers that do not match the
 compiler they stand in for, would make the release the moment those become
 expensive to change. The lint family (M27) is not part of the bar: it
