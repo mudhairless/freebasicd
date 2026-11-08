@@ -10,7 +10,7 @@
 #include "LibLsp/lsp/lsRange.h"
 #include "LibLsp/lsp/textDocument/typeHierarchy.h"
 
-// The type-hierarchy request types (M15), defined locally for two reasons, both
+// The type-hierarchy request types, defined locally for two reasons, both
 // the `call_hierarchy_lsp.h` / `semantic_tokens_lsp.h` precedent: a method name
 // the vendored tree registers wrongly, and a request type it does not ship at
 // all. `LanguageSession::on` keys registration on the method *string* and

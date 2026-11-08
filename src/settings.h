@@ -17,10 +17,10 @@ namespace fblang {
 // The server-side configuration file. A `freebasicd.toml` at a directory
 // marks that directory as a workspace root (it joins the version-control and
 // source/include-layout markers), and carries the root's settings. Parsed with
-// the vendored tomlplusplus (third_party/tomlplusplus) — M11.
+// the vendored tomlplusplus (third_party/tomlplusplus).
 inline constexpr char const *kConfigFileName = "freebasicd.toml";
 
-// What a project builds (M21 step 2). An LSP never sees the link command, so
+// What a project builds. An LSP never sees the link command, so
 // the artifact kind is a fact only the user can supply. It defaults to an
 // executable, which keeps a single-file project — and every project without a
 // config file — behaving as before.
@@ -40,7 +40,7 @@ struct BuildSettings {
   }
 };
 
-// Which compiler a root diagnoses against (M21 step 2). The version is *not*
+// Which compiler a root diagnoses against. The version is *not*
 // configured: it is probed from the resolved executable at adoption. `path`
 // is the executable itself, absolute when loaded through settingsForDir; unset
 // means the first `fbc` found on PATH.
@@ -61,7 +61,7 @@ struct Settings {
   // dir is consulted in config order before the workspace-root search).
   std::vector<std::string> includePaths;
 
-  // M21 step 2: the two facts an LSP cannot derive, plus the compiler pin.
+  // The two facts an LSP cannot derive, plus the compiler pin.
   BuildSettings build;
   FbcSettings fbc;
 
@@ -98,7 +98,7 @@ struct Settings {
   // This is the root-wide list. A per-line source comment (clang-tidy's
   // `' ignore:` / `' ignore-next-line:`) and a config allow-list counterpart
   // (a whitelist that keeps only the named keys) are future work and will feed
-  // the same delivery gate; see PLAN.md M23.
+  // the same delivery gate; see PLAN.md.
   //
   // An entry copied from a diagnostic's *wire* code (`key, fbc error: N`) is
   // reduced to the routing key at load time, so the copy/paste a client's
@@ -118,7 +118,7 @@ struct Settings {
 };
 
 // Why a settings note was produced. `SuppressWireCode` is the existing
-// `suppress` cleanup; the others are the M21 value-shape and build.main
+// `suppress` cleanup; the others are the value-shape and build.main
 // contradictions.
 enum class SettingsNoteKind {
   SuppressWireCode,

@@ -23,7 +23,7 @@ char const *kCompletionFrame =
     R"FB({"jsonrpc":"2.0","id":"comp","method":"textDocument/completion","params":)FB"
     R"FB({"textDocument":{"uri":"file://{{tmp}}/resolve.bas"},"position":{"line":1,"character":8}}})FB";
 
-// Member completion context (PLAN.md M19): `p.` must complete only the UDT's
+// Member completion context: `p.` must complete only the UDT's
 // accessible members — never keywords, globals, or intrinsics. The example
 // type has a private member, so a module-level `p.` offers just x/y; inside
 // the type's own member procedure the private member is offered too
@@ -88,7 +88,7 @@ char const *kIntrinsicSignatureFrame =
     R"FB({"jsonrpc":"2.0","id":"isg","method":"textDocument/signatureHelp","params":)FB"
     R"FB({"textDocument":{"uri":"file://{{tmp}}/intr.bas"},"position":{"line":4,"character":20}}})FB";
 
-// The words and catalog rows added with this wave: the new reserved words
+// The words and catalog rows newly added: the new reserved words
 // complete as keyword items, and `sleep`/`wait`/`out` — runtime builtins that
 // fbc registers but the catalog had no row for — come back as intrinsic items
 // at statement position, replacing the bare keyword entry instead of
@@ -136,7 +136,7 @@ char const *kSuffixCompletionFrame =
 
 // A doc-commented function and a `twi` prefix that matches only it, so the
 // completion reply carries no `documentation` at all: the item is lean and the
-// doc comment arrives only from `completionItem/resolve` (M16).
+// doc comment arrives only from `completionItem/resolve`.
 char const *kDidOpenDocCommentFrame =
     R"FB({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":)FB"
     R"FB({"uri":"file://{{tmp}}/doccomp.bas","languageId":"basic","version":1,)FB"

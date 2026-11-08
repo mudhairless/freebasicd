@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// Quick-fix checks for the M12 code-action module.
+// Quick-fix checks for the code-action module.
 //
 // The providers are pure functions of (diagnostic, QuickFixContext), so every
 // case here runs without an index, a session, or a workspace on disk: the

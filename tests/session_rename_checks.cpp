@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M8 prepareRename and rename.
+// PrepareRename and rename.
 //
 // The rename handshake end to end: what prepareRename promises, a cross-file
 // rename rewriting both files, a local-only symbol staying put, and the two

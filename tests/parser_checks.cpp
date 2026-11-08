@@ -1361,7 +1361,7 @@ static void TestPreprocessorSymbolsAndBranches() {
   }
 }
 
-// M21 step 1: module constructors and destructors. `Sub name() Constructor
+// Module constructors and destructors. `Sub name() Constructor
 // [priority]` is a procedure body that runs before its module's own code
 // (FreeBASIC.md §9). These cases pin fbc 1.10.2's own numbers for the malformed
 // forms — the argument count (1), the declaration-line decorator (3), the
@@ -1672,7 +1672,7 @@ static void TestAsmBlockRawBody() {
 
 static void TestModuleLevelStatementRanges() {
   // Module-level executable statements are recorded; declarations are not.
-  // M21 step 3: only the recorded ranges below feed the
+  // Only these recorded ranges below feed the
   // `module-code-outside-main` diagnostic.
   {
     std::string const src = "dim total as integer\n"
@@ -1823,7 +1823,7 @@ static void TestModuleLevelStatementRanges() {
   }
 }
 
-// The `select` diagnostic family (M23 G1): 62 IllegalInsideSelect,
+// The `select` diagnostic family: 62 IllegalInsideSelect,
 // 34 ExpectedCase, 118 CaseWithoutSelect, 111 EndSelectWithoutSelect,
 // 242 IllegalOutsideSelect, 246 ExpectedSelect, 250 NoEnclosedSelect, and
 // 323 InvalidCaseRange. Every shape was probed against fbc 1.10.3; the
@@ -2250,7 +2250,7 @@ static void TestSelectFamily() {
     CHECK(diagnosticCount(str, "invalid-case-range") == 0);
   }
 }
-// The loop families (M23 G2): 13 EXPECTEDNEXT, 29 EXPECTEDLOOP,
+// The loop families: 13 EXPECTEDNEXT, 29 EXPECTEDLOOP,
 // 30 EXPECTEDWEND, 106 LOOPWITHOUTDO, 107 NEXTWITHOUTFOR,
 // 108 WENDWITHOUTWHILE, 283 FORNEXTVARIABLEMISMATCH, and warning 26
 // NEXTVARMEANINGLESS. Every shape was probed against fbc 1.10.3; the
@@ -2259,8 +2259,8 @@ static void TestSelectFamily() {
 static void TestLoopFamily() {
   // The false-positive fix: one `Next` closes one `For` per name it
   // carries, innermost first, so `next j, i` is silent. A bare `Next`
-  // closes one. (Probed: fbc compiles the multi-name form clean; before
-  // this wave it drew a bogus `unterminated-block` for the outer loop.)
+  // closes one. (Probed: fbc compiles the multi-name form clean; previously
+  // it drew a bogus `unterminated-block` for the outer loop.)
   {
     std::string const src = "dim i as integer\n"
                             "dim j as integer\n"
@@ -2575,7 +2575,7 @@ static void TestLoopFamily() {
     CHECK(diagnosticCount(bare, "next-var-meaningless") == 0);
     CHECK(bare.diagnostics.empty());
     // A non-identifier tail still closes one loop bare (fbc error 3
-    // belongs to G5 and is not judged here).
+    // belongs to the punctuator family and is not judged here).
     ParseResult num = parseDocument("dim i as integer\n"
                                     "for i = 1 to 2\n"
                                     "  print i\n"
@@ -2592,7 +2592,7 @@ static void TestLoopFamily() {
     CHECK(diagnosticCount(paren, "next-var-meaningless") == 0);
     CHECK(diagnosticCount(paren, "for-next-variable-mismatch") == 0);
     // `next i+1` carries its name (warning 26) while the `+1` tail stays
-    // for G5 (probed: warning 26 plus error 3).
+    // with the punctuator family (probed: warning 26 plus error 3).
     ParseResult expr = parseDocument("dim i as integer\n"
                                      "for i = 1 to 2\n"
                                      "  print i\n"
@@ -2603,13 +2603,13 @@ static void TestLoopFamily() {
   }
 }
 
-// M23 G3: the `Exit` / `Continue` target-word family. 251
+// The `Exit` / `Continue` target-word family. 251
 // INVALIDEXITSTMT and 252 INVALIDCONTINUESTMT are purely lexical (probed at
 // fbc 1.10.3): the word after the keyword alone decides, in every context,
 // and every placement question about an accepted target belongs to another
-// family (239/240/241 for a loop target with no enclosing loop, G1's
-// 242/246/250 for `Exit Select`, 253/254/... for a procedure target outside
-// its own procedure) and stays silent here.
+// family (239/240/241 for a loop target with no enclosing loop, the `select`
+// family's 242/246/250 for `Exit Select`, 253/254/... for a procedure target
+// outside its own procedure) and stays silent here.
 static void TestExitContinueFamily() {
   // 251 InvalidExitStmt: the bare form, anchored on the `exit` keyword
   // itself. One diagnostic, no cascade — the enclosing loop still closes
@@ -2942,8 +2942,8 @@ static void TestExitContinueFamily() {
                                       "end operator\n");
     CHECK(diagnosticCount(kinds, "invalid-exit") == 0);
     CHECK(kinds.diagnostics.empty());
-    // `Exit Select` inside a Select stays exactly the G1 behaviour: no
-    // 251 from this family on an accepted `select` target.
+    // `Exit Select` inside a Select stays exactly the `select` family's
+    // behaviour: no 251 from this family on an accepted `select` target.
     ParseResult exitSelect = parseDocument("dim q as integer = 1\n"
                                            "select case q\n"
                                            "case 1\n"
@@ -2955,10 +2955,11 @@ static void TestExitContinueFamily() {
   }
 
   // The probed split — accepted targets whose *placement* fbc rejects draw
-  // other families' numbers, all outside G3, and stay silent here: a loop
-  // target with no enclosing loop of its kind is 239/240/241, a procedure
-  // target outside its own procedure is 253/254, and the loop multi-target
-  // forms are 243/244/245/247/248/249 (none implemented in this family).
+  // other families' numbers, all outside this target-word family, and stay
+  // silent here: a loop target with no enclosing loop of its kind is
+  // 239/240/241, a procedure target outside its own procedure is 253/254, and
+  // the loop multi-target forms are 243/244/245/247/248/249 (none implemented
+  // in this family).
   {
     ParseResult exitForInSub = parseDocument("sub s()\n  exit for\n"
                                              "end sub\n");
@@ -3021,7 +3022,8 @@ static void TestExitContinueFamily() {
                       "next\n");
     CHECK(diagnosticCount(trailing, "invalid-exit") == 0);
     // A procedure target has no multi-target form at all (probed: `exit
-    // sub, sub` is fbc error 3, G5's); the first target is accepted, so
+    // sub, sub` is fbc error 3, the punctuator family's); the first target
+    // is accepted, so
     // no 251 here either.
     ParseResult subSub = parseDocument("sub s()\n  exit sub, sub\nend sub\n");
     CHECK(diagnosticCount(subSub, "invalid-exit") == 0);
@@ -3071,7 +3073,7 @@ static void TestExitContinueFamily() {
   }
 }
 
-// M23 G4: placement diagnostics (61 / 96) and branch-crossing diagnostics
+// Placement diagnostics (61 / 96) and branch-crossing diagnostics
 // (105 / warning 14).
 static void TestPlacementAndBranchCrossing() {
   // 61 ILLEGALINSIDEASUB: declarations that cannot appear inside a procedure.
@@ -3156,7 +3158,7 @@ static void TestPlacementAndBranchCrossing() {
                                         "end sub\n");
     CHECK(diagnosticCount(r, "illegal-inside-sub") == 1);
   }
-  // `constructor` inside a Sub is error 165, outside G4; leave it silent here.
+  // `constructor` inside a Sub is error 165; leave it silent here.
   {
     ParseResult const r = parseDocument("sub f()\n"
                                         "  constructor C()\n"
@@ -3598,7 +3600,7 @@ static void TestPlacementAndBranchCrossing() {
   }
 }
 
-// M23 G5: the punctuator family (17/14/9/6/7/3/10/16/66/309/11/68/67/289).
+// The punctuator family (17/14/9/6/7/3/10/16/66/309/11/68/67/289).
 static void TestPunctuatorFamily() {
   // Pin: pre-existing 14 site — a reserved word that is never a field name
   // (skipStatement member capture). Behavior unchanged by the helper.
@@ -4743,7 +4745,7 @@ int main() {
     // statement the body cannot accept: the missing `END UNION` belongs right
     // above it (fbc: `error 17: found 'private'`, then `error 19: Expected
     // 'END UNION' in 'private:'`). The squiggle stays on the opener and
-    // `closerAt` is the insertion point the M12 fix uses.
+    // `closerAt` is the insertion point the quick fix uses.
     std::string const src = "union u\n"
                             "    private:\n"
                             "    a as integer\n"
@@ -4764,7 +4766,7 @@ int main() {
     // is where the closer belongs (fbc anchors `error 19` there). The block
     // ends at that statement, the statement is parsed in the enclosing scope —
     // nothing of it is captured as a member — and the report carries the offset
-    // the M12 fix inserts at, distinct from its range, which stays on the
+    // the quick fix inserts at, distinct from its range, which stays on the
     // opener.
     std::string const src = "type point\n"
                             "  x as single\n"
@@ -4941,7 +4943,7 @@ int main() {
   }
 
   {
-    // M15: the two type-graph edges. `Extends` is FreeBASIC's only inheritance
+    // The two type-graph edges. `Extends` is FreeBASIC's only inheritance
     // form (fbc rejects `type b : a`, and there is no `interface` keyword), and
     // a member procedure is declared inside the type and defined at module
     // level qualified by the type name (fbc error 17 rejects a definition in
@@ -5326,10 +5328,10 @@ int main() {
   {
     // A member name that a statement opener would otherwise claim. The tables
     // say these words are legal names, and a member we drop is a member
-    // completion and hover cannot offer — the diagnostic wave found this by
-    // auditing every reserved word for a member it should have produced and did
-    // not. `redim` and `local` are var-decl openers; in an enum body they are
-    // just a name, and the opener handler used to swallow the whole line.
+    // completion and hover cannot offer — found by auditing every reserved
+    // word for a member it should have produced and did not. `redim` and
+    // `local` are var-decl openers; in an enum body they are just a name, and
+    // the opener handler used to swallow the whole line.
     for (char const *const w : {"redim", "local"}) {
       for (char const *const tail : {"", " = 1"}) {
         std::string const src =

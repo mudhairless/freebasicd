@@ -20,7 +20,7 @@
 
 namespace fblang {
 
-// Quick fixes (M12): LSP `textDocument/codeAction`, LSP-agnostic and in byte
+// Quick fixes: LSP `textDocument/codeAction`, LSP-agnostic and in byte
 // offsets like the rest of the language layer. The session converts the edits
 // to UTF-16 positions and wraps them in the single-file WorkspaceEdit.
 
@@ -78,8 +78,8 @@ std::vector<QuickFixRegistration> const &quickFixProviders();
 // The provider registered for `code`, or nullptr when nothing answers it.
 QuickFixProvider const *quickFixProviderFor(std::string const &code);
 
-// The `include-not-found` diagnostics an index entry's edges produce (M6
-// publishes exactly these, one Error per unresolved edge at the literal's
+// The `include-not-found` diagnostics an index entry's edges produce (one
+// Error per unresolved edge at the literal's
 // range). Shared with the publish path so the two can never disagree on which
 // range carries the code a fix keys on. Edges with no filename literal, and
 // literals reaching past a `contentSize`-byte buffer, are skipped.

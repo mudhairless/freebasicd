@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// Semantic-token classification checks for the M9 token-stream classifier.
+// Semantic-token classification checks for the token-stream classifier.
 //
 // Exercises the legend spellings (must match LSP 3.17 exactly), the
 // tokenstream -> entries walk including UTF-16 column math on non-ASCII

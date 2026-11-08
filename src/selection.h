@@ -15,7 +15,7 @@
 
 namespace fblang {
 
-// Expand-selection ranges (M13, `textDocument/selectionRange`), LSP-agnostic
+// Expand-selection ranges (`textDocument/selectionRange`), LSP-agnostic
 // and in byte offsets like the rest of the language layer; the session
 // converts each range to a UTF-16 LSP range.
 //

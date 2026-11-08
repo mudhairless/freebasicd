@@ -12,7 +12,7 @@
 
 namespace fs = std::filesystem;
 
-// Exit codes (M17 plan §2): 0 = formatted or unchanged, 1 = changes needed
+// Exit codes: 0 = formatted or unchanged, 1 = changes needed
 // under --check, 2 = error (usage, config, IO).
 static constexpr int kExitOk = 0;
 static constexpr int kExitChangesNeeded = 1;

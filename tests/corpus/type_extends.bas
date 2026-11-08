@@ -1,5 +1,5 @@
 '@fbc:pass
-' M15 type graph: `Extends` is FreeBASIC's only inheritance form, and a
+' Type graph: `Extends` is FreeBASIC's only inheritance form, and a
 ' member procedure is declared inside the type and defined at module level
 ' qualified by the type name. fbc 1.10.2 accepts every line below; there is
 ' deliberately no `type d : base` (rejected, even under -lang qb) and no

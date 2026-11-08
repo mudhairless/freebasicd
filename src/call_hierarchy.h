@@ -15,7 +15,7 @@
 
 namespace fblang {
 
-// Call hierarchy (M13) over an analyzed document: `prepareCallHierarchy`
+// Call hierarchy over an analyzed document: `prepareCallHierarchy`
 // answers "which procedure is this?", and the two follow-ups answer "what does
 // it call?" and "who calls it?". Byte offsets and LSP-agnostic, like the rest
 // of the language layer; the session converts and pins.

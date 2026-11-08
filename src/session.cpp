@@ -436,14 +436,14 @@ lsDiagnostic toLsDiagnostic(std::string_view content,
   return diag;
 }
 
-// M23/M21: the gates one diagnostics payload answers to, pulled from the owning
-// root's Settings and the compiler probed at its adoption. `on` is the M11
+// The gates one diagnostics payload answers to, pulled from the owning
+// root's Settings and the compiler probed at its adoption. `on` is the
 // master switch (empties everything); a mapped warning otherwise surfaces iff
 // its catalog level reaches the configured warning level; any diagnostic whose
 // routing key is in `suppressed` is dropped outright; and a finding with a
 // `since`/`until` range is dropped when the probed compiler's version falls
 // outside it. An unknown version (no fbc found, or an unparsable `-version`)
-// filters nothing, which is exactly the pre-M21 behavior.
+// filters nothing, which is exactly the behavior before the module model.
 struct DiagnosticsGate {
   bool on = true;
   int warningLevel = 4; // fbc `-w none`; the config default
@@ -451,7 +451,7 @@ struct DiagnosticsGate {
   // diagnostic whose `code` is in here.
   std::vector<std::string> suppressed;
   std::optional<fblang::FbcVersion> version;
-  // The root's module-model facts (M21 steps 2–3): which build kind it
+  // The root's module-model facts: which build kind it
   // declares and which module it names as main. Both decide whether
   // `module-code-outside-main` fires for a document, and both are part of
   // the payload's identity (see diagnosticsResultId).
@@ -549,8 +549,8 @@ includeResolverFor(std::filesystem::path documentPath,
 // Unresolved `#include`/`#include once` literals of an indexed entry become
 // `include-not-found` Errors at the literal's own range. Only the document's
 // own edges are diagnosed here; the pull path surfaces the included files'
-// own problems through `relatedDocuments` (the include closure, M14). The
-// diagnostics are built by the code-action module (M12) so a quick fix keyed
+// own problems through `relatedDocuments` (the include closure). The
+// diagnostics are built by the code-action module so a quick fix keyed
 // on the code addresses exactly the range the publish reported.
 void appendIncludeDiagnostics(std::string_view content,
                               fblang::IndexedFile const &entry,
@@ -646,7 +646,7 @@ void appendModuleCodeDiagnostics(std::string_view content,
 using PublicProcedureCollisions =
     std::map<std::string, std::vector<fblang::Diagnostic>>;
 
-// The duplicate-public-procedure errors this file carries (M21 step 4):
+// The duplicate-public-procedure errors this file carries:
 // cross-file, so the collision set is computed from the index snapshot the
 // caller holds and passed in as the map resolve.cpp built. Gated like
 // every other diagnostic; Errors are never `-w` gated.
@@ -671,14 +671,14 @@ void appendPublicProcedureDiagnostics(
 // The diagnostics payload one document carries: the parse diagnostics (through
 // the `-w` gate), the extern-placement lint (resolve.cpp, only for non-header
 // files — a `.bi` is where `Extern` belongs), the module-level-code lint
-// (M21 step 3, only for source modules the root's build facts judge), the
-// duplicate-public-procedure collisions (M21 step 4, from the owning root's
+// (only for source modules the root's build facts judge), the
+// duplicate-public-procedure collisions (from the owning root's
 // index snapshot), plus the unresolved include edges of the index entry that
-// describes it (M6's include-not-found). One
+// describes it (the include-not-found). One
 // definition shared by the push path and both pull handlers, so a client that
 // negotiated either delivery can never see a different answer for the same
-// bytes — the M12 rule ("the fix keys on the range the publish reports")
-// extended to the pull model, and the M23 gate ("the level the config set is
+// bytes — the rule ("the fix keys on the range the publish reports")
+// extended to the pull model, and the gate ("the level the config set is
 // the level the wire answers").
 std::vector<lsDiagnostic>
 documentDiagnostics(std::string_view content, fblang::AnalyzedDoc const &doc,
@@ -769,7 +769,7 @@ diagnosticsResultId(std::string_view content, fblang::IndexedFile const *entry,
   // The module-level-code lint decides whether the payload carries the
   // load-time-initialization warnings from the root's build kind, whether a
   // main module is configured and what it names, and whether this file is
-  // that module (M21 step 3) — a flip of any of them is a payload change and
+  // that module — a flip of any of them is a payload change and
   // must move the id, or a client caching by resultId would be told
   // "unchanged" the moment the warnings appeared or vanished.
   hash = diagnosticsFnv("\x1f"
@@ -784,7 +784,7 @@ diagnosticsResultId(std::string_view content, fblang::IndexedFile const *entry,
         fblang::normalizePath(*gate.buildMain) == std::string(path);
     hash ^= isMainModule ? kResultIdBuildMainMarker * 2 : 0x00ULL;
   }
-  // The duplicate-public-procedure collisions (M21 step 4) are payload-
+  // The duplicate-public-procedure collisions are payload-
   // determining cross-file state: editing one defining file must move the
   // id of the other file so a client holding it is not told `unchanged`.
   // Folded like include edges, from the same collision map the payload was
@@ -1671,14 +1671,14 @@ void FreeBasicServer::registerHandlers() {
   });
   session_.on(
       [this](td_inlayHint::request const &req) { return onInlayHint(req); });
-  // Type go-to (M15): LspCpp ships these two correctly, as shipped.
+  // Type go-to: LspCpp ships these two correctly, as shipped.
   session_.on([this](td_typeDefinition::request const &req) {
     return onTypeDefinition(req);
   });
   session_.on([this](td_implementation::request const &req) {
     return onImplementation(req);
   });
-  // Type hierarchy (M15): the local request types, registered under the
+  // Type hierarchy: the local request types, registered under the
   // protocol's own method names — see type_hierarchy_lsp.h.
   session_.on([this](td_typeHierarchyPrepare::request const &req) {
     return onPrepareTypeHierarchy(req);
@@ -1713,7 +1713,7 @@ void FreeBasicServer::registerHandlers() {
   session_.on([this](completionItem_resolve::request const &req) {
     return onResolveCompletionItem(req);
   });
-  // Pull diagnostics (M14): the two pull requests a pull-negotiated client
+  // Pull diagnostics: the two pull requests a pull-negotiated client
   // sends, plus the server->client refresh request whose response parser must
   // be registered before startProcessingMessages() (same rule as
   // client/registerCapability below).
@@ -1753,7 +1753,7 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   // Advertised so a client sends `textDocument/willSave` before it writes. The
   // server has no pre-save work (see onWillSave); the bit is set because an
   // unadvertised notification is one the client is right not to send, and
-  // format-on-save (M17) is the feature that will need the hook.
+  // format-on-save is the feature that will need the hook.
   sync.willSave = true;
 
   // `serverInfo` (LSP 3.15+): the server's name and version, which is where a
@@ -1779,7 +1779,7 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   rsp.result.capabilities.referencesProvider.emplace();
   rsp.result.capabilities.referencesProvider->first.emplace(true);
 
-  // Type go-to (M15): the two requests whose answer is a `Location` list, so
+  // Type go-to: the two requests whose answer is a `Location` list, so
   // the bare-bool arm, like definitionProvider above.
   rsp.result.capabilities.typeDefinitionProvider.emplace();
   rsp.result.capabilities.typeDefinitionProvider->first.emplace(true);
@@ -1812,7 +1812,7 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   rsp.result.capabilities.workspaceSymbolProvider.emplace();
   rsp.result.capabilities.workspaceSymbolProvider->first.emplace(true);
 
-  // Code actions: quickfix only (M12). The options arm carries the kind list;
+  // Code actions: quickfix only. The options arm carries the kind list;
   // there is no codeAction/resolve request, so no resolveProvider.
   rsp.result.capabilities.codeActionProvider.emplace();
   rsp.result.capabilities.codeActionProvider->second.emplace();
@@ -1847,17 +1847,17 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   rsp.result.capabilities.inlayHintProvider.emplace();
   rsp.result.capabilities.inlayHintProvider->second.emplace();
 
-  // Expand selection (M13): the bare-bool arm, since there is nothing to
+  // Expand selection: the bare-bool arm, since there is nothing to
   // register and no resolve request behind it.
   rsp.result.capabilities.selectionRangeProvider.emplace();
   rsp.result.capabilities.selectionRangeProvider->first.emplace(true);
 
-  // Call hierarchy (M13): the bare-bool arm, like selectionRange — three
+  // Call hierarchy: the bare-bool arm, like selectionRange — three
   // methods, no options and no resolve.
   rsp.result.capabilities.callHierarchyProvider.emplace();
   rsp.result.capabilities.callHierarchyProvider->first.emplace(true);
 
-  // Type hierarchy (M15): the bare-bool arm for the same reason. The protocol's
+  // Type hierarchy: the bare-bool arm for the same reason. The protocol's
   // `TypeHierarchyOptions` has a `resolveProvider`, and the vendored capability
   // type is the bool arm, so nothing is sent and the field stays absent rather
   // than false — which is what tells a client not to send
@@ -1866,11 +1866,11 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   rsp.result.capabilities.typeHierarchyProvider.emplace();
   rsp.result.capabilities.typeHierarchyProvider->first.emplace(true);
 
-  // Code lens (M13): the "N references" annotation, with resolveProvider off —
+  // Code lens: the "N references" annotation, with resolveProvider off —
   // the count is one walk over the same closure `textDocument/references`
   // answers from, and a client that wants it lazy can re-request the document
   // rather than round-trip per lens.
-  // Document formatting (M17): full document formatting and range formatting.
+  // Document formatting: full document formatting and range formatting.
   rsp.result.capabilities.documentFormattingProvider.emplace();
   rsp.result.capabilities.documentFormattingProvider->first.emplace(true);
   rsp.result.capabilities.documentRangeFormattingProvider.emplace();
@@ -1882,19 +1882,19 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   // A lens cannot carry an edit, so the click is a command the client sends
   // back: advertising the one command this build answers is what makes the
   // lightbulb on a lens do anything. The alternative — a lens whose click dies
-  // in the client — is the M12 Command-honesty rule a second time.
+  // in the client — is the Command-honesty rule a second time.
   rsp.result.capabilities.executeCommandProvider.emplace();
   rsp.result.capabilities.executeCommandProvider->commands.push_back(
       kShowReferencesCommand);
 
-  // Document links (M16): the `#include` literals that resolve to a file.
+  // Document links: the `#include` literals that resolve to a file.
   // resolveProvider is off — every target is resolved eagerly (a filesystem
   // stat per include, already paid by the diagnostics path), so nothing is
   // left for a `documentLink/resolve` round trip.
   rsp.result.capabilities.documentLinkProvider.emplace();
   rsp.result.capabilities.documentLinkProvider->resolveProvider.emplace(false);
 
-  // Pull diagnostics (M14): negotiated, never assumed. A client that
+  // Pull diagnostics: negotiated, never assumed. A client that
   // advertises `textDocument.diagnostic` (a 3.17+ pull client) gets the
   // diagnosticProvider capability and the push path is disabled for the whole
   // session — the spec asks a server to stop publishing once pull is
@@ -1903,7 +1903,7 @@ FreeBasicServer::onInitialize(td_initialize::request const &req) {
   // push path exactly as before, so one server build serves both client
   // generations. `interFileDependencies` is the pull model's promise that the
   // answer for a document can carry its include closure's reports
-  // (`relatedDocuments`), which is exactly what the M6 include-edge graph
+  // (`relatedDocuments`), which is exactly what the include-edge graph
   // provides; `workspaceDiagnostics` offers the workspace-level pull.
   pullDiagnostics_ = req.params.capabilities.textDocument &&
                      req.params.capabilities.textDocument->diagnostic;
@@ -2106,7 +2106,7 @@ FreeBasicServer::indexFor(std::string const &normalizedPath) const {
   // the workspace): it gets no index of its own — workspace/symbol stays
   // strictly workspace-scoped — but the session-root index hosts its on-demand
   // closure so cross-file resolution still serves it (single-index behavior,
-  // preserved across the M11 split). Null in true single-file mode before any
+  // preserved across the split). Null in true single-file mode before any
   // didOpen, or under a deferred broad root that never had an index created.
   if (sessionRoot_.empty()) {
     return nullptr;
@@ -2399,7 +2399,7 @@ void FreeBasicServer::onDidSave(
 // already reissued by `didSave` (which every client sends, whether or not it
 // advertises `willSave`), so validating here would only publish the same bytes
 // twice. The handler is registered anyway — an advertised notification with no
-// receiver is a protocol gap — and format-on-save (M17) is the work that will
+// receiver is a protocol gap — and format-on-save is the work that will
 // give it a body.
 void FreeBasicServer::onWillSave(td_willSave::notify const &notify) {
   (void)notify;
@@ -2810,7 +2810,7 @@ FreeBasicServer::onDefinition(td_definition::request const &req) {
   return rsp;
 }
 
-// --- M15: type go-to, member implementation, type hierarchy -----------------
+// --- Type go-to, member implementation, type hierarchy -----------------
 //
 // All five answer from `fblang`'s type graph and share two rules the rest of
 // this file already follows: a result's ranges are converted against the
@@ -2979,7 +2979,7 @@ td_typeHierarchyPrepare::response FreeBasicServer::onPrepareTypeHierarchy(
 
   // Filled eagerly, in both directions, because the capability is advertised
   // without `resolveProvider` and `typeHierarchy/resolve` is not implemented —
-  // the same call M13's code lens made. `parents` is closure-scoped and
+  // the same call the code lens made. `parents` is closure-scoped and
   // `children` workspace-wide (fblang::supertypes / fblang::subtypes).
   item.parents.emplace(hierarchyItems(
       fblang::supertypes(cached->analysis, normPath, type->key, index.get())));
@@ -3763,7 +3763,7 @@ FreeBasicServer::onSignatureHelp(td_signatureHelp::request const &req) {
 wp_symbol::response
 FreeBasicServer::onWorkspaceSymbol(wp_symbol::request const &req) {
   wp_symbol::response rsp;
-  // Multi-workspace aggregation (M11): every live index contributes, one
+  // Multi-workspace aggregation: every live index contributes, one
   // sorted hit list for the whole session. Overlapping roots (a registered
   // folder inside a broad session root) can scan the same file twice, so
   // files are deduped by path. The aggregated vector pins every snapshot for
@@ -3878,7 +3878,7 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
   std::string const path = req.params.textDocument.uri.GetAbsolutePath().path();
   std::string const normPath = fblang::normalizePath(path);
   // Quick fixes are keyed off the published diagnostics; with diagnostics off
-  // the client is never told about any, so there is nothing to fix (M11's
+  // the client is never told about any, so there is nothing to fix (the
   // gate, the same one the publish path obeys).
   if (!settingsForDocument(normPath).diagnosticsOn) {
     return rsp;
@@ -3894,7 +3894,7 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
 
   // The set of diagnostics the next publish would carry: the parse
   // diagnostics plus this document's own unresolved include edges (the
-  // `include-not-found` set M6 publishes, taken from the same live entry).
+  // `include-not-found` set published from the same live entry).
   std::vector<fblang::Diagnostic> published = doc.parse.diagnostics;
   std::shared_ptr<fblang::WorkspaceIndex> const index = indexFor(normPath);
   std::optional<fblang::FbcVersion> const version =
@@ -3970,7 +3970,7 @@ td_semanticTokens_full::response FreeBasicServer::onSemanticTokensFull(
   std::string const normPath = fblang::normalizePath(
       req.params.textDocument.uri.GetAbsolutePath().path());
   if (!settingsForDocument(normPath).semanticTokensOn) {
-    // Feature gate (M11): the capability stays advertised, but a session that
+    // Feature gate: the capability stays advertised, but a session that
     // disabled semantic tokens gets a valid empty result with a fresh, cached
     // baseline (a delta diffed against the empty set stays consistent), never
     // an error or a null result.
@@ -4006,7 +4006,7 @@ td_semanticTokens_full_delta::response FreeBasicServer::onSemanticTokensDelta(
   std::string const normPath = fblang::normalizePath(
       req.params.textDocument.uri.GetAbsolutePath().path());
   if (!settingsForDocument(normPath).semanticTokensOn) {
-    // Feature gate (M11): a full-empty variant with a fresh resultId — never
+    // Feature gate: a full-empty variant with a fresh resultId — never
     // null, so a client holding a stale baseline keeps a consistent view.
     SemanticTokensOrDelta out;
     out.tokens.emplace();
@@ -4063,7 +4063,7 @@ td_semanticTokens_range::response FreeBasicServer::onSemanticTokensRange(
   std::string const normPath = fblang::normalizePath(
       req.params.textDocument.uri.GetAbsolutePath().path());
   if (!settingsForDocument(normPath).semanticTokensOn) {
-    // Feature gate (M11): an empty data set with a fresh, *uncached* resultId
+    // Feature gate: an empty data set with a fresh, *uncached* resultId
     // — a range result is never stored, exactly like the enabled path, so it
     // can never be diffed against.
     SemanticTokens tokens;
@@ -4106,7 +4106,7 @@ FreeBasicServer::onInlayHint(td_inlayHint::request const &req) {
   std::string const normPath = fblang::normalizePath(
       req.params.textDocument.uri.GetAbsolutePath().path());
   if (!settingsForDocument(normPath).inlayHintsOn) {
-    return rsp; // feature gate (M11): advertised but off — empty result
+    return rsp; // feature gate: advertised but off — empty result
   }
 
   std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
@@ -4291,7 +4291,7 @@ FreeBasicServer::onCodeLens(td_codeLens::request const &req) {
   std::string const normPath = fblang::normalizePath(
       req.params.textDocument.uri.GetAbsolutePath().path());
   if (!settingsForDocument(normPath).codeLensOn) {
-    return rsp; // feature gate (M11): advertised but off — no lenses at all
+    return rsp; // feature gate: advertised but off — no lenses at all
   }
   std::shared_ptr<fblang::AnalysisCache::Entry const> const cached =
       cachedRequestAnalysis(req.params.textDocument.uri);

@@ -48,7 +48,7 @@ struct IndexedFile {
   std::vector<IncludeEdge> includes;
 
   // The file carries a `#pragma once` line: a self-granted once-guard,
-  // recorded as M6 metadata. Not enforced yet (FreeBASIC.md §12.6: guard
+  // recorded as include metadata. Not enforced yet (FreeBASIC.md §12.6: guard
   // states are not evaluated); the per-path dedup in transitiveIncludes is
   // intentional and unaffected.
   bool pragmaOnce = false;
@@ -255,7 +255,7 @@ private:
   // Guarded by mu_ like the maps above. `includeDirs_` caches
   // settings_.includePaths resolved to absolute paths against root_;
   // `systemIncludeDir_`, `fbcExecutable_`, and `fbcVersion_` are the compiler
-  // facts probed once at the same adoption (M21 step 2).
+  // facts probed once at the same adoption.
   Settings settings_;
   std::vector<std::filesystem::path> includeDirs_;
   std::filesystem::path systemIncludeDir_;
@@ -363,7 +363,7 @@ std::filesystem::path defaultSystemIncludeDir();
 //      system search).
 // Both `/` and `\` separators are accepted. Returns the normalized absolute
 // path, or nullopt when the file exists nowhere (kept as an unresolved edge
-// for the M6 include diagnostics).
+// for the include diagnostics).
 std::optional<std::string> resolveIncludeTarget(
     std::string_view literal, std::filesystem::path const &includingFile,
     std::filesystem::path const &workspaceRoot,

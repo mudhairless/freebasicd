@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// format_config_checks: the formatter's config loader (M17). LSP-agnostic:
+// format_config_checks: the formatter's config loader. LSP-agnostic:
 // parseFormatTable/resolveConfig/configForStyle/applyClientOptions are plain
 // data behind tomlplusplus, exercised directly here. The tests pin the
 // resolution the design calls for: an explicit file or style first, then the

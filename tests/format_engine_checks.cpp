@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// format_engine_checks: the M17 formatter engine. LSP-agnostic: formatDocument
+// format_engine_checks: the formatter engine. LSP-agnostic: formatDocument
 // over literal inputs with explicit FormatConfig values, asserting full
 // expected outputs — indentation from the block stack, spacing rules, case
 // transforms against the language catalogs, and the verbatim-preservation

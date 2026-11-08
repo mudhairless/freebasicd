@@ -67,7 +67,7 @@ std::optional<std::string> stringValue(toml::table const &table,
   return resolveConfigPath(*value, configDir);
 }
 
-// Parse the `[build]` table: `kind` and `main` (M21 step 2).
+// Parse the `[build]` table: `kind` and `main`.
 void parseBuild(toml::table const &root, std::filesystem::path const &configDir,
                 std::vector<SuppressNote> *notes, Settings *s) {
   toml::node const *const node = root.get("build");
@@ -103,7 +103,7 @@ void parseBuild(toml::table const &root, std::filesystem::path const &configDir,
 }
 
 // Parse the `[fbc]` table: `path` only. The compiler version is probed at
-// runtime, never configured (M21 step 2: there is deliberately no
+// runtime, never configured (there is deliberately no
 // `fbc.version` key).
 void parseFbc(toml::table const &root, std::filesystem::path const &configDir,
               std::vector<SuppressNote> *notes, Settings *s) {
@@ -183,7 +183,7 @@ Settings parseSettings(std::string_view tomlText, bool *ok,
     s.codeLensOn = *v;
   }
 
-  // M21 step 2: the two sub-tables. Unknown keys inside them are ignored like
+  // The two sub-tables. Unknown keys inside them are ignored like
   // every other unknown key; value-shape problems are notes.
   parseBuild(root, configDir, notes, &s);
   parseFbc(root, configDir, notes, &s);

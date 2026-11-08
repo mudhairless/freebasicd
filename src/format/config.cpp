@@ -908,7 +908,7 @@ ResolvedConfig resolveConfig(std::string const &filePath,
     }
   } else if (loadPresetInto("FBdocs", configDir, &cfg, &seen, &error) !=
              PresetStatus::Loaded) {
-    // The implicit default has a built-in fallback (PLAN M17 §6): a missing
+    // The implicit default has a built-in fallback: a missing
     // install preset degrades to the factory values, which change no token
     // spelling. An explicitly named style never gets this treatment.
     cfg = factoryDefaults();

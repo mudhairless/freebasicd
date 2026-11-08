@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M13 code lens.
+// Code lens.
 //
 // The one lens a client draws: the count, the singular form, and the command
 // its click sends back.
@@ -19,7 +19,7 @@ using namespace fbtest;
 
 namespace {
 
-// M13 code lens end to end: the header's procedure carries a lens counting the
+// Code lens end to end: the header's procedure carries a lens counting the
 // includer's two call sites — the count crosses the include boundary, which is
 // the whole reason a lens is worth drawing — the client file's own procedure
 // carries the singular form, and the command a click sends back answers with

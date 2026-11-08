@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// Expand-selection checks for the M13 chain module.
+// Expand-selection checks for the chain module.
 //
 // Byte-offset, LSP-agnostic: exercises the token / statement / block / file
 // levels, the `:` statement separator, `_` continuations (which the lexer has

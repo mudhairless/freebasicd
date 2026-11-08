@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M11 index lifetime over the wire.
+// Index lifetime over the wire.
 //
 // One index per workspace root, as a client sees it: a watched-files event
 // converging an external edit, an open buffer outranking the disk copy of the

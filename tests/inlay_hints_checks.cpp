@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// Inlay-hint checks for the M9 hint module.
+// Inlay-hint checks for the hint module.
 //
 // Byte-offset, LSP-agnostic: exercises expected-closer hints at block openers
 // (keyword and preprocessor blocks), the single-line skip, and the cosmetic

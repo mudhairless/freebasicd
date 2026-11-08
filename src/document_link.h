@@ -16,7 +16,7 @@
 
 namespace fblang {
 
-// Include navigation (M16): what the server does when the cursor is on an
+// Include navigation: what the server does when the cursor is on an
 // `#include` filename literal. LSP-agnostic and in byte offsets like the rest
 // of the language layer; the session turns a `DocumentLinkItem` into an
 // `lsDocumentLink` and names the URI scheme, the same split code_lens and

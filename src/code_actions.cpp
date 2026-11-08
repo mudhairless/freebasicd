@@ -459,7 +459,7 @@ std::vector<QuickFixRegistration> const &quickFixProviders() {
       // parser.cpp: a reserved word in the name position of a record or enum
       // member list (see the probed tables in language.cpp).
       {"invalid-member-name", renameReservedMemberName},
-      // M6: an `#include` edge that resolved nowhere (session.cpp publishes
+      // An `#include` edge that resolved nowhere (session.cpp publishes
       // these through unresolvedIncludeDiagnostics).
       {"include-not-found", retargetInclude},
       // lexer.cpp/parser.cpp: a suffix char on a reserved word (fbc warning
@@ -474,7 +474,7 @@ std::vector<QuickFixRegistration> const &quickFixProviders() {
       // the same declaration — our own Hint, so the fix deletes just the dot.
       {"redundant-leading-dot", removeRedundantLeadingDot},
       // resolve.cpp: a run of module-level executable statements outside the
-      // main module (M21 step 3) — the fix wraps the run in a module
+      // main module — the fix wraps the run in a module
       // constructor, which states the load-time intent on purpose.
       {"module-code-outside-main", wrapInModuleConstructor},
   };

@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M12 quick fixes over the wire.
+// Quick fixes over the wire.
 //
 // The missing-include diagnostic and the three fixes that answer it, plus the
 // empty-result case (a diagnostic with no fix, and a `context.only` filter that
@@ -19,7 +19,7 @@
 using namespace fbtest;
 
 namespace {
-// M12 quick-fix fixtures: a sandbox holding the real header one directory
+// Quick-fix fixtures: a sandbox holding the real header one directory
 // down, so `#include "config.bai"` resolves nowhere while `inc/config.bi` is a
 // workspace file the retarget fix can find.
 struct CodeActionFixture {

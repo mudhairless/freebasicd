@@ -144,7 +144,7 @@ private:
   // the initialize reply.
   bool watchedFilesDynamic_ = false;
 
-  // Pull diagnostics (M14): the client advertised `textDocument.diagnostic`
+  // Pull diagnostics: the client advertised `textDocument.diagnostic`
   // (LSP 3.17), so the server advertises `diagnosticProvider`, answers
   // `textDocument/diagnostic` and `workspace/diagnostic`, and stops pushing
   // `publishDiagnostics` — the spec asks a server to prefer pull once it is
@@ -163,7 +163,7 @@ private:
   // pull on one document can surface alongside its own problems.
   bool relatedDocumentSupport_ = false;
 
-  // In-memory per-workspace symbol indexes (M11): one index per workspace
+  // In-memory per-workspace symbol indexes: one index per workspace
   // root, keyed by normalized root. Registered client workspace folders that
   // bear a root marker (a version-control marker or freebasicd.toml) are
   // indexed at initialize and tracked in workspaceFolderRoots_; broad folders
@@ -190,7 +190,7 @@ private:
   // set for a file opened inside them (multi-folder isolation).
   std::set<std::string> workspaceFolderRoots_;
 
-  // Content-addressed analysis memo (M10). Every request-path handler reads
+  // Content-addressed analysis memo. Every request-path handler reads
   // the open buffer through this, and the cross-file providers
   // (references/rename closures, remote range conversion) share it with the
   // open buffers, so one (path, content) pair is analyzed at most once per
@@ -204,7 +204,7 @@ private:
   // workspaceFolders_ / workspaceFolderRoots_ above.
   std::filesystem::path sessionRoot_;
 
-  // Semantic-tokens delta cache (M9). Only `full` results are stored: a
+  // Semantic-tokens delta cache. Only `full` results are stored: a
   // `range` result carries a fresh resultId but is never cached, so a delta can
   // never be diffed against a viewport-scoped token set. Handlers run on the
   // pool concurrently, so every access holds deltaMutex_; responses are built
@@ -318,7 +318,7 @@ private:
   bool formattingConfigFor(std::filesystem::path const &path,
                            lsFormattingOptions const &options,
                            fbformat::FormatConfig *out);
-  // Quick fixes (M12). LspCpp models the response as a bare command list, so
+  // Quick fixes. LspCpp models the response as a bare command list, so
   // each fix ships as `Command{title, "", [WorkspaceEdit]}` — the empty command
   // name is the client's cue to apply `arguments[0]` itself — and the kind
   // filter in `context.only` is honored here rather than by the client.
@@ -330,7 +330,7 @@ private:
   td_semanticTokens_range::response
   onSemanticTokensRange(td_semanticTokens_range::request const &req);
   td_inlayHint::response onInlayHint(td_inlayHint::request const &req);
-  // Type go-to (M15): the type a symbol has (`dim v as base_t`, a field inside
+  // Type go-to: the type a symbol has (`dim v as base_t`, a field inside
   // a type body, the type a `sub t.go()` qualifies) and the far end of a member
   // procedure's declare <-> defined edge. Both answer one location, and both
   // answer nothing rather than a guess when the symbol carries no type.
@@ -338,7 +338,7 @@ private:
   onTypeDefinition(td_typeDefinition::request const &req);
   td_implementation::response
   onImplementation(td_implementation::request const &req);
-  // Type hierarchy (M15): prepare returns the type under the cursor with its
+  // Type hierarchy: prepare returns the type under the cursor with its
   // parents and children already filled, and the two follow-ups take an item
   // the client echoes back — identified by `uri` + `selectionRange`, exactly as
   // callHierarchyIdentity is, so `TypeHierarchyItem::data` stays unset.
@@ -348,19 +348,19 @@ private:
   onSupertypes(td_typeHierarchySupertypes::request const &req);
   td_typeHierarchySubtypes::response
   onSubtypes(td_typeHierarchySubtypes::request const &req);
-  // Expand selection (M13): the token / statement / block / file chain at each
+  // Expand selection: the token / statement / block / file chain at each
   // requested position, nested outward. One response entry per requested
   // position, which is the mapping the client assumes.
   td_selectionRange::response
   onSelectionRange(td_selectionRange::request const &req);
 
-  // Document links (M16): the `#include` filename literals that resolve to a
+  // Document links: the `#include` filename literals that resolve to a
   // file, so an editor can open the header from the directive. Symbols are not
   // linked — hover covers a keyword's wiki page, and a link on every keyword
   // would underline the whole buffer to repeat what hover already shows.
   td_links::response onDocumentLink(td_links::request const &req);
 
-  // Call hierarchy (M13). All three carry the same item shape, and the two
+  // Call hierarchy. All three carry the same item shape, and the two
   // follow-ups take an item the client echoes back from prepare or from an
   // outgoing call — identified by its `uri` + `selectionRange`, which are both
   // in the item and both needed to convert the ranges that come back, so
@@ -372,7 +372,7 @@ private:
   td_incomingCalls::response
   onIncomingCalls(td_incomingCalls::request const &req);
 
-  // Code lens (M13): one "N references" lens per declaration, plus the command
+  // Code lens: one "N references" lens per declaration, plus the command
   // its click sends back. The two are one feature — a lens has no edit field,
   // so `executeCommandProvider` + `workspace/executeCommand` is what makes the
   // annotation clickable at all.
@@ -380,7 +380,7 @@ private:
   wp_executeCommand::response
   onExecuteCommand(wp_executeCommand::request const &req);
 
-  // Pull diagnostics (M14): `textDocument/diagnostic` answers one document's
+  // Pull diagnostics: `textDocument/diagnostic` answers one document's
   // report (full, or unchanged against the client's previousResultId, with
   // the include closure's reports as relatedDocuments), and
   // `workspace/diagnostic` answers a report per workspace document the client

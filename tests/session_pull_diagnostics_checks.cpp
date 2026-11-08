@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M14 pull diagnostics.
+// Pull diagnostics.
 //
 // The 3.17 alternative to push: the negotiation that decides which path runs, a
 // full report and the `unchanged` answer for a matching previousResultId, the
@@ -49,7 +49,7 @@ void TestPullDiagnosticsNegotiation() {
   Expect(response.find("\"diagnosticProvider\"") != std::string::npos,
          "a pull-capable client must be offered diagnosticProvider");
   Expect(response.find("\"interFileDependencies\":true") != std::string::npos,
-         "diagnosticProvider must advertise interFileDependencies (the M6 "
+         "diagnosticProvider must advertise interFileDependencies (the "
          "include closure is what relatedDocuments answers from)");
   Expect(response.find("\"workspaceDiagnostics\":true") != std::string::npos,
          "diagnosticProvider must advertise workspaceDiagnostics");
@@ -349,7 +349,7 @@ void TestWorkspaceDiagnostic() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
-// M23: the `-w` warning level is part of a report's identity, like the master
+// The `-w` warning level is part of a report's identity, like the master
 // diagnostics gate. A level flip changes the resultId so a client caching by id
 // re-pulls; the level itself decides which mapped warnings the items carry,
 // while errors always surface.
@@ -475,7 +475,7 @@ void TestWarningLevelFoldsIntoResultId() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
-// M23: `suppress` is part of a report's identity. The list starts with the
+// `suppress` is part of a report's identity. The list starts with the
 // stray closer suppressed, so the first report carries only the unterminated
 // sub; removing the suppression re-adds the closer and moves the resultId.
 void TestSuppressFoldsIntoResultId() {

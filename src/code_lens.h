@@ -15,7 +15,7 @@
 
 namespace fblang {
 
-// Code lens (M13): the annotation an editor draws above a declaration line —
+// Code lens: the annotation an editor draws above a declaration line —
 // here, how many places reference it. LSP-agnostic and in byte offsets like
 // the rest of the language layer; the session turns one `CodeLens` into an
 // `lsCodeLens` and answers the click.

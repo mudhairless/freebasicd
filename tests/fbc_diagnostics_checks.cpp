@@ -200,7 +200,7 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::ExpectedEndSub, FbcMessageKind::Error,
                           FbcVersion{1, 9, 9}) == 125);
 
-  // The `select` family (M23 G1), each pinned to the catalog number the
+  // The `select` family, each pinned to the catalog number the
   // probe read back from fbc 1.10.3 (tools/fbc_catalog.tsv).
   CHECK(fblang::fbcNumber(FbcDiagId::IllegalInsideSelect, FbcMessageKind::Error,
                           v1102) == 62);
@@ -219,7 +219,7 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::InvalidCaseRange, FbcMessageKind::Error,
                           v1102) == 323);
 
-  // The loop families (M23 G2): the landed closer pair plus the new
+  // The loop families: the landed closer pair plus the new
   // mismatch/warning identities, each pinned to the catalog number
   // (tools/fbc_catalog.tsv).
   CHECK(fblang::fbcNumber(FbcDiagId::ExpectedNext, FbcMessageKind::Error,
@@ -239,7 +239,7 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::NextVarMeaningless,
                           FbcMessageKind::Warning, v1102) == 26);
 
-  // The `exit`/`continue` target family (M23 G3), each pinned to the
+  // The `exit`/`continue` target family, each pinned to the
   // catalog number the probe read back from fbc 1.10.3
   // (tools/fbc_catalog.tsv).
   CHECK(fblang::fbcNumber(FbcDiagId::InvalidExitStmt, FbcMessageKind::Error,
@@ -247,7 +247,7 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::InvalidContinueStmt, FbcMessageKind::Error,
                           v1102) == 252);
 
-  // The placement / branch-crossing families (M23 G4), each pinned to the
+  // The placement / branch-crossing families, each pinned to the
   // catalog number the probe read back from fbc 1.10.3
   // (tools/fbc_catalog.tsv). The two `44` identities share the number in
   // different spaces and must stay distinct.
@@ -266,7 +266,7 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::BranchCrossingLocalVar,
                           FbcMessageKind::Error, v1102) == 0);
 
-  // The punctuator family (M23 G5), each pinned to the catalog number the
+  // The punctuator family, each pinned to the catalog number the
   // probe read back from fbc 1.10.3 (tools/fbc_catalog.tsv).
   CHECK(fblang::fbcNumber(FbcDiagId::ExpectedLprnt, FbcMessageKind::Error,
                           v1102) == 6);
@@ -293,7 +293,7 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::ExpectedGt, FbcMessageKind::Warning,
                           v1102) == 0);
 
-  // The statement-specific family (M23 G6), each pinned to the catalog
+  // The statement-specific family, each pinned to the catalog
   // number the probe read back from fbc 1.10.3 (tools/fbc_catalog.tsv).
   CHECK(fblang::fbcNumber(FbcDiagId::ExpectedDynamicArray,
                           FbcMessageKind::Error, v1102) == 54);

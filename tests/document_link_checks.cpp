@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// Document-link checks for the M16 module.
+// Document-link checks for the module.
 //
 // Byte-offset and LSP-agnostic, like the module: no index, no session. The only
 // workspace state `documentLinks` reaches is the `IncludeResolver` seam, and

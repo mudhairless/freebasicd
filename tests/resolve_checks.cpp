@@ -554,7 +554,7 @@ static void TestStorageGateInControlBlocks() {
             "storage-gated");
 }
 
-// --- M8: occurrencesAcross ---
+// --- occurrencesAcross ---
 
 static std::filesystem::path MakeTmpDir() {
   static std::atomic<long> counter{0};
@@ -646,7 +646,7 @@ static void TestOccurrencesAcrossSingleFile() {
 // Cross-file workspace rename: a shared module dim is renamed from a client
 // file; candidates are the closure plus reverse reachability, and every site
 // is re-resolved so a shadowing or gated same-named local is untouched.
-// --- M15: the type graph --------------------------------------------------
+// --- the type graph --------------------------------------------------
 //
 // One fixture for every query here, because the questions are only
 // interesting against a real graph: a three-level extends chain declared in a
@@ -2072,7 +2072,7 @@ static void TestPreprocessorDefineWindows() {
   }
 }
 
-// The `module-var-not-shared` family (M21 step 2): a module-level `Dim` without
+// The `module-var-not-shared` family: a module-level `Dim` without
 // `Shared` is invisible inside a procedure — reading it there, or naming it
 // through a leading `.` / `typeof(.x)`, is fbc's errors 42/8/9. The pass lives
 // in `analyze`, so every one of these arrives through the same parse
@@ -2600,8 +2600,8 @@ static void TestExternPlacementDiagnostics() {
 }
 
 static void TestModuleCodeDiagnostics() {
-  // The firing matrix across the build facts the session hands over
-  // (M21 step 3): an exe fires only with a configured main and never in
+  // The firing matrix across the build facts the session hands over:
+  // an exe fires only with a configured main and never in
   // the main module; a library fires everywhere; without a main the exe
   // is never judged (the server must not guess which module is main).
   auto fires = [](std::string const &src, BuildKind kind,

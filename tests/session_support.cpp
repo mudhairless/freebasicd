@@ -244,7 +244,7 @@ PollRequest(std::shared_ptr<FeedableIStream> const &input,
   return last;
 }
 
-// M7 two-file fixture: a header declaring a shared module var, a plain module
+// Two-file fixture: a header declaring a shared module var, a plain module
 // var, and a proc that reads the shared one; a client .bas that includes it and
 // uses the shared var at module level and inside a proc (where the plain var
 // must stay invisible); and a completion probe projecting the plain var's name
@@ -268,7 +268,7 @@ char const kProgContent[] = "#include \"lib.bi\"\n"
                             "end sub\n";
 char const kExtraContent[] = "dim shared earlyBird as integer\n";
 
-// M13 call hierarchy: a header declaring the only callee, and a client file
+// Call hierarchy: a header declaring the only callee, and a client file
 // that calls it twice — once with a parameter list, once bare, which fbc
 // accepts in `fb` mode — and calls itself. Both directions of the hierarchy
 // therefore cross a file boundary, and recursion is on the wire.
@@ -451,7 +451,7 @@ char const *kShutdownFrame =
 char const *kExitFrame =
     R"FB({"jsonrpc":"2.0","method":"exit","params":null})FB";
 
-// M14 pull diagnostics: a 3.17+ client that advertises textDocument.diagnostic
+// Pull diagnostics: a 3.17+ client that advertises textDocument.diagnostic
 // (with relatedDocumentSupport) and workspace.diagnostics.refreshSupport. The
 // server must answer the pull requests and stop pushing.
 char const kInitializePullFrame[] =

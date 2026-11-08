@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// format_corpus_checks: the formatter's corpus gate (M17 wave 2). For every
+// format_corpus_checks: the formatter's corpus gate. For every
 // tests/corpus/*.bas file, under each shipped preset:
 //
 //   1. idempotence: format(format(x)) == format(x);

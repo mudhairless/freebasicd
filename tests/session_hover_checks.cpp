@@ -290,7 +290,7 @@ char const *kIntrinsicHoverFrame =
     R"FB({"jsonrpc":"2.0","id":"ihv","method":"textDocument/hover","params":)FB"
     R"FB({"textDocument":{"uri":"file://{{tmp}}/intr.bas"},"position":{"line":5,"character":4}}})FB";
 
-// The runtime builtins this wave added rows for: hovering `sleep` (a statement
+// The runtime builtins with catalog rows: hovering `sleep` (a statement
 // keyword) and `inp` (a function) must show the catalog signature and the
 // intrinsic's wiki page — not the generic keyword link. Both words are
 // reserved, so the token is a Keyword either way; the catalog answer must win.

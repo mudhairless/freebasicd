@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// Call-hierarchy checks for the M13 scan module.
+// Call-hierarchy checks for the scan module.
 //
 // Byte-offset and LSP-agnostic, like the module: no index, no session. The only
 // workspace state the scans reach is the `CalleeResolver` seam, and these

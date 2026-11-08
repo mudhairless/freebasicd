@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// The format engine (M17): a line-oriented re-emission of the token stream.
+// The format engine: a line-oriented re-emission of the token stream.
 // Every physical line is rebuilt from its significant tokens with the
 // configured indent, spacing, and catalog-word case; everything the engine
 // has no opinion about is copied from the original bytes.
@@ -27,7 +27,7 @@
 // one-line-If rule); the parser's blockRanges join in when SplitSafe and
 // one-line block expansion arrive.
 //
-// Invariants this file must keep (M17 plan): never rewrite string sigils,
+// Invariants this file must keep: never rewrite string sigils,
 // Print separators, metacommand comments, enum trailing commas, Draw/Paint
 // strings, or empty graphics argument slots; never insert or remove `_`.
 

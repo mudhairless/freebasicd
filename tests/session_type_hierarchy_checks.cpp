@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M15 type go-to + type hierarchy.
+// Type go-to + type hierarchy.
 //
 // `textDocument/typeDefinition`, `textDocument/implementation`, and the
 // `textDocument/typeHierarchy` trio, over a fixture whose shapes were checked
@@ -490,7 +490,7 @@ void TestTypeHierarchyPrepareFillsBothDirections() {
   // Nothing to anchor on: a module-level procedure has no type, so there is
   // no item and the client offers no affordance. The reply carries no
   // `result` key at all, because LspCpp's serializer omits an absent optional
-  // member — the same frame M13's prepareCallHierarchy gets, and a client
+  // member — the same frame prepareCallHierarchy gets, and a client
   // reading `result` sees `undefined`, which this feature's own types admit.
   std::string const atMain = WirePositionOf(kShapesBas, "sub main", 4);
   std::string const atModule =

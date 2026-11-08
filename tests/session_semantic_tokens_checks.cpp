@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M9 semantic tokens and inlay hints.
+// Semantic tokens and inlay hints.
 //
 // Full-then-delta with the result id, the capability negotiation that decides
 // whether a delta is ever sent, the viewport request, and the inlay hints.

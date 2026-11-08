@@ -6,7 +6,7 @@
 
 // settings_checks: freebasicd.toml parsing and the config-file root marker.
 // LSP-agnostic: parseSettings/settingsForDir/hasConfigFile are plain data
-// behind tomlplusplus, exercised directly here (M11).
+// behind tomlplusplus, exercised directly here.
 
 #include <atomic>
 #include <chrono>
@@ -50,7 +50,7 @@ static void TestParseDefaults() {
   CHECK(s.semanticTokensOn);
   CHECK(s.inlayHintsOn);
   CHECK(s.codeLensOn);
-  // M23: no warnings until a config enables them (`-w none`), unlike fbc's
+  // No warnings until a config enables them (`-w none`), unlike fbc's
   // driver default of level 1.
   CHECK(s.warningLevel == 4);
   CHECK(s.suppress.empty());
@@ -86,7 +86,7 @@ static void TestParseFullSettings() {
   CHECK_EQ(s.suppress[1], "unterminated-string");
 }
 
-// M23: the vocabulary is fbc's `-w` option names, English only, matched
+// The vocabulary is fbc's `-w` option names, English only, matched
 // case-sensitively like the compiler's own option parser. Each maps to the
 // level threshold fbc's driver would set (`all`/`constness`/`funcptr` → 0,
 // `pedantic` and the family options → 1, `none` → 4); anything else — an
@@ -114,7 +114,7 @@ static void TestWarningLevelParsing() {
   CHECK(s.warningLevel == 4);
 }
 
-// M23: `suppress` is a set of our routing keys — lowercased, sorted, deduped at
+// `suppress` is a set of our routing keys — lowercased, sorted, deduped at
 // parse time, so ordering and case are not part of the value (two configs that
 // name the same set compare equal and answer the same resultId). A non-array
 // value keeps the default, and non-string elements are skipped.
@@ -134,7 +134,7 @@ static void TestSuppressParsing() {
   CHECK_EQ(mixed.suppress[1], "x");
 }
 
-// M23: a `suppress` entry copied from a diagnostic's wire code carries the fbc
+// A `suppress` entry copied from a diagnostic's wire code carries the fbc
 // half after the routing key (`include-not-found, fbc error: 23`). A key never
 // contains a comma, so the loader keeps the text before the first one and
 // reports the entry through `notes` for the session to warn about; the config
@@ -235,7 +235,7 @@ static void TestConfigFileMarkerAndLoad() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
-// M21 step 2: the `[build]` / `[fbc]` sub-tables. Defaults keep today's
+// The `[build]` / `[fbc]` sub-tables. Defaults keep today's
 // behavior (an exe with no known main, the first fbc on PATH); unknown values
 // are notes rather than parse failures; relative paths resolve against the
 // config file's own directory. `fbc.version` deliberately does not exist: the
@@ -296,7 +296,7 @@ static void TestBuildAndFbcParsing() {
   CHECK(notes.empty());
 }
 
-// M21 step 2: parse the dotted number out of `fbc -version`. The build date and
+// Parse the dotted number out of `fbc -version`. The build date and
 // platform triple are ignored; only a complete major.minor.patch token counts.
 static void TestParseFbcVersion() {
   std::optional<FbcVersion> const real = parseFbcVersion(
@@ -370,7 +370,7 @@ static std::filesystem::path writeFakeFbc(std::filesystem::path const &dir,
   return exe;
 }
 
-// M21 step 2: the probe is bounded and reads only the dotted version; a missing
+// The probe is bounded and reads only the dotted version; a missing
 // compiler leaves the version unknown rather than throwing or stalling.
 static void TestProbeFbcVersion() {
   static std::atomic<long> counter{0};

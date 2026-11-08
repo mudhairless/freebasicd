@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M21 step 4: duplicate `Public` procedure collisions across one root's
+// Duplicate `Public` procedure collisions across one root's
 // include closure (probed with fbc 1.10.3, FreeBASIC.md §9).
 //
 // A `Public` procedure that shares its uppercased name (plus, for

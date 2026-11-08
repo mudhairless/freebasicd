@@ -19,7 +19,7 @@
 using namespace fbtest;
 
 namespace {
-// M13 expand selection: the same nested document the byte-offset checks in
+// Expand selection: the same nested document the byte-offset checks in
 // selection_checks use, so every coordinate in the reply can be read straight
 // off the source below.
 //

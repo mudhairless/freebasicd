@@ -104,7 +104,7 @@ bool statFile(std::filesystem::path const &path, std::uint64_t *mtime,
 }
 
 // ---------------------------------------------------------------------------
-// Free functions (M5)
+// Free functions
 // ---------------------------------------------------------------------------
 
 // System FreeBASIC headers ship next to the compiler install: Windows keeps
@@ -741,7 +741,7 @@ void WorkspaceIndex::rescanLoop() {
 }
 
 // ---------------------------------------------------------------------------
-// Configuration (M11): per-root Settings + the include-dirs seam
+// Configuration: per-root Settings + the include-dirs seam
 // ---------------------------------------------------------------------------
 
 std::vector<SuppressNote> WorkspaceIndex::applySettings(Settings const &s) {

@@ -99,7 +99,7 @@ std::vector<InlayHintItem> inlayHints(AnalyzedDoc const &doc,
     if (opener == nullptr) {
       continue;
     }
-    // The same lookup the M12 `unterminated-block` quick fix uses, so a hint
+    // The same lookup the `unterminated-block` quick fix uses, so a hint
     // and a fix can never name the closer differently.
     std::string label = expectedCloserAt(doc.tokens, br.beg);
     if (label.empty()) {

@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M16 include navigation.
+// Include navigation.
 //
 // What the cursor on an `#include` filename literal does: the link a client
 // draws over it, and the `textDocument/definition` it answers with the resolved

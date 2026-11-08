@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M11 workspace roots and workspace/symbol.
+// Workspace roots and workspace/symbol.
 //
 // Root selection from a client root: the VCS and source/include-layout walks,
 // the config-file marker, the home-folder guard, and the single-file mode —

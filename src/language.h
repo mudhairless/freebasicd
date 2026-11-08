@@ -23,7 +23,7 @@ namespace fblang {
 // Verified against fbc 1.10.2 in both directions. The check that can *find* a
 // word this set omits is a diff against fbc's own keyword table (`kwdTb`, the
 // `FB_TK_*` token names, and the runtime builtin names the lexer reserves);
-// that diff is how the twelve words this wave added were found. Each entry
+// that diff is also how the twelve newest words in the table were found.
 // also fails `dim <word> as integer` (fbc `error 4`), which proves it *is*
 // reserved but is one-directional: it confirms an entry and can never report
 // a missing one. Two holes the diff must carry: a `KWD_OPTION_NO_QB` word is
@@ -218,7 +218,7 @@ bool statementPosition(std::vector<Token> const &tokens, std::uint32_t off);
 // The closer the block opened at byte offset `openerBeg` expects — "END SUB",
 // "NEXT", "WEND", "#ENDIF", ... — or "" when no token starts there or the token
 // opens no block. One answer for the whole server: the inlay-hint closer hints
-// and the M12 `unterminated-block` quick fix must never name a closer
+// and the `unterminated-block` quick fix must never name a closer
 // differently.
 std::string expectedCloserAt(std::vector<Token> const &tokens,
                              std::uint32_t openerBeg);

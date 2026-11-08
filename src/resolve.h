@@ -32,7 +32,7 @@ namespace fblang {
 
 // One document analyzed once: parse tree, full token stream (borrows the
 // `source` buffer passed to analyze — must not outlive it), and raw include
-// directives in source order. `parse.roots` carries the M5 occurrence
+// directives in source order. `parse.roots` carries the occurrence
 // projection: every Symbol's `occurrences` are filled and file-root Symbols
 // are tagged `moduleScope=true`.
 struct AnalyzedDoc {
@@ -118,7 +118,7 @@ std::optional<std::uint32_t> sharedInsertionOffset(std::string_view content,
 void externPlacementDiagnostics(std::vector<Token> const &tokens,
                                 std::vector<Diagnostic> *out);
 
-// Maximal runs of module-level executable statements (M21 step 3): one
+// Maximal runs of module-level executable statements: one
 // vector per run, in source order; each statement is its recorded
 // `moduleLevelStatements` range. A declaration interrupts a run — a
 // `Dim`/`Const`/`Declare`/`Type`/`Enum`/`Namespace`/`Extern` root, or a
@@ -128,7 +128,7 @@ void externPlacementDiagnostics(std::vector<Token> const &tokens,
 // so its body is one run member however the block is laid out.
 std::vector<std::vector<SourceRange>> moduleCodeRuns(ParseResult const &parse);
 
-// The module-level-code diagnostics (M21 step 3) for one file, before the
+// The module-level-code diagnostics for one file, before the
 // delivery gate. One Warning (`module-code-outside-main`, no fbc identity:
 // fbc does not diagnose this at all) per run in `moduleCodeRuns`, anchored
 // on the run's first statement. The firing matrix is a caller's facts:
@@ -143,7 +143,7 @@ void moduleCodeDiagnostics(ParseResult const &parse, BuildKind kind,
                            bool isMainModule, std::vector<Diagnostic> *out);
 
 // Duplicate `Public` procedure collisions across one root's include
-// closure (M21 step 4): group module-level `Public` `Sub`/`Function`
+// closure: group module-level `Public` `Sub`/`Function`
 // definitions by their link key — uppercased name for plain procedures,
 // uppercased name plus canonical parameter signature for `Overload`
 // procedures (FreeBASIC.md §9, probed with fbc 1.10.3). `Private`
@@ -210,7 +210,7 @@ CrossDecl resolveAcross(AnalyzedDoc const &doc,
                         std::string const &normalizedPath, std::uint32_t off,
                         WorkspaceIndex const &index);
 
-// --- Member access (M9) ---
+// --- Member access ---
 
 // The declared type name of `decl`, recovered from its signature line (the
 // word after the first `as`, skipping `const`/`byref`-style modifiers), or
@@ -301,7 +301,7 @@ MemberCompletion resolveMemberCompletion(AnalyzedDoc const &doc,
                                          std::uint32_t off,
                                          WorkspaceIndex const *index);
 
-// --- Cross-file rename support (M8) ---
+// --- Cross-file rename support ---
 
 // A single rename site: the file and byte range to replace.
 struct OccurrenceSite {
@@ -351,7 +351,7 @@ std::vector<std::string> referencingFiles(std::string const &normalizedPath,
                                           std::string const &declPath,
                                           WorkspaceIndex const *index);
 
-// --- Type graph and member implementation (M15) ---
+// --- Type graph and member implementation ---
 //
 // FreeBASIC's type graph is a single parent per type: `type d extends b` on
 // the opener line is the only inheritance form there is (no `Type : base`, and

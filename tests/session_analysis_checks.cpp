@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M7 analysis reuse.
+// Analysis reuse.
 //
 // Repeated requests served from one parse, a versionless didChange forcing a
 // fresh one, and a cross-file closure reusing the analysis the index already
@@ -20,7 +20,7 @@ using namespace fbtest;
 
 namespace {
 
-// M10: repeat requests against an unchanged open buffer must be served from
+// Repeat requests against an unchanged open buffer must be served from
 // the content-addressed analysis cache — the cache's miss counter must not
 // move, and its hit counter must. This is the "no reparse observable" gate.
 void TestRepeatRequestsShareAnalysis() {
@@ -65,7 +65,7 @@ void TestRepeatRequestsShareAnalysis() {
   session.stop();
 }
 
-// M10: a didChange with no `version` field still leaves the WorkingFile version
+// A didChange with no `version` field still leaves the WorkingFile version
 // unchanged; a version-keyed cache would serve the pre-change parse. The
 // content-addressed key must re-analyze the new bytes and serve fresh symbols.
 void TestVersionlessChangeServesFreshAnalysis() {
@@ -104,7 +104,7 @@ void TestVersionlessChangeServesFreshAnalysis() {
   session.stop();
 }
 
-// M10: the cross-file closure tax is gone — a references pass over the
+// The cross-file closure tax is gone — a references pass over the
 // requesting buffer plus a closed closure file warms the cache on first use
 // (one disk-read miss), and a repeat pass re-analyzes nothing.
 void TestReferencesClosureReusesAnalysis() {

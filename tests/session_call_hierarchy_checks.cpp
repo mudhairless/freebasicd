@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M13 call hierarchy.
+// Call hierarchy.
 //
 // PrepareCallHierarchy anchoring the procedure under the cursor, and both
 // directions of the hierarchy crossing an include boundary.
@@ -18,7 +18,7 @@
 using namespace fbtest;
 
 namespace {
-// M13 call hierarchy end to end: prepare anchors the procedure under the
+// Call hierarchy end to end: prepare anchors the procedure under the
 // cursor, outgoingCalls answers "what does it call?" and incomingCalls "who
 // calls it?", both across the include boundary and in the shape a client
 // navigates by.

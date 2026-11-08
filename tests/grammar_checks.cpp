@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M9 grammar freshness gate + catalog-completeness checks.
+// Grammar freshness gate + catalog-completeness checks.
 //
 // Regenerates the editor grammars in memory through the same emitter the
 // `gen_grammar` tool uses, then byte-diffs the result against the committed

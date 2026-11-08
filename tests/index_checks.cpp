@@ -787,7 +787,7 @@ int main() {
     }
   }
 
-  // The reverse `extends` projection (M15). `byBaseKey_` answers "which types
+  // The reverse `extends` projection. `byBaseKey_` answers "which types
   // extend this one" from a map, so every write path has to keep it honest the
   // same way it keeps `byKey_` honest — a projection that only grows answers a
   // deleted type as if it were still there, which is worse than not answering.
@@ -898,7 +898,7 @@ int main() {
     fs::remove_all(typeSandbox);
   }
 
-  // M21 step 2: adopting a settings snapshot resolves and caches the compiler
+  // Adopting a settings snapshot resolves and caches the compiler
   // facts once, and reports the build.main contradictions only an adopted
   // snapshot can state.
   {

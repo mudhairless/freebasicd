@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M17 formatting through the session: what `textDocument/formatting` and
+// Formatting through the session: what `textDocument/formatting` and
 // `textDocument/rangeFormatting` answer for an open buffer.
 //
 // The engine's rules are pinned byte for byte by format_engine_checks; this

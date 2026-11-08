@@ -104,7 +104,7 @@ enum class CoordPairSep { Leave, None, Around };
 enum class StepPrefix { Leave, Attached, Spaced };
 
 // Every member carries its factory default, so a default-constructed
-// `FormatConfig` *is* the built-in default config (PLAN M17). The defaults
+// `FormatConfig` *is* the built-in default config. The defaults
 // favor not rewriting token spelling — a first run fixes indentation, spacing,
 // and line endings and changes no token spelling. The shipped `FBdocs` preset
 // is what a document actually gets when it names no style.

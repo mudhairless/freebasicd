@@ -144,7 +144,7 @@ std::string TailAfter(std::string const &snapshot,
                       std::string const &idLiteral);
 
 // The `resultId` out of a textDocument/diagnostic response, for the
-// `unchanged` round trip (M14).
+// `unchanged` round trip.
 std::string ResultIdOf(std::string const &response);
 
 // Send a request and wait for a reply carrying `needle`, resending on each
@@ -275,7 +275,7 @@ std::shared_ptr<FeedableIStream> StartIndexedSession(
 // published by an earlier test in the same run cannot satisfy the wait early.
 
 // textDocument/semanticTokens/full-delta, the one request that carries the
-// previous result id (M9).
+// previous result id.
 std::string SemDeltaFrame(std::string const &id, std::string const &previous);
 
 // `count` publishes from now, and the URI of the last one. A publish is what
@@ -287,7 +287,7 @@ std::size_t CountPublished(std::string const &snapshot);
 std::string LastPublish(std::string const &snapshot);
 
 // workspace/diagnostic/refresh, the server hint a pull client is re-pulled by
-// (M14). Counted the same way for the same reason.
+// Counted the same way for the same reason.
 std::size_t CountRefreshes(std::string const &snapshot);
 std::string WaitForRefreshes(std::shared_ptr<StringOStream> const &output,
                              size_t count);
@@ -316,7 +316,7 @@ extern char const *kShutdownFrame;
 extern char const *kExitFrame;
 
 // A client that advertises textDocument.diagnostic, so the session negotiates
-// pull diagnostics and never publishes (M14).
+// pull diagnostics and never publishes.
 extern char const kInitializePullFrame[];
 
 // --- wire-offset helpers ----------------------------------------------------

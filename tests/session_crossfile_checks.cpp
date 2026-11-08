@@ -21,7 +21,7 @@ using namespace fbtest;
 namespace {
 // Tier-3 leniency: a name the closure does not declare at all still resolves
 // to any workspace root `byKey` knows about — a not-yet-included header.
-// Tracked as a divergence (FreeBASIC.md §12), accepted by PLAN M7.
+// Tracked as a divergence (FreeBASIC.md §12).
 void TestCrossFileLenientByKeyFallback() {
   TwoFileFixture const fix;
 

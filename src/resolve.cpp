@@ -877,7 +877,7 @@ void externPlacementDiagnostics(std::vector<Token> const &tokens,
   }
 }
 
-// The declaration kinds that end a module-level statement run (M21 step 3):
+// The declaration kinds that end a module-level statement run:
 // the forms FreeBASIC.md §9 / the task list counts as declarations, not
 // executable code. `Label`/`Scope`/`Define` roots never break a run — a
 // label is a marker, not a statement, and preprocessor windows are not
@@ -935,7 +935,7 @@ std::vector<std::vector<SourceRange>> moduleCodeRuns(ParseResult const &parse) {
 void moduleCodeDiagnostics(ParseResult const &parse, BuildKind kind,
                            std::optional<std::string> const &mainModuleName,
                            bool isMainModule, std::vector<Diagnostic> *out) {
-  // The firing matrix (M21 step 3): an exe is judged only against a
+  // The firing matrix: an exe is judged only against a
   // configured main — without one the server stays silent rather than guess
   // which module is main — and its own main module is the entry point's
   // home, so it stays silent. A library has no entry point, so every module
@@ -2030,7 +2030,7 @@ MemberCompletion resolveMemberCompletion(AnalyzedDoc const &doc,
 }
 
 // ---------------------------------------------------------------------------
-// Type graph and member implementation (M15)
+// Type graph and member implementation
 // ---------------------------------------------------------------------------
 
 namespace {

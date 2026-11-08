@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M11 settings: didChangeConfiguration and the feature gates.
+// Settings: didChangeConfiguration and the feature gates.
 //
 // The notification that re-reads every root's freebasicd.toml, the two things
 // it changes (include paths, diagnostics on/off), and the per-root application
@@ -19,7 +19,7 @@
 using namespace fbtest;
 
 namespace {
-// M11: a freebasicd.toml written after open that gains includePaths must
+// A freebasicd.toml written after open that gains includePaths must
 // make a previously-unreachable `#include` resolve on the *next*
 // didChangeConfiguration — the root's open buffer is re-resolved (no
 // include-not-found any more) and cross-file resolution reaches the header.
@@ -113,7 +113,7 @@ void TestDidChangeConfigurationIncludePathResolves() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
-// M11: the diagnosticsOn flag gates publishing per root. Off publishes a
+// The diagnosticsOn flag gates publishing per root. Off publishes a
 // single empty result per open buffer and then silence (an edit that would
 // otherwise add diagnostics publishes nothing); on re-publishes the buffer's
 // current errors.
@@ -203,7 +203,7 @@ void TestDidChangeConfigurationDiagnosticsToggle() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
-// M23: the warning `-w` level gates which mapped warnings the wire answers.
+// The warning `-w` level gates which mapped warnings the wire answers.
 // The parser still records every language-layer diagnostic; the payload obeys
 // the root's `warningLevel` (fbc's option names, English only — missing or
 // invalid is `-w none`, so the server surfaces no warnings until configured).
@@ -302,7 +302,7 @@ void TestDidChangeConfigurationWarningLevel() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
-// M23: `suppress` drops a diagnostic by its routing key. A suppression is a
+// `suppress` drops a diagnostic by its routing key. A suppression is a
 // payload change, so it re-publishes the root's open buffers the same way a
 // `-w` flip does; a diagnostic not named keeps publishing. The list reaches
 // every delivery path — the parse diagnostics and the index's own
@@ -399,7 +399,7 @@ void TestDidChangeConfigurationSuppress() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
-// M23: the `suppress` list accepts an entry copied from a diagnostic's wire
+// The `suppress` list accepts an entry copied from a diagnostic's wire
 // code (`include-not-found, fbc error: 23`). The loader keeps the routing key
 // and warns on stderr — a log line this suite does not capture — so the entry
 // suppresses exactly what the bare key would: the copy/paste a client's
@@ -484,7 +484,7 @@ void TestDidChangeConfigurationSuppressWireCode() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
-// M11: semanticTokensOn / inlayHintsOn gate their features per root while the
+// semanticTokensOn / inlayHintsOn gate their features per root while the
 // capabilities stay advertised. A root that disables them serves empty results
 // (full/delta/range all keep a fresh resultId; inlay an empty result), a root
 // with the defaults serves the populated payloads.
@@ -646,7 +646,7 @@ void TestSemanticTokensAndInlayHintsGates() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
-// M11: settings apply only to their own root. A didChangeConfiguration new
+// Settings apply only to their own root. A didChangeConfiguration new
 // need is one root re-reads its config; a sibling root whose config did not
 // change is untouched — its include stays unresolved and nothing is
 // re-published for its open buffers.
@@ -759,7 +759,7 @@ void TestSettingsApplyPerRootOnly() {
   std::error_code ec;
   std::filesystem::remove_all(sandbox, ec);
 }
-// M21 step 2: a pinned `[fbc].path` is the root's compiler. Its version is
+// A pinned `[fbc].path` is the root's compiler. Its version is
 // probed once at adoption (and stated in the log), and the install's system
 // header folder joins include resolution — so an `#include` only that compiler
 // provides resolves after the pin, and the pull report's resultId moves because

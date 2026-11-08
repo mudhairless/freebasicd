@@ -98,7 +98,7 @@ struct Symbol {
   std::string doc;       // /// or '' doc-comment block directly above
   std::vector<Symbol> children;
 
-  // M5 occurrence projection. `moduleScope` (true for file roots) marks
+  // Occurrence projection. `moduleScope` (true for file roots) marks
   // declarations whose key is cross-file reachable through the #include
   // closure; `occurrences` holds every usage site that resolved to this
   // symbol at analyze time, sorted by `range.beg` with the name token
@@ -106,7 +106,7 @@ struct Symbol {
   bool moduleScope = false;
   std::vector<Occurrence> occurrences;
 
-  // M7 storage tagging (FreeBASIC.md §8/§12.2): the storage gate. True for a
+  // Storage tagging (FreeBASIC.md §8/§12.2): the storage gate. True for a
   // module-level `Dim`-kind declaration with shared storage — the `Shared`
   // modifier (`Dim Shared`, `Redim Shared`, `Common Shared`, `[Static] Var
   // Shared`), or `Extern`, which implies it (an `Extern` variable is shared
@@ -139,7 +139,7 @@ struct Symbol {
   // declares. Distinguishes the iterator from a plain Dim in the loop body.
   bool loopVar = false;
 
-  // Module constructors/destructors (M21, FreeBASIC.md §9). The explicit form
+  // Module constructors/destructors (FreeBASIC.md §9). The explicit form
   // is a `Sub` *definition* carrying `Constructor`/`Destructor` after its
   // parameter list — `Sub name() Constructor [priority]` — which runs before
   // the module's own module-level code. The symbol keeps kind `Sub` (the
@@ -199,7 +199,7 @@ struct Symbol {
   bool isMacro = false;
   std::uint32_t defineEnd = UINT32_MAX;
 
-  // M15 type graph. Two edges, both of which the parser had no room for, and
+  // Type graph. Two edges, both of which the parser had no room for, and
   // both of which a type hierarchy and a go-to-implementation need.
 
   // The type this one extends: `type derived extends base` records base's
@@ -327,7 +327,7 @@ struct ParseResult {
       blockRanges; // every nested block, useful for folding
 
   // The byte ranges of the statements at module level that are not
-  // declarations (M21 step 3): assignments, calls, `Print`, and module-level
+  // declarations: assignments, calls, `Print`, and module-level
   // control blocks (`If`, `For`, `Do`, `Select`, `Scope`, ...). A control
   // block is one entry spanning from its opener to its closer; its body's
   // statements are not separate entries. Declarations never appear here:

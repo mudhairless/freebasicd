@@ -19,7 +19,7 @@
 
 namespace fblang {
 
-// LSP `textDocument/selectionRange` (M13): one nested chain per requested
+// LSP `textDocument/selectionRange`: one nested chain per requested
 // position, built from the byte-offset chains `selectionChain` returns
 // (innermost level first, each level strictly containing the one below it).
 //

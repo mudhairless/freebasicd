@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// M21 step 3: module-level executable code outside the main module.
+// Module-level executable code outside the main module.
 //
 // A `.bas` file's module level runs as the implicit `main` — unless the file
 // is not the main module, in which case it runs before `main` as load-time

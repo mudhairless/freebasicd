@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// Code-lens checks for the M13 module (aspect 3).
+// Code-lens checks for the module.
 //
 // Byte-offset and LSP-agnostic, like the module: no index, no session. The only
 // workspace state `codeLenses` reaches is the `ReferenceCounter` seam, and

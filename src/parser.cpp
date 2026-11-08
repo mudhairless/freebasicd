@@ -223,15 +223,15 @@ struct Block {
   // field name in it is refused when the body closes (FreeBASIC.md §7).
   bool armed = false;
   // Index into `out_.moduleLevelStatements` when this block is itself a
-  // module-level executable control block (M21 step 3): the entry's range
+  // module-level executable control block: the entry's range
   // starts at the opener and its end is set when the block closes.
   std::size_t moduleStatement = static_cast<std::size_t>(-1);
-  // `Select` state (M23 G1): whether a `Case` marker directly under this
+  // `Select` state: whether a `Case` marker directly under this
   // block has been seen yet, and whether the opener was `Select Case As
   // Const` (the only form whose Case ranges fbc judges, error 323).
   bool seenCase = false;
   bool selectConst = false;
-  // `For` counter state (M23 G2): the counter as written in the header and
+  // `For` counter state: the counter as written in the header and
   // its canonical key, for the 283 name check. `forCounterPlain` is false
   // when the counter is not a plain identifier (member `w.x`, element
   // `a(0)`, or no identifier at all), in which case the check stays
@@ -263,7 +263,7 @@ struct Container {
   // sections, and everything else — module scope, procedures, enums — stays
   // Public).
   Access access = Access::Public;
-  // M23 G6: per-name declaration-form facts for the statement-specific
+  // Per-name declaration-form facts for the statement-specific
   // checks (54/75/76/87/136/162/171-176). Recorded by handleVarDecls from
   // the parser's own walk; only the innermost container's facts and shared
   // outer facts are consulted, so a plain module Dim stays invisible inside
@@ -415,7 +415,7 @@ private:
   // handleDeclBlock/handleDeclare to stamp Symbol::isPrivate.
   bool pendingPrivate_ = false;
 
-  // M23 G4: branch-crossing diagnostics (105 / warning 14). Each procedure
+  // Branch-crossing diagnostics (105 / warning 14). Each procedure
   // body and the module-level implicit main collect their labels, forward
   // `Goto` branches, and local definitions; the check runs when the body
   // closes so every label definition has been seen.
@@ -457,7 +457,7 @@ private:
   // Type keys that carry a constructor (declared or defined). Used to promote
   // a branch-crossing UDT instance from warning 14 to error 105.
   std::unordered_set<std::string> typesWithConstructors_;
-  // M23 G6: in-file constructor/destructor form per UDT key, for the
+  // In-file constructor/destructor form per UDT key, for the
   // REDIM/ERASE convention checks (171-176). Recorded from `Declare
   // Constructor/Destructor` lines (authoritative, probed: the definition's
   // parameter defaults do not override the prototype) and from bare
@@ -640,7 +640,7 @@ private:
     return false;
   }
 
-  // M23 G4 placement helpers. A preprocessor block is compile-time, not a
+  // Placement helpers. A preprocessor block is compile-time, not a
   // runtime block, so the walk skips it: a `#if` inside a `Sub` does not make
   // its active arm "outside" the procedure. Each asks whether the statement
   // is enclosed *anywhere* by the construct (`Scope` inside a `Sub` is still
@@ -776,7 +776,7 @@ private:
     out_.diagnostics.push_back(std::move(d));
   }
 
-  // M23 G5: the punctuator family. One helper behind 17/14/9/6/7/3/10/16/66/
+  // The punctuator family. One helper behind 17/14/9/6/7/3/10/16/66/
   // 309/11/68/67/289. `match` is whether the current token is the expected
   // one; on mismatch this emits the family's diagnostic in fbc's probed shape
   // (message, found clause, anchor) and returns false so the caller abandons
@@ -918,7 +918,7 @@ private:
                        tr("Too many expressions"));
   }
 
-  // M23 G5 Dim/Const statement pre-pass: the declaration-line punctuators
+  // Dim/Const statement pre-pass: the declaration-line punctuators
   // (7 unclosed bounds, 309 `Integer<..>` without `>`, 68 function-pointer
   // without `As`, 10/11/9 on the `=` segments, 67 UDT paren-initializer
   // overflow), all probed. Runs once per Dim/Const/Redim/Var/Local/Common/
@@ -2051,7 +2051,7 @@ private:
     }
   }
 
-  // M23 G4 local-definition classification for branch-crossing diagnostics.
+  // Local-definition classification for branch-crossing diagnostics.
   // The declaration's signature (the whole logical line) is re-lexed so the
   // type can be read without disturbing the live parser position.
   LocalDef::Kind classifyLocalDefKind(std::string const &signature,
@@ -2172,7 +2172,7 @@ private:
     activeBranchScope().defs.push_back(std::move(def));
   }
 
-  // M23 G4 placement diagnostics (61 / 96). Called once the statement head is
+  // Placement diagnostics (61 / 96). Called once the statement head is
   // known but before it is parsed, so structure is still built normally after
   // the report. `w` is the lowercase head keyword when there is one.
   void checkIllegalInsideSub(const std::string &w) {
@@ -2260,7 +2260,7 @@ private:
     activeBranchScope().branches.push_back(std::move(branch));
   }
 
-  // M23 G4 branch-scope helpers.
+  // Branch-scope helpers.
   std::size_t currentBranchScope() const {
     return branchScopeStack_.empty() ? static_cast<std::size_t>(-1)
                                      : branchScopeStack_.back();
@@ -2488,7 +2488,7 @@ private:
 
   // True when no *language* block is open: only preprocessor regions
   // (`#if` / `#macro`, which are compile-time, not runtime) may surround a
-  // module-level statement (M21 step 3). An active `#if` arm's statements
+  // module-level statement. An active `#if` arm's statements
   // are real module statements; a `#macro` body's are never dispatched.
   bool atModuleLevel() const {
     return std::all_of(blocks_.begin(), blocks_.end(), [](Block const &b) {
@@ -2497,8 +2497,8 @@ private:
     });
   }
 
-  // Begin a module-level executable statement entry at `beg` (M21 step
-  // 3); for a control block the returned index is stored on the `Block` so
+  // Begin a module-level executable statement entry at `beg`; for a control
+  // block the returned index is stored on the `Block` so
   // `closeBlock` can finish the range at the closer.
   std::size_t beginModuleStatement(uint32_t beg) {
     out_.moduleLevelStatements.push_back(SourceRange{beg, beg});
@@ -2506,7 +2506,7 @@ private:
   }
 
   // Record the statement at `cur_` (head word `w`) when it is a
-  // module-level executable simple statement (M21 step 3). Called from
+  // module-level executable simple statement. Called from
   // `handleStatement` after the access-section branch: declarations return
   // without recording, control-block openers are recorded by
   // `pushBlockFromOpener` / `handleIf` (which know the closer), and branch
@@ -2870,7 +2870,7 @@ private:
     }
   }
 
-  // The `select` family (M23 G1). The region for 62 is the innermost
+  // The `select` family. The region for 62 is the innermost
   // block itself: a `Select` that has not yet seen a `Case` directly
   // under it. `Case` markers set `seenCase` on that same block when they
   // are handled, so no parallel tracker can drift from the structure.
@@ -3013,7 +3013,7 @@ private:
   // wherever it sits, because every placement question about an accepted
   // target belongs to another family: a loop target with no enclosing loop
   // of its kind is 239/240/241 (outside this group), `Exit Select` is the
-  // G1 242/246/250 family in checkExitSelect above, a procedure target
+  // `select` 242/246/250 family in checkExitSelect above, a procedure target
   // outside its own procedure is 253/254/144/165/166/193, and the loop
   // multi-target tails are 243/244/245/247/248/249. A word fbc does not
   // accept draws 251/252 in every context — inside every block kind, at
@@ -4817,7 +4817,7 @@ private:
 
     checkIllegalInsideSelect();
 
-    // M23 G5 enum-member tail: inside an Enum body a member line whose `=`
+    // Enum-member tail: inside an Enum body a member line whose `=`
     // carries nothing (`a =`) is 11, and a second token that is neither `=`
     // nor the list separator (`a 5`) is 3 (both probed). The member still
     // captures normally; the family flag stops a second family diagnostic.
@@ -4916,7 +4916,7 @@ private:
       }
     }
     if (cur_.kind != TokenKind::Keyword) {
-      // M23 G5: `x =` (and `x = 1 +`) is fbc's 9; `New T[..` without `]` is
+      // `x =` (and `x = 1 +`) is fbc's 9; `New T[..` without `]` is
       // 66 (probed). Both are statement-token scans over the simple-
       // statement forms this parser already walks.
       {
@@ -5027,7 +5027,7 @@ private:
       return;
     }
 
-    // M23 G4 placement diagnostics: declarations inside procedures (61) or
+    // Placement diagnostics: declarations inside procedures (61) or
     // inside scope/control blocks at module level (96), and executable/control
     // statements inside an `Extern "C"` block (96).
     // Result assignment (`function = expr`, ...) is a statement of its own, not
@@ -5403,7 +5403,7 @@ private:
         b.selectConst = true;
       }
     }
-    // A module-level control block is one executable statement (M21 step 3):
+    // A module-level control block is one executable statement:
     // the entry starts at the opener and `closeBlock` ends it at the closer.
     // `Extern` is excluded — its body is declarations, not code.
     if (atModuleLevel() && w != "extern") {
@@ -5506,7 +5506,7 @@ private:
   // `next`); a header without `as` reuses an already-declared variable
   // (undeclared is error 42, fbc does not auto-declare it), so nothing is
   // registered and resolution finds the outer declaration naturally.
-  // M23 G5: a header whose counter is followed by something other than `=`
+  // A header whose counter is followed by something other than `=`
   // is fbc's 10 (probed: `For i 1 To 10` is error 10; the `Step` tail takes
   // no `=`).
   void checkForStatement() {
@@ -6750,7 +6750,7 @@ private:
         advance();
       }
     }
-    // Record declaration-form facts for later statements (G6). A Redim
+    // Record declaration-form facts for later statements. A Redim
     // never overwrites an existing fact (a fixed array stays fixed so the
     // next Redim still draws 54); a Redim that names a new array defines it
     // as dynamic.
@@ -7066,7 +7066,7 @@ private:
     return false;
   }
 
-  // `NEXT [name [, name ...]]` (M23 G2): one `Next` closes one `For` per
+  // `NEXT [name [, name ...]]`: one `Next` closes one `For` per
   // name it carries, innermost first; a bare `Next` closes one. The pop
   // logic and the mismatch check are the same walk: each name is checked
   // against the `For` it closes (283, anchored on its token, the message
@@ -7078,7 +7078,7 @@ private:
   // shape, never once per extra name (probed: excess names draw no
   // warning either). A counter that is not a plain identifier stays
   // silent for 283 (the warning still runs); the non-identifier tail
-  // (fbc error 3) belongs to G5 and is not judged here beyond closing
+  // (fbc error 3) is not judged here beyond closing
   // one `For` for it, bare, as fbc does.
   void handleNext() {
     Token const closerTok = cur_;
