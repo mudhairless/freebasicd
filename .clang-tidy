@@ -54,6 +54,6 @@ HeaderFilterRegex: 'src/[^/]*\.h$'
 # not a place on this list.
 CheckOptions:
   - key: readability-magic-numbers.IgnoredIntegerValues
-    value: '0;1;2;3;4;5;6;10;16;32;64'
+    value: '0;1;2;3;4;5;8;10;16;32;64'
   - key: readability-magic-numbers.IgnorePowerOfTwoIntegerValues
     value: true
