@@ -26,6 +26,30 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-08 — exact 64-bit constant folding
+
+- **Fix a platform miss in `45 for-end-too-big` and its neighbours.**
+  The folder carried folded values as `long double`, which is 80-bit
+  wide only on Linux/x86-64; elsewhere `18446744073709551615ull`
+  rounds to 2^64 and the limit wrap folded it to 0, so the warning
+  went missing. Folded integer expressions in the range
+  -2^63..2^64-1 now also carry the exact value (sign plus magnitude)
+  beside the floating part, dropped the moment an operand or an
+  operation is genuinely floating or past that range. The judgments
+  that compare against 64-bit type limits read the exact value: `45`
+  wraps the limit with integer arithmetic, `25` compares the exact
+  value against its size-class limits (and its floating 64-bit bound
+  now checks `>= 2^64` instead of `> 2^64-1`, which rounded on the
+  narrow platforms), `33` reads the exact shift count, and the `323`
+  case range compares exact integers when both ends have them.
+  Bitwise, shift, comparison, `+ - * \ mod`, unary minus and `Abs`
+  keep the exact part when both operands have it, so a two-operand
+  expression no longer routes a 64-bit boundary through a
+  platform-sized float. Linux results are unchanged; a new
+  `foldNumericLiteral` check pins the exact form of
+  `18446744073709551615ull` and its hex and above-range friends
+  without relying on that width.
+
 ### 2026-11-08 — M23 G7: the remaining warnings (research Tier 2 syntactic, constant-dependent)
 
 - **Six new fbc identities.** `32 IFFOUNDAFTERELSE`

@@ -7,6 +7,7 @@
 // Parser checks: symbol tree, block matching, diagnostics. Byte-offset.
 
 #include <cstdio>
+#include <limits>
 #include <string>
 
 #include "language.h"
@@ -177,6 +178,73 @@ static int errorDiagnosticCount(const ParseResult &r) {
     }
   }
   return n;
+}
+
+static void TestFoldedLiteralExactness() {
+  // The width of `long double` differs by platform, so a diagnostic
+  // count does not pin the 64-bit boundary. This checks the folded
+  // form itself: an integer literal in range carries its exact value
+  // regardless of that width, while a floating or out-of-range literal
+  // carries none.
+  {
+    std::optional<FoldedConstant> const v =
+        foldNumericLiteral("18446744073709551615ull");
+    CHECK(v.has_value());
+    if (v.has_value()) {
+      CHECK(v->exact.has_value());
+      if (v->exact.has_value()) {
+        CHECK(v->exact->negative == false);
+        CHECK(v->exact->magnitude == std::numeric_limits<std::uint64_t>::max());
+      }
+    }
+  }
+  {
+    std::optional<FoldedConstant> const v =
+        foldNumericLiteral("&hFFFFFFFFFFFFFFFF");
+    CHECK(v.has_value());
+    if (v.has_value()) {
+      CHECK(v->exact.has_value());
+      if (v->exact.has_value()) {
+        CHECK(v->exact->negative == false);
+        CHECK(v->exact->magnitude == std::numeric_limits<std::uint64_t>::max());
+      }
+    }
+  }
+  {
+    std::optional<FoldedConstant> const v =
+        foldNumericLiteral("9223372036854775808");
+    CHECK(v.has_value());
+    if (v.has_value()) {
+      CHECK(v->exact.has_value());
+      if (v->exact.has_value()) {
+        CHECK(v->exact->negative == false);
+        CHECK(v->exact->magnitude == (std::uint64_t(1) << 63U));
+      }
+    }
+  }
+  {
+    std::optional<FoldedConstant> const v = foldNumericLiteral("1.5");
+    CHECK(v.has_value());
+    if (v.has_value()) {
+      CHECK(!v->exact.has_value());
+    }
+  }
+  {
+    std::optional<FoldedConstant> const v = foldNumericLiteral("1e5");
+    CHECK(v.has_value());
+    if (v.has_value()) {
+      CHECK(!v->exact.has_value());
+    }
+  }
+  {
+    // 2^64 is past the representable range, so no exact value.
+    std::optional<FoldedConstant> const v =
+        foldNumericLiteral("18446744073709551616");
+    CHECK(v.has_value());
+    if (v.has_value()) {
+      CHECK(!v->exact.has_value());
+    }
+  }
 }
 
 static void TestRemainingWarnings() {
@@ -5528,6 +5596,7 @@ int main() {
   }
 
   TestStatementSpecific();
+  TestFoldedLiteralExactness();
   TestRemainingWarnings();
   TestStep2bParsingFixes();
   TestQualifiedTypeFirstVarDecls();

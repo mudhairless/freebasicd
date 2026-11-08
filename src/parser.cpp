@@ -45,11 +45,9 @@ constexpr long long kModuleCtorPriorityMax = 65535;
 constexpr int kConstEvalMaxDepth = 32;
 constexpr int kConstLookupMaxDepth = 8;
 constexpr long long kMaxConstShiftCount = 62;
-constexpr long double kConstTrue = -1;
-constexpr long double kConstFalse = 0;
 constexpr long double kTwoTo63Ld = 9223372036854775808.0L;
-constexpr long double kUint64MaxLd = 18446744073709551615.0L;
 constexpr long double kTwoTo64Ld = 18446744073709551616.0L;
+constexpr std::uint64_t kNegMagnitudeLimit = (std::uint64_t(1) << 63U);
 
 std::string uppercase(std::string_view s) {
   std::string out;
@@ -61,6 +59,153 @@ std::string uppercase(std::string_view s) {
     out.push_back(c);
   }
   return out;
+}
+
+using ExactInteger = FoldedConstant::ExactInteger;
+
+std::optional<ExactInteger> makeExactInteger(bool negative,
+                                             std::uint64_t magnitude) {
+  if (magnitude == 0) {
+    return ExactInteger{false, 0};
+  }
+  if (negative && magnitude > kNegMagnitudeLimit) {
+    return std::nullopt;
+  }
+  return ExactInteger{negative, magnitude};
+}
+
+long double exactToLongDouble(ExactInteger const &value) {
+  if (value.negative) {
+    return -static_cast<long double>(value.magnitude);
+  }
+  return static_cast<long double>(value.magnitude);
+}
+
+FoldedConstant fromExactInteger(ExactInteger const &value) {
+  FoldedConstant out;
+  out.numeric = exactToLongDouble(value);
+  out.exact = value;
+  return out;
+}
+
+FoldedConstant fromFloatingValue(long double value) {
+  FoldedConstant out;
+  out.numeric = value;
+  return out;
+}
+
+FoldedConstant trueFolded() { return fromExactInteger(ExactInteger{true, 1}); }
+
+FoldedConstant falseFolded() {
+  return fromExactInteger(ExactInteger{false, 0});
+}
+
+int compareExactInteger(ExactInteger const &a, ExactInteger const &b) {
+  bool const aNeg = a.negative && a.magnitude != 0;
+  bool const bNeg = b.negative && b.magnitude != 0;
+  if (aNeg != bNeg) {
+    return aNeg ? -1 : 1;
+  }
+  if (a.magnitude == b.magnitude) {
+    return 0;
+  }
+  if (aNeg) {
+    return a.magnitude > b.magnitude ? -1 : 1;
+  }
+  return a.magnitude > b.magnitude ? 1 : -1;
+}
+
+std::uint64_t exactToBits(ExactInteger const &value) {
+  if (value.negative && value.magnitude != 0) {
+    return std::uint64_t(0) - value.magnitude;
+  }
+  return value.magnitude;
+}
+
+ExactInteger bitsToExact(std::uint64_t bits) {
+  if (bits <=
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+    return ExactInteger{false, bits};
+  }
+  return ExactInteger{true, std::uint64_t(0) - bits};
+}
+
+std::optional<ExactInteger> negateExact(ExactInteger const &value) {
+  if (value.magnitude == 0) {
+    return ExactInteger{false, 0};
+  }
+  return makeExactInteger(!value.negative, value.magnitude);
+}
+
+std::optional<ExactInteger> addExactInteger(ExactInteger const &a,
+                                            ExactInteger const &b) {
+  bool const aNeg = a.negative && a.magnitude != 0;
+  bool const bNeg = b.negative && b.magnitude != 0;
+  if (aNeg == bNeg) {
+    std::uint64_t const limit =
+        aNeg ? kNegMagnitudeLimit : std::numeric_limits<std::uint64_t>::max();
+    if (a.magnitude > limit - b.magnitude) {
+      return std::nullopt;
+    }
+    return makeExactInteger(aNeg, a.magnitude + b.magnitude);
+  }
+  if (a.magnitude == b.magnitude) {
+    return ExactInteger{false, 0};
+  }
+  if (a.magnitude > b.magnitude) {
+    return makeExactInteger(aNeg, a.magnitude - b.magnitude);
+  }
+  return makeExactInteger(bNeg, b.magnitude - a.magnitude);
+}
+
+std::optional<ExactInteger> subExactInteger(ExactInteger const &a,
+                                            ExactInteger const &b) {
+  std::optional<ExactInteger> const negated = negateExact(b);
+  if (!negated.has_value()) {
+    return std::nullopt;
+  }
+  return addExactInteger(a, *negated);
+}
+
+std::optional<ExactInteger> mulExactInteger(ExactInteger const &a,
+                                            ExactInteger const &b) {
+  if (a.magnitude == 0 || b.magnitude == 0) {
+    return ExactInteger{false, 0};
+  }
+  bool const neg =
+      (a.negative && a.magnitude != 0) != (b.negative && b.magnitude != 0);
+  std::uint64_t const limit =
+      neg ? kNegMagnitudeLimit : std::numeric_limits<std::uint64_t>::max();
+  if (b.magnitude > limit / a.magnitude) {
+    return std::nullopt;
+  }
+  return makeExactInteger(neg, a.magnitude * b.magnitude);
+}
+
+std::optional<ExactInteger> divExactInteger(ExactInteger const &a,
+                                            ExactInteger const &b) {
+  if (b.magnitude == 0) {
+    return std::nullopt;
+  }
+  std::uint64_t const quotient = a.magnitude / b.magnitude;
+  if (quotient == 0) {
+    return ExactInteger{false, 0};
+  }
+  bool const neg =
+      (a.negative && a.magnitude != 0) != (b.negative && b.magnitude != 0);
+  return makeExactInteger(neg, quotient);
+}
+
+std::optional<ExactInteger> modExactInteger(ExactInteger const &a,
+                                            ExactInteger const &b) {
+  if (b.magnitude == 0) {
+    return std::nullopt;
+  }
+  std::uint64_t const rem = a.magnitude % b.magnitude;
+  if (rem == 0) {
+    return ExactInteger{false, 0};
+  }
+  return makeExactInteger(a.negative && a.magnitude != 0, rem);
 }
 
 struct Block {
@@ -2940,87 +3085,11 @@ private:
   // can read from the file (a `#define` replacement, a top-level `Const`,
   // or an enum member). Anything else — a variable, a string, a call
   // other than `Abs` — is unknown, and an unknown value draws no
-  // diagnostic. The value is `long double` (64-bit mantissa on x86/x64)
-  // rather than `double`: the 64-bit type limits need to be exact, and a
-  // `double` rounds `18446744073709551615ull` up to 2^64 before the
-  // comparison can be made.
-  using ConstValue = std::optional<long double>;
-
-  static ConstValue parseNumericLiteral(std::string_view text) {
-    if (text.empty()) {
-      return std::nullopt;
-    }
-    constexpr int kDecimalBase = 10;
-    constexpr int kHexBase = 16;
-    constexpr int kOctalBase = 8;
-    constexpr int kBinaryBase = 2;
-    int base = kDecimalBase;
-    std::string_view digits = text;
-    if (text.size() >= 2 && text[0] == '&') {
-      char const c = text[1];
-      if (c == 'h' || c == 'H') {
-        base = kHexBase;
-      } else if (c == 'o' || c == 'O') {
-        base = kOctalBase;
-      } else if (c == 'b' || c == 'B') {
-        base = kBinaryBase;
-      } else {
-        return std::nullopt;
-      }
-      digits.remove_prefix(2);
-      while (!digits.empty() &&
-             (digits.back() == '%' || digits.back() == '&' ||
-              digits.back() == 'u' || digits.back() == 'U' ||
-              digits.back() == 'l' || digits.back() == 'L')) {
-        digits.remove_suffix(1);
-      }
-      if (digits.empty()) {
-        return std::nullopt;
-      }
-      long double value = 0;
-      for (char const c : digits) {
-        int d;
-        if (c >= '0' && c <= '9') {
-          d = c - '0';
-        } else if (base == kHexBase && c >= 'a' && c <= 'f') {
-          d = c - 'a' + kDecimalBase;
-        } else if (base == kHexBase && c >= 'A' && c <= 'F') {
-          d = c - 'A' + kDecimalBase;
-        } else {
-          return std::nullopt;
-        }
-        if (d >= base) {
-          return std::nullopt;
-        }
-        value = (value * base) + d;
-      }
-      return value;
-    }
-    std::string cleaned(digits);
-    // Drop a literal's type suffix (`%`, `&`, `ul`/`ll` in any order,
-    // and the floating `!`/`f`/`#`/`d`) so the numeric core parses. A
-    // digit or `.` ends the suffix: exponent digits (`1e5`) are core,
-    // not suffix.
-    while (!cleaned.empty()) {
-      char const c = cleaned.back();
-      if (c == '%' || c == '&' || c == '!' || c == '#' || c == 'f' ||
-          c == 'F' || c == 'd' || c == 'D' || c == 'u' || c == 'U' ||
-          c == 'l' || c == 'L') {
-        cleaned.pop_back();
-        continue;
-      }
-      break;
-    }
-    if (cleaned.empty()) {
-      return std::nullopt;
-    }
-    char *endPtr = nullptr;
-    long double const value = std::strtold(cleaned.c_str(), &endPtr);
-    if (endPtr == cleaned.c_str() || *endPtr != '\0') {
-      return std::nullopt;
-    }
-    return value;
-  }
+  // diagnostic. The folded value carries a floating part and, when the
+  // expression stayed integral and in range, an exact integer beside it
+  // (see `FoldedConstant`). The exact part is dropped as soon as an
+  // operand or an operation is genuinely floating or past the range.
+  using ConstValue = std::optional<FoldedConstant>;
 
   static std::vector<Token> lexAll(std::string_view text) {
     Lexer lex(text);
@@ -3074,7 +3143,7 @@ private:
     Token const &t = toks[pos];
     if (t.kind == TokenKind::Number) {
       ++pos;
-      ConstValue const value = parseNumericLiteral(t.text());
+      ConstValue const value = foldNumericLiteral(t.text());
       // The lexer leaves the disattached suffixes (`ul`, `ull`, `ll`,
       // `u`, `l`, and the floating `f`/`d`) as the next identifier
       // token; a suffix token directly attached to the number belongs
@@ -3103,10 +3172,10 @@ private:
       std::string const word = toLowerChars(t.text());
       ++pos;
       if (word == "true") {
-        return kConstTrue;
+        return trueFolded();
       }
       if (word == "false") {
-        return kConstFalse;
+        return falseFolded();
       }
       if (pos < toks.size() && tokenIsSymbol(toks[pos], "(")) {
         // A call: only `Abs` is folded (probed: `abs(-5)` is judged).
@@ -3130,7 +3199,10 @@ private:
         ConstValue arg = evalConstSlice(toks, innerBeg, i, depth + 1);
         pos = i + 1;
         if (word == "abs" && arg) {
-          return std::fabs(*arg);
+          if (arg->exact.has_value()) {
+            return fromExactInteger(ExactInteger{false, arg->exact->magnitude});
+          }
+          return fromFloatingValue(std::fabs(arg->numeric));
         }
         return std::nullopt;
       }
@@ -3199,60 +3271,115 @@ private:
     return static_cast<int>(ConstOpPrec::None);
   }
 
-  static ConstValue applyConstOp(std::string const &op, long double a,
-                                 long double b) {
-    if (op == "eqv") {
-      return static_cast<long double>(static_cast<long long>(
-          ~(static_cast<unsigned long long>(static_cast<long long>(a)) ^
-            static_cast<unsigned long long>(static_cast<long long>(b)))));
+  static ConstValue applyConstOp(std::string const &op, FoldedConstant const &a,
+                                 FoldedConstant const &b) {
+    bool const bothExact = a.exact.has_value() && b.exact.has_value();
+    auto const fromBits = [](std::uint64_t bits) {
+      return fromExactInteger(bitsToExact(bits));
+    };
+    if (op == "eqv" || op == "imp" || op == "or" || op == "xor" ||
+        op == "and") {
+      if (bothExact) {
+        std::uint64_t const av = exactToBits(*a.exact);
+        std::uint64_t const bv = exactToBits(*b.exact);
+        std::uint64_t bits = 0;
+        if (op == "eqv") {
+          bits = ~(av ^ bv);
+        } else if (op == "imp") {
+          bits = ~av | bv;
+        } else if (op == "or") {
+          bits = av | bv;
+        } else if (op == "xor") {
+          bits = av ^ bv;
+        } else {
+          bits = av & bv;
+        }
+        return fromBits(bits);
+      }
+      long long const av = static_cast<long long>(a.numeric);
+      long long const bv = static_cast<long long>(b.numeric);
+      std::uint64_t bits = 0;
+      std::uint64_t const uav = static_cast<std::uint64_t>(av);
+      std::uint64_t const ubv = static_cast<std::uint64_t>(bv);
+      if (op == "eqv") {
+        bits = ~(uav ^ ubv);
+      } else if (op == "imp") {
+        bits = ~uav | ubv;
+      } else if (op == "or") {
+        bits = uav | ubv;
+      } else if (op == "xor") {
+        bits = uav ^ ubv;
+      } else {
+        bits = uav & ubv;
+      }
+      return fromFloatingValue(
+          static_cast<long double>(static_cast<long long>(bits)));
     }
-    if (op == "imp") {
-      return static_cast<long double>(static_cast<long long>(
-          ~static_cast<unsigned long long>(static_cast<long long>(a)) |
-          static_cast<unsigned long long>(static_cast<long long>(b))));
-    }
-    if (op == "or") {
-      return static_cast<long double>(static_cast<long long>(
-          static_cast<unsigned long long>(static_cast<long long>(a)) |
-          static_cast<unsigned long long>(static_cast<long long>(b))));
-    }
-    if (op == "xor") {
-      return static_cast<long double>(static_cast<long long>(
-          static_cast<unsigned long long>(static_cast<long long>(a)) ^
-          static_cast<unsigned long long>(static_cast<long long>(b))));
-    }
-    if (op == "and") {
-      return static_cast<long double>(static_cast<long long>(
-          static_cast<unsigned long long>(static_cast<long long>(a)) &
-          static_cast<unsigned long long>(static_cast<long long>(b))));
-    }
-    if (op == "=") {
-      return a == b ? kConstTrue : kConstFalse;
-    }
-    if (op == "<>") {
-      return a != b ? kConstTrue : kConstFalse;
-    }
-    if (op == "<") {
-      return a < b ? kConstTrue : kConstFalse;
-    }
-    if (op == ">") {
-      return a > b ? kConstTrue : kConstFalse;
-    }
-    if (op == "<=") {
-      return a <= b ? kConstTrue : kConstFalse;
-    }
-    if (op == ">=") {
-      return a >= b ? kConstTrue : kConstFalse;
+    if (op == "=" || op == "<>" || op == "<" || op == ">" || op == "<=" ||
+        op == ">=") {
+      bool cmp = false;
+      if (bothExact) {
+        int const c = compareExactInteger(*a.exact, *b.exact);
+        if (op == "=") {
+          cmp = c == 0;
+        } else if (op == "<>") {
+          cmp = c != 0;
+        } else if (op == "<") {
+          cmp = c < 0;
+        } else if (op == ">") {
+          cmp = c > 0;
+        } else if (op == "<=") {
+          cmp = c <= 0;
+        } else {
+          cmp = c >= 0;
+        }
+      } else if (op == "=") {
+        cmp = a.numeric == b.numeric;
+      } else if (op == "<>") {
+        cmp = a.numeric != b.numeric;
+      } else if (op == "<") {
+        cmp = a.numeric < b.numeric;
+      } else if (op == ">") {
+        cmp = a.numeric > b.numeric;
+      } else if (op == "<=") {
+        cmp = a.numeric <= b.numeric;
+      } else {
+        cmp = a.numeric >= b.numeric;
+      }
+      return cmp ? trueFolded() : falseFolded();
     }
     if (op == "shl" || op == "shr") {
-      long long const count = static_cast<long long>(b);
+      if (bothExact) {
+        if (b.exact->negative && b.exact->magnitude != 0) {
+          return std::nullopt;
+        }
+        if (b.exact->magnitude >
+            static_cast<std::uint64_t>(kMaxConstShiftCount)) {
+          return std::nullopt;
+        }
+        std::uint64_t const cnt = b.exact->magnitude;
+        std::uint64_t const uv = exactToBits(*a.exact);
+        std::uint64_t shifted = 0;
+        if (op == "shl") {
+          shifted = uv << cnt;
+        } else if (cnt == 0) {
+          shifted = uv;
+        } else {
+          shifted = uv >> cnt;
+          if (a.exact->negative && a.exact->magnitude != 0) {
+            shifted |= (~std::uint64_t(0) << (64U - cnt));
+          }
+        }
+        return fromBits(shifted);
+      }
+      long long const count = static_cast<long long>(b.numeric);
       if (count < 0 || count > kMaxConstShiftCount) {
         return std::nullopt;
       }
-      long long const v = static_cast<long long>(a);
-      unsigned long long const uv = static_cast<unsigned long long>(v);
-      unsigned long long const cnt = static_cast<unsigned long long>(count);
-      unsigned long long shifted = 0;
+      long long const v = static_cast<long long>(a.numeric);
+      std::uint64_t const uv = static_cast<std::uint64_t>(v);
+      std::uint64_t const cnt = static_cast<std::uint64_t>(count);
+      std::uint64_t shifted = 0;
       if (op == "shl") {
         shifted = uv << cnt;
       } else if (cnt == 0) {
@@ -3260,45 +3387,88 @@ private:
       } else {
         shifted = uv >> cnt;
         if (v < 0) {
-          shifted |= (~0ULL << (64 - cnt));
+          shifted |= (~std::uint64_t(0) << (64U - cnt));
         }
       }
-      return static_cast<long double>(static_cast<long long>(shifted));
+      return fromFloatingValue(
+          static_cast<long double>(static_cast<long long>(shifted)));
     }
     if (op == "+") {
-      return a + b;
+      if (bothExact) {
+        std::optional<ExactInteger> const r =
+            addExactInteger(*a.exact, *b.exact);
+        if (!r.has_value()) {
+          return fromFloatingValue(a.numeric + b.numeric);
+        }
+        return fromExactInteger(*r);
+      }
+      return fromFloatingValue(a.numeric + b.numeric);
     }
     if (op == "-") {
-      return a - b;
+      if (bothExact) {
+        std::optional<ExactInteger> const r =
+            subExactInteger(*a.exact, *b.exact);
+        if (!r.has_value()) {
+          return fromFloatingValue(a.numeric - b.numeric);
+        }
+        return fromExactInteger(*r);
+      }
+      return fromFloatingValue(a.numeric - b.numeric);
     }
     if (op == "*") {
-      return a * b;
+      if (bothExact) {
+        std::optional<ExactInteger> const r =
+            mulExactInteger(*a.exact, *b.exact);
+        if (!r.has_value()) {
+          return fromFloatingValue(a.numeric * b.numeric);
+        }
+        return fromExactInteger(*r);
+      }
+      return fromFloatingValue(a.numeric * b.numeric);
     }
     if (op == "/") {
-      if (b == 0) {
+      if (b.numeric == 0) {
         return std::nullopt;
       }
-      return a / b;
+      return fromFloatingValue(a.numeric / b.numeric);
     }
     if (op == "\\") {
-      long long const divisor = static_cast<long long>(b);
+      if (bothExact) {
+        if (b.exact->magnitude == 0) {
+          return std::nullopt;
+        }
+        std::optional<ExactInteger> const r =
+            divExactInteger(*a.exact, *b.exact);
+        if (r.has_value()) {
+          return fromExactInteger(*r);
+        }
+      }
+      long long const divisor = static_cast<long long>(b.numeric);
       if (divisor == 0) {
         return std::nullopt;
       }
       // FreeBASIC `\` is truncating integer division, exactly as
       // fbc folds it; lldiv keeps that quotient in the long long
       // domain instead of a floating quotient.
-      return static_cast<long double>(
-          std::lldiv(static_cast<long long>(a), divisor).quot);
+      return fromFloatingValue(static_cast<long double>(
+          std::lldiv(static_cast<long long>(a.numeric), divisor).quot));
     }
     if (op == "mod") {
-      if (b == 0) {
+      if (b.numeric == 0) {
         return std::nullopt;
       }
-      return std::fmod(a, b);
+      if (bothExact) {
+        std::optional<ExactInteger> const r =
+            modExactInteger(*a.exact, *b.exact);
+        if (!r.has_value()) {
+          return std::nullopt;
+        }
+        return fromExactInteger(*r);
+      }
+      return fromFloatingValue(std::fmod(a.numeric, b.numeric));
     }
     if (op == "^") {
-      return std::pow(a, b);
+      return fromFloatingValue(std::pow(a.numeric, b.numeric));
     }
     return std::nullopt;
   }
@@ -3319,12 +3489,26 @@ private:
       if (!v) {
         lhs = std::nullopt;
       } else if (op == "-") {
-        lhs = -*v;
+        if (v->exact.has_value()) {
+          std::optional<ExactInteger> const r = negateExact(*v->exact);
+          if (!r.has_value()) {
+            lhs = fromFloatingValue(-v->numeric);
+          } else {
+            lhs = fromExactInteger(*r);
+          }
+        } else {
+          lhs = fromFloatingValue(-v->numeric);
+        }
       } else if (op == "+") {
         lhs = v;
       } else {
-        lhs = static_cast<long double>(static_cast<long long>(
-            ~static_cast<unsigned long long>(static_cast<long long>(*v))));
+        if (v->exact.has_value()) {
+          lhs = fromExactInteger(bitsToExact(~exactToBits(*v->exact)));
+        } else {
+          lhs = fromFloatingValue(static_cast<long double>(
+              static_cast<long long>(~static_cast<std::uint64_t>(
+                  static_cast<long long>(v->numeric)))));
+        }
       }
     } else {
       lhs = evalConstPrimary(toks, pos, depth);
@@ -3545,21 +3729,37 @@ private:
     }
     bool overflow = false;
     if (info->isBool) {
-      long double const r = std::nearbyint(*v);
-      overflow = r != 0 && r != 1 && r != -1;
+      if (v->exact.has_value()) {
+        int const c0 = compareExactInteger(*v->exact, ExactInteger{false, 0});
+        int const c1 = compareExactInteger(*v->exact, ExactInteger{false, 1});
+        int const cm = compareExactInteger(*v->exact, ExactInteger{true, 1});
+        overflow = c0 != 0 && c1 != 0 && cm != 0;
+      } else {
+        long double const r = std::nearbyint(v->numeric);
+        overflow = r != 0 && r != 1 && r != -1;
+      }
     } else if (info->isSingle) {
-      float const f = static_cast<float>(*v);
+      float const f = static_cast<float>(v->numeric);
       bool const convBad = f == 0 || std::isinf(f);
-      bool const srcBad = *v == 0 || std::isinf(*v);
+      bool const srcBad = v->numeric == 0 || std::isinf(v->numeric);
       overflow = convBad != srcBad;
     } else if (info->bits == 64) {
+      if (v->exact.has_value()) {
+        return;
+      }
       if (!exprMayBeFloating(slice)) {
         return;
       }
-      long double const r = std::nearbyint(*v);
-      overflow = r < -kTwoTo63Ld || r > kUint64MaxLd;
+      long double const r = std::nearbyint(v->numeric);
+      overflow = r < -kTwoTo63Ld || r >= kTwoTo64Ld;
+    } else if (v->exact.has_value()) {
+      unsigned int const bitCount = static_cast<unsigned int>(info->bits);
+      ExactInteger const minV{true, std::uint64_t(1) << (bitCount - 1)};
+      ExactInteger const maxV{false, (std::uint64_t(1) << bitCount) - 1};
+      overflow = compareExactInteger(*v->exact, minV) < 0 ||
+                 compareExactInteger(*v->exact, maxV) > 0;
     } else {
-      long double const r = std::nearbyint(*v);
+      long double const r = std::nearbyint(v->numeric);
       unsigned int const bitCount = static_cast<unsigned int>(info->bits);
       long double const minV = -(long double)(1ULL << (bitCount - 1));
       long double const maxV = (long double)(1ULL << bitCount) - 1;
@@ -4169,9 +4369,18 @@ private:
     return (typeWord == "longint" || typeWord == "ulongint") ? 64 : hostBits;
   }
 
-  void checkShiftCount(Token const &opTok, int bits, long double countValue) {
-    long double const r = std::nearbyint(countValue);
-    if (r < 0 || r >= bits) {
+  void checkShiftCount(Token const &opTok, int bits,
+                       FoldedConstant const &countValue) {
+    bool exceeds = false;
+    if (countValue.exact.has_value()) {
+      exceeds =
+          (countValue.exact->negative && countValue.exact->magnitude != 0) ||
+          countValue.exact->magnitude >= static_cast<std::uint64_t>(bits);
+    } else {
+      long double const r = std::nearbyint(countValue.numeric);
+      exceeds = r < 0 || r >= bits;
+    }
+    if (exceeds) {
       addDiagnostic(
           opTok.beg, opTok.end, Severity::Warning, "shift-exceeds-bits",
           tr("Shift value greater than or equal to number of "
@@ -4399,7 +4608,11 @@ private:
       if (!sv) {
         return;
       }
-      positiveStep = *sv >= 0;
+      if (sv->exact.has_value()) {
+        positiveStep = !sv->exact->negative || sv->exact->magnitude == 0;
+      } else {
+        positiveStep = sv->numeric >= 0;
+      }
     }
     if (limitSlice.empty()) {
       return;
@@ -4414,25 +4627,36 @@ private:
     // itself can reach.
     int const bits = info->bits;
     unsigned int const bitCount = static_cast<unsigned int>(bits);
-    long double const rounded = std::nearbyint(*lv);
-    long double const modulusLd =
-        bits == 64 ? kTwoTo64Ld : (long double)(1ULL << bitCount);
-    long double wrapped = std::fmod(rounded, modulusLd);
-    if (wrapped < 0) {
-      wrapped += modulusLd;
-    }
-    if (wrapped >= modulusLd || wrapped > kUint64MaxLd) {
-      // A rounded fmod result at the top of its range can land past
-      // what a 64-bit value can hold; a folded limit that large is
-      // not judged rather than guessed at.
-      if (bits == 64 && wrapped >= kTwoTo64Ld) {
-        return;
+    std::uint64_t u = 0;
+    if (lv->exact.has_value()) {
+      std::uint64_t const pattern = exactToBits(*lv->exact);
+      if (bits == 64) {
+        u = pattern;
+      } else {
+        std::uint64_t const mask = (std::uint64_t(1) << bitCount) - 1;
+        u = pattern & mask;
       }
-      if (bits != 64 && wrapped >= modulusLd) {
-        wrapped = modulusLd - 1;
+    } else {
+      long double const rounded = std::nearbyint(lv->numeric);
+      long double const modulusLd =
+          bits == 64 ? kTwoTo64Ld : (long double)(1ULL << bitCount);
+      long double wrapped = std::fmod(rounded, modulusLd);
+      if (wrapped < 0) {
+        wrapped += modulusLd;
       }
+      if (wrapped >= modulusLd || wrapped >= kTwoTo64Ld) {
+        // A rounded fmod result at the top of its range can land past
+        // what a 64-bit value can hold; a folded limit that large is
+        // not judged rather than guessed at.
+        if (bits == 64 && wrapped >= kTwoTo64Ld) {
+          return;
+        }
+        if (bits != 64 && wrapped >= modulusLd) {
+          wrapped = modulusLd - 1;
+        }
+      }
+      u = static_cast<std::uint64_t>(wrapped);
     }
-    std::uint64_t const u = static_cast<std::uint64_t>(wrapped);
     std::uint64_t const half =
         bits == 64 ? (1ULL << 63U) : (1ULL << (bitCount - 1));
     std::int64_t signedVal = 0;
@@ -4536,7 +4760,15 @@ private:
       }
       ConstValue lo = evalConstSlice(toks, beg, toAt, 0);
       ConstValue hi = evalConstSlice(toks, toAt + 1, end, 0);
-      if (lo && hi && *lo > *hi) {
+      bool greater = false;
+      if (lo && hi) {
+        if (lo->exact.has_value() && hi->exact.has_value()) {
+          greater = compareExactInteger(*lo->exact, *hi->exact) > 0;
+        } else {
+          greater = lo->numeric > hi->numeric;
+        }
+      }
+      if (greater) {
         addDiagnostic(caseTok.beg, caseTok.end, Severity::Error,
                       "invalid-case-range",
                       trf("invalid %s range, start value is greater than "
@@ -7125,6 +7357,126 @@ private:
 };
 
 } // namespace
+
+std::optional<FoldedConstant> foldNumericLiteral(std::string_view text) {
+  if (text.empty()) {
+    return std::nullopt;
+  }
+  constexpr int kDecimalBase = 10;
+  constexpr int kHexBase = 16;
+  constexpr int kOctalBase = 8;
+  constexpr int kBinaryBase = 2;
+  int base = kDecimalBase;
+  std::string_view digits = text;
+  if (text.size() >= 2 && text[0] == '&') {
+    char const c = text[1];
+    if (c == 'h' || c == 'H') {
+      base = kHexBase;
+    } else if (c == 'o' || c == 'O') {
+      base = kOctalBase;
+    } else if (c == 'b' || c == 'B') {
+      base = kBinaryBase;
+    } else {
+      return std::nullopt;
+    }
+    digits.remove_prefix(2);
+    while (!digits.empty() && (digits.back() == '%' || digits.back() == '&' ||
+                               digits.back() == 'u' || digits.back() == 'U' ||
+                               digits.back() == 'l' || digits.back() == 'L')) {
+      digits.remove_suffix(1);
+    }
+    if (digits.empty()) {
+      return std::nullopt;
+    }
+    long double value = 0;
+    std::uint64_t magnitude = 0;
+    bool overflowed = false;
+    for (char const c : digits) {
+      int d = 0;
+      if (c >= '0' && c <= '9') {
+        d = c - '0';
+      } else if (base == kHexBase && c >= 'a' && c <= 'f') {
+        d = c - 'a' + kDecimalBase;
+      } else if (base == kHexBase && c >= 'A' && c <= 'F') {
+        d = c - 'A' + kDecimalBase;
+      } else {
+        return std::nullopt;
+      }
+      if (d >= base) {
+        return std::nullopt;
+      }
+      value = (value * base) + d;
+      if (!overflowed) {
+        std::uint64_t const ud = static_cast<std::uint64_t>(d);
+        std::uint64_t const ubase = static_cast<std::uint64_t>(base);
+        std::uint64_t const limit = std::numeric_limits<std::uint64_t>::max();
+        if (magnitude > (limit - ud) / ubase) {
+          overflowed = true;
+        } else {
+          magnitude = (magnitude * ubase) + ud;
+        }
+      }
+    }
+    if (overflowed) {
+      return fromFloatingValue(value);
+    }
+    return fromExactInteger(ExactInteger{false, magnitude});
+  }
+  std::string cleaned(digits);
+  // Drop a literal's type suffix (`%`, `&`, `ul`/`ll` in any order,
+  // and the floating `!`/`f`/`#`/`d`) so the numeric core parses. A
+  // digit or `.` ends the suffix: exponent digits (`1e5`) are core,
+  // not suffix.
+  while (!cleaned.empty()) {
+    char const c = cleaned.back();
+    if (c == '%' || c == '&' || c == '!' || c == '#' || c == 'f' || c == 'F' ||
+        c == 'd' || c == 'D' || c == 'u' || c == 'U' || c == 'l' || c == 'L') {
+      cleaned.pop_back();
+      continue;
+    }
+    break;
+  }
+  if (cleaned.empty()) {
+    return std::nullopt;
+  }
+  bool isDecimalInteger = true;
+  for (char const c : cleaned) {
+    if (c < '0' || c > '9') {
+      isDecimalInteger = false;
+      break;
+    }
+  }
+  if (isDecimalInteger) {
+    std::uint64_t magnitude = 0;
+    bool overflowed = false;
+    for (char const c : cleaned) {
+      std::uint64_t const ud = static_cast<std::uint64_t>(c - '0');
+      if (!overflowed) {
+        std::uint64_t const limit = std::numeric_limits<std::uint64_t>::max();
+        if (magnitude > (limit - ud) / 10U) {
+          overflowed = true;
+        } else {
+          magnitude = (magnitude * 10U) + ud;
+        }
+      }
+    }
+    if (!overflowed) {
+      return fromExactInteger(ExactInteger{false, magnitude});
+    }
+    char *endPtr = nullptr;
+    long double const value = std::strtold(cleaned.c_str(), &endPtr);
+    if (endPtr == cleaned.c_str() || *endPtr != '\0') {
+      return std::nullopt;
+    }
+    return fromFloatingValue(value);
+  }
+  char *endPtr = nullptr;
+  long double const value = std::strtold(cleaned.c_str(), &endPtr);
+  if (endPtr == cleaned.c_str() || *endPtr != '\0') {
+    return std::nullopt;
+  }
+  return fromFloatingValue(value);
+}
 
 ParseResult parseDocument(std::string_view source) {
   return Parser(source).run();
