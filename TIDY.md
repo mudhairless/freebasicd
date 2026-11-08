@@ -104,6 +104,25 @@ does not already show.
 
 ---
 
+## readability-qualified-auto
+
+**Looks for:** `auto` declarations the check wants spelled with their
+pointer and const qualification, e.g. `const auto *const` for a variable
+holding a pointer.
+
+**Why suppressed at one site only:** The recommendation assumes the
+deduced type is a pointer, which is a property of the standard library,
+not of this code. The `std::upper_bound` result in `rangeFor`
+(`src/fbc_diagnostics.cpp`) is a pointer under libstdc++ and libc++ but
+an iterator class under MSVC's STL, where the qualified spelling does
+not compile (error C3535, CI run of 2026-11-08). The check stays enabled
+project-wide; the suppression is a `NOLINTNEXTLINE` on that one
+declaration, so a new site elsewhere still gets flagged.
+
+**Hit count:** 1 (the version-range lookup).
+
+---
+
 ## misc-no-recursion
 
 **Looks for:** Any function that calls itself, directly or indirectly,

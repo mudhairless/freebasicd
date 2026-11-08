@@ -158,7 +158,11 @@ FbcNumberRange const &rangeFor(std::optional<FbcVersion> const &version) {
   if (!version) {
     return kNumberRanges.back();
   }
-  const auto *const it =
+  // The iterator std::upper_bound returns here is a pointer in some
+  // standard libraries and an iterator class in MSVC's, so the
+  // declaration stays plain auto; see TIDY.md.
+  // NOLINTNEXTLINE(readability-qualified-auto)
+  auto const it =
       std::upper_bound(kNumberRanges.begin(), kNumberRanges.end(), *version,
                        [](FbcVersion const &v, FbcNumberRange const &range) {
                          return v < range.first;
