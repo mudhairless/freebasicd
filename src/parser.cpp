@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -46,6 +47,9 @@ constexpr int kConstLookupMaxDepth = 8;
 constexpr long long kMaxConstShiftCount = 62;
 constexpr long double kConstTrue = -1;
 constexpr long double kConstFalse = 0;
+constexpr long double kTwoTo63Ld = 9223372036854775808.0L;
+constexpr long double kUint64MaxLd = 18446744073709551615.0L;
+constexpr long double kTwoTo64Ld = 18446744073709551616.0L;
 
 std::string uppercase(std::string_view s) {
   std::string out;
@@ -1171,7 +1175,7 @@ private:
       return info;
     }
     std::size_t nameIdx = seg.size();
-    std::size_t afterName = seg.size();
+    std::size_t afterName;
     bool typeFirst = seg[0].kind == TokenKind::Keyword &&
                      toLowerChars(seg[0].text()) == "as";
     if (typeFirst) {
@@ -1398,10 +1402,10 @@ private:
       return false;
     }
     CtorInfo const &ci = it->second;
-    if ((isRedim ? ci.ctorPrivate : ci.ctorPrivate) && ci.hasCtor) {
+    if (ci.ctorPrivate && ci.hasCtor) {
       return false; // 204/206 own this shape; stay silent here
     }
-    if (ci.hasDtor && (isRedim ? ci.dtorPrivate : ci.dtorPrivate)) {
+    if (ci.hasDtor && ci.dtorPrivate) {
       return false;
     }
     if (isRedim) {
@@ -1523,10 +1527,10 @@ private:
           if (old != nullptr && old->fromDeclOnly &&
               ((old->kind == Container::VarFact::Dynamic) !=
                (info.kind == DeclInfo::Dynamic))) {
-            emitStatementError(info.nameTok, "expected-dynamic-array",
-                               FbcDiagId::ExpectedDynamicArray,
-                               trf("Expected var-len array, %s",
-                                   std::string(info.nameTok.text())));
+            emitStatementError(
+                info.nameTok, "expected-dynamic-array",
+                FbcDiagId::ExpectedDynamicArray,
+                trf("Expected var-len array, %s", info.nameTok.text()));
             return;
           }
         }
@@ -1597,10 +1601,10 @@ private:
                   auto const fIt = fit->second.find(fieldKey);
                   if (fIt != fit->second.end()) {
                     if (fIt->second.kind == Container::VarFact::Fixed) {
-                      emitStatementError(seg[i + 2], "expected-dynamic-array",
-                                         FbcDiagId::ExpectedDynamicArray,
-                                         trf("Expected var-len array, %s",
-                                             std::string(seg[i + 2].text())));
+                      emitStatementError(
+                          seg[i + 2], "expected-dynamic-array",
+                          FbcDiagId::ExpectedDynamicArray,
+                          trf("Expected var-len array, %s", seg[i + 2].text()));
                       return;
                     }
                     if (info.hasEllipsis) {
@@ -1622,10 +1626,10 @@ private:
         }
         if (!isField) {
           if (old != nullptr && old->kind == Container::VarFact::Fixed) {
-            emitStatementError(info.nameTok, "expected-dynamic-array",
-                               FbcDiagId::ExpectedDynamicArray,
-                               trf("Expected var-len array, %s",
-                                   std::string(info.nameTok.text())));
+            emitStatementError(
+                info.nameTok, "expected-dynamic-array",
+                FbcDiagId::ExpectedDynamicArray,
+                trf("Expected var-len array, %s", info.nameTok.text()));
             return;
           }
           if (old != nullptr && old->kind == Container::VarFact::Dynamic &&
@@ -1642,12 +1646,9 @@ private:
           if (redimType.empty() && old != nullptr) {
             redimType = old->typeKey;
           }
-          if (old != nullptr && old->kind == Container::VarFact::Dynamic) {
-            if (checkRedimEraseUdt(redimType, true, info.nameTok)) {
-              return;
-            }
-          } else if (!redimType.empty() && info.kind == DeclInfo::Dynamic) {
-            // `redim a(1) as T` defining form: no prior fact, type written.
+          // `redim a(1) as T` defining form: no prior fact, type written.
+          if ((old != nullptr && old->kind == Container::VarFact::Dynamic) ||
+              (!redimType.empty() && info.kind == DeclInfo::Dynamic)) {
             if (checkRedimEraseUdt(redimType, true, info.nameTok)) {
               return;
             }
@@ -2196,15 +2197,9 @@ private:
         if (!stillInScope) {
           continue;
         }
-        if (def.kind == LocalDef::Array || def.kind == LocalDef::VarLenString) {
-          addDiagnostic(branch.beg, branch.end, Severity::Error,
-                        "branch-crossing-dyn-data-def",
-                        trf("branch crossing local array, var-len string or "
-                            "object definition, to label: %s",
-                            branch.targetName),
-                        FbcDiagId::BranchCrossingDynDataDef);
-        } else if (def.kind == LocalDef::UdtInstance &&
-                   typeHasConstructor(def.typeKey)) {
+        if (def.kind == LocalDef::Array || def.kind == LocalDef::VarLenString ||
+            (def.kind == LocalDef::UdtInstance &&
+             typeHasConstructor(def.typeKey))) {
           addDiagnostic(branch.beg, branch.end, Severity::Error,
                         "branch-crossing-dyn-data-def",
                         trf("branch crossing local array, var-len string or "
@@ -3222,24 +3217,29 @@ private:
   static ConstValue applyConstOp(std::string const &op, long double a,
                                  long double b) {
     if (op == "eqv") {
-      return static_cast<long double>(
-          ~(static_cast<long long>(a) ^ static_cast<long long>(b)));
+      return static_cast<long double>(static_cast<long long>(
+          ~(static_cast<unsigned long long>(static_cast<long long>(a)) ^
+            static_cast<unsigned long long>(static_cast<long long>(b)))));
     }
     if (op == "imp") {
-      return static_cast<long double>(~static_cast<long long>(a) |
-                                      static_cast<long long>(b));
+      return static_cast<long double>(static_cast<long long>(
+          ~static_cast<unsigned long long>(static_cast<long long>(a)) |
+          static_cast<unsigned long long>(static_cast<long long>(b))));
     }
     if (op == "or") {
-      return static_cast<long double>(static_cast<long long>(a) |
-                                      static_cast<long long>(b));
+      return static_cast<long double>(static_cast<long long>(
+          static_cast<unsigned long long>(static_cast<long long>(a)) |
+          static_cast<unsigned long long>(static_cast<long long>(b))));
     }
     if (op == "xor") {
-      return static_cast<long double>(static_cast<long long>(a) ^
-                                      static_cast<long long>(b));
+      return static_cast<long double>(static_cast<long long>(
+          static_cast<unsigned long long>(static_cast<long long>(a)) ^
+          static_cast<unsigned long long>(static_cast<long long>(b))));
     }
     if (op == "and") {
-      return static_cast<long double>(static_cast<long long>(a) &
-                                      static_cast<long long>(b));
+      return static_cast<long double>(static_cast<long long>(
+          static_cast<unsigned long long>(static_cast<long long>(a)) &
+          static_cast<unsigned long long>(static_cast<long long>(b))));
     }
     if (op == "=") {
       return a == b ? kConstTrue : kConstFalse;
@@ -3265,7 +3265,20 @@ private:
         return std::nullopt;
       }
       long long const v = static_cast<long long>(a);
-      return static_cast<long double>(op == "shl" ? v << count : v >> count);
+      unsigned long long const uv = static_cast<unsigned long long>(v);
+      unsigned long long const cnt = static_cast<unsigned long long>(count);
+      unsigned long long shifted = 0;
+      if (op == "shl") {
+        shifted = uv << cnt;
+      } else if (cnt == 0) {
+        shifted = uv;
+      } else {
+        shifted = uv >> cnt;
+        if (v < 0) {
+          shifted |= (~0ULL << (64 - cnt));
+        }
+      }
+      return static_cast<long double>(static_cast<long long>(shifted));
     }
     if (op == "+") {
       return a + b;
@@ -3287,7 +3300,11 @@ private:
       if (divisor == 0) {
         return std::nullopt;
       }
-      return static_cast<long double>(static_cast<long long>(a) / divisor);
+      // FreeBASIC `\` is truncating integer division, exactly as
+      // fbc folds it; lldiv keeps that quotient in the long long
+      // domain instead of a floating quotient.
+      return static_cast<long double>(
+          std::lldiv(static_cast<long long>(a), divisor).quot);
     }
     if (op == "mod") {
       if (b == 0) {
@@ -3321,7 +3338,8 @@ private:
       } else if (op == "+") {
         lhs = v;
       } else {
-        lhs = static_cast<long double>(~static_cast<long long>(*v));
+        lhs = static_cast<long double>(static_cast<long long>(
+            ~static_cast<unsigned long long>(static_cast<long long>(*v))));
       }
     } else {
       lhs = evalConstPrimary(toks, pos, depth);
@@ -3554,7 +3572,7 @@ private:
         return;
       }
       long double const r = std::nearbyint(*v);
-      overflow = r < -9223372036854775808.0L || r > 18446744073709551615.0L;
+      overflow = r < -kTwoTo63Ld || r > kUint64MaxLd;
     } else {
       long double const r = std::nearbyint(*v);
       unsigned int const bitCount = static_cast<unsigned int>(info->bits);
@@ -4412,16 +4430,16 @@ private:
     unsigned int const bitCount = static_cast<unsigned int>(bits);
     long double const rounded = std::nearbyint(*lv);
     long double const modulusLd =
-        bits == 64 ? 18446744073709551616.0L : (long double)(1ULL << bitCount);
+        bits == 64 ? kTwoTo64Ld : (long double)(1ULL << bitCount);
     long double wrapped = std::fmod(rounded, modulusLd);
     if (wrapped < 0) {
       wrapped += modulusLd;
     }
-    if (wrapped >= modulusLd || wrapped > 18446744073709551615.0L) {
+    if (wrapped >= modulusLd || wrapped > kUint64MaxLd) {
       // A rounded fmod result at the top of its range can land past
       // what a 64-bit value can hold; a folded limit that large is
       // not judged rather than guessed at.
-      if (bits == 64 && wrapped >= 18446744073709551616.0L) {
+      if (bits == 64 && wrapped >= kTwoTo64Ld) {
         return;
       }
       if (bits != 64 && wrapped >= modulusLd) {
@@ -4437,7 +4455,7 @@ private:
     } else if (bits == 64) {
       // `u - 2^64`, added one term at a time so no intermediate
       // conversion goes past INT64_MAX.
-      signedVal = static_cast<std::int64_t>(-9223372036854775807LL - 1) +
+      signedVal = std::numeric_limits<std::int64_t>::min() +
                   static_cast<std::int64_t>(u - half);
     } else {
       signedVal =
@@ -4448,7 +4466,7 @@ private:
       if (info->isSigned) {
         std::int64_t const maxV =
             bits == 64
-                ? 9223372036854775807LL
+                ? std::numeric_limits<std::int64_t>::max()
                 : static_cast<std::int64_t>((1ULL << (bitCount - 1)) - 1);
         tooBig = signedVal >= maxV;
       } else {
@@ -4459,7 +4477,7 @@ private:
     } else {
       if (info->isSigned) {
         std::int64_t const minV =
-            bits == 64 ? static_cast<std::int64_t>(-9223372036854775807LL - 1)
+            bits == 64 ? std::numeric_limits<std::int64_t>::min()
                        : -static_cast<std::int64_t>(1ULL << (bitCount - 1));
         tooBig = signedVal <= minV;
       } else if (bits == 64) {
@@ -5100,6 +5118,7 @@ private:
         std::string const targetKey = keyFor(toks[1].text());
         bool isFunction = false;
         std::vector<Symbol const *> stack;
+        stack.reserve(out_.roots.size());
         for (Symbol const &root : out_.roots) {
           stack.push_back(&root);
         }
@@ -5555,7 +5574,7 @@ private:
         return -1;
       }
       value = (value * base) + d;
-      if (value > 0x7fffffffLL) {
+      if (value > std::numeric_limits<std::int32_t>::max()) {
         return value; // saturates above the 65535 ceiling; still reported
       }
     }
@@ -6808,6 +6827,7 @@ private:
   // still be 42 as a Next variable.
   bool valueNamedDeclared(const std::string &key) {
     std::vector<Symbol const *> stack;
+    stack.reserve(out_.roots.size());
     for (auto const &r : out_.roots) {
       stack.push_back(&r);
     }

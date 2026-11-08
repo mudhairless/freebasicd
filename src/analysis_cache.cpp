@@ -8,10 +8,10 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdio>
 #include <mutex>
 
 #include "lexer.h"
+#include "parse_timing.h"
 #include "symbols.h"
 
 namespace fblang {
@@ -82,49 +82,7 @@ AnalysisCache::get(std::string const &path, std::string_view content,
   auto const t0 = std::chrono::steady_clock::now();
   entry->analysis = analyze(entry->content);
   auto const dt = std::chrono::steady_clock::now() - t0;
-  auto const ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(dt).count();
-  if (ms > 10) {
-    (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n",
-                       entry->path.c_str(), static_cast<long long>(ms));
-  } else {
-    auto const ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(dt).count();
-    if (ns == 0) {
-      (void)std::fprintf(stderr, "[freebasicd] %s parsed in <1 us\n",
-                         entry->path.c_str());
-    } else if (ns < 1000) {
-      (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ns\n",
-                         entry->path.c_str(), static_cast<long long>(ns));
-    } else if (ns < 100000) {
-      double const us = static_cast<double>(ns) / 1000.0;
-      if (us < 10.0) {
-        (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f us\n",
-                           entry->path.c_str(), us);
-      } else {
-        (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.0f us\n",
-                           entry->path.c_str(), us);
-      }
-    } else if (ns < 1000000) {
-      double const us = static_cast<double>(ns) / 1000.0;
-      if (us < 10.0) {
-        (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f us\n",
-                           entry->path.c_str(), us);
-      } else {
-        (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.0f us\n",
-                           entry->path.c_str(), us);
-      }
-    } else {
-      double const msecs = static_cast<double>(ns) / 1000000.0;
-      if (msecs >= 10.0) {
-        (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n",
-                           entry->path.c_str(), static_cast<long long>(ms));
-      } else {
-        (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f ms\n",
-                           entry->path.c_str(), msecs);
-      }
-    }
-  }
+  logParseDuration(entry->path, dt);
 
   std::lock_guard<std::mutex> const lock(mu_);
   if (!insert) {

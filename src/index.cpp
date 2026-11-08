@@ -6,13 +6,13 @@
 
 #include "index.h"
 
+#include "parse_timing.h"
 #include "resolve.h"
 #include "symbols.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -662,49 +662,7 @@ void WorkspaceIndex::scan(bool async) {
     auto const t0 = std::chrono::steady_clock::now();
     AnalyzedDoc const doc = analyze(content);
     auto const dt = std::chrono::steady_clock::now() - t0;
-    auto const ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(dt).count();
-    if (ms > 10) {
-      (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n",
-                         norm.c_str(), static_cast<long long>(ms));
-    } else {
-      auto const ns =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(dt).count();
-      if (ns == 0) {
-        (void)std::fprintf(stderr, "[freebasicd] %s parsed in <1 us\n",
-                           norm.c_str());
-      } else if (ns < 1000) {
-        (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ns\n",
-                           norm.c_str(), static_cast<long long>(ns));
-      } else if (ns < 100000) {
-        double const us = static_cast<double>(ns) / 1000.0;
-        if (us < 10.0) {
-          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f us\n",
-                             norm.c_str(), us);
-        } else {
-          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.0f us\n",
-                             norm.c_str(), us);
-        }
-      } else if (ns < 1000000) {
-        double const us = static_cast<double>(ns) / 1000.0;
-        if (us < 10.0) {
-          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f us\n",
-                             norm.c_str(), us);
-        } else {
-          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.0f us\n",
-                             norm.c_str(), us);
-        }
-      } else {
-        double const msecs = static_cast<double>(ns) / 1000000.0;
-        if (msecs >= 10.0) {
-          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %lld ms\n",
-                             norm.c_str(), static_cast<long long>(ms));
-        } else {
-          (void)std::fprintf(stderr, "[freebasicd] %s parsed in %.2f ms\n",
-                             norm.c_str(), msecs);
-        }
-      }
-    }
+    logParseDuration(norm, dt);
     upsert(indexedFileFromAnalysis(norm, mtime, size, doc, root_, true, dirs,
                                    systemDir));
   }

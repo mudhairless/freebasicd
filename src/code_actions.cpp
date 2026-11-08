@@ -434,8 +434,13 @@ std::vector<QuickFix> wrapInModuleConstructor(Diagnostic const &d,
     fix.code = d.code;
     fix.diagRange = d.range;
     std::string const le(lineEnding(ctx.content));
-    fix.edits.push_back({SourceRange{run.front().beg, run.front().beg},
-                         "Sub " + name + "() Constructor" + le});
+    std::string header;
+    header.append("Sub ");
+    header.append(name);
+    header.append("() Constructor");
+    header.append(le);
+    fix.edits.push_back(
+        {SourceRange{run.front().beg, run.front().beg}, std::move(header)});
     fix.edits.push_back(
         {SourceRange{run.back().end, run.back().end}, le + "End Sub"});
     return {std::move(fix)};
