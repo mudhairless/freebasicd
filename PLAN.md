@@ -40,7 +40,7 @@
   | M21 — module model, constructors, and fbc's codes (complete 2026-11-06; summary in CHANGELOG.md) | done |
   | M18 — public release: editor setup docs, first tag | blocked on M22, M23, M24, and the VS Code extension |
   | M22 — fbc declaration-order parity: use-before-declaration | next |
-  | M23 — fbc parser diagnostics: statements, placement, warnings (groups G1–G6 landed; group G7 remains) | backlog |
+  | M23 — fbc parser diagnostics: statements, placement, warnings (groups G1–G7 landed) | backlog |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
   | M26 — formatter wave 3: wrapping and the reserved options (backlog) | backlog |
@@ -629,13 +629,14 @@ landing as their own step.
   tables is in [`CHANGELOG.md`](CHANGELOG.md). What passes to G7/M24:
   `72`, the `DIM`-lowered `174`–`176`/`183`/`204`/`206` sites, cross-file
   UDT knowledge, and the dialect `147` typeless-`REDIM` shapes.
-- **G7 — the remaining warnings.** (`12 NOCLOSINGQUOTE` and `44
-  SUFFIXIGNORED` already carry their numbers; see the code-identity bullet.)
-  Syntactic: `32 IFFOUNDAFTERELSE`, `15 NOEXPLICITPARAMMODE`, `46
-  CMDLINEIGNORED`. Constant-dependent: `25 CONVOVERFLOW` and `33
-  SHIFTEXCEEDSBITSINDATATYPE`, which need constant expressions evaluated (a
-  literal folder, not the M24 type model). Every one inherits the landed
-  `-w` gate.
+- **G7 — the remaining warnings — landed (2026-11-08).** `32
+  IFFOUNDAFTERELSE`, `15 NOEXPLICITPARAMMODE`, `46 CMDLINEIGNORED`,
+  `25 CONVOVERFLOW`, `33 SHIFTEXCEEDSBITSINDATATYPE`, and `45
+  FORENDTOOBIG` (deferred from G2; its counter and limit are
+  parser-knowable, so it lands here beside 25/33 with the same
+  literal folder, not the M24 type model). Limits are recorded at
+  `FreeBASIC.md` §12.37; the dated entry is in
+  [`CHANGELOG.md`](CHANGELOG.md).
 - **Warning `-w` level model — landed (2026-10-10).** `freebasicd.toml`'s
   `warningLevel` takes fbc's `-w` option names, English only, and an absent or
   unknown value is `-w none` — a deliberate divergence from fbc's leading

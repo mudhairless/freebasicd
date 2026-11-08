@@ -179,6 +179,201 @@ static int errorDiagnosticCount(const ParseResult &r) {
   return n;
 }
 
+static void TestRemainingWarnings() {
+  // 32: `Else If` on the `Else` line itself. The nested `If` is a block
+  // with its own closer. An `If` on the next line (the ordinary nested
+  // spelling), after a comment or blank line or separator, and `ElseIf`
+  // itself all stay silent.
+  {
+    std::string const src =
+        "if 1 then\nelse if 2 then\nprint 2\nend if\nend if\n";
+    ParseResult const r = parseDocument(src);
+    CHECK(diagnosticCount(r, "if-found-after-else") == 1);
+    CHECK(fbcErrorFor(r, "if-found-after-else") == FbcDiagId::IfFoundAfterElse);
+    CHECK(errorDiagnosticCount(r) == 0);
+    std::size_t const ifAt = src.find("if 2");
+    CHECK(r.diagnostics.size() == 1 && r.diagnostics[0].range.beg == ifAt);
+  }
+  {
+    ParseResult const nested = parseDocument(
+        "if 1 then\nelse if 2 then\nprint 2\nelse if 3 then\nprint 3\n"
+        "end if\nend if\nend if\n");
+    CHECK(diagnosticCount(nested, "if-found-after-else") == 2);
+    CHECK(errorDiagnosticCount(nested) == 0);
+    ParseResult const nextLine =
+        parseDocument("if 1 then\nelse\nif 2 then\nprint 2\nend if\nend if\n");
+    std::string const commented =
+        "if 1 then\nelse\n' a comment\n\nif 2 then\nend if\nend if\n";
+    ParseResult const commentCase = parseDocument(commented);
+    ParseResult const elseif =
+        parseDocument("if 1 then\nelseif 2 then\nprint 2\nend if\n");
+    ParseResult const single =
+        parseDocument("if 1 then print 1 else if 2 then print 2\n");
+    ParseResult const between = parseDocument(
+        "if 1 then\nprint 1\nelse\nscope\nif 2 then\nend if\nend scope\n"
+        "end if\n");
+    CHECK(diagnosticCount(nextLine, "if-found-after-else") == 0);
+    CHECK(diagnosticCount(commentCase, "if-found-after-else") == 0);
+    CHECK(diagnosticCount(elseif, "if-found-after-else") == 0);
+    CHECK(diagnosticCount(single, "if-found-after-else") == 0);
+    CHECK(diagnosticCount(between, "if-found-after-else") == 0);
+    CHECK(errorDiagnosticCount(nextLine) == 0);
+  }
+
+  // 15: one warning per parameter with no mode, across definition
+  // heads, `Declare` heads, members, and function pointers. Array
+  // parameters and the variadic tail are silent, as is an empty list.
+  {
+    ParseResult const mixed = parseDocument(
+        "sub foo(a as integer, byval b as string, c as double, d() "
+        "as integer)\nend sub\n");
+    CHECK(diagnosticCount(mixed, "no-explicit-param-mode") == 2);
+    CHECK(fbcErrorFor(mixed, "no-explicit-param-mode") ==
+          FbcDiagId::NoExplicitParamMode);
+    ParseResult const heads = parseDocument(
+        "declare sub d(a as integer)\n"
+        "function f(a as integer) as integer\nend function\n"
+        "type t\n  x as integer\n  declare sub go(a as integer)\n  "
+        "declare constructor(q as integer)\nend type\n"
+        "dim p as sub(a as integer, byval b as integer)\n"
+        "type u\n  g as function(a as integer) as integer\nend type\n");
+    CHECK(diagnosticCount(heads, "no-explicit-param-mode") == 6);
+    ParseResult const neg = parseDocument(
+        "sub foo(byval a as integer, byref b as integer)\nend sub\n"
+        "sub bar(a() as integer)\nend sub\n"
+        "sub baz cdecl(byval a as integer, ...)\nend sub\n"
+        "sub empty()\nend sub\n");
+    CHECK(diagnosticCount(neg, "no-explicit-param-mode") == 0);
+    ParseResult const others =
+        parseDocument("sub foo(a as integer = 5)\nend sub\n"
+                      "declare sub bar(as integer)\n"
+                      "declare sub print(print as integer)\n");
+    CHECK(diagnosticCount(others, "no-explicit-param-mode") == 3);
+    ParseResult const nestedPtr =
+        parseDocument("function r(a as function() as function(b as integer) as "
+                      "integer) as integer\nend function\n");
+    CHECK(diagnosticCount(nestedPtr, "no-explicit-param-mode") == 2);
+  }
+
+  // 46: a `#cmdline` after any statement (a `#define`, a comment, a
+  // leading `#cmdline` does not count) is ignored. A second early
+  // one is effective, and one in a dead arm or a macro body is never
+  // seen.
+  {
+    ParseResult const late = parseDocument("print 1\n#cmdline \"-w all\"\n");
+    CHECK(diagnosticCount(late, "cmdline-ignored") == 1);
+    CHECK(fbcErrorFor(late, "cmdline-ignored") == FbcDiagId::CmdlineIgnored);
+    CHECK(diagnosticCount(parseDocument("dim x as integer\n#cmdline \"x\"\n"),
+                          "cmdline-ignored") == 1);
+    CHECK(diagnosticCount(parseDocument("sub s()\n#cmdline \"x\"\nend sub\n"),
+                          "cmdline-ignored") == 1);
+    CHECK(diagnosticCount(parseDocument("#cmdline \"x\"\nprint 1\n"),
+                          "cmdline-ignored") == 0);
+    CHECK(diagnosticCount(
+              parseDocument("#define X 1\n' c\n#cmdline \"x\"\n#cmdline "
+                            "\"y\"\nprint 1\n"),
+              "cmdline-ignored") == 0);
+    CHECK(diagnosticCount(
+              parseDocument("#if 0\n#cmdline \"x\"\n#endif\nprint 1\n"),
+              "cmdline-ignored") == 0);
+    CHECK(diagnosticCount(
+              parseDocument("#macro m()\n#cmdline \"x\"\n#endmacro\nprint 1\n"),
+              "cmdline-ignored") == 0);
+  }
+
+  // 25: a folded constant into a builtin type outside that type's
+  // (size-class) range. Signedness alone is not the range.
+  {
+    ParseResult const bad = parseDocument("dim x as byte = 300\n");
+    CHECK(diagnosticCount(bad, "conv-overflow") == 1);
+    CHECK(fbcErrorFor(bad, "conv-overflow") == FbcDiagId::ConvOverflow);
+    ParseResult const shapes =
+        parseDocument("const c as byte = 256\n"
+                      "enum e\n  a = 300\nend enum\ndim d as byte = a\n"
+                      "dim f as byte = 200 + 100, g as byte = &h100\n"
+                      "dim h as boolean = 2\ndim i as single = 4e38\n"
+                      "sub s(byval a as byte = 300)\nend sub\n"
+                      "function fn() as byte\n  fn = 300\nend function\n");
+    CHECK(diagnosticCount(shapes, "conv-overflow") == 8);
+    ParseResult const assign = parseDocument("dim x as byte\nx = 300\n");
+    CHECK(diagnosticCount(assign, "conv-overflow") == 1);
+    ParseResult const field = parseDocument("type t\n  x as byte = 300\n"
+                                            "end type\n");
+    CHECK(diagnosticCount(field, "conv-overflow") == 1);
+    ParseResult const edges = parseDocument(
+        "dim a as byte = 255\ndim b as short = 32768\ndim c as "
+        "ushort = 65535\ndim d as ubyte = -1\ndim e as boolean = 1\n"
+        "dim f as single = 1.5\ndim g as longint = "
+        "9223372036854775808ull\ndim h as longint = 1e30\n");
+    CHECK(diagnosticCount(edges, "conv-overflow") == 1);
+    ParseResult const silent =
+        parseDocument("dim y as integer = 300\ndim x as byte = y\n"
+                      "type t\n  a as byte\nend type\ndim v as t\nv = x\n"
+                      "dim z as byte = len(\"hi\")\ndim w as byte = 12.5\n");
+    CHECK(diagnosticCount(silent, "conv-overflow") == 0);
+  }
+
+  // 33: a folded shift count at or past the (promoted) width. A
+  // narrow variable is promoted before the shift, so `byte shl 8`
+  // stays silent; only the promoted width is judged.
+  {
+    ParseResult const bad = parseDocument("print 1 shl 64\n");
+    CHECK(diagnosticCount(bad, "shift-exceeds-bits") == 1);
+    CHECK(fbcErrorFor(bad, "shift-exceeds-bits") ==
+          FbcDiagId::ShiftExceedsBitsInDataType);
+    ParseResult const shapes =
+        parseDocument("dim x as byte\nprint x shl 64\nconst k = 64\n"
+                      "print 1 shl k\nprint 1 shl (32 + 32)\nprint 1 shr -1\n"
+                      "print 1 shl 63.9\ndim y as integer\ny shl= 64\n");
+    CHECK(diagnosticCount(shapes, "shift-exceeds-bits") == 6);
+    ParseResult const edge = parseDocument(
+        "print 1 shl 63\ndim x as byte\nprint x shl 8\nprint x shl 32\n"
+        "print 1 shl 32 + 32\ndim k as integer\nprint 1 shl k\n");
+    CHECK(diagnosticCount(edge, "shift-exceeds-bits") == 0);
+    ParseResult const unknown =
+        parseDocument("type t\n  a as integer\nend type\ndim v as t\n"
+                      "print v.a shl 64\nprint 1 shl cbyte(64)\n");
+    CHECK(diagnosticCount(unknown, "shift-exceeds-bits") == 0);
+  }
+
+  // 45: a constant limit at the counter type's maximum for a positive
+  // step, or at its minimum for a negative step. The limit is
+  // converted to the counter type first, so a wrapped limit is judged
+  // on the wrapped value.
+  {
+    ParseResult const pos = parseDocument("for i as byte = 0 to 127\nnext\n"
+                                          "for i as ubyte = 0 to 255\nnext\n");
+    CHECK(diagnosticCount(pos, "for-end-too-big") == 2);
+    CHECK(fbcErrorFor(pos, "for-end-too-big") == FbcDiagId::ForEndTooBig);
+    ParseResult const limits = parseDocument(
+        "const lim = 127\nfor i as byte = 0 to lim\nnext\n"
+        "for i as ulongint = 0 to 18446744073709551615ull\nnext\n"
+        "for i as longint = 0 to -9223372036854775808ll step -1\nnext\n");
+    CHECK(diagnosticCount(limits, "for-end-too-big") == 3);
+    ParseResult const predecl = parseDocument(
+        "dim i as byte\nfor i = 0 to 127\nnext\n"
+        "dim shared j as ushort\nsub s()\n  for j = 0 to 65535\n  next\n"
+        "end sub\n");
+    CHECK(diagnosticCount(predecl, "for-end-too-big") == 2);
+    ParseResult const silent =
+        parseDocument("for i as byte = 0 to 126\nnext\n"
+                      "for i as byte = 0 to 255\nnext\n"
+                      "for i as ushort = 0 to -128 step -1\nnext\n"
+                      "dim n as integer\nfor i as byte = 0 to n\nnext\n"
+                      "for i as byte = 0 to 127 step n\nnext\n"
+                      "for i as single = 0 to 1e30\nnext\n"
+                      "for i as byte ptr = 0 to 127\nnext\n");
+    CHECK(diagnosticCount(silent, "for-end-too-big") == 0);
+    ParseResult const forConv =
+        parseDocument("for i as ubyte = 0 to 256\nnext\n");
+    CHECK(diagnosticCount(forConv, "conv-overflow") == 1);
+    CHECK(diagnosticCount(forConv, "for-end-too-big") == 0);
+    ParseResult const counterAssign =
+        parseDocument("for k as byte = 0 to 10\n  k = 300\nnext\nk = 400\n");
+    CHECK(diagnosticCount(counterAssign, "conv-overflow") == 1);
+  }
+}
+
 static void TestStatementSpecific() {
   // 54 ExpectedDynamicArray: Redim of a fixed array (probed: module,
   // in a Sub, a shared module array from a Sub, a fixed field). A dynamic
@@ -4237,8 +4432,8 @@ int main() {
                                   "    x as single\n"
                                   "    as Wall walls(10)\n"
                                   "    as integer a, b\n"
-                                  "    declare constructor(x as single, "
-                                  "y as single)\n"
+                                  "    declare constructor(byval x as "
+                                  "single, byval y as single)\n"
                                   "    declare sub Init()\n"
                                   "end type\n");
     CHECK(r.diagnostics.empty());
@@ -5307,7 +5502,7 @@ int main() {
     // declaration scope (probed: `dim p` in a `then` and again in its `else`
     // compiles; twice in *one* branch is still error 4). Siblings reuse a
     // name without colliding, same-branch re-declaration still warns.
-    ParseResult const branches = parseDocument("sub f(t as single)\n"
+    ParseResult const branches = parseDocument("sub f(byval t as single)\n"
                                                "  if t < 1 then\n"
                                                "    dim as single p = t\n"
                                                "  elseif t < 2 then\n"
@@ -5333,6 +5528,7 @@ int main() {
   }
 
   TestStatementSpecific();
+  TestRemainingWarnings();
   TestStep2bParsingFixes();
   TestQualifiedTypeFirstVarDecls();
   TestKeywordSuffixWarning();

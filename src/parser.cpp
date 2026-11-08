@@ -44,8 +44,8 @@ constexpr long long kModuleCtorPriorityMax = 65535;
 constexpr int kConstEvalMaxDepth = 32;
 constexpr int kConstLookupMaxDepth = 8;
 constexpr long long kMaxConstShiftCount = 62;
-constexpr double kConstTrue = -1;
-constexpr double kConstFalse = 0;
+constexpr long double kConstTrue = -1;
+constexpr long double kConstFalse = 0;
 
 std::string uppercase(std::string_view s) {
   std::string out;
@@ -127,6 +127,11 @@ struct Container {
     bool varLenString = false;
     bool globalInit = false; // Shared/Static/Common storage at module level
     std::string typeKey;     // UDT type when `as <type>` named one in file
+    // The builtin type word as written (`byte`, `integer`, ..., or
+    // `integer` for an enum-typed variable), empty for a UDT, pointer,
+    // string, function-pointer, or unknown type. The constant checks
+    // judge only targets this spelling names; anything else stays silent.
+    std::string builtinType;
   };
   std::unordered_map<std::string, VarFact> varFacts;
   explicit Container(Symbol *s) : sym(s) {}
@@ -201,6 +206,7 @@ public:
           advance();
           continue;
         }
+        checkShiftStatement();
         handleStatement();
         continue;
       default:
@@ -208,6 +214,7 @@ public:
           advance();
           continue;
         }
+        checkShiftStatement();
         handleStatement();
         continue;
       }
@@ -643,6 +650,12 @@ private:
   // dropped for end-of-line, a literal, and a punctuation the probe showed
   // fbc naming without one. This helper never advances: the caller skips.
   bool statementFamilyFailed_ = false;
+
+  // Whether any statement has been dispatched yet in this file. Directive
+  // and comment lines do not set it. It mirrors the compiler's stage: a
+  // `#cmdline` is effective only before the first statement, so one after
+  // it is ignored.
+  bool sawStatement_ = false;
 
   // The family diagnostic for one statement, in fbc's probed shape, at an
   // anchor token that may be ahead of `cur_` (a statement-token pre-pass) or
@@ -1107,6 +1120,8 @@ private:
     bool hasEq = false;
     bool varLenString = false;
     std::string typeKey;
+    std::string builtinType;
+    bool isPtr = false;
   };
 
   static std::vector<std::vector<Token>>
@@ -1169,14 +1184,31 @@ private:
                        seg[j + 1].kind == TokenKind::Symbol &&
                        seg[j + 1].text() == "*";
           info.varLenString = !fixed && seg[j].kind == TokenKind::Keyword;
+        } else if (seg[j].kind == TokenKind::Keyword && isBuiltinType(tw)) {
+          info.builtinType = tw;
         } else if (seg[j].kind == TokenKind::Identifier ||
                    (seg[j].kind == TokenKind::Keyword && !isBuiltinType(tw))) {
-          info.typeKey = keyFor(seg[j].text());
+          bool isEnum = false;
+          for (Symbol const &root : out_.roots) {
+            if (root.kind == SymbolKind::Enum &&
+                root.key == keyFor(seg[j].text())) {
+              isEnum = true;
+              break;
+            }
+          }
+          if (isEnum) {
+            info.builtinType = "integer";
+          } else {
+            info.typeKey = keyFor(seg[j].text());
+          }
         }
         ++j;
       }
       while (j < seg.size() && seg[j].kind == TokenKind::Keyword) {
         std::string const w = toLowerChars(seg[j].text());
+        if (w == "ptr" || w == "pointer") {
+          info.isPtr = true;
+        }
         if (isBuiltinType(w) || w == "ptr" || w == "pointer" || w == "const") {
           ++j;
           continue;
@@ -1284,15 +1316,35 @@ private:
                         seg[i + 2].text() == "*";
         if (tw == "string" && !fixedStr) {
           info.varLenString = true;
+        } else if (seg[i + 1].kind == TokenKind::Keyword && isBuiltinType(tw)) {
+          if (tw != "string") {
+            info.builtinType = tw;
+          }
         } else if (tw != "string" &&
                    (seg[i + 1].kind == TokenKind::Identifier ||
                     (seg[i + 1].kind == TokenKind::Keyword &&
                      !isBuiltinType(tw)))) {
-          // A UDT name; a builtin or a fixed-length `string *` is not one.
-          if (!(tw == "string")) {
+          // A UDT or enum name; a builtin or a fixed-length `string *`
+          // is not one.
+          bool isEnum = false;
+          for (Symbol const &root : out_.roots) {
+            if (root.kind == SymbolKind::Enum &&
+                root.key == keyFor(seg[i + 1].text())) {
+              isEnum = true;
+              break;
+            }
+          }
+          if (isEnum) {
+            info.builtinType = "integer";
+          } else {
             info.typeKey = keyFor(seg[i + 1].text());
           }
         }
+      }
+      if (depth == 0 && t.kind == TokenKind::Keyword &&
+          (toLowerChars(t.text()) == "ptr" ||
+           toLowerChars(t.text()) == "pointer")) {
+        info.isPtr = true;
       }
     }
     return info;
@@ -2439,6 +2491,16 @@ private:
               trf("variable-length arrays cannot be part of %s or nested %s",
                   "UNION", "TYPE"));
         }
+        checkFunctionPointerParams(seg);
+        if (!inUnion && !info.isPtr && !info.builtinType.empty() &&
+            info.hasInit) {
+          std::size_t const eq = eqAtDepth0(seg, 0, seg.size());
+          if (eq < seg.size() && eq + 1 < seg.size()) {
+            std::vector<Token> const slice(
+                seg.begin() + static_cast<std::ptrdiff_t>(eq + 1), seg.end());
+            checkConvOverflowValue(info.builtinType, slice, slice.front());
+          }
+        }
         if (!containers_.empty() && containers_.back().sym != nullptr) {
           Container::VarFact fact;
           fact.kind =
@@ -2448,6 +2510,7 @@ private:
                                                   : Container::VarFact::Scalar);
           fact.varLenString = info.varLenString;
           fact.typeKey = info.typeKey;
+          fact.builtinType = info.isPtr ? "" : info.builtinType;
           containers_.back().varFacts[info.key] = fact;
           fieldFacts_[containers_.back().sym->key][info.key] = fact;
         }
@@ -2890,13 +2953,18 @@ private:
     }
   }
 
-  // A constant value for a Case bound in an As Const Select (323). The
+  // A constant value for a Case bound in an As Const Select (323), and
+  // for the constant conversion, shift, and for-limit checks. The
   // evaluator folds numeric literals, parentheses, unary operators, and
   // the arithmetic/bitwise operators fbc folds, plus constant names it
   // can read from the file (a `#define` replacement, a top-level `Const`,
   // or an enum member). Anything else — a variable, a string, a call
-  // other than `Abs` — is unknown, and an unknown bound draws no 323.
-  using ConstValue = std::optional<double>;
+  // other than `Abs` — is unknown, and an unknown value draws no
+  // diagnostic. The value is `long double` (64-bit mantissa on x86/x64)
+  // rather than `double`: the 64-bit type limits need to be exact, and a
+  // `double` rounds `18446744073709551615ull` up to 2^64 before the
+  // comparison can be made.
+  using ConstValue = std::optional<long double>;
 
   static ConstValue parseNumericLiteral(std::string_view text) {
     if (text.empty()) {
@@ -2921,13 +2989,15 @@ private:
       }
       digits.remove_prefix(2);
       while (!digits.empty() &&
-             (digits.back() == '%' || digits.back() == '&')) {
+             (digits.back() == '%' || digits.back() == '&' ||
+              digits.back() == 'u' || digits.back() == 'U' ||
+              digits.back() == 'l' || digits.back() == 'L')) {
         digits.remove_suffix(1);
       }
       if (digits.empty()) {
         return std::nullopt;
       }
-      double value = 0;
+      long double value = 0;
       for (char const c : digits) {
         int d;
         if (c >= '0' && c <= '9') {
@@ -2947,16 +3017,25 @@ private:
       return value;
     }
     std::string cleaned(digits);
-    while (!cleaned.empty() &&
-           (cleaned.back() == '%' || cleaned.back() == '&' ||
-            cleaned.back() == '!' || cleaned.back() == '#')) {
-      cleaned.pop_back();
+    // Drop a literal's type suffix (`%`, `&`, `ul`/`ll` in any order,
+    // and the floating `!`/`f`/`#`/`d`) so the numeric core parses. A
+    // digit or `.` ends the suffix: exponent digits (`1e5`) are core,
+    // not suffix.
+    while (!cleaned.empty()) {
+      char const c = cleaned.back();
+      if (c == '%' || c == '&' || c == '!' || c == '#' || c == 'f' ||
+          c == 'F' || c == 'd' || c == 'D' || c == 'u' || c == 'U' ||
+          c == 'l' || c == 'L') {
+        cleaned.pop_back();
+        continue;
+      }
+      break;
     }
     if (cleaned.empty()) {
       return std::nullopt;
     }
     char *endPtr = nullptr;
-    double const value = std::strtod(cleaned.c_str(), &endPtr);
+    long double const value = std::strtold(cleaned.c_str(), &endPtr);
     if (endPtr == cleaned.c_str() || *endPtr != '\0') {
       return std::nullopt;
     }
@@ -3015,7 +3094,20 @@ private:
     Token const &t = toks[pos];
     if (t.kind == TokenKind::Number) {
       ++pos;
-      return parseNumericLiteral(t.text());
+      ConstValue const value = parseNumericLiteral(t.text());
+      // The lexer leaves the disattached suffixes (`ul`, `ull`, `ll`,
+      // `u`, `l`, and the floating `f`/`d`) as the next identifier
+      // token; a suffix token directly attached to the number belongs
+      // to it and is consumed with it.
+      if (pos < toks.size() && toks[pos].kind == TokenKind::Identifier &&
+          toks[pos].beg == t.end) {
+        std::string const suf = toLowerChars(toks[pos].text());
+        if (suf == "ul" || suf == "ull" || suf == "ll" || suf == "lu" ||
+            suf == "u" || suf == "l" || suf == "f" || suf == "d") {
+          ++pos;
+        }
+      }
+      return value;
     }
     if (tokenIsSymbol(t, "(")) {
       ++pos;
@@ -3127,26 +3219,27 @@ private:
     return static_cast<int>(ConstOpPrec::None);
   }
 
-  static ConstValue applyConstOp(std::string const &op, double a, double b) {
+  static ConstValue applyConstOp(std::string const &op, long double a,
+                                 long double b) {
     if (op == "eqv") {
-      return static_cast<double>(
+      return static_cast<long double>(
           ~(static_cast<long long>(a) ^ static_cast<long long>(b)));
     }
     if (op == "imp") {
-      return static_cast<double>(~static_cast<long long>(a) |
-                                 static_cast<long long>(b));
+      return static_cast<long double>(~static_cast<long long>(a) |
+                                      static_cast<long long>(b));
     }
     if (op == "or") {
-      return static_cast<double>(static_cast<long long>(a) |
-                                 static_cast<long long>(b));
+      return static_cast<long double>(static_cast<long long>(a) |
+                                      static_cast<long long>(b));
     }
     if (op == "xor") {
-      return static_cast<double>(static_cast<long long>(a) ^
-                                 static_cast<long long>(b));
+      return static_cast<long double>(static_cast<long long>(a) ^
+                                      static_cast<long long>(b));
     }
     if (op == "and") {
-      return static_cast<double>(static_cast<long long>(a) &
-                                 static_cast<long long>(b));
+      return static_cast<long double>(static_cast<long long>(a) &
+                                      static_cast<long long>(b));
     }
     if (op == "=") {
       return a == b ? kConstTrue : kConstFalse;
@@ -3172,7 +3265,7 @@ private:
         return std::nullopt;
       }
       long long const v = static_cast<long long>(a);
-      return static_cast<double>(op == "shl" ? v << count : v >> count);
+      return static_cast<long double>(op == "shl" ? v << count : v >> count);
     }
     if (op == "+") {
       return a + b;
@@ -3194,7 +3287,7 @@ private:
       if (divisor == 0) {
         return std::nullopt;
       }
-      return static_cast<double>(static_cast<long long>(a) / divisor);
+      return static_cast<long double>(static_cast<long long>(a) / divisor);
     }
     if (op == "mod") {
       if (b == 0) {
@@ -3228,7 +3321,7 @@ private:
       } else if (op == "+") {
         lhs = v;
       } else {
-        lhs = static_cast<double>(~static_cast<long long>(*v));
+        lhs = static_cast<long double>(~static_cast<long long>(*v));
       }
     } else {
       lhs = evalConstPrimary(toks, pos, depth);
@@ -3283,6 +3376,1129 @@ private:
       }
     }
     return std::nullopt;
+  }
+
+  struct BuiltinTypeInfo {
+    int bits = 0;
+    bool isSigned = false;
+    bool isBool = false;
+    bool isSingle = false;
+    bool isDouble = false;
+    bool isFloat = false;
+  };
+
+  // The numeric facts for a builtin type spelling, or nullopt for a
+  // spelling with no numeric width (string, pointer, function, ...).
+  // `integer`/`uinteger` take the width the seeded build flags give (`64`
+  // on a 64-bit build, `32` on a 32-bit one); the other spellings are
+  // fixed. No target is configured in the editor, so the host build is
+  // the statement the probed widths come from.
+  std::optional<BuiltinTypeInfo> builtinTypeInfo(std::string const &w) const {
+    int const hostBits = preproc_.isDefined("__FB_64BIT__") ? 64 : 32;
+    BuiltinTypeInfo t;
+    if (w == "boolean") {
+      t.bits = 8;
+      t.isBool = true;
+      return t;
+    }
+    if (w == "byte" || w == "ubyte") {
+      t.bits = 8;
+      t.isSigned = w == "byte";
+      return t;
+    }
+    if (w == "short" || w == "ushort") {
+      t.bits = 16;
+      t.isSigned = w == "short";
+      return t;
+    }
+    if (w == "long" || w == "ulong") {
+      t.bits = 32;
+      t.isSigned = w == "long";
+      return t;
+    }
+    if (w == "integer" || w == "uinteger") {
+      t.bits = hostBits;
+      t.isSigned = w == "integer";
+      return t;
+    }
+    if (w == "longint" || w == "ulongint") {
+      t.bits = 64;
+      t.isSigned = w == "longint";
+      return t;
+    }
+    if (w == "single") {
+      t.bits = 32;
+      t.isFloat = true;
+      t.isSingle = true;
+      return t;
+    }
+    if (w == "double") {
+      t.bits = 64;
+      t.isFloat = true;
+      t.isDouble = true;
+      return t;
+    }
+    return std::nullopt;
+  }
+
+  static bool numberTokenIsFloat(Token const &t) {
+    if (t.kind != TokenKind::Number) {
+      return false;
+    }
+    std::string_view const s = t.text();
+    if (s.size() >= 2 && s[0] == '&') {
+      return false; // radix integer literal
+    }
+    for (char const c : s) {
+      if (c == '.') {
+        return true;
+      }
+    }
+    std::string const low = toLowerChars(s);
+    for (std::size_t i = 0; i < low.size(); ++i) {
+      if (low[i] == 'e') {
+        return true;
+      }
+    }
+    if (!low.empty() && low.back() == '!') {
+      return true;
+    }
+    if (!low.empty() && low.back() == '#' && low.size() > 1) {
+      // A trailing `#` after digits is the double suffix, not part of a
+      // hex literal (radix forms returned above).
+      return true;
+    }
+    return false;
+  }
+
+  // Whether a folded expression may carry a floating-point value. For
+  // the 64-bit integer targets the compiler only checks floating
+  // sources (an integer literal converts without the check), and the
+  // folder does not keep the source class, so the tokens are the only
+  // evidence for it: a floating literal, `/`, or `^`, or a constant
+  // whose own initializer carries one of those.
+  bool exprMayBeFloating(std::vector<Token> const &toks, int depth = 0) {
+    if (depth > 4) {
+      return false;
+    }
+    for (Token const &t : toks) {
+      if (numberTokenIsFloat(t)) {
+        return true;
+      }
+      if (t.kind == TokenKind::Symbol && (t.text() == "/" || t.text() == "^")) {
+        return true;
+      }
+      if (t.kind == TokenKind::Identifier || t.kind == TokenKind::Keyword) {
+        std::string const key = keyFor(t.text());
+        for (Symbol const &root : out_.roots) {
+          std::string sig;
+          if (root.kind == SymbolKind::Const && root.key == key) {
+            sig = root.signature;
+          } else if (root.kind == SymbolKind::Enum) {
+            for (Symbol const &child : root.children) {
+              if (child.kind == SymbolKind::Const && child.key == key) {
+                sig = child.signature;
+                break;
+              }
+            }
+          }
+          if (!sig.empty()) {
+            if (exprMayBeFloating(lexAll(sig), depth + 1)) {
+              return true;
+            }
+            break;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  // Whether a folded constant value overflows a conversion to the
+  // builtin type spelled `typeWord`, reporting warning 25 if it does.
+  // The limit is by size class, not by signedness: an 8-bit target
+  // takes -128..255, a 16-bit one -32768..65535, a 32-bit one
+  // -2147483648..4294967295. A floating value is converted the way
+  // the compiler converts it (round to nearest, ties to even). A
+  // `boolean` takes only 0, 1, and -1. A `single` overflows when the
+  // conversion would make it zero or infinite when the source is not
+  // already. A `double` takes everything and is never judged here.
+  void checkConvOverflowValue(std::string const &typeWord,
+                              std::vector<Token> const &slice,
+                              Token const &anchor) {
+    if (typeWord.empty() || slice.empty()) {
+      return;
+    }
+    std::optional<BuiltinTypeInfo> const info = builtinTypeInfo(typeWord);
+    if (!info) {
+      return;
+    }
+    if (info->isDouble) {
+      return;
+    }
+    ConstValue const v = evalConstSlice(slice, 0, slice.size(), 0);
+    if (!v) {
+      return;
+    }
+    bool overflow = false;
+    if (info->isBool) {
+      long double const r = std::nearbyint(*v);
+      overflow = r != 0 && r != 1 && r != -1;
+    } else if (info->isSingle) {
+      float const f = static_cast<float>(*v);
+      bool const convBad = f == 0 || std::isinf(f);
+      bool const srcBad = *v == 0 || std::isinf(*v);
+      overflow = convBad != srcBad;
+    } else if (info->bits == 64) {
+      if (!exprMayBeFloating(slice)) {
+        return;
+      }
+      long double const r = std::nearbyint(*v);
+      overflow = r < -9223372036854775808.0L || r > 18446744073709551615.0L;
+    } else {
+      long double const r = std::nearbyint(*v);
+      unsigned int const bitCount = static_cast<unsigned int>(info->bits);
+      long double const minV = -(long double)(1ULL << (bitCount - 1));
+      long double const maxV = (long double)(1ULL << bitCount) - 1;
+      overflow = r < minV || r > maxV;
+    }
+    if (overflow) {
+      addDiagnostic(anchor.beg, anchor.end, Severity::Warning, "conv-overflow",
+                    tr("Overflow in constant conversion"),
+                    FbcDiagId::ConvOverflow, FbcMessageKind::Warning);
+    }
+  }
+
+  // Judges `Dim`/`Const` initializers for warning 25: each declarator
+  // whose `as` names a builtin type and whose initializer folds to a
+  // constant outside that type's range. `Dim As <type> a, b` shares
+  // the type to the later names.
+  void checkConvOverflowDecl(Token const &openTok) {
+    std::string const head = toLowerChars(openTok.text());
+    bool const isDimLike = head == "dim" || head == "local" || head == "var" ||
+                           head == "static" || head == "const";
+    if (!isDimLike) {
+      return;
+    }
+    if (!blocks_.empty() && blocks_.back().kind == BlockKind::Union) {
+      return;
+    }
+    std::vector<Token> const toks = statementTokens();
+    if (toks.empty()) {
+      return;
+    }
+    std::vector<std::vector<Token>> const segments = splitDeclSegments(toks);
+    std::string stmtType;
+    bool stmtTypeFirst = false;
+    for (std::size_t si = 0; si < segments.size(); ++si) {
+      DeclInfo const info = parseDeclSegment(segments[si]);
+      if (info.key.empty()) {
+        continue;
+      }
+      std::vector<Token> const &seg = segments[si];
+      if (si == 0 && !seg.empty() && seg[0].kind == TokenKind::Keyword &&
+          toLowerChars(seg[0].text()) == "as") {
+        stmtType = info.builtinType;
+        stmtTypeFirst = true;
+      }
+      std::string effective = info.builtinType;
+      if (effective.empty() && stmtTypeFirst) {
+        effective = stmtType;
+      }
+      if (effective.empty() || info.isPtr || !info.hasInit) {
+        continue;
+      }
+      std::size_t const eq = eqAtDepth0(seg, 0, seg.size());
+      if (eq == seg.size() || eq + 1 >= seg.size()) {
+        continue;
+      }
+      std::vector<Token> const slice(
+          seg.begin() + static_cast<std::ptrdiff_t>(eq + 1), seg.end());
+      checkConvOverflowValue(effective, slice, slice.front());
+    }
+  }
+
+  // Judges a plain assignment statement `name = <expr>` for warning 25
+  // when the name is a declared variable of a builtin type. A target
+  // whose type is not known at this level (a member, an element, a
+  // procedure result is handled where the result is spelled, an
+  // undeclared or not-yet-declared name) stays silent.
+  void checkConvAssignmentPlain(std::vector<Token> const &toks) {
+    if (toks.size() < 3 || toks[0].kind != TokenKind::Identifier ||
+        toks[1].kind != TokenKind::Symbol || toks[1].text() != "=") {
+      return;
+    }
+    // A procedure's result is assigned by its own name as well as by
+    // the keyword (`fn = 300` inside `fn`), so an enclosing function
+    // or property of the same name is the target before any variable
+    // of that name in an outer scope.
+    std::string const nameKey = keyFor(toks[0].text());
+    Symbol const *proc = nullptr;
+    for (auto it = containers_.rbegin(); it != containers_.rend(); ++it) {
+      if (it->sym != nullptr && (it->sym->kind == SymbolKind::Function ||
+                                 it->sym->kind == SymbolKind::Property)) {
+        if (it->sym->key == nameKey) {
+          proc = it->sym;
+        }
+        break;
+      }
+      if (it->sym != nullptr && (it->sym->kind == SymbolKind::Sub ||
+                                 it->sym->kind == SymbolKind::Operator ||
+                                 it->sym->kind == SymbolKind::Constructor ||
+                                 it->sym->kind == SymbolKind::Destructor)) {
+        break;
+      }
+    }
+    std::vector<Token> const slice(toks.begin() + 2, toks.end());
+    if (proc != nullptr) {
+      std::string const typeWord = returnBuiltinType(proc->signature);
+      if (!typeWord.empty()) {
+        checkConvOverflowValue(typeWord, slice, slice.front());
+      }
+      return;
+    }
+    Container::VarFact const *fact = lookupVarFact(nameKey);
+    if (fact == nullptr || fact->builtinType.empty()) {
+      return;
+    }
+    checkConvOverflowValue(fact->builtinType, slice, slice.front());
+  }
+
+  // The builtin return type written on a procedure signature, or
+  // `integer` for the default, or empty for a non-builtin result.
+  static std::string returnBuiltinType(std::string const &signature) {
+    std::vector<Token> const toks = lexAll(signature);
+    std::size_t pos = 0;
+    bool foundParen = false;
+    for (std::size_t i = 0; i < toks.size(); ++i) {
+      if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+        foundParen = true;
+        int depth = 0;
+        pos = toks.size();
+        for (std::size_t j = i; j < toks.size(); ++j) {
+          if (toks[j].kind == TokenKind::Symbol && toks[j].text() == "(") {
+            ++depth;
+          } else if (toks[j].kind == TokenKind::Symbol &&
+                     toks[j].text() == ")") {
+            --depth;
+            if (depth == 0) {
+              pos = j + 1;
+              break;
+            }
+          }
+        }
+        break;
+      }
+    }
+    if (!foundParen) {
+      pos = toks.size();
+      for (std::size_t i = 0; i < toks.size(); ++i) {
+        if (toks[i].kind == TokenKind::Keyword &&
+            toLowerChars(toks[i].text()) == "as") {
+          pos = i;
+          break;
+        }
+      }
+    }
+    while (pos < toks.size() && toks[pos].kind == TokenKind::Keyword &&
+           (toLowerChars(toks[pos].text()) == "byref" ||
+            toLowerChars(toks[pos].text()) == "byval")) {
+      ++pos;
+    }
+    if (pos >= toks.size() || toks[pos].kind != TokenKind::Keyword ||
+        toLowerChars(toks[pos].text()) != "as") {
+      return "integer";
+    }
+    if (pos + 1 >= toks.size()) {
+      return "";
+    }
+    if (pos + 2 < toks.size() && toks[pos + 2].kind == TokenKind::Keyword &&
+        (toLowerChars(toks[pos + 2].text()) == "ptr" ||
+         toLowerChars(toks[pos + 2].text()) == "pointer")) {
+      return "";
+    }
+    if (toks[pos + 1].kind == TokenKind::Keyword &&
+        isBuiltinType(toLowerChars(toks[pos + 1].text()))) {
+      std::string w = toLowerChars(toks[pos + 1].text());
+      if (w == "string" || w == "sub" || w == "function" || w == "ptr" ||
+          w == "pointer" || w == "any") {
+        return "";
+      }
+      return w;
+    }
+    if (toks[pos + 1].kind == TokenKind::Identifier) {
+      return "";
+    }
+    return "";
+  }
+
+  // Judges a procedure result assignment `Function = <expr>` (and the
+  // `Property` and cast-`Operator` forms) for warning 25 against the
+  // return type written on the enclosing procedure's signature.
+  void checkConvResultAssignment(std::vector<Token> const &toks) {
+    if (toks.size() < 3 || toks[0].kind != TokenKind::Keyword ||
+        (toLowerChars(toks[0].text()) != "function" &&
+         toLowerChars(toks[0].text()) != "property" &&
+         toLowerChars(toks[0].text()) != "operator") ||
+        toks[1].kind != TokenKind::Symbol || toks[1].text() != "=") {
+      return;
+    }
+    Symbol const *proc = nullptr;
+    for (auto it = containers_.rbegin(); it != containers_.rend(); ++it) {
+      if (it->sym != nullptr && (it->sym->kind == SymbolKind::Sub ||
+                                 it->sym->kind == SymbolKind::Function ||
+                                 it->sym->kind == SymbolKind::Property ||
+                                 it->sym->kind == SymbolKind::Operator ||
+                                 it->sym->kind == SymbolKind::Constructor ||
+                                 it->sym->kind == SymbolKind::Destructor)) {
+        if (it->sym->kind == SymbolKind::Function ||
+            it->sym->kind == SymbolKind::Property ||
+            it->sym->kind == SymbolKind::Operator) {
+          proc = it->sym;
+        }
+        break;
+      }
+    }
+    if (proc == nullptr) {
+      return;
+    }
+    std::string const typeWord = returnBuiltinType(proc->signature);
+    if (typeWord.empty()) {
+      return;
+    }
+    std::vector<Token> const slice(toks.begin() + 2, toks.end());
+    checkConvOverflowValue(typeWord, slice, slice.front());
+  }
+
+  // Entries of a parenthesized list, split at depth-0 commas. An empty
+  // list has no entries. An unclosed list reads to the end.
+  static std::vector<std::vector<Token>>
+  splitParamEntries(std::vector<Token> const &toks, std::size_t openIdx) {
+    std::vector<std::vector<Token>> out;
+    std::size_t close = toks.size();
+    int depth = 0;
+    for (std::size_t i = openIdx; i < toks.size(); ++i) {
+      if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+        ++depth;
+      } else if (toks[i].kind == TokenKind::Symbol && toks[i].text() == ")" &&
+                 depth > 0) {
+        --depth;
+        if (depth == 0) {
+          close = i;
+          break;
+        }
+      }
+    }
+    if (openIdx + 1 >= close) {
+      return out;
+    }
+    std::vector<Token> cur;
+    int d = 0;
+    for (std::size_t i = openIdx + 1; i < close; ++i) {
+      Token const &t = toks[i];
+      if (t.kind == TokenKind::Symbol && t.text() == "(") {
+        ++d;
+      } else if (t.kind == TokenKind::Symbol && t.text() == ")" && d > 0) {
+        --d;
+      }
+      if (d == 0 && t.kind == TokenKind::Symbol && t.text() == ",") {
+        out.push_back(cur);
+        cur.clear();
+        continue;
+      }
+      cur.push_back(t);
+    }
+    out.push_back(cur);
+    return out;
+  }
+
+  // One warning per parameter with no `byref`/`byval`. Array
+  // parameters (`a() as ...`, or a nameless `() as ...`), the variadic
+  // tail, and parameters that carry the mode are silent. A parameter
+  // with a default, a UDT type, or a mode only on the result or on a
+  // sibling parameter still draws it: the mode question is per
+  // parameter, not per head. Anchored on the parameter's first token
+  // (its name, or the `as` of a nameless prototype parameter).
+  void checkParamModeEntry(std::vector<Token> const &entry, int index) {
+    checkNestedParamLists(entry);
+    if (entry.empty()) {
+      return;
+    }
+    if (entry[0].kind == TokenKind::Symbol && entry[0].text() == "...") {
+      return;
+    }
+    if (entry[0].kind == TokenKind::Keyword &&
+        (toLowerChars(entry[0].text()) == "byval" ||
+         toLowerChars(entry[0].text()) == "byref")) {
+      return;
+    }
+    bool const isArray =
+        (entry[0].kind == TokenKind::Symbol && entry[0].text() == "(") ||
+        (entry.size() >= 2 && entry[1].kind == TokenKind::Symbol &&
+         entry[1].text() == "(" &&
+         (entry[0].kind == TokenKind::Identifier ||
+          entry[0].kind == TokenKind::Keyword));
+    if (isArray) {
+      return;
+    }
+    addDiagnostic(entry[0].beg, entry[0].end, Severity::Warning,
+                  "no-explicit-param-mode",
+                  trf("No explicit %s or %s, at parameter %s", "BYREF", "BYVAL",
+                      std::to_string(index)),
+                  FbcDiagId::NoExplicitParamMode, FbcMessageKind::Warning);
+  }
+
+  // Judge the function-pointer parameter lists inside a parameter
+  // entry (`a as function(b as integer) as integer`): the nested list
+  // is a parameter list of its own.
+  void checkNestedParamLists(std::vector<Token> const &toks) {
+    for (std::size_t i = 0; i < toks.size(); ++i) {
+      if (toks[i].kind != TokenKind::Keyword) {
+        continue;
+      }
+      std::string const w = toLowerChars(toks[i].text());
+      if (w != "sub" && w != "function") {
+        continue;
+      }
+      std::size_t j = i + 1;
+      if (j < toks.size() && toks[j].kind == TokenKind::Keyword &&
+          (toLowerChars(toks[j].text()) == "cdecl" ||
+           toLowerChars(toks[j].text()) == "stdcall")) {
+        ++j;
+      }
+      if (j >= toks.size() || toks[j].kind != TokenKind::Symbol ||
+          toks[j].text() != "(") {
+        continue;
+      }
+      auto const entries = splitParamEntries(toks, j);
+      int idx = 1;
+      for (auto const &e : entries) {
+        checkParamModeEntry(e, idx++);
+      }
+      // Skip past this list: a nested check inside an entry already
+      // walked its own lists, and walking `j` again would count the
+      // same nested parameters twice.
+      int depth = 0;
+      for (std::size_t k = j; k < toks.size(); ++k) {
+        if (toks[k].kind == TokenKind::Symbol && toks[k].text() == "(") {
+          ++depth;
+        } else if (toks[k].kind == TokenKind::Symbol && toks[k].text() == ")" &&
+                   depth > 0) {
+          --depth;
+          if (depth == 0) {
+            i = k;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // Judges a parameter's default value for warning 25 against the
+  // parameter's declared type.
+  void checkParamDefaultOverflow(std::vector<Token> const &entry) {
+    std::size_t asAt = entry.size();
+    for (std::size_t i = 0; i < entry.size(); ++i) {
+      if (entry[i].kind == TokenKind::Keyword &&
+          toLowerChars(entry[i].text()) == "as") {
+        asAt = i;
+        break;
+      }
+    }
+    if (asAt == entry.size()) {
+      return;
+    }
+    // Abort on a pointer or function-pointer parameter type.
+    for (std::size_t i = asAt + 1; i < entry.size(); ++i) {
+      if (entry[i].kind == TokenKind::Symbol && entry[i].text() == "=") {
+        break;
+      }
+      if (entry[i].kind == TokenKind::Keyword &&
+          (toLowerChars(entry[i].text()) == "ptr" ||
+           toLowerChars(entry[i].text()) == "pointer" ||
+           toLowerChars(entry[i].text()) == "sub" ||
+           toLowerChars(entry[i].text()) == "function")) {
+        return;
+      }
+    }
+    std::size_t typeAt = asAt + 1;
+    if (typeAt < entry.size() && entry[typeAt].kind == TokenKind::Keyword &&
+        toLowerChars(entry[typeAt].text()) == "const") {
+      ++typeAt;
+    }
+    if (typeAt >= entry.size() || entry[typeAt].kind != TokenKind::Keyword) {
+      return;
+    }
+    std::string const typeWord = toLowerChars(entry[typeAt].text());
+    std::optional<BuiltinTypeInfo> const info = builtinTypeInfo(typeWord);
+    if (!info) {
+      return;
+    }
+    std::size_t const eq = eqAtDepth0(entry, 0, entry.size());
+    if (eq == entry.size() || eq + 1 >= entry.size()) {
+      return;
+    }
+    std::vector<Token> const slice(
+        entry.begin() + static_cast<std::ptrdiff_t>(eq + 1), entry.end());
+    checkConvOverflowValue(typeWord, slice, slice.front());
+  }
+
+  // Judges the `as sub (...)` / `as function (...)` parameter lists in
+  // a declaration statement (`Dim p As Sub (...)`, a bare field, a type
+  // alias): a function pointer carries a parameter list of its own.
+  void checkFunctionPointerParams(std::vector<Token> const &toks) {
+    for (std::size_t i = 0; i + 1 < toks.size(); ++i) {
+      if (toks[i].kind != TokenKind::Keyword ||
+          toLowerChars(toks[i].text()) != "as") {
+        continue;
+      }
+      if (toks[i + 1].kind != TokenKind::Keyword) {
+        continue;
+      }
+      std::string const w = toLowerChars(toks[i + 1].text());
+      if (w != "sub" && w != "function") {
+        continue;
+      }
+      std::size_t j = i + 2;
+      if (j < toks.size() && toks[j].kind == TokenKind::Keyword &&
+          (toLowerChars(toks[j].text()) == "cdecl" ||
+           toLowerChars(toks[j].text()) == "stdcall")) {
+        ++j;
+      }
+      if (j >= toks.size() || toks[j].kind != TokenKind::Symbol ||
+          toks[j].text() != "(") {
+        continue;
+      }
+      auto const entries = splitParamEntries(toks, j);
+      int idx = 1;
+      for (auto const &e : entries) {
+        checkParamModeEntry(e, idx++);
+      }
+    }
+  }
+
+  // The operand of a shift count: from the first token after the
+  // operator to the end of its expression-shaped run. The run stops at
+  // an operator of lower precedence than the shift's operand (`+`,
+  // `-`, `&`, a comparison, `and`/`or`/..., another shift, a comma,
+  // `to`, `then`, and so on) and includes the higher-precedence
+  // operators (`*`, `/`, `\`, `mod`, `^`) with their own operands,
+  // parentheses, and calls. Returns the end index.
+  static std::size_t shiftCountEnd(std::vector<Token> const &toks,
+                                   std::size_t start) {
+    auto consumePrimary = [&](std::size_t i) -> std::size_t {
+      if (i >= toks.size()) {
+        return i;
+      }
+      Token const &t = toks[i];
+      if (t.kind == TokenKind::Number || t.kind == TokenKind::String) {
+        return i + 1;
+      }
+      if (t.kind == TokenKind::Symbol && t.text() == "(") {
+        int depth = 0;
+        for (std::size_t j = i; j < toks.size(); ++j) {
+          if (toks[j].kind == TokenKind::Symbol && toks[j].text() == "(") {
+            ++depth;
+          } else if (toks[j].kind == TokenKind::Symbol &&
+                     toks[j].text() == ")" && depth > 0) {
+            --depth;
+            if (depth == 0) {
+              return j + 1;
+            }
+          }
+        }
+        return toks.size();
+      }
+      if (t.kind == TokenKind::Identifier || t.kind == TokenKind::Keyword) {
+        std::size_t j = i + 1;
+        // A call or a member/index chain belongs to the operand.
+        for (;;) {
+          if (j < toks.size() && toks[j].kind == TokenKind::Symbol &&
+              (toks[j].text() == "." || toks[j].text() == "(")) {
+            if (toks[j].text() == ".") {
+              if (j + 1 < toks.size() &&
+                  (toks[j + 1].kind == TokenKind::Identifier ||
+                   toks[j + 1].kind == TokenKind::Keyword)) {
+                j += 2;
+                continue;
+              }
+              return j;
+            }
+            int depth = 0;
+            for (std::size_t k = j; k < toks.size(); ++k) {
+              if (toks[k].kind == TokenKind::Symbol && toks[k].text() == "(") {
+                ++depth;
+              } else if (toks[k].kind == TokenKind::Symbol &&
+                         toks[k].text() == ")" && depth > 0) {
+                --depth;
+                if (depth == 0) {
+                  j = k + 1;
+                  break;
+                }
+              }
+            }
+            continue;
+          }
+          break;
+        }
+        return j;
+      }
+      return i + 1;
+    };
+    auto consumeOperand = [&](std::size_t i) -> std::size_t {
+      while (i < toks.size() &&
+             ((toks[i].kind == TokenKind::Symbol &&
+               (toks[i].text() == "-" || toks[i].text() == "+")) ||
+              (toks[i].kind == TokenKind::Keyword &&
+               toLowerChars(toks[i].text()) == "not"))) {
+        ++i;
+      }
+      return consumePrimary(i);
+    };
+    std::size_t j = consumeOperand(start);
+    for (;;) {
+      if (j >= toks.size()) {
+        break;
+      }
+      Token const &op = toks[j];
+      bool const isHighOp = op.kind == TokenKind::Symbol &&
+                            (op.text() == "*" || op.text() == "/" ||
+                             op.text() == "\\" || op.text() == "^");
+      bool const isMod =
+          op.kind == TokenKind::Keyword && toLowerChars(op.text()) == "mod";
+      if (!isHighOp && !isMod) {
+        break;
+      }
+      j = consumeOperand(j + 1);
+    }
+    return j;
+  }
+
+  // The builtin type a const-named shift operand can be read from:
+  // a top-level `Const`'s `as <type>` (or the integer it defaults to),
+  // or an enum member (always an integer).
+  std::string constBuiltinType(std::string const &key) {
+    for (Symbol const &root : out_.roots) {
+      if (root.kind == SymbolKind::Const && root.key == key) {
+        std::vector<Token> const toks = lexAll(root.signature);
+        for (std::size_t i = 0; i + 1 < toks.size(); ++i) {
+          if (toks[i].kind == TokenKind::Keyword &&
+              toLowerChars(toks[i].text()) == "as" &&
+              toks[i + 1].kind == TokenKind::Keyword) {
+            std::string w = toLowerChars(toks[i + 1].text());
+            if (builtinTypeInfo(w)) {
+              return w;
+            }
+            return "integer";
+          }
+        }
+        return "integer";
+      }
+      if (root.kind == SymbolKind::Enum) {
+        for (Symbol const &child : root.children) {
+          if (child.kind == SymbolKind::Const && child.key == key) {
+            return "integer";
+          }
+        }
+      }
+    }
+    return "";
+  }
+
+  // Whether a shift's left operand is known at this level, and the
+  // effective bit width. A literal, a const name, or a declared
+  // variable of a builtin integer or float type is known; anything
+  // else (a call, member, element, parenthesized value, a boolean or
+  // string or pointer or UDT operand) stays silent. More than the raw
+  // width is used: a shift operand narrower than `integer` is
+  // promoted to `integer` before the shift runs, so the width judged
+  // is `integer`'s, except that `longint` as written keeps 64. The
+  // left operand is the token just before the operator, and a member
+  // (`a.b`) is not a plain variable.
+  int shiftLhsBits(std::vector<Token> const &toks, std::size_t opIdx,
+                   bool *known) {
+    *known = false;
+    if (opIdx == 0) {
+      return 0;
+    }
+    Token prev = toks[opIdx - 1];
+    bool literalIsLongLong = false;
+    // A literal's disattached suffix (`1ull`, `&hFFul`) is the token
+    // just before the operator: step back over it to the number.
+    if (prev.kind == TokenKind::Identifier && opIdx >= 2 &&
+        toks[opIdx - 2].kind == TokenKind::Number &&
+        prev.beg == toks[opIdx - 2].end) {
+      std::string const suf = toLowerChars(prev.text());
+      if (suf == "ul" || suf == "ull" || suf == "ll" || suf == "lu" ||
+          suf == "u" || suf == "l" || suf == "f" || suf == "d") {
+        prev = toks[opIdx - 2];
+        literalIsLongLong = suf == "ll" || suf == "ull";
+      }
+    }
+    int const hostBits = preproc_.isDefined("__FB_64BIT__") ? 64 : 32;
+    if (prev.kind == TokenKind::Number) {
+      *known = true;
+      std::string const text = toLowerChars(prev.text());
+      bool const isLongLong =
+          literalIsLongLong ||
+          (text.size() >= 2 && text.substr(text.size() - 2) == "ll");
+      return isLongLong ? 64 : hostBits;
+    }
+    if (prev.kind != TokenKind::Identifier) {
+      return 0;
+    }
+    std::string const key = keyFor(prev.text());
+    Container::VarFact const *fact = lookupVarFact(key);
+    std::string typeWord;
+    if (fact != nullptr && !fact->builtinType.empty()) {
+      typeWord = fact->builtinType;
+    } else if (fact == nullptr) {
+      typeWord = constBuiltinType(key);
+    }
+    if (typeWord.empty()) {
+      return 0;
+    }
+    std::optional<BuiltinTypeInfo> const info = builtinTypeInfo(typeWord);
+    if (!info || info->isBool || !info->isFloat && info->bits == 0) {
+      return 0;
+    }
+    *known = true;
+    return (typeWord == "longint" || typeWord == "ulongint") ? 64 : hostBits;
+  }
+
+  void checkShiftCount(Token const &opTok, int bits, long double countValue) {
+    long double const r = std::nearbyint(countValue);
+    if (r < 0 || r >= bits) {
+      addDiagnostic(
+          opTok.beg, opTok.end, Severity::Warning, "shift-exceeds-bits",
+          tr("Shift value greater than or equal to number of "
+             "bits in data type"),
+          FbcDiagId::ShiftExceedsBitsInDataType, FbcMessageKind::Warning);
+    }
+  }
+
+  // Judges every `shl`/`shr` (and their `=` forms) in one statement.
+  void checkShiftStatement() {
+    if (inAsmBody()) {
+      return;
+    }
+    std::vector<Token> const toks = statementTokens();
+    if (toks.empty()) {
+      return;
+    }
+    for (std::size_t i = 0; i < toks.size(); ++i) {
+      if (toks[i].kind != TokenKind::Keyword) {
+        continue;
+      }
+      std::string const w = toLowerChars(toks[i].text());
+      bool const isInfix = w == "shl" || w == "shr";
+      bool const isCombined = w == "shl=" || w == "shr=";
+      if (!isInfix && !isCombined) {
+        continue;
+      }
+      if (isCombined) {
+        if (i == 0 || toks[0].kind != TokenKind::Identifier || i != 1) {
+          continue;
+        }
+        Container::VarFact const *fact = lookupVarFact(keyFor(toks[0].text()));
+        if (fact == nullptr || fact->builtinType.empty()) {
+          continue;
+        }
+        std::optional<BuiltinTypeInfo> const info =
+            builtinTypeInfo(fact->builtinType);
+        if (!info || info->isBool) {
+          continue;
+        }
+        int const bits =
+            (fact->builtinType == "longint" || fact->builtinType == "ulongint")
+                ? 64
+                : (preproc_.isDefined("__FB_64BIT__") ? 64 : 32);
+        if (i + 1 >= toks.size()) {
+          continue;
+        }
+        std::vector<Token> const slice(
+            toks.begin() + static_cast<std::ptrdiff_t>(i + 1), toks.end());
+        ConstValue const v = evalConstSlice(slice, 0, slice.size(), 0);
+        if (!v) {
+          continue;
+        }
+        checkShiftCount(toks[i], bits, *v);
+        continue;
+      }
+      // An infix shift: the count is its operand expression, and the
+      // bit width comes from the left operand.
+      std::size_t const end = shiftCountEnd(toks, i + 1);
+      if (end <= i + 1) {
+        continue;
+      }
+      bool known = false;
+      int const bits = shiftLhsBits(toks, i, &known);
+      if (!known) {
+        continue;
+      }
+      std::vector<Token> const slice(
+          toks.begin() + static_cast<std::ptrdiff_t>(i + 1),
+          toks.begin() + static_cast<std::ptrdiff_t>(end));
+      ConstValue const v = evalConstSlice(slice, 0, slice.size(), 0);
+      if (!v) {
+        continue;
+      }
+      checkShiftCount(toks[i], bits, *v);
+    }
+  }
+
+  // Judges a `for` header: the initial, limit, and step expressions
+  // are conversions to the counter's type (warning 25), and a constant
+  // limit that reaches the counter type's maximum (for a positive
+  // step) or minimum (for a negative step) draws warning 45. The
+  // counter is judged only when it is a plain identifier whose type
+  // is known: written in the header (`as byte`) or read from its
+  // declaration in the file. A member or element counter, a pointer,
+  // boolean, float, string, UDT, or unknown counter stays silent for
+  // 45, and a non-constant step or limit stays silent too.
+  void checkForHeader() {
+    std::vector<Token> const toks = statementTokens();
+    if (toks.size() < 4 || toks[1].kind != TokenKind::Identifier) {
+      return;
+    }
+    // A member/element counter (`w.x`, `a(0)`) spells `.` or `(` next.
+    if (toks[2].kind == TokenKind::Symbol &&
+        (toks[2].text() == "." || toks[2].text() == "(")) {
+      return;
+    }
+    std::string typeWord;
+    std::size_t eq = toks.size();
+    if (toks[2].kind == TokenKind::Keyword &&
+        toLowerChars(toks[2].text()) == "as") {
+      if (toks.size() < 5) {
+        return;
+      }
+      if (toks[3].kind == TokenKind::Keyword &&
+          isBuiltinType(toLowerChars(toks[3].text()))) {
+        std::string const w = toLowerChars(toks[3].text());
+        if (w == "string" || w == "sub" || w == "function" || w == "pointer" ||
+            w == "any") {
+          return;
+        }
+        typeWord = w;
+        // A pointer chain after the builtin word stays silent.
+        for (std::size_t k = 4; k < toks.size(); ++k) {
+          if (toks[k].kind == TokenKind::Symbol && toks[k].text() == "=") {
+            eq = k;
+            break;
+          }
+          if (toks[k].kind == TokenKind::Keyword &&
+              (toLowerChars(toks[k].text()) == "ptr" ||
+               toLowerChars(toks[k].text()) == "pointer")) {
+            return;
+          }
+        }
+      } else if (toks[3].kind == TokenKind::Identifier) {
+        std::string const key = keyFor(toks[3].text());
+        bool isEnum = false;
+        for (Symbol const &root : out_.roots) {
+          if (root.kind == SymbolKind::Enum && root.key == key) {
+            isEnum = true;
+            break;
+          }
+        }
+        if (!isEnum) {
+          return;
+        }
+        typeWord = "integer";
+        for (std::size_t k = 4; k < toks.size(); ++k) {
+          if (toks[k].kind == TokenKind::Symbol && toks[k].text() == "=") {
+            eq = k;
+            break;
+          }
+        }
+      } else {
+        return;
+      }
+    } else if (toks[2].kind == TokenKind::Symbol && toks[2].text() == "=") {
+      Container::VarFact const *fact = lookupVarFact(keyFor(toks[1].text()));
+      if (fact == nullptr || fact->builtinType.empty()) {
+        return;
+      }
+      typeWord = fact->builtinType;
+      eq = 2;
+    } else {
+      return;
+    }
+    if (eq == toks.size()) {
+      return;
+    }
+    if (!builtinTypeInfo(typeWord)) {
+      return;
+    }
+    std::size_t toAt = toks.size();
+    std::size_t stepAt = toks.size();
+    int depth = 0;
+    for (std::size_t i = eq + 1; i < toks.size(); ++i) {
+      if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+        ++depth;
+      } else if (toks[i].kind == TokenKind::Symbol && toks[i].text() == ")" &&
+                 depth > 0) {
+        --depth;
+      } else if (depth == 0 && toks[i].kind == TokenKind::Keyword &&
+                 toLowerChars(toks[i].text()) == "to") {
+        toAt = i;
+        break;
+      }
+    }
+    if (toAt == toks.size()) {
+      return;
+    }
+    depth = 0;
+    for (std::size_t i = toAt + 1; i < toks.size(); ++i) {
+      if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+        ++depth;
+      } else if (toks[i].kind == TokenKind::Symbol && toks[i].text() == ")" &&
+                 depth > 0) {
+        --depth;
+      } else if (depth == 0 && toks[i].kind == TokenKind::Keyword &&
+                 toLowerChars(toks[i].text()) == "step") {
+        stepAt = i;
+        break;
+      }
+    }
+    auto sliceOf = [&](std::size_t beg, std::size_t end) {
+      return std::vector<Token>(toks.begin() + static_cast<std::ptrdiff_t>(beg),
+                                toks.begin() +
+                                    static_cast<std::ptrdiff_t>(end));
+    };
+    std::vector<Token> const initSlice = sliceOf(eq + 1, toAt);
+    std::vector<Token> const limitSlice = sliceOf(toAt + 1, stepAt);
+    checkConvOverflowValue(typeWord, initSlice,
+                           initSlice.empty() ? toks[eq] : initSlice.front());
+    checkConvOverflowValue(typeWord, limitSlice,
+                           limitSlice.empty() ? toks[toAt]
+                                              : limitSlice.front());
+    std::optional<BuiltinTypeInfo> const info = builtinTypeInfo(typeWord);
+    if (!info || info->isBool || info->isFloat) {
+      // The step conversion is judged even for those spellings, but the
+      // end-too-big question belongs to the integer counters.
+      if (stepAt < toks.size() && stepAt + 1 < toks.size()) {
+        std::vector<Token> const stepSlice = sliceOf(stepAt + 1, toks.size());
+        checkConvOverflowValue(typeWord, stepSlice, stepSlice.front());
+      }
+      return;
+    }
+    bool positiveStep = true;
+    if (stepAt < toks.size()) {
+      if (stepAt + 1 >= toks.size()) {
+        return;
+      }
+      std::vector<Token> const stepSlice = sliceOf(stepAt + 1, toks.size());
+      checkConvOverflowValue(typeWord, stepSlice, stepSlice.front());
+      ConstValue const sv = evalConstSlice(stepSlice, 0, stepSlice.size(), 0);
+      if (!sv) {
+        return;
+      }
+      positiveStep = *sv >= 0;
+    }
+    if (limitSlice.empty()) {
+      return;
+    }
+    ConstValue const lv = evalConstSlice(limitSlice, 0, limitSlice.size(), 0);
+    if (!lv) {
+      return;
+    }
+    // The limit is first converted to the counter type (wrapping to
+    // its width, with the same rounding a floating value gets), and
+    // only the converted value is compared to the limit the counter
+    // itself can reach.
+    int const bits = info->bits;
+    unsigned int const bitCount = static_cast<unsigned int>(bits);
+    long double const rounded = std::nearbyint(*lv);
+    long double const modulusLd =
+        bits == 64 ? 18446744073709551616.0L : (long double)(1ULL << bitCount);
+    long double wrapped = std::fmod(rounded, modulusLd);
+    if (wrapped < 0) {
+      wrapped += modulusLd;
+    }
+    if (wrapped >= modulusLd || wrapped > 18446744073709551615.0L) {
+      // A rounded fmod result at the top of its range can land past
+      // what a 64-bit value can hold; a folded limit that large is
+      // not judged rather than guessed at.
+      if (bits == 64 && wrapped >= 18446744073709551616.0L) {
+        return;
+      }
+      if (bits != 64 && wrapped >= modulusLd) {
+        wrapped = modulusLd - 1;
+      }
+    }
+    std::uint64_t const u = static_cast<std::uint64_t>(wrapped);
+    std::uint64_t const half =
+        bits == 64 ? (1ULL << 63u) : (1ULL << (bitCount - 1));
+    std::int64_t signedVal = 0;
+    if (u < half) {
+      signedVal = static_cast<std::int64_t>(u);
+    } else if (bits == 64) {
+      // `u - 2^64`, added one term at a time so no intermediate
+      // conversion goes past INT64_MAX.
+      signedVal = static_cast<std::int64_t>(-9223372036854775807LL - 1) +
+                  static_cast<std::int64_t>(u - half);
+    } else {
+      signedVal =
+          static_cast<std::int64_t>(u - half) - static_cast<std::int64_t>(half);
+    }
+    bool tooBig = false;
+    if (positiveStep) {
+      if (info->isSigned) {
+        std::int64_t const maxV =
+            bits == 64
+                ? 9223372036854775807LL
+                : static_cast<std::int64_t>((1ULL << (bitCount - 1)) - 1);
+        tooBig = signedVal >= maxV;
+      } else {
+        std::uint64_t const maxV =
+            bits == 64 ? UINT64_MAX : ((1ULL << bitCount) - 1);
+        tooBig = u >= maxV;
+      }
+    } else {
+      if (info->isSigned) {
+        std::int64_t const minV =
+            bits == 64 ? static_cast<std::int64_t>(-9223372036854775807LL - 1)
+                       : -static_cast<std::int64_t>(1ULL << (bitCount - 1));
+        tooBig = signedVal <= minV;
+      } else if (bits == 64) {
+        // The counter's storage is a signed 64-bit value: an unsigned
+        // limit with the top bit set is not positive in that view.
+        tooBig = signedVal <= 0;
+      } else {
+        tooBig = u == 0;
+      }
+    }
+    if (tooBig) {
+      addDiagnostic(limitSlice.front().beg, limitSlice.front().end,
+                    Severity::Warning, "for-end-too-big",
+                    trf("%s counter variable is unable to exceed limit "
+                        "value",
+                        "FOR"),
+                    FbcDiagId::ForEndTooBig, FbcMessageKind::Warning);
+    }
+  }
+
+  // The index of the `=` at paren depth 0 in `toks` starting at `beg`
+  // (or `end` when there is none), so an initializer tail can be sliced
+  // without mistaking a `=` inside a parenthesized or nested-default
+  // expression for it.
+  static std::size_t eqAtDepth0(std::vector<Token> const &toks, std::size_t beg,
+                                std::size_t end) {
+    int depth = 0;
+    for (std::size_t i = beg; i < end; ++i) {
+      if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+        ++depth;
+      } else if (toks[i].kind == TokenKind::Symbol && toks[i].text() == ")" &&
+                 depth > 0) {
+        --depth;
+      } else if (depth == 0 && toks[i].kind == TokenKind::Symbol &&
+                 toks[i].text() == "=") {
+        return i;
+      }
+    }
+    return end;
   }
 
   // fbc error 323, As Const Select only: a Case range whose folded start
@@ -3345,6 +4561,7 @@ private:
 
   void handleStatement() {
     statementFamilyFailed_ = false;
+    sawStatement_ = true;
     // An Asm body is raw assembly: no statement dispatch, no declaration
     // handling, no symbol capture, no diagnostics from its contents. The
     // block's own closer is the one statement still recognized.
@@ -3468,6 +4685,7 @@ private:
       // statement forms this parser already walks.
       {
         std::vector<Token> const toks = statementTokens();
+        checkConvAssignmentPlain(toks);
         // 9: top-level `=` with nothing after it.
         {
           int depth = 0;
@@ -3703,6 +4921,7 @@ private:
           want = BlockKind::Operator;
         }
         if (nearestProcedureIs(want)) {
+          checkConvResultAssignment(statementTokens());
           resetDoc();
           skipStatement();
           return;
@@ -3778,7 +4997,34 @@ private:
                       w == "else" ? FbcDiagId::ElseWithoutIf
                                   : FbcDiagId::ElseIfWithoutIf);
       } else {
+        // An `If` as the next token on the `Else` line (`Else If ...`,
+        // the spelling a reader takes for `ElseIf`) draws warning 32.
+        // An `If` on a following line or after a comment, blank line,
+        // separator, or any statement is a nested block and stays
+        // silent, as does `ElseIf` itself.
+        std::vector<Token> const toks = statementTokens();
+        if (w == "else" && toks.size() >= 2 &&
+            toks[1].kind == TokenKind::Keyword &&
+            toLowerChars(toks[1].text()) == "if") {
+          addDiagnostic(toks[1].beg, toks[1].end, Severity::Warning,
+                        "if-found-after-else",
+                        trf("'%s' statement found directly after "
+                            "multi-line '%s'",
+                            "IF", "ELSE"),
+                        FbcDiagId::IfFoundAfterElse, FbcMessageKind::Warning);
+        }
         openBranchScope(w);
+        if (w == "else" && toks.size() >= 2 &&
+            toks[1].kind == TokenKind::Keyword &&
+            toLowerChars(toks[1].text()) == "if") {
+          // Parse the `If` as the start of the nested block it is,
+          // rather than swallowing it as the `Else` line's tail: the
+          // nested block takes its own closer. `advance` moves onto
+          // the `If` token; the nested open then handles the rest.
+          advance();
+          handleIf();
+          return;
+        }
       }
       resetDoc();
       skipStatement();
@@ -4100,6 +5346,7 @@ private:
   void handleFor() {
     Token const openTok = cur_;
     checkForStatement();
+    checkForHeader();
     pushBlockFromOpener("for");
     // Record the counter for the 283 check: the header's first token must
     // be a plain identifier. A member (`w.x`) or element (`a(0)`) spells
@@ -4145,7 +5392,41 @@ private:
     s.signature = headerText(openTok); // carries the `as <type>` clause
     s.doc = takeDoc();
     s.loopVar = true;
+    std::string const counterKey = s.key;
     addSymbol(std::move(s));
+    // Record the counter's builtin type so an assignment to the
+    // counter in the loop body is judged against it. The fact lives
+    // in the loop's own container and dies with it.
+    Token const typeTok = lex_.peek(2);
+    std::string builtin;
+    bool isPtr = false;
+    if (typeTok.kind == TokenKind::Keyword &&
+        isBuiltinType(toLowerChars(typeTok.text())) &&
+        toLowerChars(typeTok.text()) != "string" &&
+        toLowerChars(typeTok.text()) != "sub" &&
+        toLowerChars(typeTok.text()) != "function" &&
+        toLowerChars(typeTok.text()) != "pointer") {
+      builtin = toLowerChars(typeTok.text());
+      Token const nxt = lex_.peek(3);
+      if (nxt.kind == TokenKind::Keyword &&
+          (toLowerChars(nxt.text()) == "ptr" ||
+           toLowerChars(nxt.text()) == "pointer")) {
+        isPtr = true;
+      }
+    } else if (typeTok.kind == TokenKind::Identifier) {
+      std::string const key = keyFor(typeTok.text());
+      for (Symbol const &root : out_.roots) {
+        if (root.kind == SymbolKind::Enum && root.key == key) {
+          builtin = "integer";
+          break;
+        }
+      }
+    }
+    if (!containers_.empty() && !builtin.empty() && !isPtr) {
+      Container::VarFact fact;
+      fact.builtinType = builtin;
+      containers_.back().varFacts[counterKey] = fact;
+    }
   }
 
   // `type derived extends base` / `union u extends a`: record the base's lookup
@@ -4558,6 +5839,13 @@ private:
     advance(); // '('
     std::vector<Token> entry;
     int depth = 1;
+    int paramIndex = 1;
+    auto judgeEntry = [&](std::vector<Token> const &e) {
+      if (!e.empty()) {
+        checkParamModeEntry(e, paramIndex++);
+        checkParamDefaultOverflow(e);
+      }
+    };
     for (;;) {
       TokenKind const k = cur_.kind;
       if (k == TokenKind::Eof || k == TokenKind::Newline) {
@@ -4578,15 +5866,18 @@ private:
         }
         if (t == ")") {
           if (depth == 1) {
+            judgeEntry(entry);
             addParam(s, entry);
             advance();
             return;
           }
+          entry.push_back(cur_);
           --depth;
           advance();
           continue;
         }
         if (depth == 1 && t == ",") {
+          judgeEntry(entry);
           addParam(s, entry);
           entry.clear();
           advance();
@@ -4596,6 +5887,7 @@ private:
       entry.push_back(cur_);
       advance();
     }
+    judgeEntry(entry);
     addParam(s, entry);
   }
 
@@ -4700,6 +5992,7 @@ private:
         // open nothing — the report is its job, not ours.
         resetDoc();
       }
+      checkFunctionPointerParams(toks);
       skipStatement(/*suppressMemberCapture=*/true);
       return;
     }
@@ -4779,6 +6072,7 @@ private:
       s.aliasType = true;
       s.range.end = currentLineEnd();
       addSymbol(std::move(s));
+      checkFunctionPointerParams(statementTokens());
       // The tail of an alias line is only its type expression, never a member
       // — but with the alias sitting inside a record body (probed: legal, and
       // not a member), capture-on read `type cb as sub(byval a as long)`'s
@@ -4916,6 +6210,22 @@ private:
           }
         }
       }
+      // A declared constructor, destructor, or operator carries a
+      // parameter list the symbol path below never populates.
+      {
+        std::vector<Token> const toks = statementTokens();
+        for (std::size_t i = 0; i < toks.size(); ++i) {
+          if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
+            auto const entries = splitParamEntries(toks, i);
+            int idx = 1;
+            for (auto const &e : entries) {
+              checkParamModeEntry(e, idx++);
+              checkParamDefaultOverflow(e);
+            }
+            break;
+          }
+        }
+      }
       resetDoc();
       skipStatement(/*suppressMemberCapture=*/true);
       return;
@@ -4988,6 +6298,8 @@ private:
     auto const stmtToks = statementTokens();
     checkVarDeclStatement(openTok, k);
     checkStatementSpecific(openTok);
+    checkConvOverflowDecl(openTok);
+    checkFunctionPointerParams(stmtToks);
     advance();
     bool atName = true;
     bool first = true;
@@ -5210,10 +6522,18 @@ private:
       bool const isRedimHead = head == "redim";
       bool const isCommonHead = head == "common";
       auto const segs = splitDeclSegments(stmtToks);
-      for (auto const &seg : segs) {
+      std::string stmtType;
+      bool stmtTypeFirst = false;
+      for (std::size_t si = 0; si < segs.size(); ++si) {
+        auto const &seg = segs[si];
         DeclInfo const info = parseDeclSegment(seg);
         if (info.key.empty()) {
           continue;
+        }
+        if (si == 0 && !seg.empty() && seg[0].kind == TokenKind::Keyword &&
+            toLowerChars(seg[0].text()) == "as") {
+          stmtType = info.builtinType;
+          stmtTypeFirst = true;
         }
         Container::VarFact fact;
         fact.kind =
@@ -5238,6 +6558,10 @@ private:
         fact.fromDeclOnly = declOnly && !isCommonHead;
         fact.varLenString = info.varLenString;
         fact.typeKey = info.typeKey;
+        fact.builtinType = info.isPtr ? "" : info.builtinType;
+        if (fact.builtinType.empty() && stmtTypeFirst && !info.isPtr) {
+          fact.builtinType = stmtType;
+        }
         fact.globalInit =
             blocks_.empty() &&
             (head == "static" || isCommonHead || segShared || impliedShared);
@@ -5760,6 +7084,16 @@ private:
                         trf("illegal inside functions in '%s'", cur_.text()),
                         FbcDiagId::IllegalInsideSub);
         }
+      }
+    } else if (w == "cmdline") {
+      // A `#cmdline` is effective only before the first statement of
+      // the file (directives and comments before it do not count). In
+      // a skipped arm it is not seen at all. A second early `#cmdline`
+      // is a further set of options, not an ignored one.
+      if (wasActive && sawStatement_) {
+        addDiagnostic(cur_.beg, cur_.end, Severity::Warning, "cmdline-ignored",
+                      tr("#cmdline ignored"), FbcDiagId::CmdlineIgnored,
+                      FbcMessageKind::Warning);
       }
     } else if (w == "undef") {
       // The table update is feed's; the symbol window close is ours. Both

@@ -26,6 +26,118 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-08 — M23 G7: the remaining warnings (research Tier 2 syntactic, constant-dependent)
+
+- **Six new fbc identities.** `32 IFFOUNDAFTERELSE`
+  (`if-found-after-else`), `15 NOEXPLICITPARAMMODE`
+  (`no-explicit-param-mode`), `46 CMDLINEIGNORED` (`cmdline-ignored`),
+  `25 CONVOVERFLOW` (`conv-overflow`), `33
+  SHIFTEXCEEDSBITSINDATATYPE` (`shift-exceeds-bits`), and `45
+  FORENDTOOBIG` (`for-end-too-big`), resolved through the version-range
+  table with translatable `trf` texts. `45`, deferred out of G2 as
+  constant-dependent, is taken here: a `For` counter whose declared
+  type (`as byte` in the header, or the declared variable it reuses)
+  and a constant limit and step sign are all knowable at parser level
+  — fbc judges it on exactly that condition (`end`/`ispos`
+  non-symbolic) — so it sits beside `25`/`33` with the same literal
+  folder, not in M24. `po/freebasicd.pot` regenerated. Reporting
+  reuses `addDiagnostic` directly (the per-statement error helper
+  cannot express the Warning severity); no new emitter was added.
+  Error `72 ARRAYNOTALLOCATED` and the dead pair `56`/`102` stay out:
+  `72` is headed for M24, and `56`/`102` need nothing.
+- **The folder generalization.** The constant evaluator from the
+  Select Case work now folds to `long double` (exact for 64-bit
+  integer literals, which a `double` rounds up to 2^64 before the
+  comparison) and reads a literal's disattached suffix tokens
+  (`ul`/`ull`/`ll`/…, which the lexer returns as the token after a
+  number) as part of the literal. The same evaluator serves all three
+  constant checks; a value it cannot fold is silence.
+- **Probe table (fbc 1.10.3, `/usr/bin/fbc -c`; `15` under `-w param`
+  or `-w pedantic`, the rest under `-w all`).**
+  - `32`: `Else If` on the `Else` line of a multi-line `If` draws
+    `32` (also through `_` continuation, which joins the logical
+    line). An `If` on a following line, after a comment, blank
+    line, or `:` separator, behind another statement or block, or
+    the `ElseIf` word itself stays silent; a one-line `If`'s own
+    `else` is not a multi-line `Else`. Anchored on the `If`.
+    The parser also now opens the nested block for `Else If`, so its
+    closer matches instead of reporting a stray closer.
+  - `15`: **one warning per parameter**, not per head, on parameter
+    lists in `Declare` heads, definition heads (incl. members,
+    `Constructor`/`Declare Operator`, `Operator`, `Property`), and
+    function-pointer types (`Dim`, a bare field, a type alias, nested
+    in a parameter). Silent: `byref`/`byval` on the parameter,
+    array parameters (`a() as ...`, and the nameless `() as ...`),
+    the `...` tail, and the empty list. A parameter with a default,
+    a UDT type, or a mode only on siblings has it still; the
+    procedure's result mode is irrelevant. Anchored on the
+    parameter's first token (its name, or `as` when nameless).
+  - `46`: after the first statement of the file, in reachable code.
+    Directives, comments, and blank lines before it do not count,
+    and a second early `#cmdline` is effective, not ignored. A
+    `#cmdline` in a dead arm or macro body is never seen. Inside a
+    `Sub`/`If`/`Type` it is the same warning (the earlier statement
+    already ended the preprocessor stage). Anchored on the whole
+    directive line. Judged only in the parsed file: an
+    `#include`d file's stage, the `module_count != 1` and
+    `-z nocmdline` cases are not knowable single-file.
+  - `25`: a folded constant into a builtin type outside the
+    **size-class** range (-128..255, -32768..65535,
+    -2147483648..4294967295 by width, `boolean` only 0/±1, `single`
+    on zero/infinity conversion, 64-bit only for floating sources).
+    Probe wins over the signed/unsigned expectation: `short = 32768`
+    and `ubyte = -1` are silent. Forms judged: `Dim`/`Const`/
+    `Static` initializers (incl. type-first and multi-declarator,
+    and record fields), plain assignment to a declared variable of
+    builtin type, procedure-result assignment in both spellings
+    (`fn = …` and `Function = …`), `For` init/limit/step, and
+    parameter defaults. A floating value rounds as fbc converts it
+    (ties to even). Anchored on the value. Silent: a `double` or
+    UDT/pointer/string target.
+  - `33`: a folded constant count at or past 64 (a negative count
+    warns through the unsigned comparison). The shifted operand is
+    **promoted to `integer` before the shift** (probed), so a
+    `byte` variable shifting by 8 or 32 stays silent; the
+    constant-folded RHS is an integer-type, parenthesized, unary,
+    `Abs`/conversion-call, or higher-precedence expression — without
+    precedence grouping (`1 shl 32+32` shifts by 32), `-`/`+`
+    grouping (`1 shl 64-0` shifts by 64), `2*32`, or `2^6`. The
+    count itself is not the width. Anchored on the operator. `shl=`
+    and `shr=` take the whole RHS.
+  - `45`: the counter's signed maximum for a positive step
+    (`byte` 127, `ulongint` max) and its minimum for a negative step
+    (`byte` −128, `ubyte` 0); a `For` whose limit is a non-constant
+    variable, or whose step sign is not constant, stays silent. The
+    limit is converted (rounded, wrapping) to the counter type
+    first — `byte … to 255` warns never, while `byte … to 200 step
+    -1` is silent through the wrap too. A 64-bit counter's unsigned
+    negative step follows the signed storage value's sign.
+    Anchored on the limit.
+- **No-cascade evidence.** Per warning there is at least one firing,
+  one ordinary-code negative (next-line `If`/`ElseIf`, explicit
+  modes, leading `#cmdline`, `byte = 255`, `byte shl 8`, `byte … to
+  126`), and in 25/45 a wrapped-limit negative. Everything is recorded
+  by the parser and gated by the landed `warningLevel`, like the 26
+  and 14 landed before it.
+- **Tests.** `TestRemainingWarnings` in `parser_checks` (counts,
+  identities, anchors, and the similar-but-silent shapes per warning),
+  number pins in `fbc_diagnostics_checks`, and a corpus pair
+  (`err_remaining_warnings` / `blocks_remaining_warnings_ok`, 91
+  files). Two pre-existing test snippets needed an explicit
+  parameter mode once implicit parameters were judged
+  (`declare constructor`, branch-scope probes) and six corpus
+  goldens gained the param-mode warning (their parameters are
+  implicit), without changing what those tests assert.
+- **Deliberate limits, recorded at `FreeBASIC.md` §12.37.** Left for
+  M24 by name: `25` for call arguments and member/element
+  assignments, `33` for member/call/parenthesized left operands and
+  conversion-call counts, and a 64-bit signed limit written past the
+  signed maximum (the compiler's statement for it is a plain
+  constant node before the comparison, so what is reported is
+  silence, not a guess). A 32-bit `integer` target uses the
+  widths the probed build's flags give, and cross-file and
+  second-module facts are outside the single-file parser.
+
 ### 2026-11-07 — M23 G6: statement-specific checks (research Tier 5)
 
 - **Fifteen new fbc identities.** `54 EXPECTEDDYNAMICARRAY`, `75

@@ -1821,7 +1821,7 @@ static void TestMemberCompletionContexts() {
 // Scope symbols are siblings under the block's own Scope, so the parent walk
 // from one never passes through another.
 static void TestBranchScopesAreSiblings() {
-  std::string const src = "sub f(t as single)\n"
+  std::string const src = "sub f(byval t as single)\n"
                           "  if t < 1 then\n"
                           "    dim as single p = t\n"
                           "    p = 1\n"
@@ -2200,7 +2200,7 @@ static void TestModuleVarNotSharedDiagnostics() {
   }
   {
     std::string const noDotParam = "dim var1 as integer\n"
-                                   "sub s(var1 as string)\n"
+                                   "sub s(byval var1 as string)\n"
                                    "    #print typeof(var1)\n"
                                    "end sub\n";
     AnalyzedDoc const d = analyze(noDotParam);

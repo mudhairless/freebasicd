@@ -119,6 +119,12 @@ enum class FbcDiagId {
   EraseCtorMustHaveOneParam,
   PrivOrPubAttribNotAllowed,
   ExpectedFileNumberExpression,
+  IfFoundAfterElse,
+  NoExplicitParamMode,
+  CmdlineIgnored,
+  ConvOverflow,
+  ShiftExceedsBitsInDataType,
+  ForEndTooBig,
   Count
 };
 

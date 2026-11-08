@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-11-07 17:19-0600\n"
-"PO-Revision-Date: 2026-11-07 17:19-0600\n"
+"POT-Creation-Date: 2026-11-07 18:19-0600\n"
+"PO-Revision-Date: 2026-11-07 18:19-0600\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -110,7 +110,7 @@ msgid ""
 "%s: .fbformat overrides freebasicd.toml; its formatting settings are ignored"
 msgstr ""
 
-#: src/parser.cpp:168
+#: src/parser.cpp:173
 #, c-format
 msgid "/// is not a %s comment; use '' for doc comments"
 msgstr ""
@@ -118,246 +118,273 @@ msgstr ""
 #. TRANSLATORS: %s = the proper noun "FreeBASIC" (never
 #. translated); the second %s is an example directive kept
 #. verbatim.
-#: src/parser.cpp:187
+#: src/parser.cpp:192
 #, c-format
 msgid ""
 "bare '$' is not a valid metacommand; %s metacommands are written as "
 "comments, e.g. %s"
 msgstr ""
 
-#: src/parser.cpp:219 src/parser.cpp:2188 src/parser.cpp:2760
-#: src/parser.cpp:2767 src/parser.cpp:3891 src/parser.cpp:5326
-#: src/parser.cpp:5363 src/parser.cpp:5380 src/parser.cpp:5401
+#: src/parser.cpp:226 src/parser.cpp:2263 src/parser.cpp:2848
+#: src/parser.cpp:2855 src/parser.cpp:5090 src/parser.cpp:6598
+#: src/parser.cpp:6635 src/parser.cpp:6652 src/parser.cpp:6673
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
 
-#: src/parser.cpp:331
+#: src/parser.cpp:338
 msgid "unterminated string literal"
 msgstr ""
 
-#: src/parser.cpp:347
+#: src/parser.cpp:354
 #, c-format
 msgid "Suffix ignored in '%s'"
 msgstr ""
 
-#: src/parser.cpp:374
+#: src/parser.cpp:381
 #, c-format
 msgid "dialect '%s' is not supported yet; parsing in '%s' mode"
 msgstr ""
 
-#: src/parser.cpp:671 src/parser.cpp:744
+#: src/parser.cpp:684 src/parser.cpp:757
 #, c-format
 msgid "Expected %s"
 msgstr ""
 
-#: src/parser.cpp:678
+#: src/parser.cpp:691
 #, c-format
 msgid "Expected %s, found '%s'"
 msgstr ""
 
-#: src/parser.cpp:716
+#: src/parser.cpp:729
 msgid "Syntax error"
 msgstr ""
 
-#: src/parser.cpp:718
+#: src/parser.cpp:731
 #, c-format
 msgid "Syntax error, found '%s'"
 msgstr ""
 
-#: src/parser.cpp:753 src/parser.cpp:3387
+#: src/parser.cpp:766 src/parser.cpp:4556
 msgid "Expected constant"
 msgstr ""
 
-#: src/parser.cpp:755
+#: src/parser.cpp:768
 #, c-format
 msgid "Expected constant, %s"
 msgstr ""
 
-#: src/parser.cpp:766
+#: src/parser.cpp:779
 msgid "Too many expressions"
 msgstr ""
 
-#: src/parser.cpp:1339 src/parser.cpp:1359
+#: src/parser.cpp:1410 src/parser.cpp:1431
 #, c-format
 msgid "%s on UDT with non-%s constructor"
 msgstr ""
 
-#: src/parser.cpp:1345 src/parser.cpp:1365
+#: src/parser.cpp:1416 src/parser.cpp:1437
 #, c-format
 msgid "%s on UDT with non-%s destructor"
 msgstr ""
 
-#: src/parser.cpp:1351 src/parser.cpp:1371
+#: src/parser.cpp:1423 src/parser.cpp:1444
 #, c-format
 msgid "%s on UDT with non-parameterless default constructor"
 msgstr ""
 
-#: src/parser.cpp:1418 src/parser.cpp:2408
+#: src/parser.cpp:1490 src/parser.cpp:2484
 msgid ""
 "'...' ellipsis upper bound given for array field (this is not supported)"
 msgstr ""
 
-#: src/parser.cpp:1425 src/parser.cpp:2413
+#: src/parser.cpp:1498 src/parser.cpp:2490
 #, c-format
 msgid "variable-length arrays cannot be part of %s or nested %s"
 msgstr ""
 
-#: src/parser.cpp:1434
+#: src/parser.cpp:1508
 #, c-format
 msgid "%s or %s dynamic arrays cannot have initial bounds"
 msgstr ""
 
-#: src/parser.cpp:1458 src/parser.cpp:1533 src/parser.cpp:1558
+#: src/parser.cpp:1527 src/parser.cpp:1601 src/parser.cpp:1626
 #, c-format
 msgid "Expected var-len array, %s"
 msgstr ""
 
-#: src/parser.cpp:1469
+#: src/parser.cpp:1538
 msgid "variable-length arrays cannot be initialized"
 msgstr ""
 
-#: src/parser.cpp:1489
+#: src/parser.cpp:1557
 msgid "variable-length strings cannot be initialized"
 msgstr ""
 
-#: src/parser.cpp:1540 src/parser.cpp:1566
+#: src/parser.cpp:1609 src/parser.cpp:1635
 msgid ""
 "'...' ellipsis upper bound given for dynamic array (this is not supported)"
 msgstr ""
 
-#: src/parser.cpp:1680 src/parser.cpp:1696
+#: src/parser.cpp:1746 src/parser.cpp:1762
 msgid "Expected file number expression"
 msgstr ""
 
-#: src/parser.cpp:1779 src/parser.cpp:5066
+#: src/parser.cpp:1854 src/parser.cpp:6326
 #, c-format
 msgid "duplicate definition: '%s'"
 msgstr ""
 
-#: src/parser.cpp:1838
+#: src/parser.cpp:1913
 #, c-format
 msgid ""
 "'%s' is a reserved word and cannot be a field name in a type with member "
 "functions"
 msgstr ""
 
-#: src/parser.cpp:1979 src/parser.cpp:5737
+#: src/parser.cpp:2054 src/parser.cpp:7009
 #, c-format
 msgid "illegal inside functions in '%s'"
 msgstr ""
 
-#: src/parser.cpp:1993 src/parser.cpp:2007 src/parser.cpp:3429
-#: src/parser.cpp:3506
+#: src/parser.cpp:2068 src/parser.cpp:2082 src/parser.cpp:4598
+#: src/parser.cpp:4676
 #, c-format
 msgid "illegal inside a compound statement or scoped block in '%s'"
 msgstr ""
 
-#: src/parser.cpp:2126 src/parser.cpp:2134
+#: src/parser.cpp:2201 src/parser.cpp:2209
 #, c-format
 msgid ""
 "branch crossing local array, var-len string or object definition, to label: "
 "%s"
 msgstr ""
 
-#: src/parser.cpp:2141
+#: src/parser.cpp:2216
 #, c-format
 msgid "branch crossing local variable definition, to label: %s, variable: %s"
 msgstr ""
 
-#: src/parser.cpp:2229
+#: src/parser.cpp:2304
 #, c-format
 msgid "'%s' is a reserved word and cannot be an enum member name"
 msgstr ""
 
-#: src/parser.cpp:2455
+#: src/parser.cpp:2543
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:2584 src/parser.cpp:5170
+#: src/parser.cpp:2672 src/parser.cpp:6430
 #, c-format
 msgid "'%s' is a reserved word and cannot be a field name"
 msgstr ""
 
-#: src/parser.cpp:2721
+#: src/parser.cpp:2809
 #, c-format
 msgid "statement in between %s and first %s"
 msgstr ""
 
-#: src/parser.cpp:2749
+#: src/parser.cpp:2837
 #, c-format
 msgid "illegal outside a %s compound statement"
 msgstr ""
 
-#: src/parser.cpp:2774
+#: src/parser.cpp:2862
 #, c-format
 msgid "no outer %s compound statement found"
 msgstr ""
 
-#: src/parser.cpp:2859
+#: src/parser.cpp:2947
 #, c-format
 msgid "expected %s after %s, found '%s'"
 msgstr ""
 
-#: src/parser.cpp:2863
+#: src/parser.cpp:2951
 #, c-format
 msgid "expected %s after %s"
 msgstr ""
 
-#: src/parser.cpp:3296
+#: src/parser.cpp:3543
+msgid "Overflow in constant conversion"
+msgstr ""
+
+#: src/parser.cpp:3794
+#, c-format
+msgid "No explicit %s or %s, at parameter %s"
+msgstr ""
+
+#: src/parser.cpp:4116
+msgid "Shift value greater than or equal to number of bits in data type"
+msgstr ""
+
+#: src/parser.cpp:4402
+#, c-format
+msgid "%s counter variable is unable to exceed limit value"
+msgstr ""
+
+#: src/parser.cpp:4464
 #, c-format
 msgid "invalid %s range, start value is greater than the end value"
 msgstr ""
 
-#: src/parser.cpp:3612
+#: src/parser.cpp:4781
 #, c-format
 msgid "The %s attributes are not allowed with %s"
 msgstr ""
 
-#: src/parser.cpp:3751 src/parser.cpp:3764 src/parser.cpp:5349
-#: src/parser.cpp:5430 src/parser.cpp:5555 src/parser.cpp:5718
-#: src/parser.cpp:5727 src/parser.cpp:5752
+#: src/parser.cpp:4922 src/parser.cpp:4963 src/parser.cpp:6621
+#: src/parser.cpp:6702 src/parser.cpp:6827 src/parser.cpp:6990
+#: src/parser.cpp:6999 src/parser.cpp:7034
 #, c-format
 msgid "%s without %s"
 msgstr ""
 
-#: src/parser.cpp:4312
+#: src/parser.cpp:4937
+#, c-format
+msgid "'%s' statement found directly after multi-line '%s'"
+msgstr ""
+
+#: src/parser.cpp:5545
 #, c-format
 msgid "a module %s cannot take parameters"
 msgstr ""
 
-#: src/parser.cpp:4321
+#: src/parser.cpp:5554
 msgid "invalid priority attribute; expected 101 to 65535"
 msgstr ""
 
-#: src/parser.cpp:4339
+#: src/parser.cpp:5572
 #, c-format
 msgid "a module %s cannot be exported"
 msgstr ""
 
-#: src/parser.cpp:4345
+#: src/parser.cpp:5578
 #, c-format
 msgid "Expected end of line after a module %s"
 msgstr ""
 
-#: src/parser.cpp:4355
+#: src/parser.cpp:5588
 #, c-format
 msgid "a non-static member procedure cannot be a module %s"
 msgstr ""
 
-#: src/parser.cpp:4949
+#: src/parser.cpp:6207
 #, c-format
 msgid "'%s' is not allowed on a declaration line"
 msgstr ""
 
-#: src/parser.cpp:5580
+#: src/parser.cpp:6852
 #, c-format
 msgid "%s variable name mismatch: expected '%s', found '%s'"
 msgstr ""
 
-#: src/parser.cpp:5588
+#: src/parser.cpp:6860
 #, c-format
 msgid "variable following %s is meaningless: '%s'"
+msgstr ""
+
+#: src/parser.cpp:7020
+msgid "#cmdline ignored"
 msgstr ""
 
 #. TRANSLATORS: %s is an identifier; the leading dot is a FreeBASIC scope

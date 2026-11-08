@@ -328,6 +328,23 @@ void TestVersionedNumber() {
   CHECK(fblang::fbcNumber(FbcDiagId::ExpectedDynamicArray,
                           FbcMessageKind::Warning, v1102) == 0);
 
+  // The remaining warnings, each pinned to the catalog number the
+  // probe read back from fbc 1.10.3 (tools/fbc_catalog.tsv).
+  CHECK(fblang::fbcNumber(FbcDiagId::IfFoundAfterElse, FbcMessageKind::Warning,
+                          v1102) == 32);
+  CHECK(fblang::fbcNumber(FbcDiagId::NoExplicitParamMode,
+                          FbcMessageKind::Warning, v1102) == 15);
+  CHECK(fblang::fbcNumber(FbcDiagId::CmdlineIgnored, FbcMessageKind::Warning,
+                          v1102) == 46);
+  CHECK(fblang::fbcNumber(FbcDiagId::ConvOverflow, FbcMessageKind::Warning,
+                          v1102) == 25);
+  CHECK(fblang::fbcNumber(FbcDiagId::ShiftExceedsBitsInDataType,
+                          FbcMessageKind::Warning, v1102) == 33);
+  CHECK(fblang::fbcNumber(FbcDiagId::ForEndTooBig, FbcMessageKind::Warning,
+                          v1102) == 45);
+  CHECK(fblang::fbcNumber(FbcDiagId::ForEndTooBig, FbcMessageKind::Error,
+                          v1102) == 0);
+
   // No identity is no number, in either space.
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Error, v1102) == 0);
   CHECK(fblang::fbcNumber(FbcDiagId::None, FbcMessageKind::Warning, v1102) ==

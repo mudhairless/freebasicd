@@ -1680,6 +1680,76 @@ second one.
   dialect `147`), so no `54` is reported there; a cross-file UDT is
   silent, not guessed.
 
+### 12.37 The remaining warnings (32, 15, 46, 25, 33, 45)
+
+Probed against `/usr/bin/fbc` 1.10.3. The parser records every one of
+these and the delivery gate in §12.27 decides; that simplification is
+visible at `15` in particular: the compiler enables it through
+`-w param`/`-w pedantic` (a pedantic-check option), not through its
+warning level, while here it surfaces with any level at or below its
+catalog level 1.
+
+- **32 `IFFOUNDAFTERELSE`** fires for an `If` immediately after the
+  `Else` **token** of a multi-line `If`, on that same logical line —
+  `Else If ...` and its `_` continuation form (`fbc`, probed). The
+  parser therefore reads the line's remainder as the nested block.
+  Not the first-statement case: an `If` on the following line (with
+  or without intervening blank/comment/`:`-separator lines), behind
+  any statement or block, or the `ElseIf` word itself is silent.
+- **15 `NOEXPLICITPARAMMODE`** is **per parameter**, not per head.
+  Judged parameter lists are `Declare` heads, definition heads
+  (modules, members, constructors/destructors, `Operator`,
+  `Property`), and function-pointer lists (an `As Sub`/`As
+  Function` type in a variable, bare-field, alias-type, and nested
+  parameter position). Silent: an explicit mode, array parameters
+  (`a()` and a nameless `()`, which carry the array descriptor),
+  the `...` tail, and `()`. A default does not exempt a parameter,
+  nor does a UDT type or a mode on a sibling or the result.
+  Anchored on the parameter.
+- **46 `CMDLINEIGNORED`** fires when a reachable `#cmdline` follows
+  the first statement of the file. Directives/comments/blanks do not
+  end the stage; a second effective `#cmdline` is not ignored; dead
+  arms and `#macro` bodies never see it.
+- **25 `CONVOVERFLOW`** is a **size-class** range check (see the
+  changelog probe table): `-128..255`, `-32768..65535`,
+  `-2147483648..4294967295`, `boolean` = 0/1/-1 only, `single` on
+  zero/infinity, 64-bit for floating sources (a floating literal,
+  `/`, `^`, or such a constant). All probed examples come from the
+  statement kinds listed in the changelog (declarations, plain
+  assignments, result assignments, `For` expressions, parameter
+  defaults); record fields ride on `Dim`-or-bare-field parsing. A
+  `double` target is unchecked.
+- **33 `SHIFTEXCEEDSBITSINDATATYPE`**: a count needs to be a folded
+  constant node (literals and constants, folded parentheses/
+  unaries, `Abs` calls, or a higher-precedence expression like
+  `2*32` and `2^6`; a lower-precedence tail belongs to the outer
+  expression, so `1 shl 32+32` shifts by 32 while `1 shl 64-0`
+  shifts by 64). The operand is promoted (a narrow type becomes
+  `integer`) **before** counting its bits, so there is effectively a
+  single threshold on a 64-bit build. A negative count warns, and
+  63.9 converts as the compiler converts it. A variable or call
+  count, or a left operand whose width is not in the parsed file,
+  stays silent.
+- **45 `FORENDTOOBIG`** is judged when the counter's type is known
+  (the header's `as` or the reused declaration) and the limit is a
+  folded constant, with a constant step sign (default positive). The
+  limit is converted/rounded and **wrapped** to the counter type
+  before comparison (so a huge literal can be silent), then compared
+  at the signed/unsigned maximum (positive step) or signed minimum /
+  unsigned zero-and-top-bit (negative step). A float/boolean/pointer/
+  UDT/string/variable-limit/variable-step form stays silent.
+
+**Limits not implemented.** `25` does not judge call arguments,
+member or element assignments, member initializers of a `UNION`
+(error 163 owns that shape), fixed array initializers, or conversions
+through functions the literal folder cannot evaluate; `33` does not
+judge some conversion-call counts or unknown left operands; `45`
+deliberately does not report a 64-bit limit spelled past the signed
+maximum as an unsigned literal — that miss is cheaper than warning
+on the signed form (see the comparison rule in the changelog).
+Cross-file types, second-module `#cmdline`, and `#include`d-file
+stage remain single-file limits.
+
 ## 13. Where the diagnostics come from (compiler source)
 
 Every `error N` / `warning N` in this file is a real fbc message, and fbc's

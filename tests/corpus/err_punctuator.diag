@@ -3,3 +3,4 @@ expected-eq
 expected-expression
 expected-gt
 expected-rprnt
+no-explicit-param-mode

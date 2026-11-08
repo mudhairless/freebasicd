@@ -145,7 +145,13 @@ constexpr std::array<FbcNumberRange, 1> kNumberRanges{{
                   {FbcDiagId::SuffixIgnored, 44},
                   {FbcDiagId::ArgCntMismatch, 43},
                   {FbcDiagId::NextVarMeaningless, 26},
-                  {FbcDiagId::BranchCrossingLocalVar, 14}})},
+                  {FbcDiagId::BranchCrossingLocalVar, 14},
+                  {FbcDiagId::IfFoundAfterElse, 32},
+                  {FbcDiagId::NoExplicitParamMode, 15},
+                  {FbcDiagId::CmdlineIgnored, 46},
+                  {FbcDiagId::ConvOverflow, 25},
+                  {FbcDiagId::ShiftExceedsBitsInDataType, 33},
+                  {FbcDiagId::ForEndTooBig, 45}})},
 }};
 
 FbcNumberRange const &rangeFor(std::optional<FbcVersion> const &version) {
