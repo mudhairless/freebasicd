@@ -93,6 +93,9 @@ concurrency rules are in
 
 ## Formatting and clang-tidy
 
+Do not use milestone or step names in comments or as part of a procedure
+name. They just become noise to later users.
+
 Changed C++ and header files must pass the formatting gate:
 
 ```sh
