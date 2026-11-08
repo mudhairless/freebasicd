@@ -35,6 +35,12 @@ namespace {
 // move off this thread, the parents would dangle — session_integration asserts
 // the reply carries the *nested* chain, which is what actually proves the
 // lifetime rather than assuming it.
+// TODO: reevaluate this suppression if the arena's thread model changes.
+// thread_local storage is deliberate: one thread, one arena, no lock, and the
+// nodes are consumed by the single synchronous write before reuse (above). A
+// default-constructed deque allocates nothing, so the throw-during-init risk
+// this check guards against cannot bite here.
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization, cert-err58-cpp)
 thread_local std::deque<SelectionRange> arena;
 
 // A node in the arena. A deque is what keeps it safe: push_back never

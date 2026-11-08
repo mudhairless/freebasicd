@@ -187,6 +187,25 @@ still fails the run.
 
 ---
 
+## bugprone-throwing-static-initialization / cert-err58-cpp
+
+**Looks for:** Storage-duration (static / `thread_local`) initialization that
+may throw, which cannot be caught.
+
+**Why suppressed at one site only:** `arena` (`src/selection_lsp.cpp`) is
+deliberately `thread_local`: one thread, one arena, no lock, and the nodes
+are consumed by a single synchronous write on the handler's own thread before
+anything can reuse them (the comment above the declaration states the
+lifetime model). A default-constructed `std::deque` allocates nothing, so
+the throw-during-init risk the check guards against cannot bite here. The
+checks stay enabled project-wide; the suppression is a `NOLINTNEXTLINE` on
+that one declaration, with a `TODO` to reevaluate it if the arena's thread
+model changes.
+
+**Hit count:** 1 (the selection arena).
+
+---
+
 ## clang-analyzer-optin.performance.Padding
 
 **Looks for:** Structs where the field layout wastes memory due to alignment

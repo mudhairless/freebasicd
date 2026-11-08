@@ -699,11 +699,15 @@ void typeofDiagnostics(ParseResult &parse, std::string_view source,
   }
   std::string_view const code = line.substr(0, codeEnd);
   std::size_t pos = 0;
+  // 6 is the length of the "typeof" literal scanned for below.
+  // NOLINTNEXTLINE(readability-magic-numbers)
   while (pos + 6 <= code.size()) {
     std::size_t const at = code.find("typeof", pos);
     if (at == std::string_view::npos) {
       break;
     }
+    // 6 is the length of the "typeof" literal scanned for above.
+    // NOLINTNEXTLINE(readability-magic-numbers)
     pos = at + 6;
     bool const boundary = (at == 0 || !isNameChar(code[at - 1])) &&
                           (pos == code.size() || !isNameChar(code[pos]));
@@ -902,13 +906,11 @@ bool isInterruptingDecl(SymbolKind kind) {
 
 bool declarationBetween(ParseResult const &parse, std::uint32_t prevEnd,
                         std::uint32_t nextBeg) {
-  for (Symbol const &root : parse.roots) {
-    if (isInterruptingDecl(root.kind) && root.range.beg >= prevEnd &&
-        root.range.beg < nextBeg) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(
+      parse.roots.begin(), parse.roots.end(), [&](Symbol const &root) {
+        return isInterruptingDecl(root.kind) && root.range.beg >= prevEnd &&
+               root.range.beg < nextBeg;
+      });
 }
 
 } // namespace
@@ -938,10 +940,8 @@ void moduleCodeDiagnostics(ParseResult const &parse, BuildKind kind,
   // which module is main — and its own main module is the entry point's
   // home, so it stays silent. A library has no entry point, so every module
   // is non-main by definition.
-  if (kind == BuildKind::Exe) {
-    if (!mainModuleName.has_value() || isMainModule) {
-      return;
-    }
+  if (kind == BuildKind::Exe && (!mainModuleName.has_value() || isMainModule)) {
+    return;
   }
   for (std::vector<SourceRange> const &run : moduleCodeRuns(parse)) {
     if (run.empty()) {
@@ -1113,7 +1113,7 @@ std::map<std::string, std::vector<Diagnostic>> publicProcedureCollisions(
       std::vector<std::string> otherNames;
       otherNames.reserve(others.size());
       for (std::string const &p : others) {
-        std::string fname = std::filesystem::path(p).filename().string();
+        std::string const fname = std::filesystem::path(p).filename().string();
         otherNames.push_back(fname.empty() ? p : fname);
       }
       std::string joined;

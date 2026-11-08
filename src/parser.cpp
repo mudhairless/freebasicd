@@ -501,30 +501,20 @@ private:
   // is enclosed *anywhere* by the construct (`Scope` inside a `Sub` is still
   // inside a procedure, so 61 wins over 96).
   bool inProcedure() const {
-    for (Block const &b : blocks_) {
-      if (isProcedureBlockKind(b.kind)) {
-        return true;
-      }
-    }
-    return false;
+    return std::any_of(blocks_.begin(), blocks_.end(), [](Block const &b) {
+      return isProcedureBlockKind(b.kind);
+    });
   }
 
   bool inScopeBlock() const {
-    for (Block const &b : blocks_) {
-      if (isScopeBlock(b.kind)) {
-        return true;
-      }
-    }
-    return false;
+    return std::any_of(blocks_.begin(), blocks_.end(),
+                       [](Block const &b) { return isScopeBlock(b.kind); });
   }
 
   bool inExternBlock() const {
-    for (Block const &b : blocks_) {
-      if (b.kind == BlockKind::Extern) {
-        return true;
-      }
-    }
-    return false;
+    return std::any_of(blocks_.begin(), blocks_.end(), [](Block const &b) {
+      return b.kind == BlockKind::Extern;
+    });
   }
 
   // The innermost open language block is a record/enum body: statements there
@@ -1176,17 +1166,17 @@ private:
     }
     std::size_t nameIdx = seg.size();
     std::size_t afterName;
-    bool typeFirst = seg[0].kind == TokenKind::Keyword &&
-                     toLowerChars(seg[0].text()) == "as";
+    bool const typeFirst = seg[0].kind == TokenKind::Keyword &&
+                           toLowerChars(seg[0].text()) == "as";
     if (typeFirst) {
       // `as <type> name`: type word at 1, name after the type chain.
       std::size_t j = 1;
       if (j < seg.size()) {
         std::string const tw = toLowerChars(seg[j].text());
         if (tw == "string") {
-          bool fixed = j + 1 < seg.size() &&
-                       seg[j + 1].kind == TokenKind::Symbol &&
-                       seg[j + 1].text() == "*";
+          bool const fixed = j + 1 < seg.size() &&
+                             seg[j + 1].kind == TokenKind::Symbol &&
+                             seg[j + 1].text() == "*";
           info.varLenString = !fixed && seg[j].kind == TokenKind::Keyword;
         } else if (seg[j].kind == TokenKind::Keyword && isBuiltinType(tw)) {
           info.builtinType = tw;
@@ -1315,9 +1305,9 @@ private:
       if (depth == 0 && t.kind == TokenKind::Keyword &&
           toLowerChars(t.text()) == "as" && i + 1 < seg.size()) {
         std::string const tw = toLowerChars(seg[i + 1].text());
-        bool fixedStr = i + 2 < seg.size() &&
-                        seg[i + 2].kind == TokenKind::Symbol &&
-                        seg[i + 2].text() == "*";
+        bool const fixedStr = i + 2 < seg.size() &&
+                              seg[i + 2].kind == TokenKind::Symbol &&
+                              seg[i + 2].text() == "*";
         if (tw == "string" && !fixedStr) {
           info.varLenString = true;
         } else if (seg[i + 1].kind == TokenKind::Keyword && isBuiltinType(tw)) {
@@ -1548,13 +1538,10 @@ private:
         // an initializer and a fixed-length string are the negatives.
         if (info.varLenString && info.hasInit && moduleLevel &&
             (head == "static" || isCommon || isExtern || [&] {
-              for (Token const &t : seg) {
-                if (t.kind == TokenKind::Keyword &&
-                    toLowerChars(t.text()) == "shared") {
-                  return true;
-                }
-              }
-              return false;
+              return std::any_of(seg.begin(), seg.end(), [](Token const &t) {
+                return t.kind == TokenKind::Keyword &&
+                       toLowerChars(t.text()) == "shared";
+              });
             }())) {
           emitStatementError(
               info.hasEq ? info.eqTok : info.nameTok,
@@ -1647,11 +1634,10 @@ private:
             redimType = old->typeKey;
           }
           // `redim a(1) as T` defining form: no prior fact, type written.
-          if ((old != nullptr && old->kind == Container::VarFact::Dynamic) ||
-              (!redimType.empty() && info.kind == DeclInfo::Dynamic)) {
-            if (checkRedimEraseUdt(redimType, true, info.nameTok)) {
-              return;
-            }
+          if (((old != nullptr && old->kind == Container::VarFact::Dynamic) ||
+               (!redimType.empty() && info.kind == DeclInfo::Dynamic)) &&
+              checkRedimEraseUdt(redimType, true, info.nameTok)) {
+            return;
           }
         }
       }
@@ -1970,12 +1956,11 @@ private:
     std::size_t asIdx = static_cast<std::size_t>(-1);
     for (std::size_t i = 0; i + 1 < toks.size(); ++i) {
       if (toks[i].kind == TokenKind::Keyword &&
-          toLowerChars(toks[i].text()) == "as") {
+          toLowerChars(toks[i].text()) == "as" &&
+          ((i < nameIdx && i + 1 < nameIdx) || (i > nameIdx))) {
         // Must be on the same side of the name as the type.
-        if ((i < nameIdx && i + 1 < nameIdx) || (i > nameIdx)) {
-          asIdx = i;
-          break;
-        }
+        asIdx = i;
+        break;
       }
     }
     if (asIdx == static_cast<std::size_t>(-1)) {
@@ -2361,12 +2346,10 @@ private:
   // module-level statement (M21 step 3). An active `#if` arm's statements
   // are real module statements; a `#macro` body's are never dispatched.
   bool atModuleLevel() const {
-    for (Block const &b : blocks_) {
-      if (b.kind != BlockKind::PreprocIf && b.kind != BlockKind::PreprocMacro) {
-        return false;
-      }
-    }
-    return true;
+    return std::all_of(blocks_.begin(), blocks_.end(), [](Block const &b) {
+      return b.kind == BlockKind::PreprocIf ||
+             b.kind == BlockKind::PreprocMacro;
+    });
   }
 
   // Begin a module-level executable statement entry at `beg` (M21 step
@@ -2498,11 +2481,13 @@ private:
         }
         if (!containers_.empty() && containers_.back().sym != nullptr) {
           Container::VarFact fact;
-          fact.kind =
-              info.kind == DeclInfo::Dynamic
-                  ? Container::VarFact::Dynamic
-                  : (info.kind == DeclInfo::Fixed ? Container::VarFact::Fixed
-                                                  : Container::VarFact::Scalar);
+          if (info.kind == DeclInfo::Dynamic) {
+            fact.kind = Container::VarFact::Dynamic;
+          } else if (info.kind == DeclInfo::Fixed) {
+            fact.kind = Container::VarFact::Fixed;
+          } else {
+            fact.kind = Container::VarFact::Scalar;
+          }
           fact.varLenString = info.varLenString;
           fact.typeKey = info.typeKey;
           fact.builtinType = info.isPtr ? "" : info.builtinType;
@@ -4063,7 +4048,7 @@ private:
       }
       return i + 1;
     };
-    auto consumeOperand = [&](std::size_t i) -> std::size_t {
+    auto const consumeOperand = [&](std::size_t i) -> std::size_t {
       while (i < toks.size() &&
              ((toks[i].kind == TokenKind::Symbol &&
                (toks[i].text() == "-" || toks[i].text() == "+")) ||
@@ -4227,10 +4212,11 @@ private:
         if (!info || info->isBool) {
           continue;
         }
-        int const bits =
-            (fact->builtinType == "longint" || fact->builtinType == "ulongint")
-                ? 64
-                : (preproc_.isDefined("__FB_64BIT__") ? 64 : 32);
+        int const bits = (fact->builtinType == "longint" ||
+                          fact->builtinType == "ulongint" ||
+                          preproc_.isDefined("__FB_64BIT__"))
+                             ? 64
+                             : 32;
         if (i + 1 >= toks.size()) {
           continue;
         }
@@ -4380,7 +4366,7 @@ private:
         break;
       }
     }
-    auto sliceOf = [&](std::size_t beg, std::size_t end) {
+    auto const sliceOf = [&](std::size_t beg, std::size_t end) {
       return std::vector<Token>(toks.begin() + static_cast<std::ptrdiff_t>(beg),
                                 toks.begin() +
                                     static_cast<std::ptrdiff_t>(end));
@@ -4448,7 +4434,7 @@ private:
     }
     std::uint64_t const u = static_cast<std::uint64_t>(wrapped);
     std::uint64_t const half =
-        bits == 64 ? (1ULL << 63u) : (1ULL << (bitCount - 1));
+        bits == 64 ? (1ULL << 63U) : (1ULL << (bitCount - 1));
     std::int64_t signedVal = 0;
     if (u < half) {
       signedVal = static_cast<std::int64_t>(u);
@@ -4624,7 +4610,7 @@ private:
       }
       segments.push_back(curSeg);
       for (auto const &seg : segments) {
-        if (seg.size() < 1) {
+        if (seg.empty()) {
           continue;
         }
         int d = 0;
@@ -5375,8 +5361,8 @@ private:
       Token const nameTok = lex_.peek(0);
       Token const afterTok = lex_.peek(1);
       if (nameTok.kind == TokenKind::Identifier &&
-          !(afterTok.kind == TokenKind::Symbol &&
-            (afterTok.text() == "." || afterTok.text() == "("))) {
+          (afterTok.kind != TokenKind::Symbol ||
+           (afterTok.text() != "." && afterTok.text() != "("))) {
         blocks_.back().forCounterName = std::string(nameTok.text());
         blocks_.back().forCounterKey = keyFor(nameTok.text());
         blocks_.back().forCounterPlain = true;
@@ -5859,7 +5845,7 @@ private:
     std::vector<Token> entry;
     int depth = 1;
     int paramIndex = 1;
-    auto judgeEntry = [&](std::vector<Token> const &e) {
+    auto const judgeEntry = [&](std::vector<Token> const &e) {
       if (!e.empty()) {
         checkParamModeEntry(e, paramIndex++);
         checkParamDefaultOverflow(e);
@@ -6193,7 +6179,7 @@ private:
               isStdcall = true;
             }
             if (toks[i].kind == TokenKind::Symbol && toks[i].text() == "(") {
-              std::size_t j = i + 1;
+              std::size_t const j = i + 1;
               paramless = j < toks.size() &&
                           toks[j].kind == TokenKind::Symbol &&
                           toks[j].text() == ")";
@@ -6438,7 +6424,7 @@ private:
             kind =
                 classifyLocalDefKind(s.signature, s.name, &typeName, &typeKey);
           }
-          Symbol *psym = addSymbol(std::move(s));
+          Symbol const *const psym = addSymbol(std::move(s));
           if (psym != nullptr && recordAsLocal) {
             recordLocalDef(*psym, kind, typeName, typeKey);
           }
@@ -6555,11 +6541,13 @@ private:
           stmtTypeFirst = true;
         }
         Container::VarFact fact;
-        fact.kind =
-            info.kind == DeclInfo::Dynamic
-                ? Container::VarFact::Dynamic
-                : (info.kind == DeclInfo::Fixed ? Container::VarFact::Fixed
-                                                : Container::VarFact::Scalar);
+        if (info.kind == DeclInfo::Dynamic) {
+          fact.kind = Container::VarFact::Dynamic;
+        } else if (info.kind == DeclInfo::Fixed) {
+          fact.kind = Container::VarFact::Fixed;
+        } else {
+          fact.kind = Container::VarFact::Scalar;
+        }
         if (isCommonHead) {
           fact.kind = Container::VarFact::Dynamic;
         }
@@ -6880,7 +6868,7 @@ private:
       Token segFirst{};
       bool segFirstIsIdent = false;
       int paren = 0;
-      auto emit = [&] {
+      auto const emit = [&] {
         NextSlot s;
         if (!segHasFirst) {
           s.bare = true;
