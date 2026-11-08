@@ -107,20 +107,31 @@ Use the system-installed `clang-format`. If it disagrees with the version
 pinned in CI, tell the user. A version sync is a standalone commit with no
 `CHANGELOG.md` entry.
 
-clang-tidy is on demand, not part of the milestone gate. Recreate the
-throwaway compile database rather than trusting a stale one:
+clang-tidy is part of the milestone gate. Recreate the throwaway compile
+database rather than trusting a stale one:
 
 ```sh
 cmake -S . -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
   -DCMAKE_CXX_COMPILER=clang++
-clang-tidy -p build-tidy --quiet <changed src/*.cpp files>
+clang-tidy -p build-tidy --quiet src/*.cpp
 ```
 
-Bug-class checks are warnings as errors. Keep `src/` zero-diagnostic under
-the baseline when clang-tidy is run. Do not widen suppressions to hide a new
+Re-run over all of `src/`, not just the changed files: a changed-files
+run cannot see a suppression orphaned by code motion. When a diff moves
+or reflows a line that a finding was previously ignored on (e.g. a
+`NOLINTNEXTLINE` whose guarded line was relocated, or a finding that
+moves past its marker), the marker must move with it so it still sits
+immediately above the line it guards. `src/` must read zero-diagnostic
+under the baseline — a finding appearing on a line that merely moved
+counts as new, not as inherited. Do not widen suppressions to hide a new
 bug-class finding. Suppressions record deliberate conventions, each with a
 reason in `.clang-tidy` and `TIDY.md`. After `clang-tidy --fix`, run
 `clang-format -i` over the touched files and review the diff.
+
+Never run `clang-tidy --fix` with `readability-simplify-boolean-expr`
+enabled. Its De Morgan fix-it drops parentheses around negated
+comparisons (`!(a == ".")` becomes `!a == "."`) and broke the build on
+Nov 3, 2026. Findings from that check are fixed by hand only.
 
 ## Versioning
 
