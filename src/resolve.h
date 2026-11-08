@@ -142,6 +142,19 @@ void moduleCodeDiagnostics(ParseResult const &parse, BuildKind kind,
                            std::optional<std::string> const &mainModuleName,
                            bool isMainModule, std::vector<Diagnostic> *out);
 
+// Use-before-declaration diagnostics for one document: a routine call, a
+// type use, or a module-level variable or constant use whose introduction
+// is absent above it (FreeBASIC.md §12, fbc top-down). An introduction is
+// a declaration or definition in this file, or an `#include` above the
+// use whose closure declares the name; include order matters. Diagnose
+// only when an introduction exists to point at, in this file below the
+// use or in a workspace header, so a name introduced nowhere stays silent
+// for the resolve layer to own. `index` and `entry` may be null (single
+// file mode); the include closure is read through them when present.
+std::vector<Diagnostic> declarationOrderDiagnostics(
+    AnalyzedDoc const &doc, std::string const &normalizedPath,
+    WorkspaceIndex const *index, IndexedFile const *entry);
+
 // Duplicate `Public` procedure collisions across one root's include
 // closure: group module-level `Public` `Sub`/`Function`
 // definitions by their link key — uppercased name for plain procedures,

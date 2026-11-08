@@ -26,6 +26,47 @@ history use; they are kept here so an entry can be traced back.
 
 ## [Unreleased]
 
+### 2026-11-08 — M22 complete: fbc declaration-order parity
+
+- **Use before declaration is now diagnosed, fixed, and no longer
+  suggested.** fbc compiles strictly top-down: a routine, type, or
+  module-level variable/constant used above its introduction is
+  `error 42` (routines/variables) or `error 14` (types). The server
+  now reports `use-before-declaration` at each such use (one per use,
+  module level and inside procedures, include order honored), offers
+  a generated `Declare` with the verbatim signature for a routine
+  defined below, a reorder fix for a type (or variable) defined below
+  — never an alias — and an `#include` fix for a header carrying the
+  name, and `visibleSymbols`/completion stop offering a name on lines
+  above its declaration. `FreeBASIC.md` §12 is updated to record the
+  gated behavior in place of the former no-source-order convenience.
+- **Deviations and lessons.** The check lives in `resolve.cpp`
+  (`declarationOrderDiagnostics`), the layer that already enumerates
+  tokens and scopes in source order, and is delivered through
+  `documentDiagnostics` (push and pull) and the code-action published
+  set so a fix keys on the range the publish reports; its pull
+  `resultId` folds the diagnostic messages like the collision map
+  does. Include fixes ride the existing `workspaceFiles` snapshot and
+  the `resolveInclude` seam, so no new session path was plumbed; when
+  the workspace scan finds no header, the provider scans the installed
+  fbc standard include folder (from the root's probed compiler) as a
+  last resort, but only when no in-file fix already answers — scanning
+  it on every request buried the fast fixes. Completion gating is
+  line-based (a cursor on the declaration line still offers the name
+  being declared) rather than pure byte-offset, which the cross-file
+  completion fixture pins. A name introduced nowhere stays silent
+  here so this family never double-reports with the resolve layer's
+  later work.
+- **Tests.** Unit coverage for the diagnostic matrix (module and
+  in-procedure uses, `Declare` after the use still diagnosing the
+  earlier use, type field/pointer/base shapes, include-order above
+  vs below, nowhere-introduced silence, `visibleSymbols` gating),
+  for each fix shape (defaulted-parameter `Declare` kept verbatim,
+  function return type kept, reorder never aliasing, workspace-header
+  include, system-folder fallback with workspace precedence), and
+  `session_integration` pins for the same probed behaviors over the
+  wire, including the multi-file workspace-header offer.
+
 ### 2026-11-08 — M23 complete: fbc parser diagnostics
 
 - **The parser-reachable half of fbc's catalog now reports fbc's own

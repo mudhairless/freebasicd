@@ -9,7 +9,11 @@
 #include "i18n.h"
 #include "language.h"
 #include "lexer.h"
+#include "resolve.h"
 #include "symbols.h"
+
+#include <fstream>
+#include <iterator>
 
 #include <algorithm>
 #include <cstddef>
@@ -448,6 +452,348 @@ std::vector<QuickFix> wrapInModuleConstructor(Diagnostic const &d,
   return {};
 }
 
+bool isRoutineKind(SymbolKind k) {
+  return k == SymbolKind::Sub || k == SymbolKind::Function ||
+         k == SymbolKind::Property;
+}
+bool isTypeKind(SymbolKind k) {
+  return k == SymbolKind::Type || k == SymbolKind::Union ||
+         k == SymbolKind::Enum;
+}
+bool isValueKind(SymbolKind k) {
+  return k == SymbolKind::Dim || k == SymbolKind::Const;
+}
+
+Symbol const *findRootByKey(ParseResult const &parse, std::string const &key,
+                            bool (*pred)(SymbolKind)) {
+  for (Symbol const &r : parse.roots) {
+    if (r.key == key && pred(r.kind)) {
+      return &r;
+    }
+  }
+  return nullptr;
+}
+
+Symbol const *findAnyRootByKey(ParseResult const &parse,
+                               std::string const &key) {
+  for (Symbol const &r : parse.roots) {
+    if (r.key == key && !r.key.empty()) {
+      return &r;
+    }
+    for (Symbol const &c : r.children) {
+      if (c.key == key && !c.key.empty()) {
+        return &c;
+      }
+    }
+  }
+  return nullptr;
+}
+
+bool isHeaderPathStr(std::string const &p) {
+  std::string const ext =
+      toLowerChars(std::filesystem::path(p).extension().string());
+  return ext == ".bi";
+}
+
+bool fileDeclaresKey(std::shared_ptr<IndexedFile const> const &file,
+                     std::string const &key) {
+  if (!file) {
+    return false;
+  }
+  for (Symbol const &r : file->roots) {
+    if (r.key == key && !r.key.empty() &&
+        (isRoutineKind(r.kind) || isTypeKind(r.kind) || isValueKind(r.kind))) {
+      return true;
+    }
+    if (r.kind == SymbolKind::Enum && !r.explicitEnum) {
+      for (Symbol const &c : r.children) {
+        if (c.key == key) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+std::uint32_t insertionOffsetFor(std::string_view content,
+                                 ParseResult const &parse,
+                                 std::uint32_t firstUse) {
+  Symbol const *enclosing = nullptr;
+  std::function<void(std::vector<Symbol> const &)> walk =
+      [&](std::vector<Symbol> const &nodes) {
+        for (Symbol const &n : nodes) {
+          if (n.range.beg <= firstUse && firstUse <= n.range.end) {
+            if ((isRoutineKind(n.kind) || n.kind == SymbolKind::Constructor ||
+                 n.kind == SymbolKind::Destructor ||
+                 n.kind == SymbolKind::Operator) &&
+                (enclosing == nullptr ||
+                 (n.range.end - n.range.beg) <
+                     (enclosing->range.end - enclosing->range.beg))) {
+              enclosing = &n;
+            }
+            walk(n.children);
+          }
+        }
+      };
+  walk(parse.roots);
+  std::uint32_t const anchor =
+      enclosing != nullptr ? enclosing->range.beg : firstUse;
+  return static_cast<std::uint32_t>(lineStartAt(content, anchor));
+}
+
+// `use-before-declaration` -> Declare, reorder, or `#include` above the
+// first use.
+std::vector<QuickFix> fixUseBeforeDeclaration(Diagnostic const &d,
+                                              QuickFixContext const &ctx) {
+  if (ctx.doc == nullptr || d.range.beg >= d.range.end ||
+      d.range.end > ctx.content.size()) {
+    return {};
+  }
+  std::string const name(
+      ctx.content.substr(d.range.beg, d.range.end - d.range.beg));
+  std::string const key = canonicalKey(name, ctx.doc->parse.lang);
+  if (key.empty()) {
+    return {};
+  }
+  std::vector<QuickFix> fixes;
+  std::string const le(lineEnding(ctx.content));
+
+  // First use of the name that is before its in-file introduction.
+  std::uint32_t firstUse = d.range.beg;
+  Symbol const *inFileDecl = findAnyRootByKey(ctx.doc->parse, key);
+  if (inFileDecl != nullptr) {
+    std::uint32_t earliest = d.range.beg;
+    for (Occurrence const &occ : inFileDecl->occurrences) {
+      earliest = std::min(occ.range.beg, earliest);
+    }
+    firstUse = earliest;
+  }
+  std::uint32_t const insertAt =
+      insertionOffsetFor(ctx.content, ctx.doc->parse, firstUse);
+
+  // In-file fixes.
+  Symbol const *routineDecl = findRootByKey(ctx.doc->parse, key, isRoutineKind);
+  if (routineDecl != nullptr && !routineDecl->declOnly &&
+      routineDecl->selection.beg > d.range.beg) {
+    std::string const sig = routineDecl->signature;
+    if (!sig.empty()) {
+      QuickFix fix;
+      // TRANSLATORS: the first %s is the FreeBASIC keyword Declare (passed
+      // as an argument, never translated); the second is the routine name.
+      fix.title = trf("Insert '%s' for '%s'", "Declare", name);
+      fix.code = d.code;
+      fix.diagRange = d.range;
+      std::string text = "Declare " + sig + le;
+      fix.edits.push_back({SourceRange{insertAt, insertAt}, std::move(text)});
+      fixes.push_back(std::move(fix));
+    }
+  } else {
+    Symbol const *typeDecl = findRootByKey(ctx.doc->parse, key, isTypeKind);
+    if (typeDecl != nullptr && typeDecl->selection.beg > d.range.beg) {
+      if (typeDecl->range.beg < ctx.content.size() &&
+          typeDecl->range.end <= ctx.content.size() &&
+          typeDecl->range.end > typeDecl->range.beg) {
+        std::string const block(ctx.content.substr(
+            typeDecl->range.beg, typeDecl->range.end - typeDecl->range.beg));
+        QuickFix fix;
+        // TRANSLATORS: %s is the type name being moved above its first use.
+        fix.title = trf("Move '%s' above its first use", name);
+        fix.code = d.code;
+        fix.diagRange = d.range;
+        std::string insertText = block;
+        if (!insertText.empty() && insertText.back() != '\n') {
+          insertText += le;
+        }
+        fix.edits.push_back({SourceRange{insertAt, insertAt}, insertText});
+        std::uint32_t delEnd = typeDecl->range.end;
+        if (delEnd < ctx.content.size() && ctx.content[delEnd] == '\n') {
+          ++delEnd;
+          if (delEnd > 1 && ctx.content[delEnd - 2] == '\r') {
+            // CRLF already counted via the \n; keep simple.
+          }
+        }
+        fix.edits.push_back({SourceRange{typeDecl->range.beg, delEnd}, ""});
+        fixes.push_back(std::move(fix));
+      }
+    } else {
+      Symbol const *valueDecl = findRootByKey(ctx.doc->parse, key, isValueKind);
+      if (valueDecl != nullptr && valueDecl->selection.beg > d.range.beg) {
+        std::uint32_t lineBeg = static_cast<std::uint32_t>(
+            lineStartAt(ctx.content, valueDecl->selection.beg));
+        std::uint32_t lineEnd = valueDecl->selection.end;
+        while (lineEnd < ctx.content.size() && ctx.content[lineEnd] != '\n') {
+          ++lineEnd;
+        }
+        std::uint32_t delEnd = lineEnd;
+        if (delEnd < ctx.content.size() && ctx.content[delEnd] == '\n') {
+          ++delEnd;
+        }
+        if (lineBeg < ctx.content.size() &&
+            valueDecl->selection.beg >= lineBeg) {
+          std::string const block(
+              ctx.content.substr(lineBeg, delEnd - lineBeg));
+          QuickFix fix;
+          // TRANSLATORS: %s is the variable or constant name being moved.
+          fix.title = trf("Move '%s' above its first use", name);
+          fix.code = d.code;
+          fix.diagRange = d.range;
+          std::string insertText = block;
+          if (!insertText.empty() && insertText.back() != '\n') {
+            insertText += le;
+          }
+          fix.edits.push_back({SourceRange{insertAt, insertAt}, insertText});
+          fix.edits.push_back({SourceRange{lineBeg, delEnd}, ""});
+          fixes.push_back(std::move(fix));
+        }
+      }
+    }
+  }
+
+  // Include fixes: workspace headers first.
+  struct Cand {
+    std::size_t depth;
+    std::string literal;
+    std::string headerPath;
+  };
+  std::vector<Cand> cands;
+  if (ctx.workspaceFiles != nullptr && ctx.documentPath != nullptr &&
+      ctx.resolveInclude) {
+    std::filesystem::path const dir = ctx.documentPath->parent_path();
+    for (auto const &file : *ctx.workspaceFiles) {
+      if (!file || file->path.empty() || !isHeaderPathStr(file->path)) {
+        continue;
+      }
+      if (!fileDeclaresKey(file, key)) {
+        continue;
+      }
+      std::string literal = std::filesystem::path(file->path)
+                                .lexically_relative(dir)
+                                .generic_string();
+      if (literal.empty() || literal == ".") {
+        continue;
+      }
+      if (!ctx.resolveInclude(literal)) {
+        continue;
+      }
+      bool dup = false;
+      for (Cand const &c : cands) {
+        if (c.literal == literal) {
+          dup = true;
+        }
+      }
+      if (dup) {
+        continue;
+      }
+      cands.push_back({static_cast<std::size_t>(
+                           std::count(literal.begin(), literal.end(), '/')),
+                       literal, file->path});
+    }
+  }
+  std::sort(cands.begin(), cands.end(), [](Cand const &a, Cand const &b) {
+    return a.depth != b.depth ? a.depth < b.depth : a.literal < b.literal;
+  });
+  for (std::size_t i = 0; i < cands.size() && i < kMaxIncludeCandidates; ++i) {
+    QuickFix fix;
+    // TRANSLATORS: the first %s is the FreeBASIC keyword Include (passed
+    // as an argument, never translated); the second is the header path.
+    fix.title = trf("%s \"%s\"", "Include", cands[i].literal);
+    fix.code = d.code;
+    fix.diagRange = d.range;
+    std::string text = "#include \"" + cands[i].literal + "\"" + le;
+    fix.edits.push_back({SourceRange{insertAt, insertAt}, std::move(text)});
+    fixes.push_back(std::move(fix));
+  }
+  // System folder fallback, only when the workspace search found nothing
+  // and no in-file fix already answers (scanning the installed headers
+  // on every request that already has a Declare/reorder fix would bury
+  // the fast fixes under a full scan).
+  if (cands.empty() && fixes.empty() && ctx.resolveInclude &&
+      ctx.systemIncludeDir != nullptr && !ctx.systemIncludeDir->empty()) {
+    std::filesystem::path const sysDir = *ctx.systemIncludeDir;
+    bool const haveSys = true;
+    if (haveSys) {
+      std::error_code ec;
+      if (std::filesystem::is_directory(sysDir, ec)) {
+        std::vector<Cand> sysCands;
+        std::filesystem::recursive_directory_iterator it(sysDir, ec);
+        std::filesystem::recursive_directory_iterator const end;
+        for (; !ec && it != end; it.increment(ec)) {
+          std::error_code sec;
+          if (it->is_directory(sec)) {
+            continue;
+          }
+          std::filesystem::path const p = it->path();
+          if (!isHeaderPathStr(p.string())) {
+            continue;
+          }
+          std::ifstream in(p, std::ios::binary);
+          if (!in) {
+            continue;
+          }
+          std::string const content((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+          AnalyzedDoc const headerDoc = analyze(content);
+          bool declares = false;
+          for (Symbol const &r : headerDoc.parse.roots) {
+            if (r.key == key && !r.key.empty()) {
+              declares = true;
+              break;
+            }
+            if (r.kind == SymbolKind::Enum) {
+              for (Symbol const &ch : r.children) {
+                if (ch.key == key) {
+                  declares = true;
+                  break;
+                }
+              }
+              if (declares) {
+                break;
+              }
+            }
+          }
+          if (!declares) {
+            continue;
+          }
+          std::string literal = p.lexically_relative(sysDir).generic_string();
+          if (literal.empty() || literal == ".") {
+            continue;
+          }
+          if (!ctx.resolveInclude(literal)) {
+            continue;
+          }
+          sysCands.push_back({static_cast<std::size_t>(std::count(
+                                  literal.begin(), literal.end(), '/')),
+                              literal, p.string()});
+          if (sysCands.size() >= kMaxIncludeCandidates) {
+            break;
+          }
+        }
+        std::sort(sysCands.begin(), sysCands.end(),
+                  [](Cand const &a, Cand const &b) {
+                    return a.depth != b.depth ? a.depth < b.depth
+                                              : a.literal < b.literal;
+                  });
+        for (std::size_t i = 0;
+             i < sysCands.size() && i < kMaxIncludeCandidates; ++i) {
+          QuickFix fix;
+          // TRANSLATORS: the first %s is the FreeBASIC keyword Include
+          // (passed as an argument, never translated); the second is the
+          // system header path the fix would write.
+          fix.title = trf("%s \"%s\"", "Include", sysCands[i].literal);
+          fix.code = d.code;
+          fix.diagRange = d.range;
+          std::string text = "#include \"" + sysCands[i].literal + "\"" + le;
+          fix.edits.push_back(
+              {SourceRange{insertAt, insertAt}, std::move(text)});
+          fixes.push_back(std::move(fix));
+        }
+      }
+    }
+  }
+  return fixes;
+}
+
 } // namespace
 
 std::vector<QuickFixRegistration> const &quickFixProviders() {
@@ -477,6 +823,9 @@ std::vector<QuickFixRegistration> const &quickFixProviders() {
       // main module — the fix wraps the run in a module
       // constructor, which states the load-time intent on purpose.
       {"module-code-outside-main", wrapInModuleConstructor},
+      // resolve.cpp: a use before its declaration — Declare, reorder, or
+      // `#include` of a header carrying the name above the first use.
+      {"use-before-declaration", fixUseBeforeDeclaration},
   };
   return table;
 }

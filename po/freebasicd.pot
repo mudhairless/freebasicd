@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: freebasicd\n"
 "Report-Msgid-Bugs-To: ebben.feagan@gmail.com\n"
-"POT-Creation-Date: 2026-11-07 18:19-0600\n"
-"PO-Revision-Date: 2026-11-07 18:19-0600\n"
+"POT-Creation-Date: 2026-11-08 17:31-0600\n"
+"PO-Revision-Date: 2026-11-08 17:31-0600\n"
 "Last-Translator: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language-Team: Ebben Feagan <ebben.feagan@gmail.com>\n"
 "Language: \n"
@@ -19,53 +19,77 @@ msgstr ""
 
 #. TRANSLATORS: %s is a FreeBASIC block closer written verbatim
 #. (END SUB, NEXT, WEND, #ENDIF, ...); it is never translated.
-#: src/code_actions.cpp:147
+#: src/code_actions.cpp:151
 #, c-format
 msgid "Insert '%s'"
 msgstr ""
 
 #. TRANSLATORS: %s is an include path the fix would write (e.g.
 #. inc/config.bi), quoted; it is never translated.
-#: src/code_actions.cpp:240
+#: src/code_actions.cpp:244
 #, c-format
 msgid "Change include to \"%s\""
 msgstr ""
 
 #. TRANSLATORS: %s is the member name the fix would write with a trailing
 #. underscore (e.g. `and_`); it is a FreeBASIC identifier, never translated.
-#: src/code_actions.cpp:282
+#: src/code_actions.cpp:286
 #, c-format
 msgid "Rename member to \"%s_\""
 msgstr ""
 
 #. TRANSLATORS: %s is the suffix character (%, &, ! or $); it is never
 #. translated and the placeholder is %s because only %s is substituted.
-#: src/code_actions.cpp:312
+#: src/code_actions.cpp:316
 #, c-format
 msgid "Remove the '%s' suffix"
 msgstr ""
 
 #. TRANSLATORS: the first %s is the FreeBASIC keyword Shared (passed as an
 #. argument, never translated); the second is the variable's name.
-#: src/code_actions.cpp:351
+#: src/code_actions.cpp:355
 #, c-format
 msgid "Add '%s' to '%s'"
 msgstr ""
 
 #. TRANSLATORS: the fix deletes a redundant leading dot from an expression.
-#: src/code_actions.cpp:375
+#: src/code_actions.cpp:379
 #, c-format
 msgid "Remove the redundant leading dot"
 msgstr ""
 
 #. TRANSLATORS: %s is the constructor name the fix would write (e.g.
 #. SecondInit); it is a FreeBASIC identifier, never translated.
-#: src/code_actions.cpp:433
+#: src/code_actions.cpp:437
 #, c-format
 msgid "Wrap in constructor '%s'"
 msgstr ""
 
-#: src/code_actions.cpp:508
+#. TRANSLATORS: the first %s is the FreeBASIC keyword Declare (passed
+#. as an argument, never translated); the second is the routine name.
+#: src/code_actions.cpp:586
+#, c-format
+msgid "Insert '%s' for '%s'"
+msgstr ""
+
+#. TRANSLATORS: %s is the type name being moved above its first use.
+#. TRANSLATORS: %s is the variable or constant name being moved.
+#: src/code_actions.cpp:604 src/code_actions.cpp:641
+#, c-format
+msgid "Move '%s' above its first use"
+msgstr ""
+
+#. TRANSLATORS: the first %s is the FreeBASIC keyword Include (passed
+#. as an argument, never translated); the second is the header path.
+#. TRANSLATORS: the first %s is the FreeBASIC keyword Include
+#. (passed as an argument, never translated); the second is the
+#. system header path the fix would write.
+#: src/code_actions.cpp:702 src/code_actions.cpp:789
+#, c-format
+msgid "%s \"%s\""
+msgstr ""
+
+#: src/code_actions.cpp:868
 #, c-format
 msgid "include file not found: \"%s\""
 msgstr ""
@@ -110,7 +134,7 @@ msgid ""
 "%s: .fbformat overrides freebasicd.toml; its formatting settings are ignored"
 msgstr ""
 
-#: src/parser.cpp:173
+#: src/parser.cpp:322
 #, c-format
 msgid "/// is not a %s comment; use '' for doc comments"
 msgstr ""
@@ -118,272 +142,272 @@ msgstr ""
 #. TRANSLATORS: %s = the proper noun "FreeBASIC" (never
 #. translated); the second %s is an example directive kept
 #. verbatim.
-#: src/parser.cpp:192
+#: src/parser.cpp:341
 #, c-format
 msgid ""
 "bare '$' is not a valid metacommand; %s metacommands are written as "
 "comments, e.g. %s"
 msgstr ""
 
-#: src/parser.cpp:226 src/parser.cpp:2263 src/parser.cpp:2848
-#: src/parser.cpp:2855 src/parser.cpp:5090 src/parser.cpp:6598
-#: src/parser.cpp:6635 src/parser.cpp:6652 src/parser.cpp:6673
+#: src/parser.cpp:375 src/parser.cpp:2389 src/parser.cpp:2974
+#: src/parser.cpp:2981 src/parser.cpp:5400 src/parser.cpp:6912
+#: src/parser.cpp:6949 src/parser.cpp:6966 src/parser.cpp:6987
 #, c-format
 msgid "Expected '%s'"
 msgstr ""
 
-#: src/parser.cpp:338
+#: src/parser.cpp:487
 msgid "unterminated string literal"
 msgstr ""
 
-#: src/parser.cpp:354
+#: src/parser.cpp:503
 #, c-format
 msgid "Suffix ignored in '%s'"
 msgstr ""
 
-#: src/parser.cpp:381
+#: src/parser.cpp:530
 #, c-format
 msgid "dialect '%s' is not supported yet; parsing in '%s' mode"
 msgstr ""
 
-#: src/parser.cpp:684 src/parser.cpp:757
+#: src/parser.cpp:823 src/parser.cpp:896
 #, c-format
 msgid "Expected %s"
 msgstr ""
 
-#: src/parser.cpp:691
+#: src/parser.cpp:830
 #, c-format
 msgid "Expected %s, found '%s'"
 msgstr ""
 
-#: src/parser.cpp:729
+#: src/parser.cpp:868
 msgid "Syntax error"
 msgstr ""
 
-#: src/parser.cpp:731
+#: src/parser.cpp:870
 #, c-format
 msgid "Syntax error, found '%s'"
 msgstr ""
 
-#: src/parser.cpp:766 src/parser.cpp:4556
+#: src/parser.cpp:905 src/parser.cpp:4866
 msgid "Expected constant"
 msgstr ""
 
-#: src/parser.cpp:768
+#: src/parser.cpp:907
 #, c-format
 msgid "Expected constant, %s"
 msgstr ""
 
-#: src/parser.cpp:779
+#: src/parser.cpp:918
 msgid "Too many expressions"
 msgstr ""
 
-#: src/parser.cpp:1410 src/parser.cpp:1431
+#: src/parser.cpp:1550 src/parser.cpp:1571
 #, c-format
 msgid "%s on UDT with non-%s constructor"
 msgstr ""
 
-#: src/parser.cpp:1416 src/parser.cpp:1437
+#: src/parser.cpp:1556 src/parser.cpp:1577
 #, c-format
 msgid "%s on UDT with non-%s destructor"
 msgstr ""
 
-#: src/parser.cpp:1423 src/parser.cpp:1444
+#: src/parser.cpp:1563 src/parser.cpp:1584
 #, c-format
 msgid "%s on UDT with non-parameterless default constructor"
 msgstr ""
 
-#: src/parser.cpp:1490 src/parser.cpp:2484
+#: src/parser.cpp:1630 src/parser.cpp:2608
 msgid ""
 "'...' ellipsis upper bound given for array field (this is not supported)"
 msgstr ""
 
-#: src/parser.cpp:1498 src/parser.cpp:2490
+#: src/parser.cpp:1638 src/parser.cpp:2614
 #, c-format
 msgid "variable-length arrays cannot be part of %s or nested %s"
 msgstr ""
 
-#: src/parser.cpp:1508
+#: src/parser.cpp:1648
 #, c-format
 msgid "%s or %s dynamic arrays cannot have initial bounds"
 msgstr ""
 
-#: src/parser.cpp:1527 src/parser.cpp:1601 src/parser.cpp:1626
+#: src/parser.cpp:1668 src/parser.cpp:1739 src/parser.cpp:1764
 #, c-format
 msgid "Expected var-len array, %s"
 msgstr ""
 
-#: src/parser.cpp:1538
+#: src/parser.cpp:1678
 msgid "variable-length arrays cannot be initialized"
 msgstr ""
 
-#: src/parser.cpp:1557
+#: src/parser.cpp:1694
 msgid "variable-length strings cannot be initialized"
 msgstr ""
 
-#: src/parser.cpp:1609 src/parser.cpp:1635
+#: src/parser.cpp:1746 src/parser.cpp:1772
 msgid ""
 "'...' ellipsis upper bound given for dynamic array (this is not supported)"
 msgstr ""
 
-#: src/parser.cpp:1746 src/parser.cpp:1762
+#: src/parser.cpp:1879 src/parser.cpp:1895
 msgid "Expected file number expression"
 msgstr ""
 
-#: src/parser.cpp:1854 src/parser.cpp:6326
+#: src/parser.cpp:1987 src/parser.cpp:6638
 #, c-format
 msgid "duplicate definition: '%s'"
 msgstr ""
 
-#: src/parser.cpp:1913
+#: src/parser.cpp:2046
 #, c-format
 msgid ""
 "'%s' is a reserved word and cannot be a field name in a type with member "
 "functions"
 msgstr ""
 
-#: src/parser.cpp:2054 src/parser.cpp:7009
+#: src/parser.cpp:2186 src/parser.cpp:7324
 #, c-format
 msgid "illegal inside functions in '%s'"
 msgstr ""
 
-#: src/parser.cpp:2068 src/parser.cpp:2082 src/parser.cpp:4598
-#: src/parser.cpp:4676
+#: src/parser.cpp:2200 src/parser.cpp:2214 src/parser.cpp:4908
+#: src/parser.cpp:4986
 #, c-format
 msgid "illegal inside a compound statement or scoped block in '%s'"
 msgstr ""
 
-#: src/parser.cpp:2201 src/parser.cpp:2209
+#: src/parser.cpp:2335
 #, c-format
 msgid ""
 "branch crossing local array, var-len string or object definition, to label: "
 "%s"
 msgstr ""
 
-#: src/parser.cpp:2216
+#: src/parser.cpp:2342
 #, c-format
 msgid "branch crossing local variable definition, to label: %s, variable: %s"
 msgstr ""
 
-#: src/parser.cpp:2304
+#: src/parser.cpp:2430
 #, c-format
 msgid "'%s' is a reserved word and cannot be an enum member name"
 msgstr ""
 
-#: src/parser.cpp:2543
+#: src/parser.cpp:2669
 msgid "expected a newline after '_'"
 msgstr ""
 
-#: src/parser.cpp:2672 src/parser.cpp:6430
+#: src/parser.cpp:2798 src/parser.cpp:6742
 #, c-format
 msgid "'%s' is a reserved word and cannot be a field name"
 msgstr ""
 
-#: src/parser.cpp:2809
+#: src/parser.cpp:2935
 #, c-format
 msgid "statement in between %s and first %s"
 msgstr ""
 
-#: src/parser.cpp:2837
+#: src/parser.cpp:2963
 #, c-format
 msgid "illegal outside a %s compound statement"
 msgstr ""
 
-#: src/parser.cpp:2862
+#: src/parser.cpp:2988
 #, c-format
 msgid "no outer %s compound statement found"
 msgstr ""
 
-#: src/parser.cpp:2947
+#: src/parser.cpp:3073
 #, c-format
 msgid "expected %s after %s, found '%s'"
 msgstr ""
 
-#: src/parser.cpp:2951
+#: src/parser.cpp:3077
 #, c-format
 msgid "expected %s after %s"
 msgstr ""
 
-#: src/parser.cpp:3543
+#: src/parser.cpp:3770
 msgid "Overflow in constant conversion"
 msgstr ""
 
-#: src/parser.cpp:3794
+#: src/parser.cpp:4049
 #, c-format
 msgid "No explicit %s or %s, at parameter %s"
 msgstr ""
 
-#: src/parser.cpp:4116
+#: src/parser.cpp:4386
 msgid "Shift value greater than or equal to number of bits in data type"
 msgstr ""
 
-#: src/parser.cpp:4402
+#: src/parser.cpp:4704
 #, c-format
 msgid "%s counter variable is unable to exceed limit value"
 msgstr ""
 
-#: src/parser.cpp:4464
+#: src/parser.cpp:4774
 #, c-format
 msgid "invalid %s range, start value is greater than the end value"
 msgstr ""
 
-#: src/parser.cpp:4781
+#: src/parser.cpp:5091
 #, c-format
 msgid "The %s attributes are not allowed with %s"
 msgstr ""
 
-#: src/parser.cpp:4922 src/parser.cpp:4963 src/parser.cpp:6621
-#: src/parser.cpp:6702 src/parser.cpp:6827 src/parser.cpp:6990
-#: src/parser.cpp:6999 src/parser.cpp:7034
+#: src/parser.cpp:5232 src/parser.cpp:5272 src/parser.cpp:6935
+#: src/parser.cpp:7016 src/parser.cpp:7142 src/parser.cpp:7305
+#: src/parser.cpp:7314 src/parser.cpp:7349
 #, c-format
 msgid "%s without %s"
 msgstr ""
 
-#: src/parser.cpp:4937
+#: src/parser.cpp:5247
 #, c-format
 msgid "'%s' statement found directly after multi-line '%s'"
 msgstr ""
 
-#: src/parser.cpp:5545
+#: src/parser.cpp:5856
 #, c-format
 msgid "a module %s cannot take parameters"
 msgstr ""
 
-#: src/parser.cpp:5554
+#: src/parser.cpp:5865
 msgid "invalid priority attribute; expected 101 to 65535"
 msgstr ""
 
-#: src/parser.cpp:5572
+#: src/parser.cpp:5883
 #, c-format
 msgid "a module %s cannot be exported"
 msgstr ""
 
-#: src/parser.cpp:5578
+#: src/parser.cpp:5889
 #, c-format
 msgid "Expected end of line after a module %s"
 msgstr ""
 
-#: src/parser.cpp:5588
+#: src/parser.cpp:5899
 #, c-format
 msgid "a non-static member procedure cannot be a module %s"
 msgstr ""
 
-#: src/parser.cpp:6207
+#: src/parser.cpp:6519
 #, c-format
 msgid "'%s' is not allowed on a declaration line"
 msgstr ""
 
-#: src/parser.cpp:6852
+#: src/parser.cpp:7167
 #, c-format
 msgid "%s variable name mismatch: expected '%s', found '%s'"
 msgstr ""
 
-#: src/parser.cpp:6860
+#: src/parser.cpp:7175
 #, c-format
 msgid "variable following %s is meaningless: '%s'"
 msgstr ""
 
-#: src/parser.cpp:7020
+#: src/parser.cpp:7335
 msgid "#cmdline ignored"
 msgstr ""
 
@@ -405,12 +429,12 @@ msgid ""
 "procedure"
 msgstr ""
 
-#: src/resolve.cpp:755
+#: src/resolve.cpp:759
 #, c-format
 msgid "'.%s' in typeof requires a %s module-level variable"
 msgstr ""
 
-#: src/resolve.cpp:828
+#: src/resolve.cpp:832
 #, c-format
 msgid "'.%s' requires a %s module-level variable"
 msgstr ""
@@ -418,7 +442,7 @@ msgstr ""
 #. TRANSLATORS: a convention warning. An `Extern` declaration — a
 #. multi-module variable or an `Extern "C"` block — is valid FreeBASIC in a
 #. source module, but belongs in a shared header (.bi).
-#: src/resolve.cpp:871
+#: src/resolve.cpp:875
 #, c-format
 msgid "externs belong in a shared header, not a source module"
 msgstr ""
@@ -444,94 +468,104 @@ msgstr ""
 msgid "duplicate public procedure '%s' also defined in %s"
 msgstr ""
 
-#: src/session.cpp:1346
+#: src/resolve.cpp:1348
+#, c-format
+msgid "Expected identifier, found '%s'"
+msgstr ""
+
+#: src/resolve.cpp:1350
+#, c-format
+msgid "Variable not declared, %s"
+msgstr ""
+
+#: src/session.cpp:1377
 #, c-format
 msgid ""
 "%s/freebasicd.toml: suppress entry \"%s\" should be \"%s\"; remove the fbc "
 "code"
 msgstr ""
 
-#: src/session.cpp:1352
+#: src/session.cpp:1383
 #, c-format
 msgid "%s/freebasicd.toml: unknown build.kind \"%s\"; using \"exe\""
 msgstr ""
 
-#: src/session.cpp:1358
+#: src/session.cpp:1389
 #, c-format
 msgid "%s/freebasicd.toml: %s has the wrong type; keeping its default"
 msgstr ""
 
-#: src/session.cpp:1365
+#: src/session.cpp:1396
 #, c-format
 msgid ""
 "%s/freebasicd.toml: build.main is only meaningful for build.kind = \"exe\"; "
 "ignoring \"%s\""
 msgstr ""
 
-#: src/session.cpp:1372
+#: src/session.cpp:1403
 #, c-format
 msgid ""
 "%s/freebasicd.toml: build.main names no source file in this workspace: \"%s\""
 msgstr ""
 
-#: src/session.cpp:1391
+#: src/session.cpp:1422
 #, c-format
 msgid "%s/freebasicd.toml is not valid TOML; keeping defaults"
 msgstr ""
 
-#: src/session.cpp:1407
+#: src/session.cpp:1438
 #, c-format
 msgid ""
 "%s/freebasicd.toml: fbc.path \"%s\" is not a runnable compiler; version "
 "unknown, so no version filtering"
 msgstr ""
 
-#: src/session.cpp:1413
+#: src/session.cpp:1444
 #, c-format
 msgid "%s: no fbc on PATH; version unknown, so no version filtering"
 msgstr ""
 
-#: src/session.cpp:1421
+#: src/session.cpp:1452
 #, c-format
 msgid "%s: using fbc %s (version %s)"
 msgstr ""
 
-#: src/session.cpp:1427
+#: src/session.cpp:1458
 #, c-format
 msgid ""
 "%s: using fbc %s; its -version output named no version, so no version "
 "filtering"
 msgstr ""
 
-#: src/session.cpp:1451
+#: src/session.cpp:1482
 #, c-format
 msgid "workspace root: %s"
 msgstr ""
 
-#: src/session.cpp:1477
+#: src/session.cpp:1508
 msgid "version-control marker"
 msgstr ""
 
-#: src/session.cpp:1480
+#: src/session.cpp:1511
 #, c-format
 msgid "config file %s"
 msgstr ""
 
-#: src/session.cpp:1483
+#: src/session.cpp:1514
 msgid "source/include directory"
 msgstr ""
 
-#: src/session.cpp:1492
+#: src/session.cpp:1523
 #, c-format
 msgid "workspace root %s (detected via %s; no client root)"
 msgstr ""
 
-#: src/session.cpp:1497
+#: src/session.cpp:1528
 #, c-format
 msgid "workspace root %s (detected via %s; client root %s)"
 msgstr ""
 
-#: src/session.cpp:2010
+#: src/session.cpp:2041
 #, c-format
 msgid ""
 "workspace root %s has no version-control marker or config file; index scope "

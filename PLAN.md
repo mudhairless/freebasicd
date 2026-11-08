@@ -38,8 +38,8 @@
   |-----------|--------|
   | M17 — FreeBASIC formatter (wave 2 complete 2026-11-02; summary in CHANGELOG.md) | done |
   | M21 — module model, constructors, and fbc's codes (complete 2026-11-06; summary in CHANGELOG.md) | done |
-  | M18 — public release: editor setup docs, first tag | blocked on M22, M24, and the VS Code extension |
-  | M22 — fbc declaration-order parity: use-before-declaration | next |
+  | M18 — public release: editor setup docs, first tag | blocked on M24 and the VS Code extension |
+  | M22 — fbc declaration-order parity: use-before-declaration (complete 2026-11-08; summary in CHANGELOG.md) | done |
   | M23 — fbc parser diagnostics: statements, placement, warnings (complete 2026-11-08; summary in CHANGELOG.md) | done |
   | M24 — resolve-layer type model + fbc semantic diagnostics (backlog) | backlog |
   | M25 — include-point parsing: the closure joins the name view (backlog) | backlog |
@@ -456,61 +456,7 @@
   goes to [`CHANGELOG.md`](CHANGELOG.md) and its sketch is deleted here. Commits
   happen per milestone (AGENTS.md).
 
-### M22 — fbc declaration-order parity: use-before-declaration
-
-fbc compiles strictly top-down; ours resolves order-insensitively (FreeBASIC.md
-§12: "no source-order gating at module level"), so a name we happily resolve can
-be invisible to fbc at the same point in the file. Gates M18 (added to the
-gate 2026-11-06): detect it, diagnose it, fix it, and stop suggesting it.
-
-**Probed at fbc 1.10.2** (the facts any implementation and its tests must match):
-
-- Calling a `Sub`/`Function` whose `Declare` or definition appears later in the
-  same file is `error 42: Variable not declared, <name>` — at module level *and*
-  inside a procedure body (mutual recursion needs the `Declare`). The `Declare`
-  must sit **above the first use**: one placed after a module-level use leaves
-  the earlier use still `error 42`.
-- `Declare Sub helper(a As Integer = 5)` is legal — defaults belong in the
-  `Declare`. A `Declare` omitting a default breaks the calls the definition
-  allows (`helper()` → `error 1: Argument count mismatch`), so the generated
-  `Declare` copies the signature **verbatim**: param modifiers (`ByRef`/`ByVal`)
-  and defaults, plus `As <rettype>` for a `Function`.
-- **A type has no fbc-legal top-of-file forward reference.** `Dim As T`, a value
-  field, a *pointer* field (`p As T Ptr` with `T` undeclared), and a base type
-  all error 14 before `T`'s definition — and the alias idea (`type MyType_ as
-  MyType` at the top) does **not** fix an early `Dim x As MyType`: the alias
-  binds a new name, it does not pre-declare the aliased one (probed: the early
-  `Dim` still errors 14 with the alias above it). The honest type fixes are
-  reordering (move the definition above the first use) or an include — never the
-  alias, which would teach users something that does not compile.
-
-**Shape** (mirrors M12/M21):
-
-- Diagnostic at each use (routine, type, or module-level var/const) whose
-  introduction — a `Declare`, a definition, or an `#include` preceding the use —
-  is absent above it (include *order* matters too: an `#include` at line N makes
-  its contents visible only after N). Reuse fbc's numbers from M21's generated
-  catalog (`error 42` / `error 14`) once that lands; our own codes until then.
-- Quickfix through the M12 provider table (`quickFixProviders`: one function +
-  one row, no `session.cpp`): for a routine, insert `Declare Sub/Function
-  <verbatim signature>` above the first use. If the name is declared or defined
-  in a header inside the project's include closure, offer `#include` of that
-  header instead — the documented cross-file fix (FreeBASIC.md §9: a header
-  carrying the `Declare`), through the same `resolveInclude` seam the
-  missing-include fix uses.
-- Completion/`visibleSymbols` stop offering a name while the cursor is above its
-  declaration in the same file. This deliberately removes part of the §12
-  "no source-order gating" convenience — update that divergence's text when it
-  ships.
-- New messages through `fblang::trf` and `po/freebasicd.pot` regeneration
-  (`docs/development/architecture.md`, Message catalogs).
-
-**Acceptance**
-
-- `session_integration` pins the probed behaviors: a `declare` after the use
-  still diagnoses the earlier use; the generated `Declare` for a defaulted param
-  keeps the default; an early `Dim As T` offers reorder/include, never an alias.
-- `ctest` green, changed files clang-format clean.
+### M22 — fbc declaration-order parity: use-before-declaration — complete 2026-11-08; summary in CHANGELOG.md
 
 ### M24 — Resolve-layer type model + fbc semantic diagnostics (backlog)
 
@@ -532,9 +478,9 @@ warnings (`1–5`, `10`, `13`, `40–43`, `49`).
   concatenates with the parse diagnostics) so the parse cache and the resolve
   pass stay separable — the index only parses.
 - **The milestone fbc's `error 42` output for "use before declaration" (M22)
-  depends on.** M22 ships the declaration-order diagnostic; M24 is the model
-  that makes the rest of the semantic set honest, so schedule it with M22 in
-  view.
+  depended on.** M22 shipped the declaration-order diagnostic (complete
+  2026-11-08); M24 is the model that makes the rest of the semantic set
+  honest, so schedule it with M22 in view.
 - The semantic `warnings/` corpora are imported as goldens, not compiled
   against the external compiler at test time.
 
@@ -552,7 +498,7 @@ until a member walk reaches it, and the M21 gate family reports declarations
 the compiler sees through an include (the extern-in-`.bi` gap, §12.29). This
 milestone makes the name view closure-aware and delivers included-file
 diagnostics on both deliveries. **Ordering vs M22/M24 deliberately undecided:**
-M25 supplies the include-point visibility M22's include-order rule needs, and
+M25 supplies the include-point visibility M22's include-order rule needed, and
 M24's resolve model (currently "the index only parses") would want it either
 before or alongside; both orders are workable.
 
@@ -748,12 +694,11 @@ This milestone does **not** gate M18.
 
 ### M18 — Public release: first tag
 
-**Gated on M22 and M24**: the initial release bar is parity with fbc
+**Gated on M24**: the initial release bar is parity with fbc
 diagnostics (decided 2026-11-02; M22 added to the gate 2026-11-06). M21
 (complete 2026-11-06) delivered the module model and fbc's numbers for its
 covered set, and M23 (complete 2026-11-08) the parser-reachable statement,
-placement, and warning families; M22 use-before-declaration parity and M24
-the resolve-layer semantic set are what remain of the parity the tag
+placement, and warning families; the resolve-layer semantic set (M24) is what remains of the parity the tag
 claims. Shipping earlier, with the module model
 documented but undetected and diagnostic numbers that do not match the
 compiler they stand in for, would make the release the moment those become

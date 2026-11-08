@@ -646,6 +646,19 @@ void appendModuleCodeDiagnostics(std::string_view content,
 using PublicProcedureCollisions =
     std::map<std::string, std::vector<fblang::Diagnostic>>;
 
+void appendDeclarationOrderDiagnostics(
+    std::string_view content, std::vector<fblang::Diagnostic> const *orderDiags,
+    DiagnosticsGate const &gate, std::vector<lsDiagnostic> *out) {
+  if (orderDiags == nullptr) {
+    return;
+  }
+  for (fblang::Diagnostic const &d : *orderDiags) {
+    if (std::optional<lsDiagnostic> ls = gatedDiagnostic(content, d, gate)) {
+      out->push_back(std::move(*ls));
+    }
+  }
+}
+
 // The duplicate-public-procedure errors this file carries:
 // cross-file, so the collision set is computed from the index snapshot the
 // caller holds and passed in as the map resolve.cpp built. Gated like
@@ -680,16 +693,18 @@ void appendPublicProcedureDiagnostics(
 // bytes — the rule ("the fix keys on the range the publish reports")
 // extended to the pull model, and the gate ("the level the config set is
 // the level the wire answers").
-std::vector<lsDiagnostic>
-documentDiagnostics(std::string_view content, fblang::AnalyzedDoc const &doc,
-                    fblang::IndexedFile const *entry,
-                    DiagnosticsGate const &gate, std::string_view path,
-                    PublicProcedureCollisions const *collisions = nullptr) {
+std::vector<lsDiagnostic> documentDiagnostics(
+    std::string_view content, fblang::AnalyzedDoc const &doc,
+    fblang::IndexedFile const *entry, DiagnosticsGate const &gate,
+    std::string_view path,
+    PublicProcedureCollisions const *collisions = nullptr,
+    std::vector<fblang::Diagnostic> const *orderDiags = nullptr) {
   std::vector<lsDiagnostic> diags =
       convertDiagnostics(content, doc.parse, gate);
   appendExternPlacementDiagnostics(content, path, doc, gate, &diags);
   appendModuleCodeDiagnostics(content, path, doc, gate, &diags);
   appendPublicProcedureDiagnostics(content, path, collisions, gate, &diags);
+  appendDeclarationOrderDiagnostics(content, orderDiags, gate, &diags);
   if (entry != nullptr) {
     appendIncludeDiagnostics(content, *entry, gate, &diags);
   }
@@ -721,10 +736,11 @@ constexpr std::uint64_t kResultIdBuildKindMarker = 0x2bULL;
 constexpr std::uint64_t kResultIdBuildMainMarker = 0x42ULL;
 constexpr std::uint64_t kResultIdCollisionMarker = 0x77ULL;
 
-std::string
-diagnosticsResultId(std::string_view content, fblang::IndexedFile const *entry,
-                    DiagnosticsGate const &gate, std::string_view path,
-                    PublicProcedureCollisions const *collisions = nullptr) {
+std::string diagnosticsResultId(
+    std::string_view content, fblang::IndexedFile const *entry,
+    DiagnosticsGate const &gate, std::string_view path,
+    PublicProcedureCollisions const *collisions = nullptr,
+    std::vector<fblang::Diagnostic> const *orderDiags = nullptr) {
   std::uint64_t hash = fblang::AnalysisCache::hashContent(content);
   if (isHeaderFile(path)) {
     // The extern-placement lint does not fire in a `.bi`: two documents whose
@@ -804,6 +820,19 @@ diagnosticsResultId(std::string_view content, fblang::IndexedFile const *entry,
         hash ^= static_cast<std::uint64_t>(d.range.end + 1) *
                 kResultIdCollisionMarker;
       }
+    }
+  }
+  if (orderDiags != nullptr && !orderDiags->empty()) {
+    hash = diagnosticsFnv("\x1f"
+                          "use-before-declaration",
+                          hash);
+    for (fblang::Diagnostic const &d : *orderDiags) {
+      hash = diagnosticsFnv(d.message, hash);
+      hash ^= kResultIdCollisionMarker;
+      hash ^= static_cast<std::uint64_t>(d.range.beg + 1) *
+              kResultIdCollisionMarker;
+      hash ^= static_cast<std::uint64_t>(d.range.end + 1) *
+              kResultIdCollisionMarker;
     }
   }
   char buf[32];
@@ -2470,6 +2499,14 @@ void FreeBasicServer::reparseAndPublish(
                                        &diags);
     }
   }
+  {
+    std::shared_ptr<fblang::IndexedFile const> const liveEntry =
+        index ? index->fileAt(normPath) : nullptr;
+    std::vector<fblang::Diagnostic> const orderDiags =
+        fblang::declarationOrderDiagnostics(
+            doc, normPath, index ? index.get() : nullptr, liveEntry.get());
+    appendDeclarationOrderDiagnostics(content, &orderDiags, gate, &diags);
+  }
 
   if (pullDiagnostics_) {
     // Pull mode: the client owns the publish schedule — the index entry just
@@ -3918,6 +3955,14 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
                              &modCode);
     published.insert(published.end(), modCode.begin(), modCode.end());
   }
+  {
+    std::shared_ptr<fblang::IndexedFile const> const liveEntry =
+        index ? index->fileAt(normPath) : nullptr;
+    std::vector<fblang::Diagnostic> const orderDiags =
+        fblang::declarationOrderDiagnostics(
+            doc, normPath, index ? index.get() : nullptr, liveEntry.get());
+    published.insert(published.end(), orderDiags.begin(), orderDiags.end());
+  }
 
   // One snapshot for the whole reply: a fix provider may mine it for candidate
   // targets, and a concurrent folder add/remove cannot pull the vector a
@@ -3931,6 +3976,9 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
   ctx.content = content;
   ctx.doc = &doc;
   ctx.documentPath = &documentPath;
+  std::filesystem::path const sysDir =
+      index ? index->systemIncludeDir() : fblang::defaultSystemIncludeDir();
+  ctx.systemIncludeDir = &sysDir;
   if (index) {
     ctx.workspaceFiles = &files;
     // The document's own include-resolution seam, so a candidate literal is
@@ -3939,6 +3987,11 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
       return fblang::resolveIncludeTarget(literal, path, index->root(),
                                           index->systemIncludeDir(),
                                           index->includeDirs());
+    };
+  } else {
+    ctx.resolveInclude = [&path, &sysDir](std::string const &literal) {
+      return fblang::resolveIncludeTarget(
+          literal, path, std::filesystem::path(path).parent_path(), sysDir);
     };
   }
 
@@ -4539,8 +4592,11 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
   DiagnosticsGate const gate =
       gateFor(settingsForDocument(normPath),
               index ? index->fbcVersion() : std::nullopt);
-  std::string const resultId = diagnosticsResultId(dc->content, entry.get(),
-                                                   gate, normPath, &collisions);
+  std::vector<fblang::Diagnostic> const orderDiags =
+      fblang::declarationOrderDiagnostics(
+          dc->analysis, normPath, index ? index.get() : nullptr, entry.get());
+  std::string const resultId = diagnosticsResultId(
+      dc->content, entry.get(), gate, normPath, &collisions, &orderDiags);
 
   // The client's previousResultId names the report it already holds: when it
   // still matches the current one, answer `unchanged` (kind + resultId only)
@@ -4554,8 +4610,9 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
 
   rsp.result.first->resultId.emplace(resultId);
   if (on) {
-    rsp.result.first->items = documentDiagnostics(
-        dc->content, dc->analysis, entry.get(), gate, normPath, &collisions);
+    rsp.result.first->items =
+        documentDiagnostics(dc->content, dc->analysis, entry.get(), gate,
+                            normPath, &collisions, &orderDiags);
   }
 
   // relatedDocuments: the include closure, what `interFileDependencies`
@@ -4575,14 +4632,17 @@ FreeBasicServer::onDocumentDiagnostic(td_diagnostic::request const &req) {
           index->fileAt(relatedPath);
       DiagnosticsGate const relatedGate =
           gateFor(settingsForDocument(relatedPath), index->fbcVersion());
+      std::vector<fblang::Diagnostic> const relatedOrder =
+          fblang::declarationOrderDiagnostics(related->analysis, relatedPath,
+                                              index.get(), relatedEntry.get());
       RelatedDocumentDiagnosticReport report;
       report.resultId.emplace(
           diagnosticsResultId(related->content, relatedEntry.get(), relatedGate,
-                              relatedPath, &collisions));
+                              relatedPath, &collisions, &relatedOrder));
       if (relatedGate.on) {
-        report.items = documentDiagnostics(related->content, related->analysis,
-                                           relatedEntry.get(), relatedGate,
-                                           relatedPath, &collisions);
+        report.items = documentDiagnostics(
+            related->content, related->analysis, relatedEntry.get(),
+            relatedGate, relatedPath, &collisions, &relatedOrder);
       }
       if (!rsp.result.first->relatedDocuments) {
         rsp.result.first->relatedDocuments.emplace();
@@ -4624,8 +4684,12 @@ workspace_diagnostic::response FreeBasicServer::onWorkspaceDiagnostic(
       }
       DiagnosticsGate const gate =
           gateFor(settingsForDocument(entry->path), index->fbcVersion());
-      std::string const resultId = diagnosticsResultId(
-          dc->content, entry.get(), gate, entry->path, &collisions);
+      std::vector<fblang::Diagnostic> const orderDiags =
+          fblang::declarationOrderDiagnostics(dc->analysis, entry->path,
+                                              index.get(), entry.get());
+      std::string const resultId =
+          diagnosticsResultId(dc->content, entry.get(), gate, entry->path,
+                              &collisions, &orderDiags);
       lsDocumentUri const uri(AbsolutePath(entry->path));
       auto const known = previous.find(uri.raw_uri_);
       if (known == previous.end()) {
@@ -4634,7 +4698,7 @@ workspace_diagnostic::response FreeBasicServer::onWorkspaceDiagnostic(
         }
         std::vector<lsDiagnostic> items =
             documentDiagnostics(dc->content, dc->analysis, entry.get(), gate,
-                                entry->path, &collisions);
+                                entry->path, &collisions, &orderDiags);
         if (items.empty()) {
           continue; // nothing new to surface for a file never reported
         }
@@ -4659,7 +4723,7 @@ workspace_diagnostic::response FreeBasicServer::onWorkspaceDiagnostic(
       if (gate.on) {
         doc.report.first->items =
             documentDiagnostics(dc->content, dc->analysis, entry.get(), gate,
-                                entry->path, &collisions);
+                                entry->path, &collisions, &orderDiags);
       }
       // Open buffers carry the wire version so the client can correlate the
       // report with the document generation it displayed; disk files have

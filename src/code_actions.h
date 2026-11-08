@@ -59,6 +59,12 @@ struct QuickFixContext {
   // offers a literal this callback accepts is correct by construction: the
   // next publish resolves the edge it edits and the diagnostic is gone.
   std::function<std::optional<std::string>(std::string const &)> resolveInclude;
+
+  // The installed fbc standard include folder, when the session knows it
+  // (from the root's configured compiler). A provider scans it only when
+  // the workspace search found no header, so a system header is offered
+  // only as a last resort. Null when no compiler was probed.
+  std::filesystem::path const *systemIncludeDir = nullptr;
 };
 
 // Answers one diagnostic; returns the fixes it offers, best first.

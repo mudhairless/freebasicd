@@ -1157,6 +1157,203 @@ AnalyzedDoc analyze(std::string_view source) {
   return doc;
 }
 
+std::vector<Diagnostic> declarationOrderDiagnostics(
+    AnalyzedDoc const &doc, std::string const &normalizedPath,
+    WorkspaceIndex const *index, IndexedFile const *entry) {
+  std::vector<Diagnostic> out;
+  ParseResult const &parse = doc.parse;
+  // Include edges with a resolved target, in source order, for order checks.
+  std::vector<IncludeEdge> edges;
+  if (entry != nullptr) {
+    edges = entry->includes;
+  } else if (index != nullptr) {
+    std::shared_ptr<IndexedFile const> const live =
+        index->fileAt(normalizedPath);
+    if (live) {
+      edges = live->includes;
+    }
+  }
+  // Workspace header roots by key: `.bi` files only, excluding this file.
+  struct HeaderCand {
+    std::string filePath;
+    Symbol const *decl = nullptr;
+  };
+  std::vector<std::shared_ptr<IndexedFile const>> snapshot;
+  if (index != nullptr) {
+    snapshot = index->snapshot();
+  }
+  auto isHeaderPath = [](std::string const &p) {
+    std::string const ext =
+        toLowerChars(std::filesystem::path(p).extension().string());
+    return ext == ".bi";
+  };
+  auto const headerCandidatesFor = [&](std::string const &key, bool gated) {
+    std::vector<HeaderCand> cands;
+    for (auto const &file : snapshot) {
+      if (!file || file->path == normalizedPath || !isHeaderPath(file->path)) {
+        continue;
+      }
+      for (Symbol const *c : moduleLevelCandidates(file->roots)) {
+        if (c->key != key) {
+          continue;
+        }
+        if (gated && c->kind == SymbolKind::Dim && !c->shared) {
+          continue;
+        }
+        cands.push_back(HeaderCand{file->path, c});
+      }
+    }
+    return cands;
+  };
+  auto const headerIntroducedAbove = [&](std::string const &headerPath,
+                                         std::uint32_t useBeg) {
+    for (IncludeEdge const &e : edges) {
+      if (e.target.empty() || e.targetRange.beg >= useBeg) {
+        continue;
+      }
+      if (e.target == headerPath) {
+        return true;
+      }
+      if (index != nullptr) {
+        for (std::string const &p : index->transitiveIncludes(e.target)) {
+          if (p == headerPath) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+  auto const candidatesInFile = [&](std::uint32_t off, std::string const &key) {
+    std::vector<Symbol const *> cands;
+    Symbol const *const siteScope = innermostScope(parse, off);
+    bool const gated = insideProcedureBody(parse, siteScope);
+    for (Symbol const *cur = siteScope;;) {
+      if (cur != nullptr) {
+        for (auto const &c : cur->children) {
+          if (c.key.empty() || c.key != key || !defineActiveAt(c, off)) {
+            continue;
+          }
+          cands.push_back(&c);
+        }
+      } else {
+        for (Symbol const *c : moduleLevelCandidates(parse.roots)) {
+          if (c->key.empty() || c->key != key || !defineActiveAt(*c, off)) {
+            continue;
+          }
+          if (gated && c->kind == SymbolKind::Dim && !c->shared) {
+            continue;
+          }
+          cands.push_back(c);
+        }
+      }
+      if (cur == nullptr) {
+        break;
+      }
+      cur = parentOf(parse, cur);
+    }
+    return std::pair<std::vector<Symbol const *>, bool>(cands, gated);
+  };
+  for (std::size_t i = 0; i < doc.tokens.size(); ++i) {
+    Token const &tok = doc.tokens[i];
+    if (tok.kind != TokenKind::Identifier) {
+      continue;
+    }
+    // Member names are not value/type uses of a module name.
+    if (i > 0 &&
+        (doc.tokens[i - 1].text() == "." || doc.tokens[i - 1].text() == "->")) {
+      continue;
+    }
+    std::string const key = canonicalKey(tok.text(), parse.lang);
+    if (key.empty()) {
+      continue;
+    }
+    auto const res = candidatesInFile(tok.beg, key);
+    std::vector<Symbol const *> const &cands = res.first;
+    bool const gated = res.second;
+    bool isDeclName = false;
+    bool aboveInFile = false;
+    bool belowInFile = false;
+    for (Symbol const *c : cands) {
+      if (c->selection.beg == tok.beg && c->selection.end == tok.end) {
+        isDeclName = true;
+      }
+      if (c->selection.beg < tok.beg) {
+        aboveInFile = true;
+      }
+      if (c->selection.beg > tok.beg) {
+        belowInFile = true;
+      }
+    }
+    if (isDeclName || aboveInFile) {
+      continue;
+    }
+    // Include above that brings a header declaration suppresses the report.
+    std::vector<HeaderCand> const hcands = headerCandidatesFor(key, gated);
+    bool aboveViaHeader = false;
+    for (auto const &hc : hcands) {
+      if (headerIntroducedAbove(hc.filePath, tok.beg)) {
+        aboveViaHeader = true;
+        break;
+      }
+    }
+    if (aboveViaHeader) {
+      continue;
+    }
+    if (!belowInFile && hcands.empty()) {
+      continue; // introduced nowhere: stay silent for the resolve layer
+    }
+    // Routine/type/module value uses only; skip other kinds.
+    SymbolKind kindForId = SymbolKind::Dim;
+    bool haveKind = false;
+    if (belowInFile) {
+      for (Symbol const *c : cands) {
+        if (c->selection.beg > tok.beg) {
+          kindForId = c->kind;
+          haveKind = true;
+          break;
+        }
+      }
+    } else if (!hcands.empty()) {
+      kindForId = hcands.front().decl->kind;
+      haveKind = true;
+    }
+    if (!haveKind) {
+      continue;
+    }
+    bool const isType = kindForId == SymbolKind::Type ||
+                        kindForId == SymbolKind::Union ||
+                        kindForId == SymbolKind::Enum;
+    bool const isRoutine = kindForId == SymbolKind::Sub ||
+                           kindForId == SymbolKind::Function ||
+                           kindForId == SymbolKind::Property ||
+                           kindForId == SymbolKind::Operator ||
+                           kindForId == SymbolKind::Constructor ||
+                           kindForId == SymbolKind::Destructor;
+    bool const isValue = kindForId == SymbolKind::Dim ||
+                         kindForId == SymbolKind::Const ||
+                         kindForId == SymbolKind::Variable;
+    if (!isType && !isRoutine && !isValue) {
+      continue;
+    }
+    Diagnostic d;
+    d.range = SourceRange{tok.beg, tok.end};
+    d.severity = Severity::Error;
+    d.code = "use-before-declaration";
+    d.fbcId =
+        isType ? FbcDiagId::ExpectedIdentifier : FbcDiagId::VariableNotDeclared;
+    // TRANSLATORS: %s is an identifier; the message follows the catalog
+    // shape for error 42 / 14 and is never translated beyond the template.
+    if (isType) {
+      d.message = trf("Expected identifier, found '%s'", tok.text());
+    } else {
+      d.message = trf("Variable not declared, %s", tok.text());
+    }
+    out.push_back(std::move(d));
+  }
+  return out;
+}
+
 Symbol const *resolveAt(AnalyzedDoc const &doc, std::uint32_t off) {
   return declAt(doc.parse, doc.tokens, off);
 }
@@ -1315,10 +1512,26 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
   std::vector<Symbol const *> out;
   Symbol const *const siteScope = innermostScope(parse, off);
   bool const storageGated = insideProcedureBody(parse, siteScope);
+  auto const laterLine = [&](std::uint32_t selBeg) {
+    if (selBeg <= off) {
+      return false;
+    }
+    return std::any_of(
+        doc.tokens.begin(), doc.tokens.end(), [&](Token const &t) {
+          return t.kind == TokenKind::Newline && t.beg >= off && t.beg < selBeg;
+        });
+  };
   for (Symbol const *cur = siteScope;;) {
     if (cur != nullptr) {
       for (auto const &c : cur->children) {
         if (c.key.empty() || !defineActiveAt(c, off)) {
+          continue;
+        }
+        // FreeBASIC is top-down (FreeBASIC.md §12): a name is not visible
+        // on lines above its declaration in the same file, so completion
+        // must not offer it there. A cursor on the declaration line itself
+        // still offers it (the user is typing the declaration).
+        if (laterLine(c.selection.beg)) {
           continue;
         }
         out.push_back(&c);
@@ -1326,6 +1539,9 @@ std::vector<Symbol const *> visibleSymbols(AnalyzedDoc const &doc,
     } else {
       for (Symbol const *c : moduleLevelCandidates(parse.roots)) {
         if (c->key.empty() || !defineActiveAt(*c, off)) {
+          continue;
+        }
+        if (laterLine(c->selection.beg)) {
           continue;
         }
         // §12.2 gate: from inside a procedure body, module-level Dim-kind

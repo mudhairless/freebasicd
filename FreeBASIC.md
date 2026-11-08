@@ -1102,17 +1102,22 @@ to "the language is what the lexer does":
 11. **Vim block-comment `/'...'/` nesting is approximated** (vim region
     semantics); the generated TextMate grammar nests via `begin/end` pairs.
     Grammar-side limitation only.
-12. **Module-level declaration ordering is unmodeled — enum members resolve
-    order-insensitively.** fbc injects enum member constants at the `Enum`
-    block's position in the module: a bare usage *before* the block is
-    `error 42` (§8 Enums, `order1.bas`), and a colliding module `Dim`
-    shadows the member from the `Dim` onward (`order2.bas`, `order3.bas`,
-    both print 2). This implementation resolves enum members as
-    order-insensitive module candidates everywhere, and module roots
-    (Dims/Consts/procedures) always beat a same-named plain-enum member, so
-    the shadowing outcome matches fbc when the `Dim` follows the member,
-    while pre-`Enum` bare usages resolve here as a convenience instead of
-    erroring (declared decision: no source-order gating at module level).
+12. **Module-level declaration ordering is gated — uses above their
+    introduction are reported, and completion does not offer them.**
+    fbc injects enum member constants at the `Enum` block's position in
+    the module: a bare usage *before* the block is `error 42` (§8 Enums,
+    `order1.bas`), and a colliding module `Dim` shadows the member from
+    the `Dim` onward (`order2.bas`, `order3.bas`, both print 2). The
+    same top-down rule applies to routines, types, and module-level
+    variables and constants: a use whose introduction (a `Declare`, a
+    definition, or an `#include` preceding the use whose closure declares
+    the name) is absent above it is reported as `use-before-declaration`
+    (fbc `error 42` for routines/variables, `error 14` for types), and
+    `visibleSymbols`/completion stop offering a name on lines above its
+    declaration in the same file. A name introduced nowhere is silent
+    here for the resolve layer to own. Module roots (Dims/Consts/
+    procedures) still beat a same-named plain-enum member, so the
+    shadowing outcome matches fbc when the `Dim` follows the member.
 13. **`dim T.m` static-member syntax captures a phantom variable.** In `fb`,
     `dim map.m as integer` is `error 147` (fbc 1.10.2: "Default types or
     suffixes are only valid in -lang deprecated or fblite or qb, found

@@ -383,9 +383,19 @@ static void TestStorageGate() {
   };
   CHECK_MSG(has("s"),
             "visibleSymbols must keep the shared module dim inside a block");
-  CHECK_MSG(has("st"), "visibleSymbols must keep the static shared var");
   CHECK_MSG(!has("g"),
             "visibleSymbols must drop a plain module dim inside a block");
+  std::uint32_t const stUse = static_cast<std::uint32_t>(src.find("st = 3"));
+  std::vector<std::string> keysAfter;
+  for (Symbol const *sym : visibleSymbols(doc, stUse)) {
+    keysAfter.push_back(sym->key);
+  }
+  auto hasAfter = [&keysAfter](std::string const &k) {
+    return std::find(keysAfter.begin(), keysAfter.end(), k) != keysAfter.end();
+  };
+  CHECK_MSG(hasAfter("st"),
+            "visibleSymbols must keep the static shared var after its "
+            "declaration");
 }
 
 // Declaration-scope blocks shadow: a `Dim` inside SCOPE/IF/FOR/SELECT (etc.)
@@ -2696,7 +2706,161 @@ static void TestModuleCodeDiagnostics() {
   }
 }
 
+static void TestDeclarationOrderDiagnostics() {
+  auto diagsFor = [](std::string const &src) {
+    AnalyzedDoc const doc = analyze(src);
+    return declarationOrderDiagnostics(doc, "/virtual/x.bas", nullptr, nullptr);
+  };
+  // Module-level routine use before its definition: error 42.
+  {
+    std::string const src = "helper()\nSub helper()\nEnd Sub\n";
+    auto const d = diagsFor(src);
+    CHECK(d.size() == 1);
+    if (d.size() == 1) {
+      CHECK(d[0].code == "use-before-declaration");
+      CHECK(d[0].fbcId == FbcDiagId::VariableNotDeclared);
+      CHECK(src.substr(d[0].range.beg, d[0].range.end - d[0].range.beg) ==
+            "helper");
+    }
+  }
+  // In-procedure use before its definition.
+  {
+    std::string const src =
+        "Sub s()\n  helper()\nEnd Sub\nSub helper()\nEnd Sub\n";
+    auto const d = diagsFor(src);
+    CHECK(d.size() == 1);
+    if (d.size() == 1) {
+      CHECK(d[0].fbcId == FbcDiagId::VariableNotDeclared);
+    }
+  }
+  // A Declare above the use is the introduction; a Declare below still
+  // leaves the earlier use reported.
+  {
+    std::string const src =
+        "Declare Sub helper()\nhelper()\nSub helper()\nEnd Sub\n";
+    CHECK(diagsFor(src).empty());
+    std::string const late =
+        "helper()\nDeclare Sub helper()\nSub helper()\nEnd Sub\n";
+    auto const d = diagsFor(late);
+    CHECK(d.size() == 1);
+    if (d.size() == 1) {
+      CHECK(late.substr(d[0].range.beg, 6) == "helper");
+    }
+  }
+  // Early type use: error 14.
+  {
+    std::string const src = "Dim x As T\nType T\n  n As Integer\nEnd Type\n";
+    auto const d = diagsFor(src);
+    CHECK(d.size() == 1);
+    if (d.size() == 1) {
+      CHECK(d[0].fbcId == FbcDiagId::ExpectedIdentifier);
+      CHECK(src.substr(d[0].range.beg, d[0].range.end - d[0].range.beg) == "T");
+    }
+    std::string const ok = "Type T\n  n As Integer\nEnd Type\nDim x As T\n";
+    CHECK(diagsFor(ok).empty());
+  }
+  // Type field, pointer field, and base type all draw the same.
+  {
+    std::string const field =
+        "Type A\n  x As B\nEnd Type\nType B\n  n As Integer\nEnd Type\n";
+    auto const d = diagsFor(field);
+    CHECK(d.size() == 1);
+    if (d.size() == 1) {
+      CHECK(d[0].fbcId == FbcDiagId::ExpectedIdentifier);
+    }
+    std::string const ptr =
+        "Type A\n  p As B Ptr\nEnd Type\nType B\n  n As Integer\nEnd Type\n";
+    CHECK(diagsFor(ptr).size() == 1);
+    std::string const base = "Type D Extends B\n  n As Integer\nEnd Type\nType "
+                             "B\n  m As Integer\nEnd Type\n";
+    CHECK(diagsFor(base).size() == 1);
+  }
+  // Module variable and constant uses before their declarations: 42.
+  {
+    std::string const var = "print x\nDim x As Integer\n";
+    auto const d = diagsFor(var);
+    CHECK(d.size() == 1);
+    if (d.size() == 1) {
+      CHECK(d[0].fbcId == FbcDiagId::VariableNotDeclared);
+    }
+    std::string const kon = "print c\nConst c = 1\n";
+    CHECK(diagsFor(kon).size() == 1);
+  }
+  // Introduced nowhere: stay silent.
+  {
+    std::string const src = "print nowhere\nhelper()\nDim x As Missing\n";
+    CHECK(diagsFor(src).empty());
+  }
+  // Include order: an #include above introduces, below does not. The
+  // single-file check treats only a header in the snapshot as carrying
+  // the name, so drive it through a workspace with a header on disk.
+  {
+    std::filesystem::path const ws = MakeTmpDir() / "ws";
+    std::filesystem::create_directories(ws);
+    WriteFile(ws / "h.bi", "Type T\n  n As Integer\nEnd Type\n");
+    std::string const mainNorm = normalizePath(ws / "main.bas");
+    WorkspaceIndex index(ws);
+    index.open();
+    index.scan(false);
+    std::string const above = "#include \"h.bi\"\nDim x As T\n";
+    {
+      AnalyzedDoc const doc2 = analyze(above);
+      IndexedFile entry;
+      entry.path = mainNorm;
+      entry.roots = doc2.parse.roots;
+      IncludeEdge edge;
+      edge.literal = "h.bi";
+      edge.target = normalizePath(ws / "h.bi");
+      edge.targetRange = SourceRange{11, 15};
+      entry.includes.push_back(edge);
+      auto const d =
+          declarationOrderDiagnostics(doc2, mainNorm, &index, &entry);
+      CHECK(d.empty());
+    }
+    {
+      std::string const below = "Dim x As T\n#include \"h.bi\"\n";
+      AnalyzedDoc const doc3 = analyze(below);
+      IndexedFile entry;
+      entry.path = mainNorm;
+      entry.roots = doc3.parse.roots;
+      IncludeEdge edge;
+      edge.literal = "h.bi";
+      edge.target = normalizePath(ws / "h.bi");
+      edge.targetRange =
+          SourceRange{static_cast<std::uint32_t>(below.find("h.bi")),
+                      static_cast<std::uint32_t>(below.find("h.bi") + 4)};
+      entry.includes.push_back(edge);
+      auto const d =
+          declarationOrderDiagnostics(doc3, mainNorm, &index, &entry);
+      CHECK(d.size() == 1);
+      if (d.size() == 1) {
+        CHECK(d[0].fbcId == FbcDiagId::ExpectedIdentifier);
+      }
+    }
+    index.close();
+  }
+  // visibleSymbols gating: a name is not offered on lines above it.
+  {
+    std::string const src = "print helper\nSub helper()\nEnd Sub\n";
+    AnalyzedDoc const doc = analyze(src);
+    std::uint32_t const before =
+        static_cast<std::uint32_t>(src.find("print helper") + 6);
+    std::vector<std::string> keys;
+    for (Symbol const *s : visibleSymbols(doc, before)) {
+      keys.push_back(s->key);
+    }
+    CHECK(std::find(keys.begin(), keys.end(), "helper") == keys.end());
+    std::uint32_t const after = static_cast<std::uint32_t>(src.find("End Sub"));
+    keys.clear();
+    for (Symbol const *s : visibleSymbols(doc, after)) {
+      keys.push_back(s->key);
+    }
+    CHECK(std::find(keys.begin(), keys.end(), "helper") != keys.end());
+  }
+}
+
 int main() {
+  TestDeclarationOrderDiagnostics();
   TestScopingResolvesCorrectly();
   TestDeclAtIdentityFindsBySelectionRange();
   TestUnknownAndNonIdentifiersResolveNull();

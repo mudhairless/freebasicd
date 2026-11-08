@@ -49,6 +49,7 @@ void RunTypeHierarchyTests();
 void RunPreprocTests();
 void RunModuleCodeTests();
 void RunCollisionsTests();
+void RunOrderTests();
 } // namespace fbtest
 
 int main(int argc, char **argv) {
@@ -80,6 +81,7 @@ int main(int argc, char **argv) {
   fbtest::RunPreprocTests();
   fbtest::RunModuleCodeTests();
   fbtest::RunCollisionsTests();
+  fbtest::RunOrderTests();
 
   // The last line of a healthy run. If it is missing, main never got here, and
   // the last [ DONE ] names the test the process died in; if it is present, the

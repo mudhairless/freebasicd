@@ -13,6 +13,8 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <set>
@@ -882,8 +884,216 @@ void WrapInConstructorTest() {
   }
 }
 
+void UseBeforeDeclareKeepsDefault() {
+  std::string const src = "helper()\nSub helper(a As Integer = 5)\nEnd Sub\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  auto const diags =
+      declarationOrderDiagnostics(doc, "/virtual/x.bas", nullptr, nullptr);
+  CHECK(diags.size() == 1);
+  if (diags.size() != 1) {
+    return;
+  }
+  std::vector<QuickFix> const fixes =
+      fixesFor("use-before-declaration", diags.front(), ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() != 1) {
+    return;
+  }
+  CHECK(fixes[0].title == "Insert 'Declare' for 'helper'");
+  CHECK(fixes[0].edits.size() == 1);
+  if (!fixes[0].edits.empty()) {
+    CHECK(fixes[0].edits.front().range.beg == 0);
+    CHECK(fixes[0].edits.front().newText ==
+          "Declare Sub helper(a As Integer = 5)\n");
+    std::string const applied = fixes[0].edits.front().newText + src;
+    AnalyzedDoc const after = analyze(applied);
+    CHECK(declarationOrderDiagnostics(after, "/virtual/x.bas", nullptr, nullptr)
+              .empty());
+  }
+  // Function return type is kept verbatim too.
+  std::string const fsrc = "Dim y As Integer = f()\nFunction f() As Integer\n  "
+                           "return 1\nEnd Function\n";
+  AnalyzedDoc const fdoc = analyze(fsrc);
+  QuickFixContext const fctx = bareContext(fsrc, fdoc);
+  auto const fdiags =
+      declarationOrderDiagnostics(fdoc, "/virtual/x.bas", nullptr, nullptr);
+  CHECK(fdiags.size() == 1);
+  if (fdiags.size() == 1) {
+    std::vector<QuickFix> const ffixes =
+        fixesFor("use-before-declaration", fdiags.front(), fctx);
+    CHECK(ffixes.size() == 1);
+    if (ffixes.size() == 1 && !ffixes[0].edits.empty()) {
+      CHECK(ffixes[0].edits.front().newText ==
+            "Declare Function f() As Integer\n");
+    }
+  }
+  // A use inside a procedure gets the Declare above the procedure.
+  std::string const insrc =
+      "Sub s()\n  helper()\nEnd Sub\nSub helper()\nEnd Sub\n";
+  AnalyzedDoc const indoc = analyze(insrc);
+  QuickFixContext const inctx = bareContext(insrc, indoc);
+  auto const indiags =
+      declarationOrderDiagnostics(indoc, "/virtual/x.bas", nullptr, nullptr);
+  CHECK(indiags.size() == 1);
+  if (indiags.size() == 1) {
+    std::vector<QuickFix> const infixes =
+        fixesFor("use-before-declaration", indiags.front(), inctx);
+    CHECK(infixes.size() == 1);
+    if (infixes.size() == 1 && !infixes[0].edits.empty()) {
+      CHECK(infixes[0].edits.front().range.beg == 0);
+    }
+  }
+}
+
+void UseBeforeTypeReordersNeverAliases() {
+  std::string const src = "Dim x As T\nType T\n  n As Integer\nEnd Type\n";
+  AnalyzedDoc const doc = analyze(src);
+  QuickFixContext const ctx = bareContext(src, doc);
+  auto const diags =
+      declarationOrderDiagnostics(doc, "/virtual/x.bas", nullptr, nullptr);
+  CHECK(diags.size() == 1);
+  if (diags.size() != 1) {
+    return;
+  }
+  std::vector<QuickFix> const fixes =
+      fixesFor("use-before-declaration", diags.front(), ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() != 1) {
+    return;
+  }
+  CHECK(fixes[0].title == "Move 'T' above its first use");
+  CHECK(fixes[0].edits.size() == 2);
+  for (QuickFix const &f : fixes) {
+    for (TextEditBytes const &e : f.edits) {
+      CHECK(e.newText.find("Type T As") == std::string::npos);
+      CHECK(e.newText.find(" as T") == std::string::npos ||
+            e.newText.find("Type T") != std::string::npos);
+    }
+  }
+  // Applying both edits (delete first, then insert) moves the block above.
+  std::string applied = src;
+  if (fixes[0].edits.size() == 2) {
+    TextEditBytes const del = fixes[0].edits[1];
+    std::string step = applied.substr(0, del.range.beg) + del.newText +
+                       applied.substr(del.range.end);
+    TextEditBytes const ins = fixes[0].edits[0];
+    std::string finalText = step.substr(0, ins.range.beg) + ins.newText +
+                            step.substr(ins.range.beg);
+    CHECK(finalText.find("Type T") < finalText.find("Dim x As T"));
+    AnalyzedDoc const after = analyze(finalText);
+    CHECK(declarationOrderDiagnostics(after, "/virtual/x.bas", nullptr, nullptr)
+              .empty());
+  }
+}
+
+void UseBeforeIncludeOffersHeader() {
+  std::string const src = "Dim x As T\n";
+  AnalyzedDoc const doc = analyze(src);
+  // Build a workspace header entry carrying T.
+  auto headerFile = std::make_shared<IndexedFile>();
+  headerFile->path = "/ws/inc/types.bi";
+  headerFile->fromDisk = true;
+  {
+    AnalyzedDoc const hdoc = analyze("Type T\n  n As Integer\nEnd Type\n");
+    headerFile->roots = hdoc.parse.roots;
+  }
+  std::vector<std::shared_ptr<IndexedFile const>> const files = {headerFile};
+  std::filesystem::path const docPath("/ws/src/main.bas");
+  QuickFixContext ctx = bareContext(src, doc);
+  ctx.documentPath = &docPath;
+  ctx.workspaceFiles = &files;
+  ctx.resolveInclude =
+      [](std::string const &literal) -> std::optional<std::string> {
+    if (literal == "../inc/types.bi") {
+      return std::string("/ws/inc/types.bi");
+    }
+    return std::nullopt;
+  };
+  Diagnostic const d = diagAt("use-before-declaration",
+                              static_cast<std::uint32_t>(src.find("T")),
+                              static_cast<std::uint32_t>(src.find("T") + 1));
+  std::vector<QuickFix> const fixes =
+      fixesFor("use-before-declaration", d, ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() == 1) {
+    CHECK(fixes[0].title == "Include \"../inc/types.bi\"");
+    CHECK(fixes[0].edits.size() == 1);
+    if (!fixes[0].edits.empty()) {
+      CHECK(fixes[0].edits.front().newText == "#include \"../inc/types.bi\"\n");
+      CHECK(fixes[0].edits.front().range.beg == 0);
+    }
+  }
+  // A header the seam refuses is never offered.
+  QuickFixContext const badCtx = [&] {
+    QuickFixContext c = ctx;
+    c.resolveInclude = [](std::string const &) -> std::optional<std::string> {
+      return std::nullopt;
+    };
+    return c;
+  }();
+  CHECK(fixesFor("use-before-declaration", d, badCtx).empty());
+}
+
+void UseBeforeSystemFallback() {
+  std::string const src = "Dim x As SysT\n";
+  AnalyzedDoc const doc = analyze(src);
+  std::filesystem::path const sysDir =
+      std::filesystem::temp_directory_path() / "fblsp-system-inc";
+  std::filesystem::create_directories(sysDir);
+  {
+    std::ofstream out(sysDir / "syst.bi");
+    out << "Type SysT\n  n As Integer\nEnd Type\n";
+  }
+  std::filesystem::path const docPath("/ws/src/main.bas");
+  QuickFixContext ctx = bareContext(src, doc);
+  ctx.documentPath = &docPath;
+  ctx.workspaceFiles = nullptr;
+  ctx.systemIncludeDir = &sysDir;
+  ctx.resolveInclude =
+      [](std::string const &literal) -> std::optional<std::string> {
+    if (literal == "syst.bi") {
+      return std::string("syst.bi");
+    }
+    return std::nullopt;
+  };
+  Diagnostic const d = diagAt("use-before-declaration",
+                              static_cast<std::uint32_t>(src.find("SysT")),
+                              static_cast<std::uint32_t>(src.find("SysT") + 4));
+  std::vector<QuickFix> const fixes =
+      fixesFor("use-before-declaration", d, ctx);
+  CHECK(fixes.size() == 1);
+  if (fixes.size() == 1) {
+    CHECK(fixes[0].title == "Include \"syst.bi\"");
+  }
+  // When the workspace already found a header, the system folder is not
+  // consulted.
+  auto headerFile = std::make_shared<IndexedFile>();
+  headerFile->path = "/ws/inc/syst.bi";
+  headerFile->fromDisk = true;
+  {
+    AnalyzedDoc const hdoc = analyze("Type SysT\n  n As Integer\nEnd Type\n");
+    headerFile->roots = hdoc.parse.roots;
+  }
+  std::vector<std::shared_ptr<IndexedFile const>> const files = {headerFile};
+  QuickFixContext ctx2 = ctx;
+  ctx2.workspaceFiles = &files;
+  ctx2.resolveInclude =
+      [](std::string const &literal) -> std::optional<std::string> {
+    return literal;
+  };
+  std::vector<QuickFix> const fixes2 =
+      fixesFor("use-before-declaration", d, ctx2);
+  CHECK(fixes2.size() == 1);
+  if (fixes2.size() == 1) {
+    CHECK(fixes2[0].title == "Include \"../inc/syst.bi\"");
+  }
+  std::error_code ec;
+  std::filesystem::remove_all(sysDir, ec);
+}
+
 void RegistryAnswersTheFixableCodes() {
-  CHECK(quickFixProviders().size() == 7);
+  CHECK(quickFixProviders().size() == 8);
   CHECK(quickFixProviderFor("unterminated-block") != nullptr);
   CHECK(quickFixProviderFor("invalid-member-name") != nullptr);
   CHECK(quickFixProviderFor("include-not-found") != nullptr);
@@ -891,6 +1101,7 @@ void RegistryAnswersTheFixableCodes() {
   CHECK(quickFixProviderFor("module-var-not-shared") != nullptr);
   CHECK(quickFixProviderFor("redundant-leading-dot") != nullptr);
   CHECK(quickFixProviderFor("module-code-outside-main") != nullptr);
+  CHECK(quickFixProviderFor("use-before-declaration") != nullptr);
   // Every registered code is a real diagnostic code, and the registry is
   // stable across calls (the session serves it from the handler pool).
   CHECK(quickFixProviders().data() == quickFixProviders().data());
@@ -921,6 +1132,10 @@ int main() {
   SharedFixRefusesAnUnfixableDeclaration();
   RedundantDotFixRemovesOnlyTheDot();
   WrapInConstructorTest();
+  UseBeforeDeclareKeepsDefault();
+  UseBeforeTypeReordersNeverAliases();
+  UseBeforeIncludeOffersHeader();
+  UseBeforeSystemFallback();
   RegistryAnswersTheFixableCodes();
 
   if (failures == 0) {
