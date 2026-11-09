@@ -1422,10 +1422,38 @@ std::vector<Diagnostic> declarationOrderDiagnostics(
   };
   for (std::size_t i = 0; i < doc.tokens.size(); ++i) {
     Token const &tok = doc.tokens[i];
-    if (tok.kind != TokenKind::Identifier) {
+    bool const isKeywordName = tok.kind == TokenKind::Keyword;
+    if (tok.kind != TokenKind::Identifier && !isKeywordName) {
       continue;
     }
     if (inAsm(tok.beg)) {
+      continue;
+    }
+    // A reserved word is a name only in the member-name and type-name
+    // slots (FreeBASIC.md §1): treat a keyword token as a use only in a
+    // proven type position, after `as` (a `Dim`, field, parameter, or
+    // return type, with `const` qualifiers in between) or after
+    // `extends` (a base type). Ordinary keyword statements never qualify.
+    if (isKeywordName && i > 0) {
+      std::size_t prev = i - 1;
+      while (prev > 0 && doc.tokens[prev].kind == TokenKind::Keyword &&
+             toLowerChars(doc.tokens[prev].text()) == "const") {
+        --prev;
+      }
+      std::string const prevWord = doc.tokens[prev].kind == TokenKind::Keyword
+                                       ? toLowerChars(doc.tokens[prev].text())
+                                       : std::string{};
+      if (prevWord != "as" && prevWord != "extends") {
+        continue;
+      }
+      // A builtin type name (`integer`, `string`, …) is introduced by the
+      // language itself, never by a declaration below, so it can never be
+      // used before its introduction.
+      std::string const keywordKey = canonicalKey(tok.text(), parse.lang);
+      if (isBuiltinType(keywordKey)) {
+        continue;
+      }
+    } else if (isKeywordName) {
       continue;
     }
     // Member names are not value/type uses of a module name.
@@ -1541,6 +1569,11 @@ std::vector<Diagnostic> declarationOrderDiagnostics(
                          kindForId == SymbolKind::Const ||
                          kindForId == SymbolKind::Variable;
     if (!isType && !isRoutine && !isValue) {
+      continue;
+    }
+    // A keyword token is a name only in the type-name slot, so it may
+    // only match a type introduction.
+    if (isKeywordName && !isType) {
       continue;
     }
     Diagnostic d;

@@ -2759,6 +2759,59 @@ static void TestDeclarationOrderDiagnostics() {
     std::string const ok = "Type T\n  n As Integer\nEnd Type\nDim x As T\n";
     CHECK(diagsFor(ok).empty());
   }
+  // A keyword-named type (`Color`) used as a type before its Enum.
+  {
+    std::string const src = "Dim c As Color\nEnum Color\n  green\nEnd Enum\n";
+    auto const d = diagsFor(src);
+    CHECK(d.size() == 1);
+    if (d.size() == 1) {
+      CHECK(d[0].code == "use-before-declaration");
+      CHECK(d[0].fbcId == FbcDiagId::ExpectedIdentifier);
+      CHECK(src.substr(d[0].range.beg, d[0].range.end - d[0].range.beg) ==
+            "Color");
+      CHECK(d[0].range.beg == src.find("Color"));
+    }
+    // The other type positions sharing the same path.
+    std::string const field =
+        "Type A\n  x As Color\nEnd Type\nEnum Color\n  green\nEnd Enum\n";
+    auto const fd = diagsFor(field);
+    CHECK(fd.size() == 1);
+    if (fd.size() == 1) {
+      CHECK(fd[0].fbcId == FbcDiagId::ExpectedIdentifier);
+      CHECK(field.substr(fd[0].range.beg, fd[0].range.end - fd[0].range.beg) ==
+            "Color");
+    }
+    std::string const param =
+        "Sub s(p As Color)\nEnd Sub\nEnum Color\n  green\nEnd Enum\n";
+    auto const pd = diagsFor(param);
+    CHECK(pd.size() == 1);
+    if (pd.size() == 1) {
+      CHECK(pd[0].fbcId == FbcDiagId::ExpectedIdentifier);
+      CHECK(param.substr(pd[0].range.beg, pd[0].range.end - pd[0].range.beg) ==
+            "Color");
+    }
+    std::string const ret =
+        "Function f() As Color\nEnd Function\nEnum Color\n  green\nEnd Enum\n";
+    auto const rd = diagsFor(ret);
+    CHECK(rd.size() == 1);
+    if (rd.size() == 1) {
+      CHECK(rd[0].fbcId == FbcDiagId::ExpectedIdentifier);
+      CHECK(ret.substr(rd[0].range.beg, rd[0].range.end - rd[0].range.beg) ==
+            "Color");
+    }
+    // An enum member before the block keeps error 42.
+    std::string const member = "print green\nEnum Color\n  green\nEnd Enum\n";
+    auto const md = diagsFor(member);
+    CHECK(md.size() == 1);
+    if (md.size() == 1) {
+      CHECK(md[0].fbcId == FbcDiagId::VariableNotDeclared);
+    }
+    // Negative controls: an ordinary keyword statement with no matching
+    // type introduction, and the same statement before a matching Enum,
+    // stay silent (it is the Color statement, not a type use).
+    CHECK(diagsFor("color 1, 2\n").empty());
+    CHECK(diagsFor("color 1, 2\nEnum Color\n  green\nEnd Enum\n").empty());
+  }
   // Type field, pointer field, and base type all draw the same.
   {
     std::string const field =
