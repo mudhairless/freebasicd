@@ -1,0 +1,6 @@
+erase-ctor-must-be-cdecl
+erase-ctor-must-have-one-param
+erase-dtor-must-be-cdecl
+redim-ctor-must-be-cdecl
+redim-ctor-must-have-one-param
+redim-dtor-must-be-cdecl

@@ -7,14 +7,16 @@
 // fbc-agreement corpus driver.
 //
 // For every tests/corpus/*.bas snippet this driver:
-//   1. parses it with our parser and checks the emitted diagnostic codes match
-//      the golden <name>.diag file (absent golden = no diagnostics expected);
+//   1. parses it with our parser (plus the declaration-order family, the one
+//      resolve-layer diagnostic single files can judge against fbc's top-down
+//      rule) and checks the emitted diagnostic codes match the golden
+//      <name>.diag file (absent golden = no diagnostics expected);
 //   2. when the system fbc compiler is available, compiles the snippet with
 //      `fbc -c` and asserts agreement with each file's `'@fbc:pass` /
 //      `'@fbc:fail` marker (default: pass);
-//   3. for pass files, additionally asserts our parser emits no Error-severity
-//      diagnostics (Information/Warning, e.g. lang-mode, meta-directive, are
-//      tolerated).
+//   3. for pass files, additionally asserts our combined diagnostics carry no
+//      Error-severity findings (Information/Warning, e.g. lang-mode,
+//      meta-directive, are tolerated).
 //
 // Exit status: 0 = all agree, 1 = disagreement, 77 = fbc unavailable (skipped).
 
@@ -30,6 +32,7 @@
 #include "fbc_version.h"
 #include "index.h"
 #include "parser.h"
+#include "resolve.h"
 
 namespace fs = std::filesystem;
 using namespace fblang;
@@ -171,9 +174,21 @@ int main(int argc, char **argv) {
     std::string name = f.stem().string();
     std::string content = readFile(f);
 
-    // Parser side.
+    // Parser side, plus the declaration-order family (fbc errors 42/14).
+    // Single-file corpus snippets judge fbc's top-down rule directly, so the
+    // one resolve-layer diagnostic that answers from one file rides here
+    // even though the server emits it from resolve.cpp. Other resolve and
+    // session families need workspace or session state the corpus does not
+    // model and stay out.
     ParseResult r = parseDocument(content);
+    AnalyzedDoc doc = analyze(content);
+    std::vector<Diagnostic> const order =
+        declarationOrderDiagnostics(doc, "/virtual/" + name, nullptr, nullptr);
     std::vector<std::string> actual = actualCodes(r);
+    for (auto const &d : order) {
+      actual.push_back(d.code);
+    }
+    std::sort(actual.begin(), actual.end());
     std::vector<std::string> expected = readDiagGolden(dir, name);
 
     bool failMarker = content.find("@fbc:fail") != std::string::npos;
@@ -226,8 +241,12 @@ int main(int argc, char **argv) {
                            : "fbc rejected but no diagnostic emitted");
       }
     } else {
-      bool clean = !anyErrorSeverity(r);
-      if (!clean) {
+      bool const hasError =
+          anyErrorSeverity(r) ||
+          std::any_of(order.begin(), order.end(), [](Diagnostic const &d) {
+            return d.severity == Severity::Error;
+          });
+      if (hasError) {
         report(name, "parser reports Error-severity diagnostics");
         continue;
       }
