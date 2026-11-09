@@ -14,10 +14,15 @@
 #include "symbols.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -1205,6 +1210,141 @@ std::vector<Diagnostic> declarationOrderDiagnostics(
     }
     return cands;
   };
+  // Installed fbc standard headers: candidates that are not in the
+  // workspace snapshot at all. Built once per system folder per process
+  // and cached by folder, because a diagnostics publish on every edit
+  // must not re-analyze every system header to answer one unresolved
+  // name. Only the candidate's file and kind are kept, never a pointer
+  // into a temporary analysis.
+  struct SysCand {
+    std::string filePath;
+    SymbolKind kind = SymbolKind::Dim;
+    bool shared = false;
+  };
+  auto const systemCandidatesFor = [&](std::string const &key, bool gated) {
+    std::vector<SysCand> cands;
+    std::filesystem::path const sysDir =
+        index != nullptr && !index->systemIncludeDir().empty()
+            ? index->systemIncludeDir()
+            : defaultSystemIncludeDir();
+    if (sysDir.empty()) {
+      return cands;
+    }
+    struct SysFile {
+      std::string path;
+      std::string content;
+      std::string lower;
+    };
+    static std::mutex filesMu;
+    static std::map<std::string, std::vector<SysFile>> filesCache;
+    std::vector<SysFile> const *filesPtr = nullptr;
+    {
+      std::lock_guard<std::mutex> const lk(filesMu);
+      auto const it = filesCache.find(sysDir.string());
+      if (it != filesCache.end()) {
+        filesPtr = &it->second;
+      }
+    }
+    if (filesPtr == nullptr) {
+      std::vector<SysFile> built;
+      std::error_code ec;
+      if (std::filesystem::is_directory(sysDir, ec)) {
+        // Top-level headers only: the diagnostic must not pay for a full
+        // recursive walk (800 files, some parsing in ~10s) on every
+        // publish. The common system headers (quicklz.bi and friends)
+        // live directly under the system folder.
+        std::filesystem::directory_iterator it(sysDir, ec);
+        std::filesystem::directory_iterator const end;
+        for (; !ec && it != end; it.increment(ec)) {
+          std::error_code sec;
+          if (it->is_directory(sec)) {
+            continue;
+          }
+          std::filesystem::path const p = it->path();
+          if (!isHeaderPath(p.string())) {
+            continue;
+          }
+          std::ifstream in(p, std::ios::binary);
+          if (!in) {
+            continue;
+          }
+          std::string const content((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+          built.push_back(
+              SysFile{normalizePath(p), content, toLowerChars(content)});
+        }
+      }
+      std::lock_guard<std::mutex> const lk(filesMu);
+      if (filesCache.find(sysDir.string()) == filesCache.end()) {
+        filesCache[sysDir.string()] = std::move(built);
+      }
+      filesPtr = &filesCache[sysDir.string()];
+    }
+    if (key.size() < 3) {
+      return cands;
+    }
+    static std::mutex candMu;
+    static std::map<std::pair<std::string, std::string>, std::vector<SysCand>>
+        candCache;
+    std::pair<std::string, std::string> const candKey{sysDir.string(), key};
+    {
+      std::lock_guard<std::mutex> const lk(candMu);
+      auto const it = candCache.find(candKey);
+      if (it != candCache.end()) {
+        for (SysCand const &c : it->second) {
+          if (gated && c.kind == SymbolKind::Dim && !c.shared) {
+            continue;
+          }
+          cands.push_back(c);
+        }
+        return cands;
+      }
+    }
+    auto const containsWord = [](std::string const &hay,
+                                 std::string const &needle) {
+      std::size_t pos = 0;
+      while ((pos = hay.find(needle, pos)) != std::string::npos) {
+        bool const beforeOk =
+            pos == 0 ||
+            (!std::isalnum(static_cast<unsigned char>(hay[pos - 1])) &&
+             hay[pos - 1] != '_');
+        std::size_t const after = pos + needle.size();
+        bool const afterOk =
+            after >= hay.size() ||
+            (!std::isalnum(static_cast<unsigned char>(hay[after])) &&
+             hay[after] != '_');
+        if (beforeOk && afterOk) {
+          return true;
+        }
+        pos += needle.size();
+      }
+      return false;
+    };
+    std::vector<SysCand> found;
+    for (SysFile const &f : *filesPtr) {
+      if (!containsWord(f.lower, key)) {
+        continue;
+      }
+      AnalyzedDoc const headerDoc = analyze(f.content);
+      for (Symbol const *c : moduleLevelCandidates(headerDoc.parse.roots)) {
+        if (c->key != key) {
+          continue;
+        }
+        found.push_back(SysCand{f.path, c->kind, c->shared});
+      }
+    }
+    {
+      std::lock_guard<std::mutex> const lk(candMu);
+      candCache[candKey] = found;
+    }
+    for (SysCand const &c : found) {
+      if (gated && c.kind == SymbolKind::Dim && !c.shared) {
+        continue;
+      }
+      cands.push_back(c);
+    }
+    return cands;
+  };
   auto const headerIntroducedAbove = [&](std::string const &headerPath,
                                          std::uint32_t useBeg) {
     for (IncludeEdge const &e : edges) {
@@ -1254,14 +1394,49 @@ std::vector<Diagnostic> declarationOrderDiagnostics(
     }
     return std::pair<std::vector<Symbol const *>, bool>(cands, gated);
   };
+  // Assembly bodies are raw text (FreeBASIC.md §7): a mnemonic or register
+  // there is not a FreeBASIC use, so skip every token inside `Asm … End Asm`.
+  std::vector<SourceRange> asmRanges;
+  {
+    bool inAsm = false;
+    std::uint32_t asmBeg = 0;
+    for (std::size_t k = 0; k < doc.tokens.size(); ++k) {
+      Token const &t = doc.tokens[k];
+      if (!inAsm && t.kind == TokenKind::Keyword &&
+          toLowerChars(t.text()) == "asm") {
+        inAsm = true;
+        asmBeg = t.beg;
+      } else if (inAsm && t.kind == TokenKind::Keyword &&
+                 toLowerChars(t.text()) == "end" && k + 1 < doc.tokens.size() &&
+                 doc.tokens[k + 1].kind == TokenKind::Keyword &&
+                 toLowerChars(doc.tokens[k + 1].text()) == "asm") {
+        asmRanges.push_back(SourceRange{asmBeg, doc.tokens[k + 1].end});
+        inAsm = false;
+      }
+    }
+  }
+  auto const inAsm = [&](std::uint32_t off) {
+    return std::any_of(
+        asmRanges.begin(), asmRanges.end(),
+        [off](SourceRange const &r) { return off >= r.beg && off < r.end; });
+  };
   for (std::size_t i = 0; i < doc.tokens.size(); ++i) {
     Token const &tok = doc.tokens[i];
     if (tok.kind != TokenKind::Identifier) {
       continue;
     }
+    if (inAsm(tok.beg)) {
+      continue;
+    }
     // Member names are not value/type uses of a module name.
     if (i > 0 &&
         (doc.tokens[i - 1].text() == "." || doc.tokens[i - 1].text() == "->")) {
+      continue;
+    }
+    // A qualifier before '.'/'->' (`FB.SC_UP`) names a namespace/type,
+    // not a direct use of a routine/type/variable.
+    if (i + 1 < doc.tokens.size() &&
+        (doc.tokens[i + 1].text() == "." || doc.tokens[i + 1].text() == "->")) {
       continue;
     }
     std::string const key = canonicalKey(tok.text(), parse.lang);
@@ -1290,6 +1465,27 @@ std::vector<Diagnostic> declarationOrderDiagnostics(
     }
     // Include above that brings a header declaration suppresses the report.
     std::vector<HeaderCand> const hcands = headerCandidatesFor(key, gated);
+    // The workspace search is the fast path; the installed folder is
+    // consulted only for a routine call or a type use the workspace did
+    // not carry and that is not introduced below in this file, so its
+    // cost is paid only for genuinely external names. A plain value use
+    // (an assignment target, a `print` argument) is not worth a folder
+    // scan for every occurrence.
+    bool const atStatementHead = i == 0 ||
+                                 doc.tokens[i - 1].kind == TokenKind::Newline ||
+                                 doc.tokens[i - 1].text() == ":";
+    bool const bareCall = atStatementHead && i + 1 < doc.tokens.size() &&
+                          doc.tokens[i + 1].text() != "=";
+    bool const isCallOrTypeUse =
+        (i + 1 < doc.tokens.size() && doc.tokens[i + 1].text() == "(") ||
+        bareCall ||
+        (i > 0 && doc.tokens[i - 1].kind == TokenKind::Keyword &&
+         (toLowerChars(doc.tokens[i - 1].text()) == "as" ||
+          toLowerChars(doc.tokens[i - 1].text()) == "extends"));
+    std::vector<SysCand> const sysCands =
+        (hcands.empty() && !belowInFile && isCallOrTypeUse)
+            ? systemCandidatesFor(key, gated)
+            : std::vector<SysCand>{};
     bool aboveViaHeader = false;
     for (auto const &hc : hcands) {
       if (headerIntroducedAbove(hc.filePath, tok.beg)) {
@@ -1297,10 +1493,18 @@ std::vector<Diagnostic> declarationOrderDiagnostics(
         break;
       }
     }
+    if (!aboveViaHeader) {
+      for (auto const &sc : sysCands) {
+        if (headerIntroducedAbove(sc.filePath, tok.beg)) {
+          aboveViaHeader = true;
+          break;
+        }
+      }
+    }
     if (aboveViaHeader) {
       continue;
     }
-    if (!belowInFile && hcands.empty()) {
+    if (!belowInFile && hcands.empty() && sysCands.empty()) {
       continue; // introduced nowhere: stay silent for the resolve layer
     }
     // Routine/type/module value uses only; skip other kinds.
@@ -1316,6 +1520,9 @@ std::vector<Diagnostic> declarationOrderDiagnostics(
       }
     } else if (!hcands.empty()) {
       kindForId = hcands.front().decl->kind;
+      haveKind = true;
+    } else if (!sysCands.empty()) {
+      kindForId = sysCands.front().kind;
       haveKind = true;
     }
     if (!haveKind) {

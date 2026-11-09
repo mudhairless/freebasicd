@@ -19,6 +19,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -711,85 +713,90 @@ std::vector<QuickFix> fixUseBeforeDeclaration(Diagnostic const &d,
   if (cands.empty() && fixes.empty() && ctx.resolveInclude &&
       ctx.systemIncludeDir != nullptr && !ctx.systemIncludeDir->empty()) {
     std::filesystem::path const sysDir = *ctx.systemIncludeDir;
-    bool const haveSys = true;
-    if (haveSys) {
-      std::error_code ec;
-      if (std::filesystem::is_directory(sysDir, ec)) {
-        std::vector<Cand> sysCands;
-        std::filesystem::recursive_directory_iterator it(sysDir, ec);
-        std::filesystem::recursive_directory_iterator const end;
-        for (; !ec && it != end; it.increment(ec)) {
-          std::error_code sec;
-          if (it->is_directory(sec)) {
-            continue;
-          }
-          std::filesystem::path const p = it->path();
-          if (!isHeaderPathStr(p.string())) {
-            continue;
-          }
-          std::ifstream in(p, std::ios::binary);
-          if (!in) {
-            continue;
-          }
-          std::string const content((std::istreambuf_iterator<char>(in)),
-                                    std::istreambuf_iterator<char>());
-          AnalyzedDoc const headerDoc = analyze(content);
-          bool declares = false;
-          for (Symbol const &r : headerDoc.parse.roots) {
-            if (r.key == key && !r.key.empty()) {
-              declares = true;
-              break;
+    std::vector<Cand> sysCands;
+    {
+      static std::mutex sysMu;
+      static std::map<std::pair<std::string, std::string>, std::vector<Cand>>
+          sysCache;
+      std::pair<std::string, std::string> const sysKey{sysDir.string(), key};
+      std::lock_guard<std::mutex> const lk(sysMu);
+      auto const it = sysCache.find(sysKey);
+      if (it != sysCache.end()) {
+        sysCands = it->second;
+      } else {
+        std::error_code ec2;
+        if (std::filesystem::is_directory(sysDir, ec2)) {
+          std::filesystem::recursive_directory_iterator it2(sysDir, ec2);
+          std::filesystem::recursive_directory_iterator const end2;
+          for (; !ec2 && it2 != end2; it2.increment(ec2)) {
+            std::error_code sec2;
+            if (it2->is_directory(sec2)) {
+              continue;
             }
-            if (r.kind == SymbolKind::Enum) {
-              for (Symbol const &ch : r.children) {
-                if (ch.key == key) {
-                  declares = true;
-                  break;
-                }
-              }
-              if (declares) {
+            std::filesystem::path const p = it2->path();
+            if (!isHeaderPathStr(p.string())) {
+              continue;
+            }
+            std::ifstream in(p, std::ios::binary);
+            if (!in) {
+              continue;
+            }
+            std::string const content((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+            std::string const lower = toLowerChars(content);
+            if (lower.find(key) == std::string::npos) {
+              continue;
+            }
+            AnalyzedDoc const headerDoc = analyze(content);
+            bool declares = false;
+            for (Symbol const &r : headerDoc.parse.roots) {
+              if (r.key == key && !r.key.empty()) {
+                declares = true;
                 break;
               }
             }
-          }
-          if (!declares) {
-            continue;
-          }
-          std::string literal = p.lexically_relative(sysDir).generic_string();
-          if (literal.empty() || literal == ".") {
-            continue;
-          }
-          if (!ctx.resolveInclude(literal)) {
-            continue;
-          }
-          sysCands.push_back({static_cast<std::size_t>(std::count(
-                                  literal.begin(), literal.end(), '/')),
-                              literal, p.string()});
-          if (sysCands.size() >= kMaxIncludeCandidates) {
-            break;
+            if (!declares) {
+              continue;
+            }
+            std::string literal = p.lexically_relative(sysDir).generic_string();
+            if (literal.empty() || literal == ".") {
+              continue;
+            }
+            if (!ctx.resolveInclude(literal)) {
+              continue;
+            }
+            sysCands.push_back({static_cast<std::size_t>(std::count(
+                                    literal.begin(), literal.end(), '/')),
+                                literal, p.string()});
+            if (sysCands.size() >= kMaxIncludeCandidates) {
+              break;
+            }
           }
         }
-        std::sort(sysCands.begin(), sysCands.end(),
-                  [](Cand const &a, Cand const &b) {
-                    return a.depth != b.depth ? a.depth < b.depth
-                                              : a.literal < b.literal;
-                  });
-        for (std::size_t i = 0;
-             i < sysCands.size() && i < kMaxIncludeCandidates; ++i) {
-          QuickFix fix;
-          // TRANSLATORS: the first %s is the FreeBASIC keyword Include
-          // (passed as an argument, never translated); the second is the
-          // system header path the fix would write.
-          fix.title = trf("%s \"%s\"", "Include", sysCands[i].literal);
-          fix.code = d.code;
-          fix.diagRange = d.range;
-          std::string text = "#include \"" + sysCands[i].literal + "\"" + le;
-          fix.edits.push_back(
-              {SourceRange{insertAt, insertAt}, std::move(text)});
-          fixes.push_back(std::move(fix));
-        }
+        sysCache[sysKey] = sysCands;
       }
     }
+    {
+      std::sort(sysCands.begin(), sysCands.end(),
+                [](Cand const &a, Cand const &b) {
+                  return a.depth != b.depth ? a.depth < b.depth
+                                            : a.literal < b.literal;
+                });
+      for (std::size_t i = 0; i < sysCands.size() && i < kMaxIncludeCandidates;
+           ++i) {
+        QuickFix fix;
+        // TRANSLATORS: the first %s is the FreeBASIC keyword Include
+        // (passed as an argument, never translated); the second is the
+        // system header path the fix would write.
+        fix.title = trf("%s \"%s\"", "Include", sysCands[i].literal);
+        fix.code = d.code;
+        fix.diagRange = d.range;
+        std::string text = "#include \"" + sysCands[i].literal + "\"" + le;
+        fix.edits.push_back({SourceRange{insertAt, insertAt}, std::move(text)});
+        fixes.push_back(std::move(fix));
+      }
+    }
+    return fixes;
   }
   return fixes;
 }

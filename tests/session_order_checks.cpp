@@ -197,6 +197,33 @@ void TestWorkspaceHeaderIncludeOffer() {
   std::filesystem::remove_all(sandbox, ec);
 }
 
+void TestSystemHeaderIncludeOffer() {
+  OrderFixture fix;
+  lsp::NullLog log;
+  lsp::LanguageSession session(log);
+  auto input = std::make_shared<FeedableIStream>();
+  auto output = std::make_shared<StringOStream>();
+  FreeBasicServer server(session);
+  server.registerHandlers();
+  session.start(input, output);
+  std::string const rootUri = FileUri(fix.sandbox);
+  std::string const initFrame =
+      R"({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"rootUri":")" +
+      rootUri + "\"}}";
+  input->append(MakeLspFrame(initFrame.c_str()));
+  WaitForOutputContaining(output, "\"id\":\"init\"");
+  input->append(MakeLspFrame(
+      OpenFrame(fix.mainUri, "var x = qlz_decompress(23)\n").c_str()));
+  WaitForPublishedUri(output, 1);
+  std::string const reply = PollRequest(
+      input, output, "casys", "Include", [&](std::string const &id) {
+        return CodeActionFrame(id, fix.mainUri, 0);
+      });
+  Expect(reply.find("quicklz.bi") != std::string::npos,
+         "the system fallback must offer the installed quicklz.bi header");
+  session.stop();
+}
+
 } // namespace
 
 namespace fbtest {
@@ -207,6 +234,7 @@ void RunOrderTests() {
   RUN_TEST(TestEarlyDimOffersReorderNeverAlias);
   RUN_TEST(TestCompletionGatedAboveDeclaration);
   RUN_TEST(TestWorkspaceHeaderIncludeOffer);
+  RUN_TEST(TestSystemHeaderIncludeOffer);
 }
 
 } // namespace fbtest

@@ -3976,16 +3976,18 @@ FreeBasicServer::onCodeAction(td_codeAction::request const &req) {
   ctx.content = content;
   ctx.doc = &doc;
   ctx.documentPath = &documentPath;
-  std::filesystem::path const sysDir =
-      index ? index->systemIncludeDir() : fblang::defaultSystemIncludeDir();
+  std::filesystem::path sysDir =
+      index ? index->systemIncludeDir() : std::filesystem::path{};
+  if (sysDir.empty()) {
+    sysDir = fblang::defaultSystemIncludeDir();
+  }
   ctx.systemIncludeDir = &sysDir;
   if (index) {
     ctx.workspaceFiles = &files;
     // The document's own include-resolution seam, so a candidate literal is
     // offered only when the next publish would resolve it.
-    ctx.resolveInclude = [&path, index](std::string const &literal) {
-      return fblang::resolveIncludeTarget(literal, path, index->root(),
-                                          index->systemIncludeDir(),
+    ctx.resolveInclude = [&path, index, &sysDir](std::string const &literal) {
+      return fblang::resolveIncludeTarget(literal, path, index->root(), sysDir,
                                           index->includeDirs());
     };
   } else {

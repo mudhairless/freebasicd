@@ -1,4 +1,4 @@
-# Changelog
+#Changelog
 
 Every user-visible change to `freebasicd` is recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions follow
@@ -48,10 +48,14 @@ history use; they are kept here so an entry can be traced back.
   `resultId` folds the diagnostic messages like the collision map
   does. Include fixes ride the existing `workspaceFiles` snapshot and
   the `resolveInclude` seam, so no new session path was plumbed; when
-  the workspace scan finds no header, the provider scans the installed
-  fbc standard include folder (from the root's probed compiler) as a
-  last resort, but only when no in-file fix already answers — scanning
-  it on every request buried the fast fixes. Completion gating is
+  the workspace scan finds no header, both the diagnostic and the
+  provider scan the installed fbc standard include folder (from the
+  root's probed compiler) as a last resort — top-level headers only,
+  routine-call and type uses only, whole-word text pre-filter with a
+  per-key cache, assembly bodies excluded — but only when no in-file
+  fix already answers. Scanning every system header (some parse in
+  ~10s) on every publish buried the suite; the cached, filtered scan
+  keeps it to ~24s for 23/23. Completion gating is
   line-based (a cursor on the declaration line still offers the name
   being declared) rather than pure byte-offset, which the cross-file
   completion fixture pins. A name introduced nowhere stays silent
@@ -300,7 +304,7 @@ history use; they are kept here so an entry can be traced back.
     level draw `216`; `private dim` compiles. Inside a `Sub` the landed
     `61` (inside a scope block, `96`) keeps the line.
   - `327`: `seek #`, `print #`, `input #`, `get #`, `open "x" for input as
-    #`, and `close #1,` draw `327`; `close #` alone is close-all and
+#`, and `close #1,` draw `327`; `close #` alone is close - all and
     compiles.
   - Overlap pins: a fixed `redim` with `...` draws `54`, never `76` too;
     `private common a(1)` draws `216`, never `136` too; `erase` of a
@@ -828,7 +832,8 @@ Wave 2 made the formatter refuse the inputs it cannot trust and leave alone the 
 ### 2026-10-18 — M17: formatter engine + tokenizer + LSP wiring + tests
 
 - **Core formatter engine**: the real `formatDocument` in `src/format/engine.cpp` (was an identity stub) — line-oriented re-emission with indent stack (If/Select/Enum/Struct/Type/Union/Namespace/Sub/Function/Property/Operator/Constructor/Destructor/Do/While/For/With/SplitSafe block kinds), one-line `If ... Then stmt` doesn't push, `EndIf` (merged) and `ElseIf` dedent to opener (and `Next As Node Ptr` treated as a field, not a closer via the `w1 == "as"` guard). Case transforms by specificity (boolean literal > builtin type > intrinsic > keyword); type/intrinsic resolution is position-aware (`sub`/`function` are types only after `as`). Preservation: strings, `''` and `/'...'/` block comments (verbatim spans), directive lines and macro body continuations (raw verbatim), metacommand comments, continuation lines verbatim. Blank runs collapsed by `maxEmptyLinesToKeep`, trailing whitespace trimmed, EOF newline normalized. Conservative spacing: sign-before-paren (`Line -(10,10)`) preserves tightness; adjacent commas (empty graphics slots `,, , ,`) preserve author spacing; paren context mapping honors `SpaceBeforeParens`/control/declaration/call. CRLF/LF line-ending derived from input.
-- **Canonical spelling table**: `src/format/spelling.{h,cpp}` with 206 entries, binary-searched, `static_assert` order guard, `applyCase(..., Canonical)` uses it (TitleCase fallback). Titles required renaming `Endif`→`EndIf` etc (table matches documented spellings). FBdocs preset uses `"Canonical"` for `KeywordCase/TypeNameCase/IntrinsicCase` (Title would produce `Elseif`).
+- **Canonical spelling table**: `src/format/spelling.{
+  h, cpp}` with 206 entries, binary-searched, `static_assert` order guard, `applyCase(..., Canonical)` uses it (TitleCase fallback). Titles required renaming `Endif`→`EndIf` etc (table matches documented spellings). FBdocs preset uses `"Canonical"` for `KeywordCase/TypeNameCase/IntrinsicCase` (Title would produce `Elseif`).
 - **Tokenizer OOM fix (root cause)**: `src/format/tokens.cpp` number branch could enter on `.`/`&H` without consuming → zero-length token, infinite loop growing token vector. Fixed to consume prefix and allow `.` inside numbers; now correctly lexes floats (`1.5`, `.25`, `1.`) and hex (`&H1F`, `&hFF`) — regression tested by the new engine tests. Rebuilt safely under memory/time caps to reproduce the original OOM case (`circle ... ,1.5`).
 - **LSP wiring**: `onFormatting` converts bytes to UTF-16 via `fblang::utf16Range`; `onRangeFormatting` now passes the request's real range (clamped), deferring to the documented stub but at the correct boundary. Capabilities advertise both providers. The formatter library wires through `fbformat::formatDocumentLsp` returning a single full-document `TextEdit` when changed (empty if already formatted).
 - **CLI notes**: `fbformat_main` already uses argparse; flags for `--config`/`--style` remain parsed-but-not-honored (documented as deferred). The binary reads the file and writes to stdout; the engine's disableFormat returns bytes byte-identical.
@@ -861,7 +866,8 @@ Wave 2 made the formatter refuse the inputs it cannot trust and leave alone the 
   request is answered with that declaration's `''` doc comment, as markdown
   `documentation`. The identity is the same `(path, name-token)` pair
   `fblang::identityOf` produces; the new `fblang::declAtIdentity`
-  (`src/resolve.{h,cpp}`) is its reverse, and it answers `nullptr` — not the
+  (`src/resolve.{
+  h, cpp}`) is its reverse, and it answers `nullptr` — not the
   nearest declaration — when the range matches none. `typeAtIdentity` now shares
   that walk, so a type nested below module scope resolves too where the old
   root-only loop missed it.
@@ -908,7 +914,8 @@ Wave 2 made the formatter refuse the inputs it cannot trust and leave alone the 
   client shown both cannot see two different answers, and share the
   literal-range rule (`includeLiteralAt`) so a click a link covers is exactly a
   click a definition answers.
-- **Include navigation is a module, `src/document_link.{h,cpp}`** (LSP-agnostic,
+- **Include navigation is a module, `src/document_link.{
+  h, cpp}`** (LSP-agnostic,
   byte offsets), the same shape as `code_lens`/`inlay_hints`: `DocumentLinkItem`
   plus `documentLinks(doc, resolve)`, where `resolve` is the module's only seam
   on workspace state (`IncludeResolver`), exactly as `ReferenceCounter` is for a
@@ -2135,8 +2142,10 @@ Four defects, none of them in the server, each of which failed as a *timeout* or
   `unterminated-block` appends the closer the opener expects, one fix per block,
   and `include-not-found` retargets an existing directive at a workspace file the
   document's own `resolveInclude` seam accepts — never a guess (`66e81eb`).
-- `src/code_actions.{h,cpp}` is the LSP-agnostic, byte-offset fix layer, keyed on
-  diagnostic code in a `{diagnostic code, provider}` table. **Adding a fix is one
+- `src/code_actions.{
+  h, cpp}` is the LSP-agnostic, byte-offset fix layer, keyed on
+  diagnostic code in a `{
+  diagnostic code, provider}` table. **Adding a fix is one
   function plus one table row** and touches neither `session.cpp` nor the
   capability. Providers are pure functions of (diagnostic, `QuickFixContext`); the
   context is the only way they reach workspace state, so a fix never guesses.
@@ -2228,7 +2237,8 @@ Four defects, none of them in the server, each of which failed as a *timeout* or
 - System GNU gettext only, never vendored: `cmake/FindIntl.cmake` defines
   `Intl::Intl`, `find_package(Gettext)` supplies msgfmt/msgmerge, and a local
   `find_program` adds xgettext (the bundled FindGettext locates only the first
-  two). `src/i18n.{h,cpp}` wraps the runtime (`tr`, `trf`, `initI18n`,
+  two). `src/i18n.{
+  h, cpp}` wraps the runtime (`tr`, `trf`, `initI18n`,
   `setClientLocale` from `InitializeParams.locale`), domain `freebasicd`, UTF-8
   catalogs, and only the environment's *message* locale activated — so LSP output
   never depends on the UI locale (`bddbcbe`).
@@ -2246,7 +2256,8 @@ Four defects, none of them in the server, each of which failed as a *timeout* or
 
 ### 2026-09-22 — M11: configuration and workspace folders
 
-- `freebasicd.toml` (`src/settings.{h,cpp}`, parsed with the vendored
+- `freebasicd.toml` (`src/settings.{
+  h, cpp}`, parsed with the vendored
   tomlplusplus v3.4.0) with `includePaths`, `diagnosticsOn`, `semanticTokensOn`,
   `inlayHintsOn`, later `codeLensOn`. `workspace/didChangeConfiguration`
   re-reads every root's file — the notification payload is ignored, the file is
