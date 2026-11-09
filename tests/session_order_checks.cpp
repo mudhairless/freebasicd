@@ -198,6 +198,14 @@ void TestWorkspaceHeaderIncludeOffer() {
 }
 
 void TestSystemHeaderIncludeOffer() {
+  std::filesystem::path const sysDir = fblang::defaultSystemIncludeDir();
+  std::error_code ec;
+  if (sysDir.empty() ||
+      !std::filesystem::is_regular_file(sysDir / "quicklz.bi", ec)) {
+    std::printf(
+        "[ NOTE    ] system header: no installed fbc headers, skipping\n");
+    return;
+  }
   OrderFixture fix;
   lsp::NullLog log;
   lsp::LanguageSession session(log);
